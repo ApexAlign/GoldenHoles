@@ -54,6 +54,8 @@ pub struct NetClient {
     teams: HashMap<u16, u8>,
     team_score: [u16; 2],
     team_result: u8,
+    /// Live player-built blocks: grid cell -> owner id (from `BlockPlaced` / `BlockRemoved`).
+    blocks: HashMap<[i32; 3], u16>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -88,6 +90,7 @@ impl Default for NetClient {
             teams: HashMap::new(),
             team_score: [0; 2],
             team_result: 0,
+            blocks: HashMap::new(),
             anchor: None,
             kicked: None,
             own: None,
@@ -211,6 +214,12 @@ impl NetClient {
                 NetEvent::TeamAssign { player, team } => {
                     self.teams.insert(player, team);
                 }
+                NetEvent::BlockPlaced { owner, cell } => {
+                    self.blocks.insert(cell, owner);
+                }
+                NetEvent::BlockRemoved { cell } => {
+                    self.blocks.remove(&cell);
+                }
                 NetEvent::TeamScore { score, result, .. } => {
                     self.team_score = score;
                     self.team_result = result;
@@ -299,6 +308,13 @@ impl NetClient {
     /// Tick the interpolated world should be drawn at.
     pub fn render_tick(&self, local_tick: f64) -> Option<f64> {
         self.server_tick_estimate(local_tick).map(|s| self.interp.render_tick(s))
+    }
+
+    /// Live blocks as `(owner, cell)`, sorted by cell. Centre = `(cell + 0.5) * block size` (size 1.0 by default).
+    pub fn blocks(&self) -> Vec<(u16, [i32; 3])> {
+        let mut v: Vec<_> = self.blocks.iter().map(|(c, o)| (*o, *c)).collect();
+        v.sort_by_key(|&(_, c)| c);
+        v
     }
 
     /// `player`'s team (`shinobi_sim::team::TEAM_*`), once the server has told us.
@@ -457,6 +473,21 @@ mod tests {
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn block_events_keep_the_live_block_set() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::BlockPlaced { owner: 2, cell: [1, 0, 0] });
+        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [0, 0, 5] });
+        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [1, 0, 0] }); // re-sent catch-up: same cell, idempotent
+        ob.push(NetEvent::BlockRemoved { cell: [0, 0, 5] });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!(c.blocks(), vec![(1, [1, 0, 0])]);
     }
 
     #[test]

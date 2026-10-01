@@ -38,7 +38,17 @@ pub enum NetEvent {
     TeamAssign { player: u16, team: u8 },
     /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*`.
     TeamScore { tick: u32, score: [u16; 2], result: u8 },
+    /// A player-built block appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). Replayed to late joiners.
+    BlockPlaced { owner: u16, cell: [i32; 3] },
+    /// The block in `cell` is gone (evicted by its owner's cap, or its owner left).
+    BlockRemoved { cell: [i32; 3] },
+    /// Owner only: the build press was refused, `BLOCK_REFUSED_*`.
+    BlockRefused { why: u8 },
 }
+
+pub const BLOCK_REFUSED_OCCUPIED: u8 = 0;
+pub const BLOCK_REFUSED_BLOCKED: u8 = 1;
+pub const BLOCK_REFUSED_COOLDOWN: u8 = 2;
 
 /// `TeamAssign.team` for a player who left.
 pub const TEAM_NONE: u8 = 3;
@@ -65,7 +75,7 @@ impl NetEvent {
     pub fn write(&self, w: &mut BitWriter) {
         match self {
             Self::WallSpawn(s) => {
-                w.write_bits(0, 4);
+                w.write_bits(0, 5);
                 w.write_varint(s.id);
                 w.write_bits(s.owner as u32, 8);
                 w.write_varint(s.spawn_tick);
@@ -73,12 +83,12 @@ impl NetEvent {
                 write_v3(w, s.b, s.a); // segments are short: delta from `a`
             }
             Self::WallKill { id, tick } => {
-                w.write_bits(1, 4);
+                w.write_bits(1, 5);
                 w.write_varint(*id);
                 w.write_varint(*tick);
             }
             Self::ObstacleSpawn(d) => {
-                w.write_bits(2, 4);
+                w.write_bits(2, 5);
                 w.write_bits(d.id as u32, 16);
                 w.write_bits(d.kind as u32, 8);
                 w.write_varint(d.start_tick);
@@ -101,85 +111,98 @@ impl NetEvent {
                 }
             }
             Self::ObstacleDespawn { id, tick } => {
-                w.write_bits(3, 4);
+                w.write_bits(3, 5);
                 w.write_bits(*id as u32, 16);
                 w.write_varint(*tick);
             }
             Self::Kill { tick, killer, victim, kind } => {
-                w.write_bits(4, 4);
+                w.write_bits(4, 5);
                 w.write_varint(*tick);
                 w.write_bits(*killer as u32, 16);
                 w.write_bits(*victim as u32, 16);
                 w.write_bits(*kind as u32 & 7, 3);
             }
             Self::Respawn { tick, player } => {
-                w.write_bits(5, 4);
+                w.write_bits(5, 5);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
             }
             Self::MatchCountdown { tick, phase, seconds } => {
-                w.write_bits(6, 4);
+                w.write_bits(6, 5);
                 w.write_varint(*tick);
                 w.write_bits(*phase as u32 & 3, 2);
                 w.write_bits(*seconds as u32, 8);
             }
             Self::MatchStart { tick, map } => {
-                w.write_bits(7, 4);
+                w.write_bits(7, 5);
                 w.write_varint(*tick);
                 w.write_varint(*map);
             }
             Self::MatchEnd { tick, winner, reason } => {
-                w.write_bits(8, 4);
+                w.write_bits(8, 5);
                 w.write_varint(*tick);
                 w.write_bits(*winner as u32, 16);
                 w.write_bits(*reason as u32 & 3, 2);
             }
             Self::MapChange { tick, map } => {
-                w.write_bits(9, 4);
+                w.write_bits(9, 5);
                 w.write_varint(*tick);
                 w.write_varint(*map);
             }
             Self::PickupSpawned { tick, id, pos, kind } => {
-                w.write_bits(10, 4);
+                w.write_bits(10, 5);
                 w.write_varint(*tick);
                 w.write_varint(*id);
                 write_v3(w, *pos, [0; 3]);
                 w.write_bits(*kind as u32, 8);
             }
             Self::PickupTaken { tick, id, player } => {
-                w.write_bits(11, 4);
+                w.write_bits(11, 5);
                 w.write_varint(*tick);
                 w.write_varint(*id);
                 w.write_bits(*player as u32, 16);
             }
             Self::RopeAttach { tick, player, anchor } => {
-                w.write_bits(12, 4);
+                w.write_bits(12, 5);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
                 write_v3(w, *anchor, [0; 3]);
             }
             Self::RopeRelease { tick, player } => {
-                w.write_bits(13, 4);
+                w.write_bits(13, 5);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
             }
             Self::TeamAssign { player, team } => {
-                w.write_bits(14, 4);
+                w.write_bits(14, 5);
                 w.write_bits(*player as u32, 16);
                 w.write_bits(*team as u32 & 3, 2);
             }
             Self::TeamScore { tick, score, result } => {
-                w.write_bits(15, 4);
+                w.write_bits(15, 5);
                 w.write_varint(*tick);
                 w.write_varint(score[0] as u32);
                 w.write_varint(score[1] as u32);
                 w.write_bits(*result as u32 & 3, 2);
             }
+            Self::BlockPlaced { owner, cell } => {
+                w.write_bits(16, 5);
+                w.write_bits(*owner as u32, 16);
+                write_v3(w, *cell, [0; 3]);
+            }
+            Self::BlockRemoved { cell } => {
+                w.write_bits(17, 5);
+                write_v3(w, *cell, [0; 3]);
+            }
+            Self::BlockRefused { why } => {
+                w.write_bits(18, 5);
+                w.write_bits(*why as u32 & 3, 2);
+            }
         }
     }
 
     pub fn read(r: &mut BitReader) -> DecodeResult<Self> {
-        Ok(match r.read_bits(4)? {
+        Ok(match r.read_bits(5)? {
             0 => {
                 let id = r.read_varint()?;
                 let owner = r.read_bits(8)? as u8;
@@ -241,6 +264,9 @@ impl NetEvent {
                 ];
                 Self::TeamScore { tick, score, result: r.read_bits(2)? as u8 }
             }
+            16 => Self::BlockPlaced { owner: r.read_bits(16)? as u16, cell: read_v3(r, [0; 3])? },
+            17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
+            18 => Self::BlockRefused { why: r.read_bits(2)? as u8 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -341,6 +367,25 @@ mod tests {
     }
 
     #[test]
+    fn block_events_roundtrip_and_stay_small() {
+        let evs = [
+            NetEvent::BlockPlaced { owner: 7, cell: [-12, 3, 40] },
+            NetEvent::BlockRemoved { cell: [-12, 3, 40] },
+            NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN },
+        ];
+        let mut w = BitWriter::new();
+        for e in &evs {
+            e.write(&mut w);
+        }
+        let bytes = w.finish();
+        assert!(bytes.len() <= 14, "{} B for place + remove + refuse", bytes.len());
+        let mut r = BitReader::new(&bytes);
+        for e in &evs {
+            assert_eq!(&NetEvent::read(&mut r).unwrap(), e);
+        }
+    }
+
+    #[test]
     fn team_events_roundtrip() {
         let evs = [
             NetEvent::TeamAssign { player: 201, team: 1 },
@@ -430,14 +475,14 @@ mod tests {
             let b = w.finish();
             assert_eq!(NetEvent::read(&mut BitReader::new(&b)).unwrap(), ev, "{ev:?}");
         }
-        // tag 15 does not exist (and tag 3-bit-era garbage must not decode as an event)
+        // tag 31 does not exist (garbage must not decode as an event)
         let mut w = BitWriter::new();
-        w.write_bits(15, 4);
+        w.write_bits(31, 5);
         let b = w.finish();
         assert!(NetEvent::read(&mut BitReader::new(&b)).is_err());
         // match countdown with an impossible phase is rejected
         let mut w = BitWriter::new();
-        w.write_bits(6, 4);
+        w.write_bits(6, 5);
         w.write_varint(1);
         w.write_bits(3, 2);
         w.write_bits(5, 8);

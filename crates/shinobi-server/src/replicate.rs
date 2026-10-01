@@ -165,6 +165,10 @@ impl Replicator {
         for ev in changed {
             self.broadcast(ev);
         }
+        // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
+        for (owner, cell) in server.blocks.iter() {
+            st.outbox.push(NetEvent::BlockPlaced { owner, cell });
+        }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
         roped.sort();
@@ -226,6 +230,7 @@ impl Replicator {
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
         self.sync_teams(server, tick);
+        self.sync_blocks(server);
         if self.features.light_walls {
             self.solid.sync(tick, &mut server.world);
         }
@@ -237,6 +242,29 @@ impl Replicator {
             }
             self.obstacles.prune(tick);
             server.hazards.obstacles.prune(tick);
+        }
+    }
+
+    /// `Server::block_events` of the last frame -> reliable events (placed / removed to everyone, refusals to the
+    /// builder only). The sim clears the vec at the start of its next frame, so this runs every `post_frame`.
+    fn sync_blocks(&mut self, server: &mut Server) {
+        use shinobi_sim::blocks::{BlockEvent, PlaceError};
+        use shinobi_sim::events::{BLOCK_REFUSED_BLOCKED, BLOCK_REFUSED_COOLDOWN, BLOCK_REFUSED_OCCUPIED};
+        for ev in std::mem::take(&mut server.block_events) {
+            match ev {
+                BlockEvent::Placed { owner, cell, .. } => self.broadcast(NetEvent::BlockPlaced { owner, cell }),
+                BlockEvent::Removed { cell, .. } => self.broadcast(NetEvent::BlockRemoved { cell }),
+                BlockEvent::Refused { owner, why, .. } => {
+                    let why = match why {
+                        PlaceError::Occupied => BLOCK_REFUSED_OCCUPIED,
+                        PlaceError::Blocked => BLOCK_REFUSED_BLOCKED,
+                        PlaceError::Cooldown => BLOCK_REFUSED_COOLDOWN,
+                    };
+                    if let Some(p) = self.peers.get_mut(&owner) {
+                        p.outbox.push(NetEvent::BlockRefused { why });
+                    }
+                }
+            }
         }
     }
 
@@ -743,6 +771,38 @@ mod tests {
         );
         assert!(max_len <= 1200, "steady-state 8v8 datagram {max_len} B exceeds one MTU");
         assert!(ms < 16.0, "{ms:.2} ms per tick leaves no headroom at 60 Hz");
+    }
+
+    #[test]
+    fn blocks_are_broadcast_refusals_go_to_the_builder_and_joiners_get_the_world() {
+        use shinobi_sim::blocks::{BlockEvent, PlaceError};
+        use shinobi_sim::events::BLOCK_REFUSED_COOLDOWN;
+        let (mut s, mut r) = two_peers();
+        let blocks_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter()
+                .filter(|e| matches!(e, NetEvent::BlockPlaced { .. } | NetEvent::BlockRemoved { .. } | NetEvent::BlockRefused { .. }))
+                .collect::<Vec<_>>()
+        };
+        let tick = s.tick;
+        s.blocks.place(&mut s.world, 1, [2, 0, 0], &[]).unwrap();
+        s.block_events.push(BlockEvent::Placed { tick, owner: 1, cell: [2, 0, 0] });
+        s.block_events.push(BlockEvent::Refused { tick, owner: 1, why: PlaceError::Cooldown });
+        s.block_events.push(BlockEvent::Removed { tick, cell: [9, 9, 9] });
+        r.post_frame(&mut s);
+        let placed = NetEvent::BlockPlaced { owner: 1, cell: [2, 0, 0] };
+        let builder = blocks_for(&mut r, &s, 1);
+        assert!(builder.contains(&placed) && builder.contains(&NetEvent::BlockRemoved { cell: [9, 9, 9] }), "{builder:?}");
+        assert!(builder.contains(&NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN }), "{builder:?}");
+        let other = blocks_for(&mut r, &s, 2);
+        assert!(other.contains(&placed) && !other.iter().any(|e| matches!(e, NetEvent::BlockRefused { .. })), "{other:?}");
+        // a joiner is told about every live block
+        s.add_player(3, [9.0, 0.81, 0.0]);
+        r.add_peer(&s, 3, s.tick);
+        assert!(blocks_for(&mut r, &s, 3).contains(&placed));
     }
 
     #[test]
