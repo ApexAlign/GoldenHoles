@@ -12,6 +12,7 @@
 mod crt;
 mod demo;
 mod discs;
+mod impacts;
 mod grid;
 mod hud_view;
 mod mobile;
@@ -117,7 +118,7 @@ fn main() {
         .add_plugins(crt::CrtPlugin)
         .add_plugins(sky::SkyPlugin)
         .add_plugins(play::PlayPlugin)
-        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin))
+        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin))
         .add_plugins(hud_view::HudPlugin)
         .add_plugins(walls::WallsPlugin);
     if flag("--demo") {

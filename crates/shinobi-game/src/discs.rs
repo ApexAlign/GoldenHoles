@@ -11,6 +11,7 @@ use shinobi_client::fx::{lightwall_alpha_age, LightWallCfg};
 use shinobi_client::hud::Palette;
 use shinobi_sim::combat::shuriken::ShurikenCfg;
 
+use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::ViewRes;
 
 const POOL: usize = 32;
@@ -23,6 +24,8 @@ const TRAIL_MAX: usize = 24;
 
 /// One trail per pool slot. A slot whose disc jumps (a different disc took the slot) restarts its history.
 struct Trail {
+    /// Last drawn disc position when the slot was live (to place the end-of-flight puff).
+    last: Option<Vec3>,
     pts: VecDeque<(Vec3, f32)>,
     mesh: Handle<Mesh>,
     entity: Entity,
@@ -110,7 +113,7 @@ fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
             let entity = commands
                 .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(tmat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
                 .id();
-            Trail { pts: VecDeque::new(), mesh, entity }
+            Trail { last: None, pts: VecDeque::new(), mesh, entity }
         })
         .collect();
     commands.insert_resource(Trails(trails));
@@ -156,6 +159,7 @@ fn update_trails(
     mut trails: ResMut<Trails>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<&mut Visibility>,
+    mut impacts: ResMut<ImpactQueue>,
 ) {
     let now = time.elapsed_secs();
     let pal = Palette::TRON;
@@ -163,6 +167,10 @@ fn update_trails(
         match view.0.discs.get(i) {
             Some((p, _)) => {
                 let p = Vec3::from(*p);
+                if tr.last.is_none() {
+                    impacts.0.push(Impact { pos: p, kind: ImpactKind::Muzzle });
+                }
+                tr.last = Some(p);
                 match tr.pts.back() {
                     Some((l, _)) if l.distance(p) > 3.0 => tr.pts.clear(), // slot reused by a different disc
                     _ => {}
@@ -174,7 +182,11 @@ fn update_trails(
                     }
                 }
             }
-            None => {}
+            None => {
+                if let Some(p) = tr.last.take() {
+                    impacts.0.push(Impact { pos: p, kind: ImpactKind::Gone });
+                }
+            }
         }
         while tr.pts.front().map_or(false, |(_, b)| now - b > TRAIL_LIFE) {
             tr.pts.pop_front();
