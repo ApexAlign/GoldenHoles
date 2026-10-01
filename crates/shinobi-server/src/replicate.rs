@@ -77,6 +77,8 @@ pub struct Replicator {
     features: Features,
     /// One line per gameplay event for the server console (kill feed), drained by `take_log`.
     log: Vec<String>,
+    /// Last rope anchor (1/512 m) broadcast per roped player: changes become `RopeAttach` / `RopeRelease`.
+    ropes: HashMap<u16, [i32; 3]>,
 }
 
 impl Replicator {
@@ -97,6 +99,7 @@ impl Replicator {
             seed: obstacle_seed,
             features: Features::default(),
             log: Vec::new(),
+            ropes: HashMap::new(),
         }
     }
 
@@ -143,10 +146,19 @@ impl Replicator {
         for w in self.walls.live_at(now_tick, self.life_ticks) {
             st.outbox.push(NetEvent::WallSpawn(w.spawn));
         }
+        // ropes already hooked when this peer joined (sorted: deterministic)
+        let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
+        roped.sort();
+        for (player, anchor) in roped {
+            st.outbox.push(NetEvent::RopeAttach { tick: now_tick, player, anchor });
+        }
         self.peers.insert(id, st);
     }
 
     pub fn remove_peer(&mut self, server: &mut Server, id: u16, now_tick: u32) {
+        if self.ropes.remove(&id).is_some() {
+            self.broadcast(NetEvent::RopeRelease { tick: now_tick, player: id });
+        }
         self.peers.remove(&id);
         if let Some(mut t) = self.trails.remove(&id) {
             for wid in t.clear() {
@@ -190,6 +202,7 @@ impl Replicator {
         let Some(tick) = server.tick.checked_sub(1) else { return };
         // The sim clears these event vecs at the start of its next `frame()`: drain now or lose them.
         self.drain_game_events(server, tick);
+        self.sync_ropes(server, tick);
         if self.features.light_walls {
             self.solid.sync(tick, &mut server.world);
         }
@@ -201,6 +214,25 @@ impl Replicator {
             }
             self.obstacles.prune(tick);
             server.hazards.obstacles.prune(tick);
+        }
+    }
+
+    /// Rope attach / release edges -> reliable events. Other players' ropes are rare (a few per minute per player,
+    /// ~7 B each), so reliable events are cheaper than a per-snapshot flag and survive loss. Dead players have no rope.
+    fn sync_ropes(&mut self, server: &Server, tick: u32) {
+        for p in &server.players {
+            let now = p.ch.grapple.filter(|_| p.vitals.alive()).map(|g| q_pos3([g.anchor.x, g.anchor.y, g.anchor.z]));
+            match (now, self.ropes.get(&p.id).copied()) {
+                (Some(a), prev) if prev != Some(a) => {
+                    self.ropes.insert(p.id, a);
+                    self.broadcast(NetEvent::RopeAttach { tick, player: p.id, anchor: a });
+                }
+                (None, Some(_)) => {
+                    self.ropes.remove(&p.id);
+                    self.broadcast(NetEvent::RopeRelease { tick, player: p.id });
+                }
+                _ => {}
+            }
         }
     }
 
@@ -579,6 +611,44 @@ mod tests {
         let delta = encode_delta(Some(&base), &mk(103, 3)).len();
         eprintln!("16 players + 96 discs: full {full} B, delta(3 ticks) {delta} B");
         assert!(delta < 1200 && full < 1200 * 2, "delta snapshot {delta} B too big for MTU budget");
+    }
+
+    #[test]
+    fn ropes_are_broadcast_on_edges_only_and_replayed_to_late_joiners() {
+        use shinobi_sim::character::GrappleState;
+        let (mut s, mut r) = two_peers();
+        let events_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter().filter(|e| matches!(e, NetEvent::RopeAttach { .. } | NetEvent::RopeRelease { .. })).collect::<Vec<_>>()
+        };
+        // player 1 hooks: everyone is told once, with the quantized anchor
+        s.players[0].ch.grapple = Some(GrappleState { anchor: shinobi_sim::rapier3d::prelude::Vector::new(3.0, 6.0, -8.0), len: 9.0, time: 0.0 });
+        r.post_frame(&mut s);
+        let want = NetEvent::RopeAttach { tick: s.tick - 1, player: 1, anchor: q_pos3([3.0, 6.0, -8.0]) };
+        assert_eq!(events_for(&mut r, &s, 2), vec![want]);
+        // unchanged rope costs nothing: no repeat event while hooked (and the peers have not acked, so only the
+        // already-queued one is re-sent, never a second copy)
+        r.post_frame(&mut s);
+        assert_eq!(events_for(&mut r, &s, 2), vec![want], "still exactly one queued attach");
+        // a peer that joins while the rope is up gets it replayed
+        s.add_player(3, [9.0, 0.81, 0.0]);
+        r.add_peer(&s, 3, s.tick);
+        assert!(matches!(events_for(&mut r, &s, 3)[..], [NetEvent::RopeAttach { player: 1, .. }]));
+        // release (or death) -> one release
+        s.players[0].ch.grapple = None;
+        r.post_frame(&mut s);
+        let got = events_for(&mut r, &s, 2);
+        assert_eq!(got.len(), 2, "attach then release: {got:?}");
+        assert!(matches!(got[1], NetEvent::RopeRelease { player: 1, .. }));
+        // leaving while roped releases it too
+        s.players[0].ch.grapple = Some(GrappleState { anchor: shinobi_sim::rapier3d::prelude::Vector::new(1.0, 2.0, 3.0), len: 3.0, time: 0.0 });
+        r.post_frame(&mut s);
+        let t = s.tick;
+        r.remove_peer(&mut s, 1, t);
+        assert!(events_for(&mut r, &s, 2).iter().any(|e| matches!(e, NetEvent::RopeRelease { player: 1, .. })));
     }
 
     #[test]

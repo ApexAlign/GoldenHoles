@@ -29,6 +29,10 @@ pub enum NetEvent {
     MapChange { tick: u32, map: u32 },
     PickupSpawned { tick: u32, id: u32, pos: [i32; 3], kind: u8 },
     PickupTaken { tick: u32, id: u32, player: u16 },
+    /// Wrist-grapple hooked (or re-hooked): `anchor` in 1/512 m. Draw a rope from the player's hand to it.
+    RopeAttach { tick: u32, player: u16, anchor: [i32; 3] },
+    /// The player's rope is gone (released, expired, died, left).
+    RopeRelease { tick: u32, player: u16 },
 }
 
 fn write_v3(w: &mut BitWriter, v: [i32; 3], base: [i32; 3]) {
@@ -136,6 +140,17 @@ impl NetEvent {
                 w.write_varint(*id);
                 w.write_bits(*player as u32, 16);
             }
+            Self::RopeAttach { tick, player, anchor } => {
+                w.write_bits(12, 4);
+                w.write_varint(*tick);
+                w.write_bits(*player as u32, 16);
+                write_v3(w, *anchor, [0; 3]);
+            }
+            Self::RopeRelease { tick, player } => {
+                w.write_bits(13, 4);
+                w.write_varint(*tick);
+                w.write_bits(*player as u32, 16);
+            }
         }
     }
 
@@ -191,6 +206,8 @@ impl NetEvent {
                 kind: r.read_bits(8)? as u8,
             },
             11 => Self::PickupTaken { tick: r.read_varint()?, id: r.read_varint()?, player: r.read_bits(16)? as u16 },
+            12 => Self::RopeAttach { tick: r.read_varint()?, player: r.read_bits(16)? as u16, anchor: read_v3(r, [0; 3])? },
+            13 => Self::RopeRelease { tick: r.read_varint()?, player: r.read_bits(16)? as u16 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -288,6 +305,24 @@ mod tests {
 
     fn wall(id: u32) -> NetEvent {
         NetEvent::WallSpawn(WallSpawn { id, owner: 3, spawn_tick: 1000 + id, a: [10, 0, -5], b: [200, 0, 90] })
+    }
+
+    #[test]
+    fn rope_events_roundtrip_and_stay_small() {
+        let evs = [
+            NetEvent::RopeAttach { tick: 123_456, player: 7, anchor: [-20_000, 5_120, 33_333] },
+            NetEvent::RopeRelease { tick: 123_500, player: 7 },
+        ];
+        let mut w = BitWriter::new();
+        for e in &evs {
+            e.write(&mut w);
+        }
+        let bytes = w.finish();
+        assert!(bytes.len() <= 20, "attach + release = {} B", bytes.len());
+        let mut r = BitReader::new(&bytes);
+        for e in &evs {
+            assert_eq!(&NetEvent::read(&mut r).unwrap(), e);
+        }
     }
 
     #[test]

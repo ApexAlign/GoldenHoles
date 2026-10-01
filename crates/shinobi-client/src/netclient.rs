@@ -5,7 +5,7 @@
 //! (HELLO every `HELLO_RETRY_MS`, cookie 0 until a CHALLENGE arrives, newest cookie after). `state()` becomes
 //! `Connected` on WELCOME; `connect_failed()` after `CONNECT_TIMEOUT_MS`. Then each sim tick: `next_packet`.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use shinobi_proto::bits::{BitReader, DecodeError, DecodeResult};
 use shinobi_proto::datagram::{
@@ -48,6 +48,8 @@ pub struct NetClient {
     pub interp: InterpBuffer,
     inbox: EventInbox,
     events: Vec<NetEvent>,
+    /// Hooked ropes of other players (and us): player id -> anchor in metres. Kept from the reliable events.
+    ropes: HashMap<u16, [f32; 3]>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -78,6 +80,7 @@ impl Default for NetClient {
             interp: InterpBuffer::default(),
             inbox: EventInbox::default(),
             events: Vec::new(),
+            ropes: HashMap::new(),
             anchor: None,
             kicked: None,
             own: None,
@@ -186,6 +189,18 @@ impl NetClient {
         };
         let board = if board_bytes.is_empty() { None } else { Some(Board::decode(board_bytes)?) };
 
+        for ev in &pending {
+            match *ev {
+                NetEvent::RopeAttach { player, anchor, .. } => {
+                    self.ropes.insert(player, dq_pos3(anchor));
+                }
+                NetEvent::RopeRelease { player, .. } | NetEvent::Kill { victim: player, .. } => {
+                    self.ropes.remove(&player);
+                }
+                NetEvent::MapChange { .. } => self.ropes.clear(),
+                _ => {}
+            }
+        }
         self.events.extend(pending);
         if let Some(b) = board {
             self.board = Some(b);
@@ -267,6 +282,11 @@ impl NetClient {
     /// Tick the interpolated world should be drawn at.
     pub fn render_tick(&self, local_tick: f64) -> Option<f64> {
         self.server_tick_estimate(local_tick).map(|s| self.interp.render_tick(s))
+    }
+
+    /// Where `player`'s rope is hooked, if it is (from `RopeAttach` / `RopeRelease`).
+    pub fn rope_anchor(&self, player: u16) -> Option<[f32; 3]> {
+        self.ropes.get(&player).copied()
     }
 
     /// Reliable events (walls, obstacles) received since last call, in order.
@@ -400,6 +420,26 @@ mod tests {
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn rope_anchor_follows_attach_release_and_death() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::RopeAttach { tick: 5, player: 2, anchor: [512, 1024, -512] });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        let d = frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0)));
+        c.on_datagram(&d, 1.0).unwrap();
+        assert_eq!(c.rope_anchor(2), Some([1.0, 2.0, -1.0]));
+        assert_eq!(c.rope_anchor(3), None);
+        ob.push(NetEvent::Kill { tick: 6, killer: 3, victim: 2, kind: 0 });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        let d = frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0)));
+        c.on_datagram(&d, 1.1).unwrap();
+        assert_eq!(c.rope_anchor(2), None, "a dead player's rope is gone");
     }
 
     #[test]
