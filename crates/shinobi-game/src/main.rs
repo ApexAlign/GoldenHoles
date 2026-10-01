@@ -32,24 +32,13 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Same rule as `shinobi-server`'s `config::default_level_path` (keep identical, or the client predicts against a
-/// different world): `levels/arena.lvl` from the working directory, then upward from the executable.
-fn default_level_path() -> Option<std::path::PathBuf> {
-    let rel = std::path::Path::new("levels/arena.lvl");
-    if rel.is_file() {
-        return Some(rel.to_path_buf());
-    }
-    let exe = std::env::current_exe().ok()?;
-    exe.ancestors().skip(1).take(5).map(|d| d.join(rel)).find(|p| p.is_file())
-}
-
 /// `--level PATH` wins, else the server's default (`levels/arena.lvl` when found), else the built-in level.
 fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
     if path.as_deref() == Some("builtin") {
         eprintln!("level: built-in (forced)");
         return shinobi_sim::level::LevelDesc::standard();
     }
-    let path = path.map(std::path::PathBuf::from).or_else(default_level_path);
+    let path = path.map(std::path::PathBuf::from).or_else(shinobi_sim::level::default_level_path);
     match path {
         None => {
             eprintln!("level: built-in");

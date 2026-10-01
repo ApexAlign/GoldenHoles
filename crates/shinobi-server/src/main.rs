@@ -136,7 +136,7 @@ fn main() -> std::io::Result<()> {
         }
     };
     // explicit --level wins; otherwise `levels/arena.lvl` when present; otherwise the built-in arena
-    let level_path = conf.level.clone().or_else(config::default_level_path);
+    let level_path = conf.level.clone().or_else(shinobi_sim::level::default_level_path);
     let setup = match &level_path {
         Some(path) => Setup::load(path).unwrap_or_else(|e| {
             eprintln!("error: level: {e}");

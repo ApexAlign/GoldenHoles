@@ -104,17 +104,6 @@ fn normalize_bind(b: &str) -> String {
     b.to_string()
 }
 
-/// `levels/arena.lvl` when it exists: looked up from the working directory, then upward from the executable
-/// (so `target/release/shinobi-server` finds the repo's `levels/` however it was launched).
-pub fn default_level_path() -> Option<PathBuf> {
-    let rel = std::path::Path::new("levels/arena.lvl");
-    if rel.is_file() {
-        return Some(rel.to_path_buf());
-    }
-    let exe = std::env::current_exe().ok()?;
-    exe.ancestors().skip(1).take(5).map(|d| d.join(rel)).find(|p| p.is_file())
-}
-
 fn truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
