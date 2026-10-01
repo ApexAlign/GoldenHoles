@@ -90,7 +90,7 @@ fn snapshot_datagram(srv: &Server) -> Vec<u8> {
     let mut ev = BitWriter::new();
     EventOutbox::default().write_pending(&mut ev, 256);
     let mut own = BitWriter::new();
-    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![] };
+    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0 };
     extras.write(&mut own, |w| OwnState::from_snapshot(&p.ch.snapshot(&srv.world)).write(w));
     frame_snapshot_v3(&ev.finish(), &own.finish(), &[], &encode_delta(None, &snap))
 }

@@ -34,14 +34,19 @@ const EVENT_BUDGET: usize = 480;
 struct PeerState {
     ack_snapshot: Option<u32>,
     outbox: EventOutbox,
-    /// Hit markers / damage directions waiting for the next snapshot datagram (unreliable: loss is fine).
-    hits: Vec<HitMsg>,
+    /// Hit markers / damage directions, each sent in `HIT_RESENDS` consecutive datagrams (unreliable: this is
+    /// the loss tolerance). `(seq, hit, sends left)`, oldest first, seqs consecutive.
+    hits: Vec<(u8, HitMsg, u8)>,
+    /// Seq of the next hit pushed (wrapping).
+    next_hit_seq: u8,
 }
 
 /// Scoreboard cadence: every second, plus immediately on a phase change.
 const BOARD_EVERY_TICKS: u32 = 60;
 /// Never let a stalled snapshot cadence grow a peer's hit backlog without bound.
 const MAX_PENDING_HITS: usize = 32;
+/// Datagrams each hit rides in (survives 2 consecutive losses).
+const HIT_RESENDS: u8 = 3;
 
 /// Optional world features. The game is a shooter: Tron is a visual style, so by default the server creates NO
 /// trail walls and NO obstacle waves. Both stay available (wire codecs intact) behind explicit opt-ins until the
@@ -212,7 +217,8 @@ impl Replicator {
 
     fn push_hit(&mut self, player: u16, hit: HitMsg) {
         if let Some(p) = self.peers.get_mut(&player) {
-            p.hits.push(hit);
+            p.hits.push((p.next_hit_seq, hit, HIT_RESENDS));
+            p.next_hit_seq = p.next_hit_seq.wrapping_add(1);
             let extra = p.hits.len().saturating_sub(MAX_PENDING_HITS);
             p.hits.drain(..extra);
         }
@@ -376,7 +382,13 @@ impl Replicator {
             let snap_bytes = encode_delta(base, &snap);
             let mut w = BitWriter::new();
             peer.outbox.write_pending(&mut w, EVENT_BUDGET);
-            let own = own_block(server, *id, &std::mem::take(&mut peer.hits));
+            let send: Vec<HitMsg> = peer.hits.iter().map(|h| h.1).collect();
+            let hit_seq = peer.hits.last().map_or(0, |h| h.0);
+            for h in &mut peer.hits {
+                h.2 -= 1;
+            }
+            peer.hits.retain(|h| h.2 > 0);
+            let own = own_block(server, *id, &send, hit_seq);
             out.push((*id, datagram::frame_snapshot_v3(&w.finish(), &own, &board, &snap_bytes)));
         }
         self.history.push_back(snap);
@@ -403,7 +415,7 @@ fn move_kind(p: &Player) -> (MoveKind, u8) {
 /// Owner-only block (`gameplay::OwnExtras`), built from the SAME post-step world as the snapshot:
 /// movement state for reconciliation when the player is alive and has executed an intent, exact health, and
 /// the hit markers accumulated since the last datagram.
-fn own_block(server: &Server, id: u16, hits: &[HitMsg]) -> Vec<u8> {
+fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8) -> Vec<u8> {
     let Some(p) = server.players.iter().find(|p| p.id == id) else { return Vec::new() };
     let acked = p.queue.last_executed_tick().filter(|_| p.vitals.alive());
     let extras = OwnExtras {
@@ -411,6 +423,7 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg]) -> Vec<u8> {
         acked_tick: acked.unwrap_or(0),
         hp_x10: if p.vitals.alive() { (p.vitals.hp * 10.0).round().clamp(1.0, u16::MAX as f32) as u16 } else { 0 },
         hits: hits.to_vec(),
+        hit_seq,
     };
     let mut w = BitWriter::new();
     extras.write(&mut w, |w| OwnState::from_snapshot(&p.ch.snapshot(&server.world)).write(w));
@@ -788,8 +801,13 @@ mod tests {
         assert!(log.contains("KILL    p2 fell out of the world"), "void kill has its own feed line:\n{log}");
         assert!(log.contains("KILL    p1 sliced p2") && log.contains("RESPAWN p2"), "console kill feed:\n{log}");
         assert!(r.take_log().is_empty(), "drained");
-        // hits are one-shot: next round has none
-        assert!(hits_of_next(&mut r, &s, 1).is_empty());
+        // each hit rides in HIT_RESENDS datagrams (first was `round`), then stops
+        let first = decode_own(datagram_for(&round, 1).1).0;
+        for _ in 1..HIT_RESENDS {
+            let again = decode_own(datagram_for(&r.build_round(&s), 1).1).0;
+            assert_eq!((again.hits.clone(), again.hit_seq), (first.hits.clone(), first.hit_seq), "resend is identical");
+        }
+        assert!(hits_of_next(&mut r, &s, 1).is_empty(), "hit stops after its resends");
 
         // kill + respawn are RELIABLE and reach every peer, bystander included
         for id in [1u16, 2, 3] {

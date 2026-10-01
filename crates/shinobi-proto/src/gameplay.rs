@@ -39,7 +39,11 @@ pub struct OwnExtras {
     pub acked_tick: u32,
     /// Exact health x10 (0 = dead).
     pub hp_x10: u16,
+    /// Newest hits, oldest first. Each hit is resent in several datagrams (loss tolerance); `hit_seq` is the
+    /// wrapping sequence of the LAST hit, earlier ones are consecutive below it, so the client dedups by seq.
     pub hits: Vec<HitMsg>,
+    /// Only on the wire when `hits` is non-empty.
+    pub hit_seq: u8,
 }
 
 impl OwnExtras {
@@ -52,6 +56,9 @@ impl OwnExtras {
         w.write_varint(self.hp_x10 as u32);
         let n = self.hits.len().min(MAX_HITS);
         w.write_bits(n as u32, 4);
+        if n > 0 {
+            w.write_bits(self.hit_seq as u32, 8);
+        }
         for h in &self.hits[self.hits.len() - n..] {
             w.write_varint(h.other as u32);
             w.write_bits(h.amount as u32, 8);
@@ -75,6 +82,7 @@ impl OwnExtras {
         };
         let hp_x10 = u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?;
         let n = r.read_bits(4)? as usize;
+        let hit_seq = if n > 0 { r.read_bits(8)? as u8 } else { 0 };
         let mut hits = Vec::with_capacity(n);
         for _ in 0..n {
             hits.push(HitMsg {
@@ -85,7 +93,7 @@ impl OwnExtras {
                 kill: r.read_bool()?,
             });
         }
-        Ok((Self { has_state, acked_tick, hp_x10, hits }, state))
+        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq }, state))
     }
 }
 
@@ -166,7 +174,7 @@ mod tests {
     #[test]
     fn own_extras_roundtrip_with_and_without_state() {
         let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7 };
-        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)] };
+        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9 };
         let mut w = BitWriter::new();
         full.write(&mut w, |w| {
             w.write_bits(0b1011, 4); // stand-in for OwnState
@@ -179,7 +187,7 @@ mod tests {
         assert_eq!(st, Some((0b1011, 99)));
 
         // dead: extras only, state closure never runs
-        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)] };
+        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255 };
         let mut w = BitWriter::new();
         dead.write(&mut w, |_| panic!("no state when dead"));
         let bytes = w.finish();
@@ -191,7 +199,7 @@ mod tests {
     #[test]
     fn hit_list_keeps_newest_and_truncation_errors() {
         let hits: Vec<_> = (0..30u16).map(|i| HitMsg { other: i, amount: 1, kind: 0, taken: false, kill: false }).collect();
-        let e = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits };
+        let e = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: 4 };
         let mut w = BitWriter::new();
         e.write(&mut w, |_| {});
         let bytes = w.finish();

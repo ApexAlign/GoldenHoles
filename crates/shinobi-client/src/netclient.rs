@@ -58,6 +58,8 @@ pub struct NetClient {
     last_hello: Option<f64>,
     /// Snapshot tick of the newest datagram whose owner extras (hits, hp) we applied: drops duplicates/reordered.
     last_extras_tick: Option<u32>,
+    /// Wrapping seq of the newest hit already surfaced; hits are resent by the server, so dedup by seq.
+    last_hit_seq: Option<u8>,
     hp_x10: Option<u16>,
     hits: Vec<HitMsg>,
     board: Option<Board>,
@@ -83,6 +85,7 @@ impl Default for NetClient {
             connect_started: None,
             last_hello: None,
             last_extras_tick: None,
+            last_hit_seq: None,
             hp_x10: None,
             hits: Vec::new(),
             board: None,
@@ -187,12 +190,20 @@ impl NetClient {
         if let Some(b) = board {
             self.board = Some(b);
         }
-        // hits are unreliable and flushed once; a duplicated or reordered datagram must not replay them
+        // hits are unreliable but resent by the server with a seq; a duplicated or reordered datagram must not replay them
         if let Some((x, state)) = extras {
             if self.last_extras_tick.map_or(true, |t| snap.tick > t) {
                 self.last_extras_tick = Some(snap.tick);
                 self.hp_x10 = Some(x.hp_x10);
-                self.hits.extend(x.hits);
+                let n = x.hits.len();
+                for (i, h) in x.hits.into_iter().enumerate() {
+                    let seq = x.hit_seq.wrapping_sub((n - 1 - i) as u8);
+                    // newer than the last one surfaced (wrapping window of 127)
+                    if self.last_hit_seq.map_or(true, |l| (1..128).contains(&seq.wrapping_sub(l))) {
+                        self.last_hit_seq = Some(seq);
+                        self.hits.push(h);
+                    }
+                }
                 if let Some(own) = state {
                     let me = self.player_id();
                     let server_pos = me.and_then(|id| snap.get(id)).map(|e| dq_pos3(e.pos));
@@ -385,10 +396,32 @@ mod tests {
     }
 
     fn own_block(has_state: bool, acked: u32, hp_x10: u16, hits: Vec<HitMsg>) -> Vec<u8> {
-        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits };
+        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1 };
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn resent_hits_survive_loss_and_surface_once() {
+        let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false };
+        let blk = |hits: Vec<HitMsg>, seq: u8| {
+            let x = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: seq };
+            let mut w = BitWriter::new();
+            x.write(&mut w, |w| OwnState::default().write(w));
+            w.finish()
+        };
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        // datagram carrying hit #254 (and the seq wraps to #0, #1) is lost; the next two resend it
+        let d2 = frame_snapshot_v3(&no_events(), &blk(vec![mk(1), mk(2)], 255), &[], &encode_delta(None, &snap(10, 0)));
+        let d3 = frame_snapshot_v3(&no_events(), &blk(vec![mk(1), mk(2), mk(3)], 0), &[], &encode_delta(None, &snap(11, 0)));
+        let d4 = frame_snapshot_v3(&no_events(), &blk(vec![mk(2), mk(3)], 0), &[], &encode_delta(None, &snap(12, 0)));
+        for (i, d) in [d2, d3, d4].iter().enumerate() {
+            c.on_datagram(d, 1.0 + i as f64).unwrap();
+        }
+        let got: Vec<u16> = c.take_hits().iter().map(|h| h.other).collect();
+        assert_eq!(got, vec![1, 2, 3], "each hit once, across the seq wrap");
     }
 
     #[test]
