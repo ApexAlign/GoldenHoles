@@ -126,6 +126,8 @@ pub enum CombatEvent {
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real> },
     ShurikenBounce { pos: Point<Real>, normal: Vector<Real> },
     ShurikenGone { pos: Point<Real> },
+    /// Pushed just before the `Damage` of a disc that had already bounced when it hit `collider` (ricochet).
+    RicochetHit { collider: ColliderHandle },
     /// Feed to `FpsCamera.recoil.kick`.
     Recoil { pitch_deg: f32, yaw_deg: f32 },
     PickedUp { id: u32, kind: powerup::PowerupKind },

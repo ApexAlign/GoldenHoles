@@ -133,6 +133,9 @@ impl Weapon for ShurikenLauncher {
             DiscStep::Flying => true,
             DiscStep::Hit { collider, point } => {
                 let target = ctx.world.colliders.get(collider).map_or(0, |c| c.user_data);
+                if d.bounces > 0 {
+                    ctx.events.push(CombatEvent::RicochetHit { collider });
+                }
                 ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage, kind: DamageKind::Shuriken, point });
                 ctx.events.push(CombatEvent::ShurikenGone { pos: point });
                 false

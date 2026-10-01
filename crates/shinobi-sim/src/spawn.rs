@@ -284,3 +284,51 @@ mod team_tests {
         assert_eq!(full, slice_duel(1, 1), "teammates unhurt");
     }
 }
+
+#[cfg(test)]
+mod kill_tag_tests {
+    use std::time::Duration;
+
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, PITCH_LEVEL};
+
+    fn send(s: &mut Server, id: u16, buttons: u8) {
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, buttons: Buttons(buttons), aim_pitch: PITCH_LEVEL, ..Default::default() };
+        let pkt = ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() };
+        s.ingest(id, &pkt.encode().unwrap());
+    }
+
+    /// A throws toward -Z with B standing behind A: only a disc that bounced off the wall in front can reach B.
+    #[test]
+    fn a_disc_that_bounced_first_tags_the_kill_as_a_ricochet_and_a_straight_one_does_not() {
+        let run = |wall: bool| {
+            let mut s = Server::new(Cfg::default());
+            s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+            s.add_player(1, [0.0, 0.81, 0.0]);
+            s.add_player(2, [0.0, 0.81, 3.0]); // behind A (A faces -Z)
+            s.players[0].team = 0;
+            s.players[1].team = 1;
+            s.players[1].vitals.hp = 1.0; // any hit kills
+            if wall {
+                s.add_static_box([0.0, 1.0, -4.0], [5.0, 3.0, 0.2]); // A's shot bounces straight back through A to B
+            }
+            send(&mut s, 1, Buttons::FIRE);
+            let mut tags = Vec::new();
+            let mut killed = false;
+            for _ in 0..60 {
+                s.frame(Duration::from_nanos(16_666_667));
+                tags.extend(s.kill_tags.iter().copied());
+                killed |= s.pvp_events.iter().any(|e| matches!(e, crate::pvp::PvpEvent::Kill { victim: 2, .. }));
+            }
+            (killed, tags)
+        };
+        let (killed, tags) = run(true);
+        assert!(killed, "the rebounding disc killed B");
+        assert_eq!(tags.len(), 1);
+        assert!(tags[0].ricochet && !tags[0].wall_run, "{tags:?}");
+        let (killed, tags) = run(false);
+        assert!(!killed && tags.is_empty(), "control: without the wall the disc never reaches B");
+    }
+}
