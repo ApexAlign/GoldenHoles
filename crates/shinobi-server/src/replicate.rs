@@ -79,6 +79,9 @@ pub struct Replicator {
     log: Vec<String>,
     /// Last rope anchor (1/512 m) broadcast per roped player: changes become `RopeAttach` / `RopeRelease`.
     ropes: HashMap<u16, [i32; 3]>,
+    /// Last team broadcast per player (`TeamAssign`), and the last `TeamScore` sent.
+    teams: HashMap<u16, u8>,
+    last_team_score: Option<([u16; 2], u8)>,
 }
 
 impl Replicator {
@@ -100,6 +103,8 @@ impl Replicator {
             features: Features::default(),
             log: Vec::new(),
             ropes: HashMap::new(),
+            teams: HashMap::new(),
+            last_team_score: None,
         }
     }
 
@@ -146,6 +151,20 @@ impl Replicator {
         for w in self.walls.live_at(now_tick, self.life_ticks) {
             st.outbox.push(NetEvent::WallSpawn(w.spawn));
         }
+        // everyone's team (this peer's own included), and tell the others about the newcomer
+        let mut changed = Vec::new();
+        for p in &server.players {
+            st.outbox.push(NetEvent::TeamAssign { player: p.id, team: p.team });
+            if self.teams.insert(p.id, p.team) != Some(p.team) {
+                changed.push(NetEvent::TeamAssign { player: p.id, team: p.team });
+            }
+        }
+        if let Some((score, result)) = self.team_score_now(server) {
+            st.outbox.push(NetEvent::TeamScore { tick: now_tick, score, result });
+        }
+        for ev in changed {
+            self.broadcast(ev);
+        }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
         roped.sort();
@@ -156,6 +175,9 @@ impl Replicator {
     }
 
     pub fn remove_peer(&mut self, server: &mut Server, id: u16, now_tick: u32) {
+        if self.teams.remove(&id).is_some() {
+            self.broadcast(NetEvent::TeamAssign { player: id, team: shinobi_sim::events::TEAM_NONE });
+        }
         if self.ropes.remove(&id).is_some() {
             self.broadcast(NetEvent::RopeRelease { tick: now_tick, player: id });
         }
@@ -203,6 +225,7 @@ impl Replicator {
         // The sim clears these event vecs at the start of its next `frame()`: drain now or lose them.
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
+        self.sync_teams(server, tick);
         if self.features.light_walls {
             self.solid.sync(tick, &mut server.world);
         }
@@ -215,6 +238,46 @@ impl Replicator {
             self.obstacles.prune(tick);
             server.hazards.obstacles.prune(tick);
         }
+    }
+
+    /// Team membership changes (join, auto-balance, `set_team`, leave) and team-score changes -> reliable events.
+    fn sync_teams(&mut self, server: &Server, tick: u32) {
+        for p in &server.players {
+            if self.teams.insert(p.id, p.team) != Some(p.team) {
+                self.broadcast(NetEvent::TeamAssign { player: p.id, team: p.team });
+            }
+        }
+        let gone: Vec<u16> = self.teams.keys().copied().filter(|id| server.players.iter().all(|p| p.id != *id)).collect();
+        for id in gone {
+            self.teams.remove(&id);
+            self.broadcast(NetEvent::TeamAssign { player: id, team: shinobi_sim::events::TEAM_NONE });
+        }
+        let now = self.team_score_now(server);
+        if now != self.last_team_score {
+            self.last_team_score = now;
+            if let Some((score, result)) = now {
+                self.broadcast(NetEvent::TeamScore { tick, score, result });
+            }
+        }
+    }
+
+    /// `(scores, result)` while the server runs team deathmatch.
+    fn team_score_now(&self, server: &Server) -> Option<([u16; 2], u8)> {
+        use shinobi_sim::events::{TEAM_RESULT_CYAN, TEAM_RESULT_DRAW, TEAM_RESULT_ORANGE, TEAM_RESULT_RUNNING};
+        let ms = &server.match_state;
+        if !ms.team_mode {
+            return None;
+        }
+        let result = if ms.kind() == PhaseKind::Intermission {
+            match ms.last_winner_team {
+                Some(0) => TEAM_RESULT_CYAN,
+                Some(_) => TEAM_RESULT_ORANGE,
+                None => TEAM_RESULT_DRAW,
+            }
+        } else {
+            TEAM_RESULT_RUNNING
+        };
+        Some((ms.team_scores(&server.players), result))
     }
 
     /// Rope attach / release edges -> reliable events. Other players' ropes are rare (a few per minute per player,
@@ -614,6 +677,46 @@ mod tests {
     }
 
     #[test]
+    fn teams_reach_every_peer_joiners_get_everyone_and_scores_follow_changes() {
+        use shinobi_sim::events::{TEAM_NONE, TEAM_RESULT_RUNNING};
+        let (mut s, mut r) = two_peers();
+        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        let teams_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter()
+                .filter(|e| matches!(e, NetEvent::TeamAssign { .. } | NetEvent::TeamScore { .. }))
+                .collect::<Vec<_>>()
+        };
+        // two_peers() added players before post_frame ever ran: peer 1 and 2 are told both memberships
+        r.post_frame(&mut s);
+        let got = teams_for(&mut r, &s, 1);
+        assert!(got.contains(&NetEvent::TeamAssign { player: 1, team: 0 }), "{got:?}");
+        assert!(got.contains(&NetEvent::TeamAssign { player: 2, team: 1 }), "{got:?}");
+        assert!(got.iter().any(|e| matches!(e, NetEvent::TeamScore { score: [0, 0], result: TEAM_RESULT_RUNNING, .. })));
+        // a kill changes the score once
+        s.players[0].vitals.kills = 3;
+        r.post_frame(&mut s);
+        let got = teams_for(&mut r, &s, 2);
+        assert!(got.iter().any(|e| matches!(e, NetEvent::TeamScore { score: [3, 0], .. })), "{got:?}");
+        // a late joiner is told every player's team, and the others are told about the newcomer
+        s.add_player(3, [9.0, 0.81, 0.0]);
+        r.add_peer(&s, 3, s.tick);
+        let got = teams_for(&mut r, &s, 3);
+        for (id, team) in [(1u16, 0u8), (2, 1), (3, 1)] {
+            assert!(got.contains(&NetEvent::TeamAssign { player: id, team }), "joiner missing {id}: {got:?}");
+        }
+        assert!(teams_for(&mut r, &s, 1).contains(&NetEvent::TeamAssign { player: 3, team: 1 }));
+        // leaving is announced
+        s.remove_player(3);
+        let t = s.tick;
+        r.remove_peer(&mut s, 3, t);
+        assert!(teams_for(&mut r, &s, 1).contains(&NetEvent::TeamAssign { player: 3, team: TEAM_NONE }));
+    }
+
+    #[test]
     fn ropes_are_broadcast_on_edges_only_and_replayed_to_late_joiners() {
         use shinobi_sim::character::GrappleState;
         let (mut s, mut r) = two_peers();
@@ -740,7 +843,8 @@ mod tests {
         r.add_peer(&s, 3, s.tick);
         assert_eq!(
             r.peers[&3].outbox.pending(),
-            r.walls.live_at(s.tick, r.life_ticks).count() + r.obstacles.not_ended_at(s.tick).count()
+            r.walls.live_at(s.tick, r.life_ticks).count() + r.obstacles.not_ended_at(s.tick).count() + s.players.len(),
+            "live walls + obstacles + one TeamAssign per player"
         );
     }
 

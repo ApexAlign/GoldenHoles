@@ -50,6 +50,10 @@ pub struct NetClient {
     events: Vec<NetEvent>,
     /// Hooked ropes of other players (and us): player id -> anchor in metres. Kept from the reliable events.
     ropes: HashMap<u16, [f32; 3]>,
+    /// Team of every player (from `TeamAssign`), team kills and the match result (from `TeamScore`).
+    teams: HashMap<u16, u8>,
+    team_score: [u16; 2],
+    team_result: u8,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -81,6 +85,9 @@ impl Default for NetClient {
             inbox: EventInbox::default(),
             events: Vec::new(),
             ropes: HashMap::new(),
+            teams: HashMap::new(),
+            team_score: [0; 2],
+            team_result: 0,
             anchor: None,
             kicked: None,
             own: None,
@@ -198,6 +205,16 @@ impl NetClient {
                     self.ropes.remove(&player);
                 }
                 NetEvent::MapChange { .. } => self.ropes.clear(),
+                NetEvent::TeamAssign { player, team } if team == shinobi_sim::events::TEAM_NONE => {
+                    self.teams.remove(&player);
+                }
+                NetEvent::TeamAssign { player, team } => {
+                    self.teams.insert(player, team);
+                }
+                NetEvent::TeamScore { score, result, .. } => {
+                    self.team_score = score;
+                    self.team_result = result;
+                }
                 _ => {}
             }
         }
@@ -282,6 +299,26 @@ impl NetClient {
     /// Tick the interpolated world should be drawn at.
     pub fn render_tick(&self, local_tick: f64) -> Option<f64> {
         self.server_tick_estimate(local_tick).map(|s| self.interp.render_tick(s))
+    }
+
+    /// `player`'s team (`shinobi_sim::team::TEAM_*`), once the server has told us.
+    pub fn team_of(&self, player: u16) -> Option<u8> {
+        self.teams.get(&player).copied()
+    }
+
+    /// Our own team.
+    pub fn my_team(&self) -> Option<u8> {
+        self.player_id().and_then(|id| self.team_of(id))
+    }
+
+    /// Team kills `[cyan, orange]` (all zero outside team deathmatch).
+    pub fn team_scores(&self) -> [u16; 2] {
+        self.team_score
+    }
+
+    /// `shinobi_sim::events::TEAM_RESULT_*`: running, or who won the match that just ended.
+    pub fn team_result(&self) -> u8 {
+        self.team_result
     }
 
     /// Where `player`'s rope is hooked, if it is (from `RopeAttach` / `RopeRelease`).
@@ -420,6 +457,27 @@ mod tests {
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn team_events_fill_team_of_and_scores() {
+        use shinobi_sim::events::{TEAM_NONE, TEAM_RESULT_CYAN};
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::TeamAssign { player: 1, team: 1 });
+        ob.push(NetEvent::TeamAssign { player: 2, team: 0 });
+        ob.push(NetEvent::TeamScore { tick: 9, score: [50, 31], result: TEAM_RESULT_CYAN });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!((c.my_team(), c.team_of(2), c.team_of(7)), (Some(1), Some(0), None));
+        assert_eq!((c.team_scores(), c.team_result()), ([50, 31], TEAM_RESULT_CYAN));
+        ob.push(NetEvent::TeamAssign { player: 2, team: TEAM_NONE });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
+        assert_eq!(c.team_of(2), None, "left players are forgotten");
     }
 
     #[test]

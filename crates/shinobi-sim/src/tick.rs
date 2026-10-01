@@ -280,6 +280,9 @@ impl Server {
     pub fn remove_player(&mut self, id: u16) -> bool {
         let Some(i) = self.players.iter().position(|p| p.id == id) else { return false };
         let mut p = self.players.remove(i);
+        // a leaver's frags stay on their team's score
+        let team = crate::team::valid(p.team) as usize;
+        self.match_state.team_banked[team] = self.match_state.team_banked[team].saturating_add(p.vitals.kills);
         let w = &mut self.world;
         w.colliders.remove(p.vitals.hitbox, &mut w.islands, &mut w.bodies, false);
         w.bodies.remove(

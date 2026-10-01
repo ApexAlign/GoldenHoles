@@ -33,7 +33,19 @@ pub enum NetEvent {
     RopeAttach { tick: u32, player: u16, anchor: [i32; 3] },
     /// The player's rope is gone (released, expired, died, left).
     RopeRelease { tick: u32, player: u16 },
+    /// `player` is on `team` (`team::TEAM_*`); `TEAM_NONE` = left the match. Sent to everyone on join / switch, and
+    /// replayed to late joiners, so every client always knows every player's team (own team included).
+    TeamAssign { player: u16, team: u8 },
+    /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*`.
+    TeamScore { tick: u32, score: [u16; 2], result: u8 },
 }
+
+/// `TeamAssign.team` for a player who left.
+pub const TEAM_NONE: u8 = 3;
+pub const TEAM_RESULT_RUNNING: u8 = 0;
+pub const TEAM_RESULT_CYAN: u8 = 1;
+pub const TEAM_RESULT_ORANGE: u8 = 2;
+pub const TEAM_RESULT_DRAW: u8 = 3;
 
 fn write_v3(w: &mut BitWriter, v: [i32; 3], base: [i32; 3]) {
     for i in 0..3 {
@@ -151,6 +163,18 @@ impl NetEvent {
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
             }
+            Self::TeamAssign { player, team } => {
+                w.write_bits(14, 4);
+                w.write_bits(*player as u32, 16);
+                w.write_bits(*team as u32 & 3, 2);
+            }
+            Self::TeamScore { tick, score, result } => {
+                w.write_bits(15, 4);
+                w.write_varint(*tick);
+                w.write_varint(score[0] as u32);
+                w.write_varint(score[1] as u32);
+                w.write_bits(*result as u32 & 3, 2);
+            }
         }
     }
 
@@ -208,6 +232,15 @@ impl NetEvent {
             11 => Self::PickupTaken { tick: r.read_varint()?, id: r.read_varint()?, player: r.read_bits(16)? as u16 },
             12 => Self::RopeAttach { tick: r.read_varint()?, player: r.read_bits(16)? as u16, anchor: read_v3(r, [0; 3])? },
             13 => Self::RopeRelease { tick: r.read_varint()?, player: r.read_bits(16)? as u16 },
+            14 => Self::TeamAssign { player: r.read_bits(16)? as u16, team: r.read_bits(2)? as u8 },
+            15 => {
+                let tick = r.read_varint()?;
+                let score = [
+                    u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?,
+                    u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?,
+                ];
+                Self::TeamScore { tick, score, result: r.read_bits(2)? as u8 }
+            }
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -305,6 +338,24 @@ mod tests {
 
     fn wall(id: u32) -> NetEvent {
         NetEvent::WallSpawn(WallSpawn { id, owner: 3, spawn_tick: 1000 + id, a: [10, 0, -5], b: [200, 0, 90] })
+    }
+
+    #[test]
+    fn team_events_roundtrip() {
+        let evs = [
+            NetEvent::TeamAssign { player: 201, team: 1 },
+            NetEvent::TeamAssign { player: 9, team: TEAM_NONE },
+            NetEvent::TeamScore { tick: 99_999, score: [49, 50], result: TEAM_RESULT_ORANGE },
+        ];
+        let mut w = BitWriter::new();
+        for e in &evs {
+            e.write(&mut w);
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for e in &evs {
+            assert_eq!(&NetEvent::read(&mut r).unwrap(), e);
+        }
     }
 
     #[test]

@@ -98,6 +98,14 @@ pub struct MatchState {
     pub map_index: u32,
     /// Winner of the last finished match (`None` = draw or no match yet).
     pub last_winner: Option<u16>,
+    /// Team deathmatch: the match is a team race (`team_frag_limit` team kills or the time limit); the individual
+    /// frag race and `last_winner` are not used. Off by default (free-for-all).
+    pub team_mode: bool,
+    pub team_frag_limit: u16,
+    /// Frags of players who left mid-match, per team (so leaving never lowers a team's score).
+    pub team_banked: [u16; 2],
+    /// Winning team of the last finished team match (`None` = draw / none yet).
+    pub last_winner_team: Option<u8>,
     last_count: Option<(PhaseKind, u32)>,
 }
 
@@ -113,7 +121,24 @@ fn since(now: u32, then: u32) -> u32 {
 
 impl MatchState {
     pub fn new(cfg: MatchCfg) -> Self {
-        Self { cfg, phase: Phase::Warmup { countdown_from: None }, map_index: 0, last_winner: None, last_count: None }
+        Self {
+            cfg,
+            phase: Phase::Warmup { countdown_from: None },
+            map_index: 0,
+            last_winner: None,
+            team_mode: false,
+            team_frag_limit: 50,
+            team_banked: [0; 2],
+            last_winner_team: None,
+            last_count: None,
+        }
+    }
+
+    /// Switch to team deathmatch: first team to `frag_limit` team kills (or the time limit) wins.
+    pub fn with_teams(mut self, frag_limit: u16) -> Self {
+        self.team_mode = true;
+        self.team_frag_limit = frag_limit;
+        self
     }
 
     pub fn kind(&self) -> PhaseKind {
@@ -138,6 +163,16 @@ impl MatchState {
             Phase::Intermission { since } => (since, self.cfg.intermission_ticks),
         };
         Some(len.saturating_sub(since(now, from)))
+    }
+
+    /// Team kills: current players' frags plus those of players who left.
+    pub fn team_score(&self, players: &[Player], team: u8) -> u16 {
+        let live: u32 = players.iter().filter(|p| p.team == team).map(|p| p.vitals.kills as u32).sum();
+        (live + self.team_banked[crate::team::valid(team) as usize] as u32).min(u16::MAX as u32) as u16
+    }
+
+    pub fn team_scores(&self, players: &[Player]) -> [u16; 2] {
+        [self.team_score(players, crate::team::TEAM_CYAN), self.team_score(players, crate::team::TEAM_ORANGE)]
     }
 
     /// Highest score first: kills desc, deaths asc, id asc.
@@ -219,19 +254,32 @@ impl MatchState {
     pub fn end_tick(&mut self, tick: u32, players: &[Player], out: &mut Vec<MatchEvent>) {
         let Phase::Live { since: s } = self.phase else { return };
         let board = Self::scoreboard(players);
-        let frag = board.first().map_or(false, |e| e.kills >= self.cfg.frag_limit);
+        let teams = self.team_scores(players);
+        let frag = if self.team_mode {
+            teams.iter().any(|s| *s >= self.team_frag_limit)
+        } else {
+            board.first().map_or(false, |e| e.kills >= self.cfg.frag_limit)
+        };
         let time = since(tick, s).saturating_add(1) >= self.cfg.time_limit_ticks;
         // training never ends; co-op has no frag race (time limit still applies)
         let frag = frag && self.cfg.mode == GameMode::Deathmatch;
         if self.cfg.mode == GameMode::Training || !(frag || time) {
             return;
         }
+        let winner_team = match teams[0].cmp(&teams[1]) {
+            _ if !self.team_mode => None,
+            std::cmp::Ordering::Greater => Some(crate::team::TEAM_CYAN),
+            std::cmp::Ordering::Less => Some(crate::team::TEAM_ORANGE),
+            std::cmp::Ordering::Equal => None,
+        };
         let winner = match (board.first(), board.get(1)) {
+            _ if self.team_mode => None,
             (Some(a), Some(b)) if (a.kills, a.deaths) == (b.kills, b.deaths) => None,
             (Some(a), _) if a.kills > 0 || frag => Some(a.id),
             _ => None,
         };
         self.last_winner = winner;
+        self.last_winner_team = winner_team;
         self.phase = Phase::Intermission { since: tick.wrapping_add(1) };
         self.last_count = None;
         out.push(MatchEvent::MatchEnd {
@@ -252,6 +300,8 @@ impl MatchState {
         pickups: &mut Pickups,
         invuln_ticks: u32,
     ) {
+        self.team_banked = [0; 2];
+        self.last_winner_team = None;
         // everyone is "dead" for the selection pass so players are placed one after another, each avoiding
         // those already placed (order = player order: deterministic)
         for p in players.iter_mut() {
@@ -348,6 +398,30 @@ mod tests {
         // everybody stands on a spawn point, and not the same one
         let (pa, pb) = (pos_of(&s, A), pos_of(&s, B));
         assert!((pa[0].abs() - 20.0).abs() < 0.5 && (pb[0].abs() - 20.0).abs() < 0.5 && pa[0] != pb[0], "{pa:?} {pb:?}");
+    }
+
+    #[test]
+    fn team_match_is_a_team_race_and_leavers_keep_their_teams_score() {
+        let mut s = server(4); // 1,3 Cyan; 2,4 Orange (auto-balance alternates)
+        s.match_state = MatchState::new(cfg()).with_teams(5);
+        assert_eq!(s.players.iter().map(|p| p.team).collect::<Vec<_>>(), vec![0, 1, 0, 1]);
+        live(&mut s);
+        // an individual with 3 kills (frag_limit) must NOT end a team match
+        player(&mut s, 1).vitals.kills = 3;
+        let mut ev = Vec::new();
+        step(&mut s, 3, &mut ev);
+        assert!(matches!(s.match_state.phase, Phase::Live { .. }), "individual frag limit is ignored in team mode");
+        assert_eq!(s.match_state.team_scores(&s.players), [3, 0]);
+        // the scorer leaves: their frags stay on Cyan's side
+        s.remove_player(1);
+        assert_eq!(s.match_state.team_scores(&s.players), [3, 0]);
+        player(&mut s, 3).vitals.kills = 1;
+        player(&mut s, 2).vitals.kills = 1;
+        assert_eq!(s.match_state.team_scores(&s.players), [4, 1]);
+        player(&mut s, 3).vitals.kills = 2; // Cyan 3 + 2 = 5 = limit
+        step(&mut s, 3, &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { winner: None, reason: EndReason::FragLimit, .. })));
+        assert_eq!(s.match_state.last_winner_team, Some(crate::team::TEAM_CYAN));
     }
 
     #[test]
