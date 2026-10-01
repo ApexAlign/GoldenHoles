@@ -544,6 +544,31 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_bandwidth_16_players_with_discs() {
+        use shinobi_proto::snapshot::{encode_delta, Snapshot};
+        let mk = |tick: u32, shift: i32| {
+            let mut entities: Vec<(u16, EntityState)> = (1..=16u16)
+                .map(|id| {
+                    (id, EntityState { pos: [id as i32 * 4096 + shift * 8, 512, 0], vel: [640, 0, 0], yaw: id * 100, ..Default::default() })
+                })
+                .collect();
+            for i in 0..96u16 {
+                // 6 discs per player in flight at 40 m/s
+                entities.push((
+                    PROJECTILE_ID_BASE + i,
+                    EntityState { pos: [i as i32 * 700 + shift * 341, 512, i as i32 * 90], vel: [2560, 0, 0], yaw: 1 + i / 6, flags: (i % 3) as u8, ..Default::default() },
+                ));
+            }
+            Snapshot { tick, entities }
+        };
+        let base = mk(100, 0);
+        let full = encode_delta(None, &base).len();
+        let delta = encode_delta(Some(&base), &mk(103, 3)).len();
+        eprintln!("16 players + 96 discs: full {full} B, delta(3 ticks) {delta} B");
+        assert!(delta < 1200 && full < 1200 * 2, "delta snapshot {delta} B too big for MTU budget");
+    }
+
+    #[test]
     fn shurikens_replicate_as_projectile_entities() {
         use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, ViewState};
         let mut s = world();
