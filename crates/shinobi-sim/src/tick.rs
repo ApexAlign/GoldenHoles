@@ -366,9 +366,9 @@ impl Server {
             let it = intent.unwrap_or_default();
             let (aim_yaw, aim_pitch) = (self.players[i].yaw, self.players[i].pitch);
             let mut input = to_player_input(&PlayerIntent { aim_yaw, ..it });
-            // shots and slashes start at the EYE (same `Cfg.eye_above_center` the client camera uses), so the
+            // shots and slashes start at the EYE (`CharacterSystem::eye_above`, the height the client camera uses), so the
             // crosshair and the projectile agree; hitboxes stay centred on the capsule
-            let origin = vector![before[0], before[1] + self.cfg.eye_above_center, before[2]];
+            let origin = vector![before[0], before[1] + self.players[i].ch.eye_above(), before[2]];
             let aim = Aim { origin, yaw: dq_yaw(aim_yaw), pitch: dq_pitch(aim_pitch) };
 
             // combat runs against the world as this attacker saw it (lag compensation)

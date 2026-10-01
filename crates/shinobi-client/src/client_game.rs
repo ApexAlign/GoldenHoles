@@ -56,6 +56,8 @@ pub enum Action {
     Fire,
     Cling,
     Slide,
+    /// Wrist grapple: fire at the crosshair, press again to release (one-tick edge on the `zip` wire bit).
+    Grapple,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -231,6 +233,17 @@ pub struct RenderView {
     pub aim: Aim,
     /// Shurikens in flight: world position, direction (own from prediction, others from the snapshot).
     pub discs: Vec<([f32; 3], [f32; 3])>,
+    /// Own wrist-grapple rope as (hand/eye, anchor) while attached, from the prediction.
+    pub rope: Option<([f32; 3], [f32; 3])>,
+}
+
+impl RenderView {
+    /// (yaw, pitch) the camera must render with: exactly the aim that goes out in intents, so the crosshair is
+    /// where the shot goes. Recoil, bob, roll and the FX look-kick are NOT added here (roll / FOV are separate
+    /// pose channels; the kick was dropped from the view because it moved the crosshair off the real aim).
+    pub fn look_angles(&self) -> (f32, f32) {
+        (self.aim.yaw, self.aim.pitch)
+    }
 }
 
 pub struct ClientGame {
@@ -243,6 +256,7 @@ pub struct ClientGame {
     pub camera: FpsCamera,
     level: LevelDesc,
     latch: ButtonLatch,
+    zip_edge: bool,
     touch: TouchController,
     pred: Option<Predicted>,
     /// Intents sent before the predictor has an authoritative starting state; replayed once it has.
@@ -257,7 +271,8 @@ pub struct ClientGame {
 }
 
 impl ClientGame {
-    pub fn new(level: LevelDesc, cfg: ClientGameCfg) -> Self {
+    pub fn new(level: LevelDesc, mut cfg: ClientGameCfg) -> Self {
+        cfg.camera.slide_drop = cfg.sim.slide_eye_drop; // one source for the eye drop: camera and shot origin agree
         Self {
             camera: FpsCamera::new(cfg.camera),
             cfg,
@@ -268,6 +283,7 @@ impl ClientGame {
             reconciler: Reconciler::default(),
             level,
             latch: ButtonLatch::default(),
+            zip_edge: false,
             touch: TouchController::new(1280.0, 90.0),
             pred: None,
             pending: VecDeque::new(),
@@ -290,6 +306,7 @@ impl ClientGame {
             Action::Fire => self.latch.set(Buttons::FIRE, e.down),
             Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
+            Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
         }
     }
 
@@ -437,7 +454,8 @@ impl ClientGame {
             return self.net.hello_due(local_tick).map(|h| h.to_vec());
         }
         let tick = self.net.pace_tick(local_tick, self.cfg.lead_ticks)?;
-        let intent = build_intent(tick, stick, &self.aim, self.latch.sample());
+        let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
+        intent.zip = std::mem::take(&mut self.zip_edge);
 
         match &mut self.pred {
             Some(p) => {
@@ -449,7 +467,7 @@ impl ClientGame {
                     p.world.queries.update(&p.world.colliders); // only combat reads it; idle ticks skip the rebuild
                 }
                 let aim = CombatAim {
-                    origin: vector![p.pos[0], p.pos[1] + self.cfg.sim.eye_above_center, p.pos[2]],
+                    origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
                     yaw: dq_yaw(intent.aim_yaw),
                     pitch: dq_pitch(intent.aim_pitch),
                 };
@@ -594,6 +612,7 @@ impl ClientGame {
             events: self.net.take_events(),
             aim: self.aim,
             discs,
+            rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
         }
     }
 

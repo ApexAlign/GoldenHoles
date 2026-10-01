@@ -126,11 +126,15 @@ fn every_new_effect_scales_with_intensity_and_vanishes_in_reduced_motion() {
     let full = all(&Settings::default());
     let half = all(&Settings { fx_intensity: 0.5, ..Default::default() });
     let rm = all(&Settings { reduced_motion: true, ..Default::default() });
-    for (name, f, h) in [("dip", full.0, half.0), ("landing fov", full.1, half.1), ("slide drop", full.3, half.3), ("slide roll", full.4, half.4)] {
+    for (name, f, h) in [("dip", full.0, half.0), ("landing fov", full.1, half.1), ("slide roll", full.4, half.4)] {
         assert!(f != 0.0 && (h / f - 0.5).abs() < 0.08, "{name}: full {f}, half {h}");
     }
     assert!(full.2 != 0.0 && (half.2 / full.2 - 0.5).abs() < 0.12, "dash-end FOV: {} vs {}", full.2, half.2);
-    assert_eq!((rm.0, rm.1, rm.2, rm.3, rm.4), (0.0, 0.0, 0.0, 0.0, 0.0), "reduced motion zeroes everything: {rm:?}");
+    // The slide eye drop is NOT scaled: the shot origin drops by the same `Cfg::slide_eye_drop`, and the crosshair
+    // must stay on the shot (tests/aim_accuracy.rs). Everything else is zeroed by reduced motion.
+    assert_eq!(full.3, half.3, "slide drop is accuracy, not feel");
+    assert_eq!(full.3, rm.3);
+    assert_eq!((rm.0, rm.1, rm.2, rm.4), (0.0, 0.0, 0.0, 0.0), "reduced motion zeroes every feel effect: {rm:?}");
 }
 
 #[test]

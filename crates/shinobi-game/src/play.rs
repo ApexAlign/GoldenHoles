@@ -291,6 +291,7 @@ pub fn input(
         (k(KeyCode::ShiftLeft), Action::Dash),
         (k(KeyCode::KeyQ), Action::Roll),
         (k(KeyCode::KeyC), Action::Slide),
+        (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (m(MouseButton::Left), Action::Slice),
         (m(MouseButton::Right), Action::Fire),
@@ -380,12 +381,10 @@ fn follow_camera(view: Res<ViewRes>, vm: Res<crate::vm::Vm>, fx: Res<FxRes>, mut
     tf.translation = Vec3::from(v.eye);
     // Aim yaw 0 faces -Z, positive turns toward -X == +Y rotation in Bevy; positive pitch looks up == +X rotation.
     // `CameraPose::roll > 0` leans the view clockwise; a clockwise camera is a NEGATIVE rotation about +Z.
-    tf.rotation = Quat::from_euler(
-        EulerRot::YXZ,
-        v.aim.yaw + fx.out.yaw_kick_deg.to_radians(),
-        v.aim.pitch + fx.out.pitch_kick_deg.to_radians(),
-        -v.camera.roll,
-    );
+    // Look angles are exactly the aim sent in intents (`look_angles`): the FX look-kick used to be added here and moved
+    // the crosshair up to ~0.8 deg off the real shot. Shake now lives in vignette/FOV/viewmodel only.
+    let (yaw, pitch) = v.look_angles();
+    tf.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, -v.camera.roll);
     if let Projection::Perspective(p) = &mut **proj {
         // CameraPose is all-zero until the first sim tick has produced a pose: keep a sane FOV until then
         let base = if v.camera.fov > 1.0 { v.camera.fov } else { 90.0 };

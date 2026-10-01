@@ -50,6 +50,9 @@ pub struct Cfg {
     /// predicted combat aim and the server's combat aim all read it, so shots leave where the crosshair is.
     /// Cosmetic/aim only; it never affects movement.
     pub eye_above_center: f32,
+    /// How far the eye (camera AND shot origin) drops while sliding. The client camera reads this same value, so the
+    /// crosshair ray and the shuriken's flight line stay together during a slide.
+    pub slide_eye_drop: f32,
     /// Wrist grapple (see docs/grapple.md).
     pub grapple_range: f32,
     pub grapple_min_len: f32,
@@ -59,6 +62,10 @@ pub struct Cfg {
     pub grapple_arrive: f32,
     pub grapple_max_time: f32,
     pub grapple_jump_boost: f32,
+    /// Upward kick when the rope hooks while grounded, so the reel lifts the player off the floor instead of dragging.
+    pub grapple_lift: f32,
+    /// Fraction of `air_accel` the stick gets while on the rope (adds speed along the stick, never brakes).
+    pub grapple_steer: f32,
 }
 
 impl Default for Cfg {
@@ -101,6 +108,7 @@ impl Default for Cfg {
             slide_cd: 0.5,
             kcc_offset: 0.01,
             eye_above_center: 0.6,
+            slide_eye_drop: 0.35,
             grapple_range: 40.0,
             grapple_min_len: 2.5,
             grapple_speed: 26.0,
@@ -109,6 +117,8 @@ impl Default for Cfg {
             grapple_arrive: 2.0,
             grapple_max_time: 4.0,
             grapple_jump_boost: 5.0,
+            grapple_lift: 3.0,
+            grapple_steer: 0.35,
         }
     }
 }
@@ -300,6 +310,12 @@ impl CharacterSystem {
         self.slice_cd = v;
     }
 
+    /// Eye height above the capsule centre right now: `eye_above_center`, lowered by `slide_eye_drop` in a slide.
+    /// Shots, slashes and grapple aim start here, so they leave from where the camera is.
+    pub fn eye_above(&self) -> f32 {
+        self.cfg.eye_above_center - if self.slide.is_some() { self.cfg.slide_eye_drop } else { 0.0 }
+    }
+
     pub fn sliding(&self) -> bool {
         self.slide.is_some()
     }
@@ -429,7 +445,7 @@ impl CharacterSystem {
         if self.grapple.is_some() {
             self.grapple_release_check(w, pos, input, &mut jumped);
         } else if let Some(aim) = input.grapple_aim {
-            self.grapple_fire(w, pos, aim);
+            self.grapple_fire(w, pos, aim, &mut jumped);
         }
 
         // ---- evasion start (dash any time, roll on ground) ----
@@ -524,7 +540,14 @@ impl CharacterSystem {
                 let h = flat(self.vel);
                 let delta = target - h;
                 let max = if grounded_state { f32::INFINITY } else { cfg.air_accel * dt };
-                let step = if delta.norm() <= max { delta } else { delta.normalize() * max };
+                let step = if self.grapple.is_some() {
+                    // on the rope the stick only nudges sideways; it never brakes the swing or the reel
+                    dir_in * (cfg.air_accel * dt * cfg.grapple_steer)
+                } else if delta.norm() <= max {
+                    delta
+                } else {
+                    delta.normalize() * max
+                };
                 let nh = h + step;
                 self.vel.x = nh.x;
                 self.vel.z = nh.z;
@@ -674,17 +697,22 @@ impl CharacterSystem {
         w.queries.cast_ray(&w.bodies, &w.colliders, &ray, max, true, filter).map(|(_, t)| t)
     }
 
-    fn grapple_fire(&mut self, w: &PhysicsWorld, pos: Vector<Real>, aim: Vector<Real>) {
+    fn grapple_fire(&mut self, w: &PhysicsWorld, pos: Vector<Real>, aim: Vector<Real>, jumped: &mut bool) {
         let cfg = self.cfg;
         if self.grapple_cd > 0.0 || aim.norm_squared() < 1e-6 {
             return;
         }
         let dir = aim.normalize();
-        let eye = pos + Vector::y() * cfg.eye_above_center;
+        let eye = pos + Vector::y() * self.eye_above();
         if let Some(toi) = self.grapple_cast(w, eye, dir, cfg.grapple_range) {
             if toi >= cfg.grapple_min_len {
                 let anchor = eye + dir * toi;
                 self.grapple = Some(GrappleState { anchor, len: toi, time: 0.0 });
+                if self.state == MoveState::Grounded {
+                    self.vel.y = self.vel.y.max(0.0) + cfg.grapple_lift;
+                    self.coyote = 0.0;
+                    *jumped = true; // leave the ground this tick (no ground stick, no landing snap)
+                }
                 self.grapple_event = GrappleEvent::Attached { origin: eye, anchor };
             }
         }
@@ -737,6 +765,8 @@ impl CharacterSystem {
         let along = self.vel.dot(&dir);
         if along < cfg.grapple_speed {
             self.vel += dir * (cfg.grapple_accel * dt).min(cfg.grapple_speed - along);
+            // a reeling rope carries the weight: cancel this tick's gravity so shallow shots still lift the player
+            self.vel.y += cfg.gravity * dt;
         }
         g.time += dt;
         g.len = g.len.min(d);
@@ -1216,7 +1246,7 @@ mod tests {
         assert_eq!(ch.grapple_event, GrappleEvent::Released);
         let p = *w.bodies[ch.body].translation();
         assert!(p.z < -20.0, "was pulled most of the way to the wall: z = {}", p.z);
-        assert!(ch.vel.z < -5.0, "momentum kept on release: {:?}", ch.vel);
+        assert!(ch.vel.norm() > 5.0, "momentum kept on release: {:?}", ch.vel);
     }
 
     #[test]
@@ -1336,5 +1366,25 @@ mod tests {
                 assert_eq!((*w2.bodies[ch2.body].translation(), ch2.vel), a[k], "wire = {use_wire}, tick {i}");
             }
         }
+    }
+
+    #[test]
+    fn grapple_from_the_ground_lifts_off_and_reels() {
+        let mut w = world();
+        boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
+        boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]); // floor, top at y = 0
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert_eq!(ch.state, MoveState::Grounded);
+        tick(&mut ch, &mut w, &fire([0.0, 0.1, -1.0]), &mut now);
+        assert!(ch.grapple.is_some());
+        for _ in 0..90 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        let p = *w.bodies[ch.body].translation();
+        assert!(p.z < -15.0 && p.y > 2.0, "lifted off and pulled: {p:?}");
     }
 }

@@ -269,7 +269,9 @@ impl FpsCamera {
             self.fov_extra -= c.dash_end_fov_settle * self.feel.fov_kick;
         }
         // --- slide: eye lowers ---
-        let slide_target = if input.sliding.is_some() { -c.slide_drop * self.feel.thrust } else { 0.0 };
+        // not scaled by `feel.thrust`: the shot origin drops by the same amount (`Cfg::slide_eye_drop`), so the
+        // crosshair must too
+        let slide_target = if input.sliding.is_some() { -c.slide_drop } else { 0.0 };
         self.slide_y = smooth_damp(self.slide_y, slide_target, &mut self.slide_y_v, c.slide_smooth, dt);
         // --- optional sprint bob (off unless `bob_amp` > 0) ---
         let bob_target = if c.bob_amp > 0.0 && input.ground_speed > 3.0 {
