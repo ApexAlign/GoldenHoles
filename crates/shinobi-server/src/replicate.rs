@@ -1,4 +1,4 @@
-//! Server -> client replication: per-peer delta baselines, reliable wall/obstacle event streams,
+//! Server -> client replication: per-peer delta baselines, reliable event streams (teams, ropes, blocks, obstacles),
 //! and datagram assembly. Pure logic (no sockets) so it is unit-testable.
 
 use std::collections::{HashMap, VecDeque};
@@ -7,11 +7,10 @@ use shinobi_proto::bits::BitWriter;
 use shinobi_proto::datagram;
 use shinobi_proto::gameplay::{self, Board, BoardRow, HitMsg, OwnExtras};
 use shinobi_proto::quant::{q_pos3, q_vel};
-use shinobi_proto::secs_to_ticks;
 use shinobi_proto::snapshot::{
     encode_delta, with_hp_frac, EntityState, MoveKind, Snapshot, FLAG_DEAD, FLAG_INVULN, FLAG_ROLL,
 };
-use shinobi_sim::character::{Cfg, MoveState, TRAIL_CAP};
+use shinobi_sim::character::{Cfg, MoveState};
 use shinobi_sim::combat::DamageKind;
 use shinobi_sim::events::{EventOutbox, NetEvent};
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind};
@@ -20,8 +19,6 @@ use shinobi_sim::pvp::{HazardSource, PvpEvent, NO_ATTACKER};
 use shinobi_sim::tick::{Player, Server};
 use shinobi_sim::obstacle::ObstacleStore;
 use shinobi_sim::own_state::OwnState;
-use shinobi_sim::walls::{OwnerTrail, WallId, WallStore};
-use shinobi_sim::walls_world::{WallsWorld, WALL_GRACE_TICKS};
 
 use crate::obstacles_spawner::ObstacleSpawner;
 
@@ -49,12 +46,9 @@ const MAX_PENDING_HITS: usize = 32;
 const HIT_RESENDS: u8 = 3;
 
 /// Optional world features. The game is a shooter: Tron is a visual style, so by default the server creates NO
-/// trail walls and NO obstacle waves. Both stay available (wire codecs intact) behind explicit opt-ins until the
-/// dead code is removed.
+/// obstacle waves (explicit opt-in). The light-cycle trail walls are gone from the server.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Features {
-    /// Legacy light-cycle mechanic: trails become solid, damaging walls (hidden `--light-walls`).
-    pub light_walls: bool,
     /// Moving neon obstacle waves (`--obstacles`).
     pub obstacles: bool,
 }
@@ -62,14 +56,8 @@ pub struct Features {
 pub struct Replicator {
     history: VecDeque<Snapshot>,
     peers: HashMap<u16, PeerState>,
-    trails: HashMap<u16, OwnerTrail>,
-    walls: WallStore,
-    /// Solid colliders for the same walls (server-only; clients render from `WallStore`).
-    solid: WallsWorld,
     obstacles: ObstacleStore,
     spawner: ObstacleSpawner,
-    next_wall: WallId,
-    life_ticks: u32,
     last_sent: Option<u32>,
     /// (tick, phase) of the last scoreboard that went out.
     last_board: Option<(u32, u8)>,
@@ -85,18 +73,12 @@ pub struct Replicator {
 }
 
 impl Replicator {
-    pub fn new(cfg: &Cfg, obstacle_seed: u64) -> Self {
-        let life_ticks = secs_to_ticks(cfg.trail_life);
+    pub fn new(_cfg: &Cfg, obstacle_seed: u64) -> Self {
         Self {
             history: VecDeque::new(),
             peers: HashMap::new(),
-            trails: HashMap::new(),
-            walls: WallStore::default(),
-            solid: WallsWorld::new(life_ticks, WALL_GRACE_TICKS, cfg.trail_height, cfg.trail_thick),
             obstacles: ObstacleStore::default(),
             spawner: ObstacleSpawner::new(obstacle_seed),
-            next_wall: 1,
-            life_ticks,
             last_sent: None,
             last_board: None,
             seed: obstacle_seed,
@@ -113,43 +95,22 @@ impl Replicator {
         self
     }
 
-    /// Contact-damage config must match our `WallsWorld` exactly (see `shinobi_sim::hazards`).
-    fn configure_hazards(&self, server: &mut Server) {
-        let c = &mut server.hazards.cfg;
-        c.life_ticks = self.life_ticks;
-        c.grace_ticks = WALL_GRACE_TICKS;
-        c.wall_height = self.solid.height;
-        c.wall_thick = self.solid.thick;
-    }
-
-    /// The world was rebuilt (supervisor recovery): put the solid wall colliders and the hazard mirror back
-    /// from our authoritative lists.
+    /// The world was rebuilt (supervisor recovery): put the hazard mirror of live obstacles back from our
+    /// authoritative list.
     pub fn rebuild_world_state(&mut self, server: &mut Server, tick: u32) {
-        self.solid = WallsWorld::new(self.life_ticks, WALL_GRACE_TICKS, self.solid.height, self.solid.thick);
-        self.configure_hazards(server);
-        let live: Vec<_> = self.walls.live_at(tick, self.life_ticks).map(|w| w.spawn).collect();
-        for w in live {
-            self.solid.add(w);
-            server.hazards.walls.apply_spawn(w);
-        }
         for o in self.obstacles.not_ended_at(tick) {
             server.hazards.obstacles.apply_spawn(*o);
         }
     }
 
-    /// New peer: queues every live wall so late joiners see existing Tron walls.
+    /// New peer: queues the live world (pickups, obstacles, blocks, teams, ropes) so late joiners see it.
     pub fn add_peer(&mut self, server: &Server, id: u16, now_tick: u32) {
         let mut st = PeerState::default();
-        // Small + essential first (pickups, obstacles), bulk last (walls): the outbox is byte-budgeted per datagram,
-        // so a joiner sees the rest of the world immediately and the long trail tail over the next datagrams.
         for (pid, pos, _kind) in server.pickups.active() {
             st.outbox.push(NetEvent::PickupSpawned { tick: now_tick, id: pid, pos: q_pos3(pos), kind: 0 });
         }
         for o in self.obstacles.not_ended_at(now_tick) {
             st.outbox.push(NetEvent::ObstacleSpawn(*o));
-        }
-        for w in self.walls.live_at(now_tick, self.life_ticks) {
-            st.outbox.push(NetEvent::WallSpawn(w.spawn));
         }
         // everyone's team (this peer's own included), and tell the others about the newcomer
         let mut changed = Vec::new();
@@ -178,7 +139,7 @@ impl Replicator {
         self.peers.insert(id, st);
     }
 
-    pub fn remove_peer(&mut self, server: &mut Server, id: u16, now_tick: u32) {
+    pub fn remove_peer(&mut self, _server: &mut Server, id: u16, now_tick: u32) {
         if self.teams.remove(&id).is_some() {
             self.broadcast(NetEvent::TeamAssign { player: id, team: shinobi_sim::events::TEAM_NONE });
         }
@@ -186,11 +147,6 @@ impl Replicator {
             self.broadcast(NetEvent::RopeRelease { tick: now_tick, player: id });
         }
         self.peers.remove(&id);
-        if let Some(mut t) = self.trails.remove(&id) {
-            for wid in t.clear() {
-                self.kill_wall(server, wid, now_tick);
-            }
-        }
     }
 
     /// Client-claimed acks are only ever used as lookup keys / upper-bounded pops, never trusted for state.
@@ -211,29 +167,15 @@ impl Replicator {
         }
     }
 
-    fn kill_wall(&mut self, server: &mut Server, id: WallId, tick: u32) {
-        self.walls.apply_kill(id, tick);
-        self.solid.kill(id, tick);
-        server.hazards.walls.apply_kill(id, tick);
-        self.broadcast(NetEvent::WallKill { id, tick });
-    }
-
-    /// Everything that must happen once per server frame, after `Server::frame`: trail sampling, solid wall
-    /// sync, obstacle waves. (Ticks inside a frame are 16 ms apart; wall spacing is 0.4 m, so nothing is missed.)
+    /// Everything that must happen once per server frame, after `Server::frame`: event streams (game, ropes,
+    /// teams, blocks) and obstacle waves.
     pub fn post_frame(&mut self, server: &mut Server) {
-        self.configure_hazards(server);
-        if self.features.light_walls {
-            self.sample_trails(server);
-        }
         let Some(tick) = server.tick.checked_sub(1) else { return };
         // The sim clears these event vecs at the start of its next `frame()`: drain now or lose them.
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
         self.sync_teams(server, tick);
         self.sync_blocks(server);
-        if self.features.light_walls {
-            self.solid.sync(tick, &mut server.world);
-        }
         if self.features.obstacles {
             for d in self.spawner.poll(tick) {
                 self.obstacles.apply_spawn(d);
@@ -432,48 +374,15 @@ impl Replicator {
         let _ = tick;
     }
 
-    /// Host job on `MatchEvent::NextMap`: forget every wall / obstacle (server colliders, hazard mirror, trails),
+    /// Host job on `MatchEvent::NextMap`: forget every obstacle (hazard mirror),
     /// restart the obstacle cadence, and tell clients to clear theirs. The level geometry itself comes from
     /// `Setup`; with a single level there is nothing to reload (a multi-map host would swap `server.world` statics here).
     fn map_change(&mut self, server: &mut Server, tick: u32, map: u32) {
-        self.solid.clear(&mut server.world);
-        self.walls = WallStore::default();
-        server.hazards.walls = WallStore::default();
         self.obstacles = ObstacleStore::default();
         server.hazards.obstacles = ObstacleStore::default();
-        for t in self.trails.values_mut() {
-            let _ = t.clear();
-        }
         self.spawner.restart(tick, self.seed ^ (map as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        self.log_line(tick, format!("MATCH   map change -> {map} (walls and obstacles cleared)"));
+        self.log_line(tick, format!("MATCH   map change -> {map} (obstacles cleared)"));
         self.broadcast(NetEvent::MapChange { tick, map });
-    }
-
-    fn sample_trails(&mut self, server: &mut Server) {
-        let Some(tick) = server.tick.checked_sub(1) else { return };
-        let cfg = server.cfg();
-        let (cfg_spacing, half) = (cfg.trail_spacing, cfg.half_height + cfg.radius);
-        let poses: Vec<(u16, [f32; 3])> = server.players.iter().map(|p| (p.id, p.pos(&server.world))).collect();
-        for (id, pos) in poses {
-            let feet = [pos[0], pos[1] - half, pos[2]];
-            let trail = self
-                .trails
-                .entry(id)
-                .or_insert_with(|| OwnerTrail::new(id as u8, cfg_spacing, self.life_ticks, TRAIL_CAP));
-            let step = trail.sample(tick, feet, &mut self.next_wall);
-            if let Some(w) = step.spawned {
-                self.walls.apply_spawn(w);
-                self.solid.add(w);
-                server.hazards.walls.apply_spawn(w);
-                self.broadcast(NetEvent::WallSpawn(w));
-            }
-            for wid in step.killed {
-                self.kill_wall(server, wid, tick);
-            }
-            // time expiry needs no message; the stores just forget it after a grace period
-        }
-        self.walls.prune(tick, self.life_ticks, 600);
-        server.hazards.walls.prune(tick, self.life_ticks, 600);
     }
 
     /// True when a snapshot round is due (every `divisor` ticks, robust to multi-tick frames).
@@ -941,39 +850,32 @@ mod tests {
     }
 
     #[test]
-    fn walls_reach_peers_and_late_joiners() {
+    fn obstacles_reach_peers_and_late_joiners() {
         let mut s = world();
-        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { light_walls: true, obstacles: true });
+        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { obstacles: true });
         r.add_peer(&s, 1, 0);
-        // walk player 1 along +x by teleporting its body between frames (server-side test shortcut)
-        for i in 0..20 {
-            let h = s.players[0].ch.body;
-            s.world.bodies[h].set_position(shinobi_sim::rapier3d::prelude::Isometry::translation(i as f32 * 0.5, 0.81, 0.0), true);
+        for _ in 0..20 {
             s.frame(Duration::from_millis(17));
             r.post_frame(&mut s);
         }
-        assert!(r.walls.len() > 5, "trail walls spawned: {}", r.walls.len());
         let round = r.build_round(&s);
         let (events, _, _, _) = datagram::split_snapshot_v3(&round[0].1).unwrap();
         let mut inbox = EventInbox::default();
-        let mut client_walls = WallStore::default();
         let (mut obstacle_events, mut other_events) = (0, 0);
         read_events(events, &mut inbox, |e| match e {
-            NetEvent::WallSpawn(w) => client_walls.apply_spawn(w),
             NetEvent::ObstacleSpawn(_) => obstacle_events += 1,
-            _ => other_events += 1, // match countdown etc.
+            _ => other_events += 1, // match countdown, teams etc.
         })
         .unwrap();
         assert!(obstacle_events >= 3, "wave 0 was broadcast");
-        assert_eq!(client_walls.len() + obstacle_events + other_events, inbox.ack() as usize);
-        assert!(client_walls.len() > 5);
+        assert_eq!(obstacle_events + other_events, inbox.ack() as usize);
 
-        // late joiner gets the live walls too
+        // late joiner gets the live obstacles too
         r.add_peer(&s, 3, s.tick);
         assert_eq!(
             r.peers[&3].outbox.pending(),
-            r.walls.live_at(s.tick, r.life_ticks).count() + r.obstacles.not_ended_at(s.tick).count() + s.players.len(),
-            "live walls + obstacles + one TeamAssign per player"
+            r.obstacles.not_ended_at(s.tick).count() + s.players.len(),
+            "live obstacles + one TeamAssign per player"
         );
     }
 
@@ -1001,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn default_server_makes_no_trail_walls_and_no_obstacles() {
+    fn default_server_makes_no_obstacles() {
         let mut s = world();
         let mut r = Replicator::new(&Cfg::default(), 1);
         r.add_peer(&s, 1, 0);
@@ -1011,17 +913,16 @@ mod tests {
             s.frame(Duration::from_millis(17));
             r.post_frame(&mut s);
         }
-        assert_eq!((r.walls.len(), r.solid.tracked(), r.solid.colliders(), r.obstacles.not_ended_at(s.tick).count()), (0, 0, 0, 0));
-        assert_eq!((s.hazards.walls.len(), s.hazards.obstacles.not_ended_at(s.tick).count()), (0, 0));
+        assert_eq!((r.obstacles.not_ended_at(s.tick).count(), s.hazards.obstacles.not_ended_at(s.tick).count()), (0, 0));
         let round = r.build_round(&s);
         let (events, _, _, _) = datagram::split_snapshot_v3(&round[0].1).unwrap();
         let mut inbox = shinobi_sim::events::EventInbox::default();
         read_events(events, &mut inbox, |e| {
-            assert!(!matches!(e, NetEvent::WallSpawn(_) | NetEvent::WallKill { .. } | NetEvent::ObstacleSpawn(_)), "{e:?}")
+            assert!(!matches!(e, NetEvent::ObstacleSpawn(_)), "{e:?}")
         })
         .unwrap();
         // opting in brings obstacle waves back
-        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { light_walls: false, obstacles: true });
+        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { obstacles: true });
         r.add_peer(&s, 1, 0);
         r.post_frame(&mut s);
         assert!(r.obstacles.not_ended_at(s.tick).count() >= 3);
@@ -1163,7 +1064,7 @@ mod tests {
     fn late_joiner_is_seeded_with_pickups_and_map_change_clears_everything() {
         let mut s = world();
         s.add_pickup(1, [5.0, 1.0, 20.0], shinobi_sim::combat::powerup::PowerupKind::GridBeam, 10.0); // off the walking path
-        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { light_walls: true, obstacles: true });
+        let mut r = Replicator::new(&Cfg::default(), 1).with_features(Features { obstacles: true });
         r.add_peer(&s, 1, 0);
         for i in 0..40 {
             let h = s.players[0].ch.body;
@@ -1172,7 +1073,6 @@ mod tests {
             r.post_frame(&mut s);
         }
         assert_eq!(s.pickups.active().count(), 1);
-        assert!(r.walls.len() > 5 && r.solid.tracked() > 5);
 
         r.add_peer(&s, 7, s.tick);
         let round = r.build_round(&s);
@@ -1180,14 +1080,12 @@ mod tests {
         let mut got = Vec::new();
         read_events(datagram_for(&round, 7).0, &mut inbox, |e| got.push(e)).unwrap();
         assert!(got.iter().any(|e| matches!(e, NetEvent::PickupSpawned { id: 1, .. })), "pickup seeded: {got:?}");
-        assert!(got.iter().any(|e| matches!(e, NetEvent::WallSpawn(_))), "walls seeded");
 
-        // host job: NextMap clears server walls, hazard mirror, obstacles, and tells clients
+        // host job: NextMap clears the obstacles and hazard mirror, and tells clients
         let tick = s.tick;
         s.match_events.push(MatchEvent::NextMap { tick, map: 1 });
         r.post_frame(&mut s);
-        assert_eq!((r.walls.len(), r.solid.tracked(), r.solid.colliders()), (0, 0, 0));
-        assert_eq!(s.hazards.walls.len(), 0);
+        assert_eq!(r.obstacles.not_ended_at(s.tick).count(), 0);
         // peer 1 never acked anything, so MapChange sits behind a backlog of walls: a real client acks as it
         // reads and the stream drains over a few datagrams (in order, nothing lost)
         let mut inbox = shinobi_sim::events::EventInbox::default();

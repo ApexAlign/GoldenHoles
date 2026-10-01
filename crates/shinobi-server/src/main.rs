@@ -169,7 +169,7 @@ fn main() -> std::io::Result<()> {
     let cfg = Cfg::default();
     let mut server = setup.build(cfg);
     let mut rep = Replicator::new(&cfg, conf.seed)
-        .with_features(Features { light_walls: conf.light_walls, obstacles: conf.obstacles });
+        .with_features(Features { obstacles: conf.obstacles });
     let plan = BotPlan { count: conf.bots, skill: conf.bot_skill, seed: conf.seed, team_size: conf.team_size };
     let mut bots = make_bots(&plan, &mut server);
     if plan.count > 0 {

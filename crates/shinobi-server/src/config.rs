@@ -72,8 +72,6 @@ pub struct Config {
     pub balance: Option<PathBuf>,
     /// Moving neon obstacle waves (off by default: the game is a shooter).
     pub obstacles: bool,
-    /// Legacy light-cycle trail walls (hidden; off by default, scheduled for removal).
-    pub light_walls: bool,
 }
 
 impl Default for Config {
@@ -92,7 +90,6 @@ impl Default for Config {
             team_size: 0,
             balance: None,
             obstacles: false,
-            light_walls: false,
         }
     }
 }
@@ -174,9 +171,6 @@ impl Config {
         if let Some(v) = env("SHINOBI_OBSTACLES") {
             c.obstacles = truthy(&v);
         }
-        if let Some(v) = env("SHINOBI_LIGHT_WALLS") {
-            c.light_walls = truthy(&v);
-        }
         // 2. CLI overrides
         let mut it = args.iter();
         let mut positional = 0;
@@ -199,7 +193,6 @@ impl Config {
                 "--teams" => c.teams = true,
                 "--team-size" => c.team_size = num("--team-size", &val("--team-size")?)?,
                 "--obstacles" => c.obstacles = true,
-                "--light-walls" => c.light_walls = true,
                 "--balance" => c.balance = Some(val("--balance")?.into()),
                 "--bot-skill" => c.bot_skill = BotSkill::parse(&val("--bot-skill")?)?,
                 "-h" | "--help" => return Err(String::new()),
@@ -336,10 +329,9 @@ mod tests {
     #[test]
     fn world_hazards_are_opt_in() {
         let d = parse(&[], &[]).unwrap();
-        assert_eq!((d.obstacles, d.light_walls), (false, false), "shooter: no obstacle waves, no light walls by default");
+        assert!(!d.obstacles, "shooter: no obstacle waves by default");
         assert!(parse(&["--obstacles"], &[]).unwrap().obstacles);
         assert!(parse(&[], &[("SHINOBI_OBSTACLES", "1")]).unwrap().obstacles);
-        assert!(parse(&["--light-walls"], &[]).unwrap().light_walls);
         assert!(d.describe().contains("obstacles=off"));
     }
 
