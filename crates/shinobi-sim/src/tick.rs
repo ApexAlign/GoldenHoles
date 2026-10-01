@@ -160,6 +160,11 @@ impl Server {
         &self.cfg
     }
 
+    /// Every shuriken in flight as `(owner id, disc)`, for snapshot replication.
+    pub fn projectiles(&self) -> impl Iterator<Item = (u16, &crate::combat::shuriken::Disc)> {
+        self.players.iter().flat_map(|p| p.combat.loadout.discs().map(move |d| (p.id, d)))
+    }
+
     /// Static level geometry: primitive cuboids only (never render meshes).
     pub fn add_static_box(&mut self, center: [f32; 3], half: [f32; 3]) {
         self.world.colliders.insert(

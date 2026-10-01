@@ -134,7 +134,6 @@ fn side(id: u16) -> usize {
 
 fn run(skill: BotSkill, arch: Archetype, noise: f32, seed: u64, n_bots: u16) -> Stats {
     let mut s = arena();
-    let mut walls = Walls::new(&s);
     let mut h = host(seed);
     let at = s.pick_spawn(None);
     s.add_player(HUMAN, at);
@@ -151,7 +150,7 @@ fn run(skill: BotSkill, arch: Archetype, noise: f32, seed: u64, n_bots: u16) -> 
     for tick in 0..(LIVE_TICKS + 1200) {
         let it = human.intent(&s, tick);
         push_human(&mut s, HUMAN, it);
-        step(&mut h, &mut s, &mut walls);
+        step(&mut h, &mut s);
         let t = s.tick;
         let is_live = s.match_state.kind() == PhaseKind::Live;
         if is_live {

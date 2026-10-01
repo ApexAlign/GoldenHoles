@@ -49,7 +49,14 @@ pub fn choose(world: &PhysicsWorld, spawns: &[[f32; 3]], enemies: &[[f32; 3]], r
     let best = pool.iter().map(|&i| nearest(i)).fold(0.0f32, f32::max);
     // every spawn nearly as good as the best is a fair candidate; rotating through them (instead of always taking
     // the single farthest) stops the same corner being used for every respawn when enemies camp
-    let candidates: Vec<usize> = pool.iter().copied().filter(|&i| nearest(i) >= best * NEAR_BEST).collect();
+    let mut candidates: Vec<usize> = pool.iter().copied().filter(|&i| nearest(i) >= best * NEAR_BEST).collect();
+    if candidates.len() < MIN_POOL {
+        // camping enemies leave only one or two spawns inside the window, which would repeat back to back;
+        // widen with the next-best spawns as long as they are still a safe distance from every enemy
+        let mut rest: Vec<usize> = pool.iter().copied().filter(|i| !candidates.contains(i)).collect();
+        rest.sort_by(|&a, &b| nearest(b).total_cmp(&nearest(a)));
+        candidates.extend(rest.into_iter().filter(|&i| nearest(i) >= SAFE_DIST).take(MIN_POOL - candidates.len()));
+    }
     least_recent(candidates, rotation)
 }
 
@@ -79,6 +86,10 @@ fn least_recent(candidates: Vec<usize>, history: u32) -> Option<usize> {
 
 /// A spawn within this fraction of the best distance is "good enough" to rotate through.
 pub const NEAR_BEST: f32 = 0.7;
+/// Rotation needs at least this many candidates to avoid back-to-back repeats.
+pub const MIN_POOL: usize = 3;
+/// Spawns padding the pool below `MIN_POOL` must be at least this far (metres) from every enemy.
+pub const SAFE_DIST: f32 = 15.0;
 
 #[cfg(test)]
 mod tests {

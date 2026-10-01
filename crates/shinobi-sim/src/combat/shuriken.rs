@@ -106,6 +106,10 @@ impl Weapon for ShurikenLauncher {
         !self.discs.is_empty()
     }
 
+    fn discs(&self) -> &[Disc] {
+        &self.discs
+    }
+
     fn reset(&mut self) {
         self.discs.clear();
     }
