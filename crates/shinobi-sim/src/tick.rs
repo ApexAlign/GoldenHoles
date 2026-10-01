@@ -100,6 +100,18 @@ pub struct FrameReport {
     pub kicked: Vec<u16>,
 }
 
+/// Extra facts about a kill that `PvpEvent::Kill` does not carry (HUD medals): see `Server::kill_tags`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KillTag {
+    pub tick: u32,
+    pub killer: u16,
+    pub victim: u16,
+    /// The killing disc had bounced off geometry first.
+    pub ricochet: bool,
+    /// The killer was wall-running when the shot landed.
+    pub wall_run: bool,
+}
+
 pub struct Server {
     /// Next tick to simulate.
     pub tick: u32,
@@ -127,6 +139,8 @@ pub struct Server {
     /// Team of each spawn point (parallel to `spawns`; `NO_TEAM` = shared). See `set_team_spawns`.
     pub spawn_teams: Vec<u8>,
     spawn_counter: u32,
+    /// One entry per `PvpEvent::Kill` of the most recent `frame` that has a medal-worthy fact (ricochet / wall-run).
+    pub kill_tags: Vec<KillTag>,
     /// Player-built blocks (see `blocks.rs`).
     pub blocks: crate::blocks::Blocks,
     /// Placed / Removed / Refused of the most recent `frame` (cleared each frame).
@@ -169,6 +183,7 @@ impl Server {
             spawns: Vec::new(),
             spawn_teams: Vec::new(),
             spawn_counter: 0,
+            kill_tags: Vec::new(),
             blocks: crate::blocks::Blocks::default(),
             block_events: Vec::new(),
             pickup_events: Vec::new(),
@@ -340,6 +355,7 @@ impl Server {
         self.pvp_events.clear();
         self.pickup_events.clear();
         self.block_events.clear();
+        self.kill_tags.clear();
         self.match_events.clear();
         let adv = self.acc.advance(elapsed);
         let mut report = FrameReport { ticks: adv.steps, discarded: adv.discarded, kicked: Vec::new() };
@@ -371,6 +387,9 @@ impl Server {
         let frozen = self.match_state.frozen();
         pvp::tick_respawns(&mut self.players, &mut self.world, crate::spawn::SpawnSet { pos: &self.spawns, teams: &self.spawn_teams }, &mut self.spawn_counter, tick, self.balance.player.invuln_ticks, &mut self.pvp_events);
         let mut hits = Vec::new();
+        // (attacker, victim) pairs hit by a bounced disc this tick, and attackers that were wall-running
+        let mut ricochets: Vec<(u16, u16)> = Vec::new();
+        let mut wall_runners: Vec<u16> = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
@@ -436,6 +455,22 @@ impl Server {
             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg, head, &mut synthesized));
             ev.extend(synthesized);
             let id = self.players[i].id;
+            let mut ric = false;
+            for e in &ev {
+                match *e {
+                    CombatEvent::RicochetHit { .. } => ric = true,
+                    CombatEvent::Damage { collider, .. } if ric => {
+                        ric = false;
+                        if let Some(v) = self.players.iter().find(|q| q.vitals.hitbox == collider) {
+                            ricochets.push((id, v.id));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if matches!(self.players[i].ch.state, crate::character::MoveState::WallRun { .. }) {
+                wall_runners.push(id);
+            }
             self.events.extend(ev.into_iter().map(|e| (id, e)));
 
             if it.build {
@@ -485,7 +520,17 @@ impl Server {
         }
 
         // every attacker has run: settle damage once, then record the tick
+        let first_new = self.pvp_events.len();
         pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
+        for e in &self.pvp_events[first_new..] {
+            if let PvpEvent::Kill { tick, killer, victim, kind } = *e {
+                let ricochet = kind == crate::combat::DamageKind::Shuriken && ricochets.contains(&(killer, victim));
+                let wall_run = wall_runners.contains(&killer);
+                if ricochet || wall_run {
+                    self.kill_tags.push(KillTag { tick, killer, victim, ricochet, wall_run });
+                }
+            }
+        }
         self.match_state.end_tick(tick, &self.players, &mut self.match_events);
         if !frozen {
             self.pickups.update(tick, &self.world, &mut self.players, &self.cfg, &mut self.pickup_events);
