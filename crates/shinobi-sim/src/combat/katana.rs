@@ -8,6 +8,9 @@ use super::{
 };
 use crate::character::Cfg;
 
+/// Yaw offsets (degrees, tried left and right) a missed swing re-sweeps before giving up.
+const ASSIST_STEPS_DEG: [f32; 3] = [8.0, 16.0, 24.0];
+
 #[derive(Clone, Copy, Debug)]
 pub struct KatanaCfg {
     pub damage: f32,
@@ -29,8 +32,8 @@ impl KatanaCfg {
     pub fn for_character(ch: &Cfg) -> Self {
         Self {
             damage: 120.0,
-            blade_len: 1.2,
-            half_width: 1.0,
+            blade_len: 1.6,
+            half_width: 1.3,
             half_height: 1.0,
             // Matching the dash cooldown keeps every slice paired with a lunge.
             cooldown: ch.dash_cd,
@@ -117,11 +120,11 @@ impl Weapon for Katana {
         let short = c.blade_len.min(full);
 
         // Short-lived hit boxes: query-only, they exist for exactly this call.
-        let rot = UnitQuaternion::face_towards(&dir, &Vector::y()); // local +Z -> dir
         let filter = QueryFilter::default()
             .exclude_rigid_body(ctx.ch.body)
             .groups(InteractionGroups::new(GROUP_MELEE, TARGETS));
-        let boxhits = |reach: f32| -> Vec<ColliderHandle> {
+        let boxhits_at = |dir: Vector<Real>, reach: f32| -> Vec<ColliderHandle> {
+            let rot = UnitQuaternion::face_towards(&dir, &Vector::y());
             let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
             let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), rot);
             let mut hits = Vec::new();
@@ -130,6 +133,24 @@ impl Weapon for Katana {
                 true
             });
             hits
+        };
+        // Melee aim assist: a swing that misses dead-ahead re-sweeps a few degrees to either side and takes the
+        // first sweep that connects. Hit boxes only: the lunge keeps the aimed direction (client prediction).
+        let boxhits = |reach: f32| -> Vec<ColliderHandle> {
+            let straight = boxhits_at(dir, reach);
+            if !straight.is_empty() {
+                return straight;
+            }
+            for deg in ASSIST_STEPS_DEG {
+                for sign in [1.0f32, -1.0] {
+                    let r = UnitQuaternion::from_axis_angle(&Vector::y_axis(), (deg * sign).to_radians());
+                    let h = boxhits_at(r * dir, reach);
+                    if !h.is_empty() {
+                        return h;
+                    }
+                }
+            }
+            straight
         };
 
         // Lunge = the character's own dash, aimed along the slash. If the dash is still on cooldown the

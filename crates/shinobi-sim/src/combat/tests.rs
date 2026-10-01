@@ -211,3 +211,16 @@ fn grid_beam_hits_each_enemy_once_as_the_wave_passes() {
     hit.sort();
     assert_eq!(hit, vec![1, 2]);
 }
+
+#[test]
+fn slice_assist_catches_a_near_miss_but_not_a_wild_one() {
+    let mut w = world();
+    let origin = vector![0.0, 1.0, 0.0];
+    let (ch, cfg) = add_player(&mut w, origin);
+    add_enemy(&mut w, vector![2.1, 1.0, -4.0], 1); // ~28 deg off, outside the straight box, past the first assist step
+    add_enemy(&mut w, vector![-4.0, 1.0, -4.0], 2); // 45 deg: out of assist range
+    w.queries.update(&w.colliders);
+    let (ev, input) = slice_once(&w, &ch, &cfg, origin);
+    assert_eq!(damaged(&ev, DamageKind::Slash), vec![1]);
+    assert!((input.move_dir - vector![0.0, 0.0, -1.0]).norm() < 1e-5, "lunge direction stays on the aim");
+}
