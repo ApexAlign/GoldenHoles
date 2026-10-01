@@ -41,10 +41,6 @@ pub trait Weapon: Send + Sync {
     fn active(&self) -> bool {
         false
     }
-    /// Shuriken discs in flight (renderer / replication); empty for weapons without projectiles.
-    fn discs(&self) -> &[super::shuriken::Disc] {
-        &[]
-    }
     /// Drop in-flight state (owner died).
     fn reset(&mut self) {}
     /// Append in-flight discs (for snapshots / rendering).
@@ -71,11 +67,6 @@ impl Loadout {
 
     pub fn active(&self) -> bool {
         self.slots.iter().any(|s| s.weapon.active())
-    }
-
-    /// Every disc in flight across the loadout.
-    pub fn discs(&self) -> impl Iterator<Item = &super::shuriken::Disc> {
-        self.slots.iter().flat_map(|s| s.weapon.discs())
     }
 
     /// Remaining cooldown (seconds) of the first weapon on `t`; 0 = ready.
