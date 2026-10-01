@@ -1,13 +1,14 @@
 //! Team colours for the 8v8 mode: Cyan vs Orange (magenta stays hazards / pickups). Single source of truth so ally vs
 //! enemy reads the same on bodies, discs, trails, sparks and flashes.
 //!
-//! The team id per player will come from `RenderView` once Network puts it on the wire; until then `LocalTeam` is a
-//! resource (default Cyan) and `remote_team` is a stub (parity of the entity id). Swap `remote_team` for the real
-//! lookup and everything downstream follows.
+//! Team ids come from `NetClient::team_of` / `my_team` (Network). Outside team modes there are no teams: remotes keep
+//! the neutral magenta hostile colour and the local team defaults to Cyan.
 
 use bevy::prelude::*;
 
 use shinobi_client::hud::{Palette, Rgba};
+
+use crate::net::Net;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Team {
@@ -39,16 +40,27 @@ impl Team {
     }
 }
 
-/// Our own team (stub: Cyan until the server tells us).
+/// Wire team id (`shinobi_sim::team::TEAM_*`) -> `Team`.
+pub fn from_wire(t: u8) -> Option<Team> {
+    match t {
+        shinobi_sim::team::TEAM_CYAN => Some(Team::Cyan),
+        shinobi_sim::team::TEAM_ORANGE => Some(Team::Orange),
+        _ => None,
+    }
+}
+
+/// Our own team (Cyan until the server tells us / outside team modes). Kept fresh by `sync_local`.
 #[derive(Resource, Default, Clone, Copy)]
 pub struct LocalTeam(pub Team);
 
-/// Team of another player. STUB: alternates by id until the wire carries it.
-pub fn remote_team(id: u16) -> Team {
-    if id % 2 == 0 {
-        Team::Cyan
-    } else {
-        Team::Orange
+/// Team of another player; `None` outside team modes (callers fall back to the neutral hostile colour).
+pub fn remote_team(net: &Net, id: u16) -> Option<Team> {
+    net.0.game.net.team_of(id).and_then(from_wire)
+}
+
+fn sync_local(net: Res<Net>, mut local: ResMut<LocalTeam>) {
+    if let Some(t) = net.0.game.net.my_team().and_then(from_wire) {
+        local.0 = t;
     }
 }
 
@@ -56,7 +68,7 @@ pub struct TeamPlugin;
 
 impl Plugin for TeamPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LocalTeam>();
+        app.init_resource::<LocalTeam>().add_systems(Update, sync_local);
     }
 }
 
@@ -69,7 +81,9 @@ mod tests {
         let p = Palette::TRON;
         assert_ne!(Team::Cyan.color(&p), Team::Orange.color(&p));
         assert_eq!(Team::Cyan.other().other(), Team::Cyan);
-        assert_ne!(remote_team(2), remote_team(3));
+        assert_eq!(from_wire(0), Some(Team::Cyan));
+        assert_eq!(from_wire(1), Some(Team::Orange));
+        assert_eq!(from_wire(9), None);
     }
 
     #[test]
