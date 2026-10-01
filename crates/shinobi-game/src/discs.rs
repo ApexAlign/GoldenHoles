@@ -13,6 +13,7 @@ use shinobi_sim::combat::shuriken::ShurikenCfg;
 
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::ViewRes;
+use crate::team::LocalTeam;
 
 const POOL: usize = 32;
 const SPIN: f32 = 28.0; // rad/s
@@ -160,6 +161,7 @@ fn update_trails(
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<&mut Visibility>,
     mut impacts: ResMut<ImpactQueue>,
+    local: Res<LocalTeam>,
 ) {
     let now = time.elapsed_secs();
     let pal = Palette::TRON;
@@ -168,7 +170,7 @@ fn update_trails(
             Some((p, _)) => {
                 let p = Vec3::from(*p);
                 if tr.last.is_none() {
-                    impacts.0.push(Impact { pos: p, kind: ImpactKind::Muzzle });
+                    impacts.0.push(Impact { pos: p, team: local.0, kind: ImpactKind::Muzzle });
                 }
                 tr.last = Some(p);
                 match tr.pts.back() {
@@ -184,7 +186,7 @@ fn update_trails(
             }
             None => {
                 if let Some(p) = tr.last.take() {
-                    impacts.0.push(Impact { pos: p, kind: ImpactKind::Gone });
+                    impacts.0.push(Impact { pos: p, team: local.0, kind: ImpactKind::Gone });
                 }
             }
         }

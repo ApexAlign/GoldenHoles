@@ -12,6 +12,7 @@ use shinobi_client::hud::Palette;
 
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::ViewRes;
+use crate::team::LocalTeam;
 
 const SEGS: usize = 28;
 const HALF_W: f32 = 0.035;
@@ -111,6 +112,7 @@ fn update(
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<&mut Visibility>,
     mut impacts: ResMut<ImpactQueue>,
+    local: Res<LocalTeam>,
 ) {
     let (t, dt) = (time.elapsed_secs(), time.delta_secs());
     let pal = Palette::TRON;
@@ -118,7 +120,7 @@ fn update(
 
     // edges: attach flash at the anchor, release snap
     match (rope.last, cur) {
-        (None, Some((_, a))) => impacts.0.push(Impact { pos: a, kind: ImpactKind::Gone }),
+        (None, Some((_, a))) => impacts.0.push(Impact { pos: a, team: local.0, kind: ImpactKind::Gone }),
         (Some((a, e)), None) => rope.snap = Some((0.0, a, e)),
         _ => {}
     }
