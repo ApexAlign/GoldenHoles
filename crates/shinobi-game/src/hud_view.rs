@@ -286,6 +286,7 @@ fn update(
     let tab = keys.as_ref().map_or(false, |k| k.pressed(KeyCode::Tab));
     let ctl = &mut *ctl;
 
+    ctl.bridge.aspect = aspect;
     let state: HudState = ctl.bridge.update(dt, &view.0, &net.0.game.net, tab);
     let screen = ctl.watch.update(
         dt,

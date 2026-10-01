@@ -6,11 +6,31 @@ use shinobi_sim::match_state::{PhaseKind, ScoreEntry};
 use shinobi_sim::pvp::MAX_HP;
 
 use crate::client_game::RenderView;
-use crate::hud::{bearing_to, damage_kind, killfeed_tick, score_rows_from_entries, HudFx, HudState, KillEntry, LocalStats, KILLFEED_MAX};
+use std::collections::HashMap;
+
+use crate::hud::{
+    bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, TeamScores,
+    BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
+};
 use crate::netclient::NetClient;
+
+/// Team-match data. Stub input until the network layer carries teams: the shell (or a test) fills it, and
+/// the bridge turns it into the score bar, team-coloured names and ally tags. `None` = free-for-all.
+#[derive(Clone, Debug, Default)]
+pub struct TeamInfo {
+    /// The local player's team (0 cyan, 1 orange).
+    pub my_team: u8,
+    pub scores: [u16; 2],
+    pub score_limit: u16,
+    /// Team per player id.
+    pub team_of: HashMap<u16, u8>,
+}
 
 #[derive(Default)]
 pub struct HudBridge {
+    pub teams: Option<TeamInfo>,
+    /// Viewport width / height for projecting ally tags (<= 0 means 16:9).
+    pub aspect: f32,
     pub fx: HudFx,
     killfeed: Vec<KillEntry>,
     time: f32,
@@ -40,7 +60,11 @@ impl HudBridge {
         let name = |id: u16| format!("PLAYER {id}");
         for e in &view.events {
             self.fx.on_net_event(e, local_id, name);
-            if let Some(k) = KillEntry::from_net(e, local_id, name) {
+            if let Some(mut k) = KillEntry::from_net(e, local_id, name) {
+                if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&self.teams, e) {
+                    k.killer_team = (!k.void).then(|| t.team_of.get(killer).copied()).flatten();
+                    k.victim_team = t.team_of.get(victim).copied();
+                }
                 self.killfeed.push(k);
                 if self.killfeed.len() > KILLFEED_MAX {
                     self.killfeed.remove(0);
@@ -62,6 +86,32 @@ impl HudBridge {
                 score_rows_from_entries(&entries, local_id, |id| format!("PLAYER {id}"), |_| 0)
             })
             .unwrap_or_default();
+        let mut scoreboard = scoreboard;
+        let mut team_scores = None;
+        let mut ally_tags = Vec::new();
+        if let (Some(t), Some(b)) = (&self.teams, view.board.as_ref()) {
+            for (row, r) in scoreboard.iter_mut().zip(b.rows.iter()) {
+                row.team = t.team_of.get(&(r.id as u16)).copied();
+            }
+        }
+        if let Some(t) = &self.teams {
+            team_scores = Some(TeamScores { mine: t.my_team, scores: t.scores, limit: t.score_limit });
+            let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
+            let (yaw, pitch) = view.look_angles();
+            let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
+            for (id, smp) in &view.remotes {
+                // allies only: enemies never get a tag, even through walls
+                if t.team_of.get(id).copied().map(|x| x != 0) != Some(t.my_team != 0) || *id == local_id {
+                    continue;
+                }
+                let head = [smp.pos[0], smp.pos[1] + 1.1, smp.pos[2]];
+                if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
+                    // keep tags in the central band (the side columns stay empty); an off-screen ally pins to the edge
+                    let (cx, cy) = (x.clamp(SIDE_CLEAR + 0.04, 1.0 - SIDE_CLEAR - 0.04), y.clamp(BROW_H + 0.12, CHIN_TOP - 0.05));
+                    ally_tags.push(AllyTag { pos: (cx, cy), name: format!("PLAYER {id}"), dist, clamped: (cx, cy) != (x, y) });
+                }
+            }
+        }
         let stats = LocalStats {
             hp: view.hp.map_or(1.0, |h| h / MAX_HP),
             dash_ready: if f.dash_ready { 1.0 } else { 1.0 - f.slice_cooldown },
@@ -85,7 +135,10 @@ impl HudBridge {
             match_map: view.board.as_ref().map(|b| b.map),
             ..Default::default()
         };
-        HudState::from_frame(net, &stats, &self.fx, self.time)
+        let mut hs = HudState::from_frame(net, &stats, &self.fx, self.time);
+        hs.team_scores = team_scores;
+        hs.ally_tags = ally_tags;
+        hs
     }
 }
 
@@ -232,5 +285,32 @@ mod tests {
         v.fx.throw_cooldown = 1.0;
         let busy = b.update(0.016, &v, &net(), false);
         assert_eq!(busy.spread, 1.0);
+    }
+
+    #[test]
+    fn team_info_gives_a_score_bar_team_rows_and_tags_for_allies_only() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        let smp = |x: f32, z: f32| shinobi_client_sample([x, 0.5, z]);
+        v.remotes = vec![(2, smp(0.0, -12.0)), (3, smp(3.0, -12.0)), (4, smp(0.0, 12.0))];
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 3, kills: 2, deaths: 1, alive: true }] });
+        b.teams = Some(TeamInfo { my_team: 0, scores: [4, 9], score_limit: 50, team_of: [(2, 0), (3, 1), (4, 0)].into_iter().collect() });
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.team_scores, Some(TeamScores { mine: 0, scores: [4, 9], limit: 50 }));
+        assert_eq!(s.scoreboard.iter().map(|r| r.team).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
+        // ally 2 ahead: tagged; enemy 3 ahead: never; ally 4 behind: not projected
+        assert_eq!(s.ally_tags.len(), 1);
+        assert_eq!(s.ally_tags[0].name, "PLAYER 2");
+        assert!(!s.ally_tags[0].clamped);
+        // no team info -> free-for-all: nothing team-shaped
+        b.teams = None;
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.team_scores.is_none() && s.ally_tags.is_empty());
+    }
+
+    fn shinobi_client_sample(pos: [f32; 3]) -> crate::interp::Sample {
+        crate::interp::Sample { pos, yaw: 0.0, extrapolated: false }
     }
 }
