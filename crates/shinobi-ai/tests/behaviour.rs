@@ -218,3 +218,32 @@ fn bots_never_target_or_hurt_teammates_and_fill_both_sides_to_the_team_size() {
     assert!(foe > 0.0, "the sides actually fought");
     assert_eq!(friendly, 0.0, "no friendly damage in 30 s of bot fighting");
 }
+
+#[test]
+fn bots_get_past_a_player_built_block_wall_and_still_kill() {
+    use shinobi_sim::blocks::Blocks;
+    for arch in [Archetype::Heavy, Archetype::Light] {
+        let mut s = flat_server(vec![[-14.0, 0.81, 0.0]]);
+        s.add_player(1, [14.0, 0.81, 0.0]); // dummy human on the far side
+        // a 3-high, 12-wide wall of blocks across the middle (z -6..6): going around is ~7 m, over needs a jump
+        let mut b = Blocks::default();
+        for z in -6..6 {
+            for y in 0..3 {
+                b.place(&mut s.world, 1, [0, y, z], &[]).unwrap();
+            }
+        }
+        s.blocks = b;
+        let mut h = host(5);
+        spawn_bot(&mut h, &mut s, 201, [-14.0, 0.81, 0.0], arch, BotSkill::Normal);
+        let mut dealt = 0.0f32;
+        for _ in 0..1800 {
+            step(&mut h, &mut s);
+            for e in &s.pvp_events {
+                if let PvpEvent::Hit { attacker: 201, victim: 1, amount, .. } = e {
+                    dealt += amount;
+                }
+            }
+        }
+        assert!(dealt > 0.0, "{arch:?} bot never hurt the dummy behind the block wall (phase {})", phase_name(&h, 201));
+    }
+}
