@@ -21,6 +21,8 @@ pub const BROW_H: f32 = 0.07;
 pub const CHIN_TOP: f32 = 0.86;
 pub const VIGNETTE_START: f32 = 0.78; // radial distance (corner = 1) where the shade begins
 pub const VIGNETTE_MAX_A: f32 = 0.22;
+/// Peak edge flash when hit (transient, fades over `DAMAGE_TIME`); the only vignette allowed above the cap.
+pub const DAMAGE_FLASH_A: f32 = 0.5;
 pub const RAIL_W: f32 = 0.0025; // hairline visor rail thickness
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,8 +240,8 @@ impl HudState {
     }
 }
 
-pub const HIT_MARK_TIME: f32 = 0.18;
-pub const DAMAGE_TIME: f32 = 0.6;
+pub const HIT_MARK_TIME: f32 = 0.3;
+pub const DAMAGE_TIME: f32 = 0.9;
 pub const KILLFEED_TIME: f32 = 5.0;
 pub const KILLFEED_MAX: usize = 5;
 
@@ -588,15 +590,15 @@ impl Hud {
         if let Some(t) = s.since_hit.filter(|t| *t < HIT_MARK_TIME) {
             let f = 1.0 - t / HIT_MARK_TIME;
             let c = s.hit_kind.map_or(p.gold, |k| p.for_damage(k)).a(f);
-            let d = 0.008 + 0.012 * (1.0 - f);
+            let d = 0.012 + 0.016 * (1.0 - f);
             // A kill draws a longer gold X plus a ring: unmistakable even at a glance.
-            let (arm, c) = if s.hit_kill { (0.022, p.gold.a(f)) } else { (0.01, c) };
+            let (arm, c) = if s.hit_kill { (0.035, p.gold.a(f)) } else { (0.022, c) };
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                 out.push(Prim::Line {
                     a: (cx + sx * d, cy + sy * d),
                     b: (cx + sx * (d + arm), cy + sy * (d + arm)),
                     color: c,
-                    glow: 0.004,
+                    glow: 0.008,
                 });
             }
             if s.hit_kill {
@@ -607,14 +609,19 @@ impl Hud {
         // Damage direction: short arc tick on a ring of radius 0.09 around center (inside clear zone).
         if let Some((t, bearing)) = s.since_damage.filter(|(t, _)| *t < DAMAGE_TIME) {
             let f = 1.0 - t / DAMAGE_TIME;
-            let (r0, r1) = (0.085, 0.105);
-            let (sn, cs) = bearing.sin_cos();
-            out.push(Prim::Line {
-                a: (cx + sn * r0 * 0.5625, cy - cs * r0), // 0.5625 ~ 9/16 aspect correction
-                b: (cx + sn * r1 * 0.5625, cy - cs * r1),
-                color: p.magenta.a(f),
-                glow: 0.008,
-            });
+            // red screen flash + a thick wedge of ticks pointing at the attacker (far outside the reticle)
+            out.push(Prim::Vignette { start: 0.35, max_a: DAMAGE_FLASH_A * f, tint: p.magenta.a(1.0) });
+            let (r0, r1) = (0.16, 0.24);
+            for off in [-0.12f32, -0.06, 0.0, 0.06, 0.12] {
+                let (sn, cs) = (bearing + off).sin_cos();
+                let w = 1.0 - off.abs() * 3.0;
+                out.push(Prim::Line {
+                    a: (cx + sn * r0 * 0.5625, cy - cs * r0),
+                    b: (cx + sn * r1 * 0.5625, cy - cs * r1),
+                    color: p.magenta.a(f * w.clamp(0.4, 1.0)),
+                    glow: 0.012,
+                });
+            }
         }
 
         if let Some((phase, secs)) = s.match_clock {
@@ -916,7 +923,7 @@ mod tests {
         let ps = Hud::build(&busy());
         for p in &ps {
             if let Prim::Vignette { max_a, .. } = p {
-                assert!(*max_a <= VIGNETTE_MAX_A);
+                assert!(*max_a <= VIGNETTE_MAX_A.max(DAMAGE_FLASH_A));
             }
         }
     }
