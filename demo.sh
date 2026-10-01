@@ -2,6 +2,7 @@
 # One-command demo: local server + game window.
 #   ./demo.sh              build, start a local server, open the game window on this machine's display
 #   BOTS=3 ./demo.sh       also ask the server for 3 AI opponents (once the server supports --bots)
+#   TEAM_SIZE=8 ./demo.sh  8v8 Cyan vs Orange team deathmatch, bots fill empty slots (opt-in; instead of BOTS)
 #   ./demo.sh --server-only   just run the server (connect the game yourself)
 # Quit: close the window; the server is stopped automatically.
 set -euo pipefail
@@ -9,6 +10,7 @@ cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"
 BOTS="${BOTS:-0}"
+TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs
 LEVEL="${LEVEL:-levels/arena.lvl}"
@@ -25,8 +27,14 @@ if [ "$BOTS" != "0" ]; then
   if grep -rq -- '"--bots"' crates/shinobi-server/src; then BOT_ARGS=(--bots "$BOTS"); else echo ">> server has no --bots yet, starting without"; fi
 fi
 
-echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-}"
-SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" &
+TEAM_ARGS=()
+if [ "$TEAM_SIZE" != "0" ]; then
+  # --team-size fills BOTH teams with bots, so it replaces --bots
+  TEAM_ARGS=(--team-size "$TEAM_SIZE"); BOT_ARGS=()
+fi
+
+echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-} ${TEAM_ARGS[*]:-}"
+SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" "${TEAM_ARGS[@]}" &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true' EXIT
 sleep 1

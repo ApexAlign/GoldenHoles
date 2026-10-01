@@ -70,6 +70,8 @@ pub struct Replicator {
     /// Last team broadcast per player (`TeamAssign`), and the last `TeamScore` sent.
     teams: HashMap<u16, u8>,
     last_team_score: Option<([u16; 2], u8)>,
+    /// Shurikens replicated per snapshot right now (shrinks under load, see `build_round`).
+    disc_cap: usize,
 }
 
 impl Replicator {
@@ -87,6 +89,7 @@ impl Replicator {
             ropes: HashMap::new(),
             teams: HashMap::new(),
             last_team_score: None,
+            disc_cap: PROJECTILE_ID_MAX,
         }
     }
 
@@ -397,7 +400,26 @@ impl Replicator {
     /// Builds one datagram per peer. Returns `(player_id, bytes)`.
     pub fn build_round(&mut self, server: &Server) -> Vec<(u16, Vec<u8>)> {
         let Some(tick) = server.tick.checked_sub(1) else { return Vec::new() };
-        let snap = build_snapshot(tick, server);
+        // Fit the snapshot into its byte budget: when a firefight puts too many discs on screen, every peer gets
+        // the same smaller disc set (one shared snapshot / baseline history), and the cap recovers when it calms.
+        let mut cap = self.disc_cap;
+        let (snap, mut encoded, worst) = loop {
+            let snap = build_snapshot(tick, server, cap);
+            let encoded: HashMap<u16, Vec<u8>> = self
+                .peers
+                .iter()
+                .map(|(id, peer)| {
+                    let base = peer.ack_snapshot.and_then(|t| self.history.iter().find(|s| s.tick == t));
+                    (*id, encode_delta(base, &snap))
+                })
+                .collect();
+            let worst = encoded.values().map(Vec::len).max().unwrap_or(0);
+            if worst <= SNAPSHOT_BUDGET || cap <= MIN_SNAPSHOT_DISCS {
+                break (snap, encoded, worst);
+            }
+            cap = (cap * 3 / 4).max(MIN_SNAPSHOT_DISCS);
+        };
+        self.disc_cap = if worst < SNAPSHOT_BUDGET * 7 / 10 { (cap + 8).min(PROJECTILE_ID_MAX) } else { cap };
         self.last_sent = Some(tick);
         let phase = phase_code(server.match_state.kind());
         let board_due = self.last_board.map_or(true, |(t, ph)| tick.wrapping_sub(t) >= BOARD_EVERY_TICKS || ph != phase);
@@ -410,8 +432,7 @@ impl Replicator {
 
         let mut out = Vec::with_capacity(self.peers.len());
         for (id, peer) in self.peers.iter_mut() {
-            let base = peer.ack_snapshot.and_then(|t| self.history.iter().find(|s| s.tick == t));
-            let snap_bytes = encode_delta(base, &snap);
+            let snap_bytes = encoded.remove(id).unwrap_or_default();
             let mut w = BitWriter::new();
             peer.outbox.write_pending(&mut w, EVENT_BUDGET);
             let send: Vec<HitMsg> = peer.hits.iter().map(|h| h.1).collect();
@@ -518,8 +539,12 @@ pub use shinobi_proto::snapshot::PROJECTILE_ID_BASE;
 /// stay under one 1200 B datagram. Realistic 8v8 peaks around 20; beyond the cap the extra discs are simply not drawn
 /// by clients (they still hit on the server).
 const PROJECTILE_ID_MAX: usize = 128;
+/// Per-peer snapshot bytes before the disc cap shrinks; leaves ~500 B of a 1200 B datagram for events, the owner
+/// block and the scoreboard.
+const SNAPSHOT_BUDGET: usize = 700;
+const MIN_SNAPSHOT_DISCS: usize = 16;
 
-fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
+fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
     let mut entities: Vec<_> = server
         .players
         .iter()
@@ -549,7 +574,7 @@ fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
     entities.sort_by_key(|e| e.0);
     // shurikens: ids PROJECTILE_ID_BASE.., yaw = owner id, flags = bounce count, vel = dir * speed
     let speed = server.balance.shuriken_cfg().speed;
-    for (i, (owner, d)) in server.projectiles().into_iter().take(PROJECTILE_ID_MAX).enumerate() {
+    for (i, (owner, d)) in server.projectiles().into_iter().take(disc_cap).enumerate() {
         let v = d.dir * speed;
         entities.push((
             PROJECTILE_ID_BASE + i as u16,
@@ -714,6 +739,91 @@ mod tests {
         assert!(blocks_for(&mut r, &s, 3).contains(&placed));
     }
 
+    /// Release-mode soak: 16 players all throwing shurikens (disc cap reached), 4 ropes up, every datagram built.
+    /// Prints per-tick cost percentiles. Run: `cargo test --release -p shinobi-server soak_8v8 -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf report: run in --release"]
+    fn soak_8v8_tick_cost_percentiles() {
+        use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, ViewState, PITCH_LEVEL};
+        use shinobi_sim::character::GrappleState;
+        use shinobi_sim::events::EventInbox;
+        let cfg = Cfg::default();
+        let mut s = crate::setup::Setup::standard().build(cfg);
+        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        for id in 1..=16u16 {
+            let at = s.pick_spawn(None);
+            s.add_player(id, at);
+        }
+        let mut r = Replicator::new(&cfg, 1);
+        for id in 1..=16u16 {
+            r.add_peer(&s, id, s.tick);
+        }
+        let mut inboxes: HashMap<u16, EventInbox> = (1..=16u16).map(|id| (id, EventInbox::default())).collect();
+        let (mut ticks_ns, mut max_discs, mut max_dgram, mut max_first) = (Vec::<u64>::new(), 0usize, 0usize, 0usize);
+        const TICKS: u32 = 3600; // one minute
+        for t in 0..TICKS {
+            for p in s.players.iter_mut().take(4) {
+                p.ch.grapple = Some(GrappleState { anchor: shinobi_sim::rapier3d::prelude::Vector::new(0.0, 9.0, -6.0), len: 8.0, time: 0.0 });
+            }
+            for id in 1..=16u16 {
+                let it = PlayerIntent {
+                    tick: s.tick,
+                    buttons: Buttons(Buttons::FIRE),
+                    move_z: if (t / 90) % 2 == 0 { 100 } else { -100 },
+                    aim_yaw: ((t * 37 + id as u32 * 4001) % 65536) as u16,
+                    aim_pitch: PITCH_LEVEL,
+                    ..Default::default()
+                };
+                let pkt = ClientPacket { ack_snapshot_tick: s.tick.saturating_sub(2), view: ViewState { from_tick: s.tick.saturating_sub(2), alpha: 0 }, intents: vec![it], ..Default::default() };
+                s.ingest(id, &pkt.encode().unwrap());
+            }
+            let t0 = std::time::Instant::now();
+            s.frame(Duration::from_nanos(16_666_667));
+            r.post_frame(&mut s);
+            let mut round = Vec::new();
+            if r.due(s.tick, shinobi_proto::SNAPSHOT_DIVISOR) {
+                round = r.build_round(&s);
+            }
+            ticks_ns.push(t0.elapsed().as_nanos() as u64);
+            max_discs = max_discs.max(s.projectiles().len());
+            let tick = s.tick.saturating_sub(1);
+            for (id, bytes) in round {
+                if t < 120 {
+                    max_first = max_first.max(bytes.len()); // joins / first full snapshots
+                } else {
+                    max_dgram = max_dgram.max(bytes.len());
+                }
+                let (events, ..) = datagram::split_snapshot_v3(&bytes).unwrap();
+                let inbox = inboxes.get_mut(&id).unwrap();
+                read_events(events, inbox, |_| {}).unwrap();
+                r.on_client_ack(id, tick, inbox.ack());
+            }
+        }
+        let worst_at: Vec<(usize, f64)> = {
+            let mut v: Vec<(usize, u64)> = ticks_ns.iter().copied().enumerate().collect();
+            v.sort_by_key(|x| std::cmp::Reverse(x.1));
+            v.into_iter().take(5).map(|(i, n)| (i, n as f64 / 1e6)).collect()
+        };
+        eprintln!("slowest ticks (index, ms): {worst_at:.2?}");
+        ticks_ns.sort_unstable();
+        let pct = |q: f64| ticks_ns[((ticks_ns.len() as f64 * q) as usize).min(ticks_ns.len() - 1)] as f64 / 1e6;
+        let mean = ticks_ns.iter().sum::<u64>() as f64 / ticks_ns.len() as f64 / 1e6;
+        eprintln!(
+            "soak 8v8 ({} build): {} ticks, mean {mean:.2} ms, p50 {:.2}, p99 {:.2}, p99.9 {:.2}, max {:.2} ms; most discs in flight {max_discs} (sim; up to {} replicated); largest steady datagram {max_dgram} B, first 2 s {max_first} B",
+            if cfg!(debug_assertions) { "debug" } else { "release" },
+            TICKS,
+            pct(0.5),
+            pct(0.99),
+            pct(0.999),
+            pct(1.0),
+            max_discs.min(PROJECTILE_ID_MAX),
+        );
+        if !cfg!(debug_assertions) {
+            assert!(pct(0.99) < 16.6, "p99 tick {:.2} ms blows the 60 Hz budget", pct(0.99));
+        }
+        assert!(max_dgram <= 1200, "largest steady datagram {max_dgram} B");
+    }
+
     #[test]
     fn teams_reach_every_peer_joiners_get_everyone_and_scores_follow_changes() {
         use shinobi_sim::events::{TEAM_NONE, TEAM_RESULT_RUNNING};
@@ -808,7 +918,7 @@ mod tests {
             s.frame(Duration::from_millis(17));
         }
         assert!(!s.projectiles().is_empty(), "player 1 threw a disc");
-        let snap = build_snapshot(s.tick, &s);
+        let snap = build_snapshot(s.tick, &s, PROJECTILE_ID_MAX);
         let discs: Vec<_> = snap.entities.iter().filter(|e| e.0 >= PROJECTILE_ID_BASE).collect();
         assert_eq!(discs.len(), s.projectiles().len());
         assert!(discs.iter().all(|(_, e)| e.yaw == 1));
