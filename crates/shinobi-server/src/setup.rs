@@ -30,6 +30,10 @@ pub struct Setup {
     /// Gameplay tuning (hp, respawn, weapon damage, match rules). Default = the demo preset;
     /// `--balance PATH` loads `key = value` lines (`Balance::from_text`, `Balance::default().to_text()` lists keys).
     pub balance: Balance,
+    /// Team of each spawn (parallel to `level.spawns`; `NO_TEAM` = either). From `spawn x y z [team]`.
+    pub spawn_teams: Vec<u8>,
+    /// `Some(limit)`: team deathmatch to `limit` team kills (set from `--teams` / `--team-size`).
+    pub team_frag_limit: Option<u16>,
 }
 
 impl Setup {
@@ -40,7 +44,7 @@ impl Setup {
             .enumerate()
             .map(|(i, pos)| PickupDef { id: i as u32 + 1, pos, respawn_secs: 20.0 })
             .collect();
-        Self { level: LevelDesc::standard(), pickups, balance: Balance::demo() }
+        Self { level: LevelDesc::standard(), pickups, balance: Balance::demo(), spawn_teams: Vec::new(), team_frag_limit: None }
     }
 
     /// Level-file text -> `Setup` (format and errors owned by `shinobi_sim::level::parse_level_file`).
@@ -52,7 +56,7 @@ impl Setup {
             .enumerate()
             .map(|(i, p)| PickupDef { id: i as u32 + 1, pos: p.pos, respawn_secs: p.respawn_secs })
             .collect();
-        Ok(Self { level: f.level, pickups, balance: Balance::demo() })
+        Ok(Self { level: f.level, pickups, balance: Balance::demo(), spawn_teams: shinobi_sim::level::parse_spawn_teams(text), team_frag_limit: None })
     }
 
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
@@ -76,7 +80,10 @@ impl Setup {
         let mut server = Server::new(cfg);
         server.set_balance(self.balance.clone()).expect("balance was validated when the Setup was made");
         self.level.apply_to_server(&mut server);
-        server.set_spawns(self.level.spawns.clone());
+        server.set_team_spawns(self.level.spawns.clone(), self.spawn_teams.clone());
+        if let Some(limit) = self.team_frag_limit {
+            server.match_state = std::mem::take(&mut server.match_state).with_teams(limit);
+        }
         for p in &self.pickups {
             server.add_pickup(p.id, p.pos, PowerupKind::GridBeam, p.respawn_secs);
         }
@@ -87,6 +94,16 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_lines_may_carry_a_team_and_reach_the_server() {
+        use shinobi_sim::tick::NO_TEAM;
+        let s = Setup::parse("box 0 -0.5 0 50 0.5 50\nspawn -20 0.81 0 0\nspawn 20 0.81 0 1\nspawn 0 0.81 9\n").unwrap();
+        assert_eq!(s.spawn_teams, vec![0, 1, NO_TEAM]);
+        let srv = s.build(Cfg::default());
+        assert_eq!((srv.spawns.len(), srv.spawn_teams.clone()), (3, vec![0, 1, NO_TEAM]));
+        assert!(Setup::parse("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0 2\n").unwrap_err().contains("team must be 0"));
+    }
 
     #[test]
     fn parse_wraps_the_shared_parser_and_numbers_pickups() {

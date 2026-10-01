@@ -82,7 +82,7 @@ pub const DEFAULT_PICKUP_RESPAWN_SECS: f32 = 20.0;
 /// Parse a level file: one directive per line, `#` starts a comment.
 /// ```text
 /// box    cx cy cz  hx hy hz [rot_z_radians]   # static cuboid (centre, half extents), optional roll for ramps
-/// spawn  x y z                                 # capsule-centre spawn point
+/// spawn  x y z [team]                          # capsule-centre spawn point; team 0 Cyan / 1 Orange, omitted = either
 /// pickup x y z [respawn_secs]                  # power-up cube, default respawn 20 s
 /// ```
 /// Errors name the line. A level needs at least one `box` and one `spawn`.
@@ -109,7 +109,12 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
                 let b = LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]);
                 boxes.push(if nums.len() == 7 { b.rolled(nums[6]) } else { b });
             }
-            ("spawn", 3) => spawns.push([nums[0], nums[1], nums[2]]),
+            ("spawn", 3 | 4) => {
+                if nums.len() == 4 && !(nums[3] == 0.0 || nums[3] == 1.0) {
+                    return Err(err("spawn team must be 0 (Cyan) or 1 (Orange)"));
+                }
+                spawns.push([nums[0], nums[1], nums[2]]);
+            }
             ("pickup", 3 | 4) => pickups.push(PickupPoint {
                 pos: [nums[0], nums[1], nums[2]],
                 respawn_secs: nums.get(3).copied().unwrap_or(DEFAULT_PICKUP_RESPAWN_SECS),
@@ -125,6 +130,18 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
         return Err("level has no `spawn`".into());
     }
     Ok(LevelFile { level: LevelDesc { boxes, spawns }, pickups })
+}
+
+/// Team of each `spawn` line of a level file, in order (`NO_TEAM` when the line has no team). Parallel to
+/// `LevelDesc::spawns`. Kept apart from `LevelDesc` so the client's copy of the level is unchanged; call after
+/// `parse_level_file` accepted the text.
+pub fn parse_spawn_teams(text: &str) -> Vec<u8> {
+    text.lines()
+        .filter_map(|raw| {
+            let mut it = raw.split('#').next()?.split_whitespace();
+            (it.next()? == "spawn").then(|| it.nth(3).and_then(|t| t.parse::<u8>().ok()).unwrap_or(crate::tick::NO_TEAM))
+        })
+        .collect()
 }
 
 impl LevelFile {

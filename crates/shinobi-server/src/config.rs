@@ -1,6 +1,6 @@
 //! Server configuration: CLI flags override environment variables override defaults.
 //! `shinobi-server [BIND] [--bind ADDR | --port N] [--max-players N] [--stats-secs S] [--seed N]
-//!                 [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]`
+//!                 [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]`
 //! Env: SHINOBI_BIND, SHINOBI_PORT, SHINOBI_MAX_PLAYERS, SHINOBI_STATS_SECS, SHINOBI_SEED, SHINOBI_LEVEL,
 //! SHINOBI_IDLE_MS, SHINOBI_COOKIE_BUCKET_MS, SHINOBI_BOTS, SHINOBI_BOT_SKILL, SHINOBI_BALANCE, SHINOBI_OBSTACLES.
 //! The effective config is printed at boot.
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub const USAGE: &str = "usage: shinobi-server [BIND] [--bind ADDR | --port N] [--max-players N] [--stats-secs S] \
-[--seed N] [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]   \
+[--seed N] [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]   \
 (env: SHINOBI_BIND, SHINOBI_PORT, SHINOBI_MAX_PLAYERS, SHINOBI_STATS_SECS, SHINOBI_SEED, SHINOBI_LEVEL, SHINOBI_IDLE_MS, \
 SHINOBI_COOKIE_BUCKET_MS, SHINOBI_BOTS, SHINOBI_BOT_SKILL, SHINOBI_BALANCE, SHINOBI_OBSTACLES)";
 
@@ -47,6 +47,8 @@ impl BotSkill {
 
 /// Bots take ids `BOT_ID_BASE..=255`, so they never collide with humans (1..=200); trail `owner` is a u8.
 pub const MAX_BOTS: usize = 55;
+/// Team deathmatch: first team to this many team kills wins (docs/8v8.md).
+pub const TEAM_FRAG_LIMIT: u16 = 50;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Config {
@@ -62,6 +64,10 @@ pub struct Config {
     /// AI opponents the server runs itself (they do not occupy human slots).
     pub bots: usize,
     pub bot_skill: BotSkill,
+    /// Team deathmatch (Cyan vs Orange, race to `TEAM_FRAG_LIMIT` team kills). Implied by `team_size`.
+    pub teams: bool,
+    /// Bots keep every team at this many players (humans take bot slots as they join). 0 = no fill.
+    pub team_size: usize,
     /// Balance tuning file (`key = value` lines); default = demo preset.
     pub balance: Option<PathBuf>,
     /// Moving neon obstacle waves (off by default: the game is a shooter).
@@ -82,6 +88,8 @@ impl Default for Config {
             cookie_bucket: Duration::from_millis(10_000),
             bots: 0,
             bot_skill: BotSkill::Normal,
+            teams: false,
+            team_size: 0,
             balance: None,
             obstacles: false,
             light_walls: false,
@@ -151,6 +159,12 @@ impl Config {
         if let Some(v) = env("SHINOBI_BOTS") {
             c.bots = num("SHINOBI_BOTS", &v)?;
         }
+        if let Some(v) = env("SHINOBI_TEAM_SIZE") {
+            c.team_size = num("SHINOBI_TEAM_SIZE", &v)?;
+        }
+        if let Some(v) = env("SHINOBI_TEAMS") {
+            c.teams = truthy(&v);
+        }
         if let Some(v) = env("SHINOBI_BOT_SKILL") {
             c.bot_skill = BotSkill::parse(&v)?;
         }
@@ -182,6 +196,8 @@ impl Config {
                     c.cookie_bucket = Duration::from_millis(num("--cookie-bucket-ms", &val("--cookie-bucket-ms")?)?)
                 }
                 "--bots" => c.bots = num("--bots", &val("--bots")?)?,
+                "--teams" => c.teams = true,
+                "--team-size" => c.team_size = num("--team-size", &val("--team-size")?)?,
                 "--obstacles" => c.obstacles = true,
                 "--light-walls" => c.light_walls = true,
                 "--balance" => c.balance = Some(val("--balance")?.into()),
@@ -205,6 +221,12 @@ impl Config {
         }
         if self.bots > MAX_BOTS {
             return Err(format!("bots must be 0..={MAX_BOTS}, got {}", self.bots));
+        }
+        if self.team_size > MAX_BOTS / 2 {
+            return Err(format!("team size must be 0..={}, got {}", MAX_BOTS / 2, self.team_size));
+        }
+        if self.team_size > 0 && self.bots > 0 {
+            return Err("--team-size fills both teams with bots; use it instead of --bots".into());
         }
         if self.cookie_bucket < Duration::from_millis(50) {
             return Err("cookie bucket must be >= 50 ms".into());
@@ -301,6 +323,8 @@ mod tests {
             (vec!["--frobnicate"], "unknown argument"),
             (vec!["--cookie-bucket-ms", "1"], "cookie bucket"),
             (vec!["--bots", "56"], "bots must be"),
+            (vec!["--team-size", "28"], "team size must be"),
+            (vec!["--team-size", "8", "--bots", "2"], "instead of --bots"),
             (vec!["--bot-skill", "godlike"], "not easy | normal | hard"),
         ] {
             let e = parse(&args, &[]).unwrap_err();
@@ -326,6 +350,14 @@ mod tests {
         assert_eq!(parse(&["--bind", "192.168.1.5:8000"], &[]).unwrap().bind, "192.168.1.5:8000");
         assert_eq!(parse(&["--bind", "localhost"], &[]).unwrap().bind, "localhost:7777");
         assert_eq!(parse(&[], &[("SHINOBI_BIND", "0.0.0.0")]).unwrap().bind, "0.0.0.0:7777");
+    }
+
+    #[test]
+    fn team_flags_and_env() {
+        let c = parse(&["--team-size", "8"], &[]).unwrap();
+        assert_eq!(c.team_size, 8);
+        assert!(parse(&["--teams"], &[]).unwrap().teams);
+        assert_eq!(parse(&[], &[("SHINOBI_TEAM_SIZE", "5")]).unwrap().team_size, 5);
     }
 
     #[test]

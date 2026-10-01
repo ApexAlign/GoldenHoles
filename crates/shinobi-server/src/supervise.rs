@@ -37,6 +37,40 @@ pub struct BotPlan {
     pub count: usize,
     pub skill: BotSkill,
     pub seed: u64,
+    /// Keep every team at this many players with bots (0 = off); `count` is then unused.
+    pub team_size: usize,
+}
+
+impl BotPlan {
+    /// The host must tick (`BotHost::advance`) whenever any bot can exist.
+    pub fn active(&self) -> bool {
+        self.count > 0 || self.team_size > 0
+    }
+}
+
+/// Team-size fill: top every team up to `plan.team_size` with bots (at most one per team per call, so a
+/// 16-player match builds up over a few frames instead of one spike) and drop surplus bots when humans took
+/// their slots. Humans join the smaller team (`Server::balanced_team`), so a join normally frees one bot.
+pub fn fill_team_bots(plan: &BotPlan, server: &mut Server, host: &mut BotHost) {
+    if plan.team_size == 0 {
+        return;
+    }
+    let skill = AiSkill::parse(plan.skill.as_str()).unwrap_or(AiSkill::Normal);
+    for team in shinobi_sim::team::TEAM_CYAN..shinobi_sim::team::TEAM_COUNT {
+        let n = server.team_size(team);
+        if n < plan.team_size {
+            let Some(id) = (BOT_ID_BASE..=255u16).find(|id| server.players.iter().all(|p| p.id != *id)) else { continue };
+            let arch = if id % 2 == 0 { Archetype::Heavy } else { Archetype::Light };
+            if host.add_bot(server, id, arch, skill) {
+                server.set_team(id, team);
+            }
+        } else if n > plan.team_size {
+            let surplus = server.players.iter().filter(|p| p.team == team && host.is_bot(p.id)).map(|p| p.id).max();
+            if let Some(id) = surplus {
+                host.remove_bot(server, id);
+            }
+        }
+    }
 }
 
 /// A fresh `BotHost` with the plan's bots added to `server` (ids `BOT_ID_BASE..`, alternating archetypes).
@@ -48,6 +82,9 @@ pub fn make_bots(plan: &BotPlan, server: &mut Server) -> BotHost {
     for i in 0..plan.count {
         let arch = if i % 2 == 0 { Archetype::Heavy } else { Archetype::Light };
         host.add_bot(server, BOT_ID_BASE + i as u16, arch, skill);
+    }
+    for _ in 0..plan.team_size * 2 {
+        fill_team_bots(plan, server, &mut host); // initial fill: both sides to team_size
     }
     host
 }
@@ -112,7 +149,7 @@ mod tests {
         let setup = Setup::standard();
         let mut server = setup.build(cfg);
         let mut rep = Replicator::new(&cfg, 1);
-        let plan = BotPlan { count: 2, skill: BotSkill::Easy, seed: 7 };
+        let plan = BotPlan { count: 2, skill: BotSkill::Easy, seed: 7, team_size: 0 };
         let mut bots = make_bots(&plan, &mut server);
         assert_eq!(bots.bot_count(), 2);
         server.add_player(3, [0.0, 0.81, 0.0]);
@@ -137,6 +174,34 @@ mod tests {
         }
         assert!(server.tick > tick);
         assert_eq!(server.pickups.active().count(), setup.pickups.len(), "pickups rebuilt from Setup");
+    }
+
+    #[test]
+    fn team_size_fill_tops_both_sides_up_and_gives_slots_to_humans() {
+        let setup = Setup::standard();
+        let mut server = setup.build(Cfg::default());
+        let plan = BotPlan { count: 0, skill: BotSkill::Easy, seed: 7, team_size: 3 };
+        let mut bots = make_bots(&plan, &mut server);
+        let sizes = |s: &Server| (s.team_size(0), s.team_size(1));
+        assert_eq!(sizes(&server), (3, 3), "3v3 of bots from an empty server");
+        assert_eq!(bots.bot_count(), 6);
+        // a human joins the smaller / behind team and takes a bot slot there
+        server.add_player(1, [0.0, 0.81, 0.0]);
+        let team = server.players.iter().find(|p| p.id == 1).unwrap().team;
+        assert_eq!(sizes(&server).0 + sizes(&server).1, 7);
+        fill_team_bots(&plan, &mut server, &mut bots);
+        assert_eq!(sizes(&server), (3, 3), "a bot made room for the human");
+        assert_eq!(bots.bot_count(), 5);
+        assert_eq!(server.players.iter().find(|p| p.id == 1).unwrap().team, team, "humans are never moved");
+        // the human leaves: a bot is added again
+        server.remove_player(1);
+        fill_team_bots(&plan, &mut server, &mut bots);
+        assert_eq!(sizes(&server), (3, 3));
+        assert_eq!(bots.bot_count(), 6);
+        // it simulates
+        for _ in 0..30 {
+            bots.advance(&mut server, Duration::from_millis(17));
+        }
     }
 
     #[test]

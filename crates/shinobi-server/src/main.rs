@@ -164,14 +164,21 @@ fn main() -> std::io::Result<()> {
     );
     eprintln!("{}", conf.banner(&level_summary, config::lan_ip()));
 
+    let mut setup = setup;
+    setup.team_frag_limit = (conf.teams || conf.team_size > 0).then_some(config::TEAM_FRAG_LIMIT);
     let cfg = Cfg::default();
     let mut server = setup.build(cfg);
     let mut rep = Replicator::new(&cfg, conf.seed)
         .with_features(Features { light_walls: conf.light_walls, obstacles: conf.obstacles });
-    let plan = BotPlan { count: conf.bots, skill: conf.bot_skill, seed: conf.seed };
+    let plan = BotPlan { count: conf.bots, skill: conf.bot_skill, seed: conf.seed, team_size: conf.team_size };
     let mut bots = make_bots(&plan, &mut server);
     if plan.count > 0 {
         eprintln!("bots: {} AI opponent(s) ({}) joined as p{}..p{}", plan.count, plan.skill.as_str(), config::BOT_ID_BASE, config::BOT_ID_BASE as usize + plan.count - 1);
+    }
+    if plan.team_size > 0 {
+        eprintln!("teams: {0}v{0} Cyan vs Orange, bots fill empty slots ({1})", plan.team_size, plan.skill.as_str());
+    } else if setup.team_frag_limit.is_some() {
+        eprintln!("teams: Cyan vs Orange (no bot fill)");
     }
     let ac = AntiCheatCfg::standard(&cfg);
     let epoch = Instant::now();
@@ -299,7 +306,10 @@ fn main() -> std::io::Result<()> {
         let now = Instant::now();
         let t_sim = Instant::now();
         let elapsed = now - last;
-        let report = match guarded(|| if plan.count > 0 { bots.advance(&mut server, elapsed) } else { server.frame(elapsed) }) {
+        let report = match guarded(|| {
+            supervise::fill_team_bots(&plan, &mut server, &mut bots);
+            if plan.active() { bots.advance(&mut server, elapsed) } else { server.frame(elapsed) }
+        }) {
             Ok(r) => r,
             Err(msg) => {
                 panic_msgs.push(format!("frame: {msg}"));
