@@ -468,6 +468,9 @@ fn board_bytes(server: &Server, tick: u32) -> Vec<u8> {
     .encode()
 }
 
+pub const PROJECTILE_ID_BASE: u16 = 0x4000;
+const PROJECTILE_ID_MAX: usize = 0x4000;
+
 fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
     let mut entities: Vec<_> = server
         .players
@@ -496,6 +499,21 @@ fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
         })
         .collect();
     entities.sort_by_key(|e| e.0);
+    // shurikens: ids PROJECTILE_ID_BASE.., yaw = owner id, flags = bounce count, vel = dir * speed
+    let speed = server.balance.shuriken_cfg().speed;
+    for (i, (owner, d)) in server.projectiles().into_iter().take(PROJECTILE_ID_MAX).enumerate() {
+        let v = d.dir * speed;
+        entities.push((
+            PROJECTILE_ID_BASE + i as u16,
+            EntityState {
+                pos: q_pos3(d.pos.into()),
+                vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)],
+                yaw: owner,
+                kind: MoveKind::Airborne,
+                flags: d.bounces,
+            },
+        ));
+    }
     Snapshot { tick, entities }
 }
 
@@ -523,6 +541,29 @@ mod tests {
         s.add_player(1, [0.0, 0.81, 0.0]);
         s.add_player(2, [5.0, 0.81, 0.0]);
         s
+    }
+
+    #[test]
+    fn shurikens_replicate_as_projectile_entities() {
+        use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, ViewState};
+        let mut s = world();
+        for tick in 1..=6u32 {
+            let it = PlayerIntent { tick, buttons: Buttons(Buttons::FIRE), ..Default::default() };
+            let pkt = ClientPacket {
+                ack_snapshot_tick: 1,
+                view: ViewState { from_tick: 1, alpha: 0 },
+                intents: vec![it],
+                ..Default::default()
+            };
+            s.ingest(1, &pkt.encode().unwrap());
+            s.frame(Duration::from_millis(17));
+        }
+        assert!(!s.projectiles().is_empty(), "player 1 threw a disc");
+        let snap = build_snapshot(s.tick, &s);
+        let discs: Vec<_> = snap.entities.iter().filter(|e| e.0 >= PROJECTILE_ID_BASE).collect();
+        assert_eq!(discs.len(), s.projectiles().len());
+        assert!(discs.iter().all(|(_, e)| e.yaw == 1));
+        assert!(snap.entities.windows(2).all(|w| w[0].0 < w[1].0), "sorted, unique");
     }
 
     #[test]

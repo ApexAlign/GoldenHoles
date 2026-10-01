@@ -114,6 +114,10 @@ impl Weapon for ShurikenLauncher {
         self.discs.clear();
     }
 
+    fn collect_discs(&self, out: &mut Vec<Disc>) {
+        out.extend_from_slice(&self.discs);
+    }
+
     fn tick(&mut self, dt: f32, ctx: &mut TickCtx) {
         let cfg = self.cfg;
         self.discs.retain_mut(|d| match advance_disc(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.events) {

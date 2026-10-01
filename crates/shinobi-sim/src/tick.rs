@@ -126,6 +126,11 @@ pub struct Server {
 }
 
 impl Server {
+    /// Every in-flight shuriken as `(owner id, disc)`, players in `players` order.
+    pub fn projectiles(&self) -> Vec<(u16, crate::combat::shuriken::Disc)> {
+        self.players.iter().flat_map(|p| p.combat.loadout.discs().into_iter().map(move |d| (p.id, d))).collect()
+    }
+
     pub fn new(cfg: Cfg) -> Self {
         Self {
             tick: 0,
