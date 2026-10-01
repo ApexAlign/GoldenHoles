@@ -22,7 +22,8 @@ use shinobi_proto::datagram::KickReason;
 use shinobi_proto::gameplay::{Board, HitMsg};
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{dq_pitch, dq_yaw};
-use shinobi_proto::snapshot::EntityId;
+use shinobi_proto::quant::dq_vel;
+use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
 use shinobi_sim::character::{Cfg, CharacterSystem, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
@@ -228,7 +229,7 @@ pub struct RenderView {
     /// Reliable events (walls, obstacles) received since the previous view.
     pub events: Vec<NetEvent>,
     pub aim: Aim,
-    /// The local player's own shurikens in flight (predicted): world position, direction.
+    /// Shurikens in flight: world position, direction (own from prediction, others from the snapshot).
     pub discs: Vec<([f32; 3], [f32; 3])>,
 }
 
@@ -532,11 +533,21 @@ impl ClientGame {
             (Some(rt), Some(newest)) => newest
                 .entities
                 .iter()
-                .filter(|(id, _)| Some(*id) != own_id)
+                .filter(|(id, _)| Some(*id) != own_id && *id < PROJECTILE_ID_BASE)
                 .filter_map(|(id, _)| self.net.interp.sample(*id, rt).map(|s| (*id, s)))
                 .collect(),
             _ => Vec::new(),
         };
+        // other players' shurikens ride in the snapshot; our own are drawn from the prediction (no latency)
+        let mut discs: Vec<([f32; 3], [f32; 3])> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles());
+        if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
+            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && Some(st.yaw) != own_id) {
+                if let Some(s) = self.net.interp.sample(*id, rt) {
+                    let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
+                    discs.push((s.pos, v));
+                }
+            }
+        }
         let off = self.reconciler.visual_offset;
         let local_pos = match &self.pred {
             Some(p) => {
@@ -582,7 +593,7 @@ impl ClientGame {
             remotes,
             events: self.net.take_events(),
             aim: self.aim,
-            discs: self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles()),
+            discs,
         }
     }
 

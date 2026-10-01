@@ -318,3 +318,6 @@ mod tests {
         assert_eq!(decode_delta(&d, |_| None), Err(DecodeError::BaselineMissing(1)));
     }
 }
+
+/// Snapshot entity ids at or above this are in-flight shurikens (yaw = owner id, vel = direction * speed), not players.
+pub const PROJECTILE_ID_BASE: EntityId = 0x4000;

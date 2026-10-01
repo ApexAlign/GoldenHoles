@@ -468,7 +468,7 @@ fn board_bytes(server: &Server, tick: u32) -> Vec<u8> {
     .encode()
 }
 
-pub const PROJECTILE_ID_BASE: u16 = 0x4000;
+pub use shinobi_proto::snapshot::PROJECTILE_ID_BASE;
 const PROJECTILE_ID_MAX: usize = 0x4000;
 
 fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
