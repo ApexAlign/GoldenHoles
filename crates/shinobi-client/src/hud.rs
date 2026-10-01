@@ -158,8 +158,16 @@ pub struct HudState {
     pub hit_kind: Option<DamageKind>,
     /// The last dealt hit killed its target (bigger marker).
     pub hit_kill: bool,
+    /// Damage dealt by the last hit, whole points (0 = unknown): shown as a rising number.
+    pub hit_amount: u8,
     /// Seconds since damage taken and its bearing: radians, 0 = ahead, +ve = clockwise.
     pub since_damage: Option<(f32, f32)>,
+    /// Size of the last hit taken as a fraction of max HP (0 = unknown): widens the damage wedge.
+    pub damage_frac: f32,
+    /// Shuriken ammo `(loaded, max)` once the weapon has a magazine; `None` hides the readout.
+    pub shuriken_ammo: Option<(u8, u8)>,
+    /// Block-building slot: `(blocks left, cooldown ready 0..=1)`; `None` until building exists.
+    pub block_slot: Option<(u8, f32)>,
     pub ping_ms: Option<u16>,
     pub killfeed: Vec<KillEntry>,
     /// Hold-to-show (Tab / touch button).
@@ -272,7 +280,9 @@ pub const TOAST_TIME: f32 = 1.6;
 pub struct HudFx {
     hit: Option<(f32, DamageKind)>,
     hit_kill: bool,
+    hit_amount: u8,
     hurt: Option<(f32, f32)>,
+    hurt_frac: f32,
     banner: Option<Banner>,
     toast: Option<(String, f32)>,
 }
@@ -355,13 +365,25 @@ impl HudFx {
 
     /// Dealt hit from the server's own-hit message; `killed` makes the marker big and gold.
     pub fn on_hit(&mut self, kind: DamageKind, killed: bool) {
+        self.on_hit_amount(kind, killed, 0);
+    }
+
+    /// `on_hit` plus the damage dealt (shown as a number next to the reticle).
+    pub fn on_hit_amount(&mut self, kind: DamageKind, killed: bool, amount: u8) {
         self.hit = Some((0.0, kind));
         self.hit_kill = killed;
+        self.hit_amount = amount;
     }
 
     /// `bearing` from `bearing_to`: radians relative to view, 0 = ahead, +ve = clockwise (to the right).
     pub fn on_hurt(&mut self, bearing: f32) {
+        self.on_hurt_amount(bearing, 0);
+    }
+
+    /// `on_hurt` plus the damage taken in points; bigger hits draw a wider wedge.
+    pub fn on_hurt_amount(&mut self, bearing: f32, amount: u8) {
         self.hurt = Some((0.0, bearing));
+        self.hurt_frac = (amount as f32 / shinobi_sim::pvp::MAX_HP).clamp(0.0, 1.0);
     }
 
     pub fn apply(&self, s: &mut HudState) {
@@ -369,6 +391,8 @@ impl HudFx {
         s.hit_kind = self.hit.map(|h| h.1);
         s.hit_kill = self.hit.is_some() && self.hit_kill;
         s.since_damage = self.hurt;
+        s.hit_amount = if self.hit.is_some() { self.hit_amount } else { 0 };
+        s.damage_frac = if self.hurt.is_some() { self.hurt_frac } else { 0.0 };
         s.banner = self.banner.clone();
         s.toast = self.toast.clone();
     }
@@ -536,7 +560,15 @@ impl Hud {
         let chrome = if s.invulnerable { p.gold } else { chrome };
         let chrome = if s.dead { p.magenta } else { chrome };
 
-        out.push(Prim::Vignette { start: VIGNETTE_START, max_a: VIGNETTE_MAX_A, tint: chrome.a(1.0) });
+        // Low HP: heartbeat on the edge tint (two quick beats, then rest), never above the vignette cap.
+        let beat = if low_hp && !s.dead {
+            let ph = (s.time * 1.4).fract();
+            let pk = |c: f32| (-((ph - c) / 0.05).powi(2)).exp();
+            (pk(0.0) + 0.7 * pk(0.18)).min(1.0)
+        } else {
+            0.0
+        };
+        out.push(Prim::Vignette { start: VIGNETTE_START, max_a: VIGNETTE_MAX_A * (0.55 + 0.45 * beat), tint: chrome.a(1.0) });
         out.push(Prim::Scanlines { count: 240, scroll: (s.time * 0.05).fract(), a: 0.035 });
 
         // Visor rails: hairlines hugging the side edges, brow and chin.
@@ -586,23 +618,36 @@ impl Hud {
         out.push(Prim::Line { a: (cx + gap, cy), b: (cx + gap + len, cy), color: ret, glow: 0.003 });
         out.push(Prim::Line { a: (cx, cy + gap), b: (cx, cy + gap + len), color: ret, glow: 0.003 });
 
-        // Hit marker: X flash at center, fades fast.
+        // Hit marker: X at the centre. A dark under-stroke keeps it readable over bright scenery; colour says
+        // what hit (cyan shuriken / orange slash / magenta beam), a kill is a long gold X with a ring, and a
+        // slash adds a short horizontal tick so it differs from a shuriken hit without relying on colour.
         if let Some(t) = s.since_hit.filter(|t| *t < HIT_MARK_TIME) {
             let f = 1.0 - t / HIT_MARK_TIME;
-            let c = s.hit_kind.map_or(p.gold, |k| p.for_damage(k)).a(f);
+            let kind_col = s.hit_kind.map_or(p.gold, |k| p.for_damage(k));
+            let (arm, col) = if s.hit_kill { (0.035, p.gold) } else { (0.022, kind_col) };
             let d = 0.012 + 0.016 * (1.0 - f);
-            // A kill draws a longer gold X plus a ring: unmistakable even at a glance.
-            let (arm, c) = if s.hit_kill { (0.035, p.gold.a(f)) } else { (0.022, c) };
+            let punch = f.sqrt();
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                out.push(Prim::Line {
-                    a: (cx + sx * d, cy + sy * d),
-                    b: (cx + sx * (d + arm), cy + sy * (d + arm)),
-                    color: c,
-                    glow: 0.008,
-                });
+                let (a, b) = ((cx + sx * d, cy + sy * d), (cx + sx * (d + arm), cy + sy * (d + arm)));
+                out.push(Prim::Line { a, b, color: p.bg.a(0.85 * punch), glow: 0.014 });
+                out.push(Prim::Line { a, b, color: col.a(punch), glow: 0.006 });
             }
             if s.hit_kill {
                 out.push(Prim::Ring { c: (cx, cy), r: 0.03 + 0.02 * (1.0 - f), color: p.gold.a(0.7 * f), fill: false, glow: 0.008 });
+            } else if s.hit_kind == Some(DamageKind::Slash) {
+                for sx in [-1.0f32, 1.0] {
+                    out.push(Prim::Line { a: (cx + sx * 0.012, cy), b: (cx + sx * 0.03, cy), color: col.a(punch), glow: 0.006 });
+                }
+            }
+            // damage number drifting up from the reticle
+            if s.hit_amount > 0 {
+                out.push(Prim::Text {
+                    pos: (cx, cy - 0.05 - 0.03 * (1.0 - f)),
+                    text: s.hit_amount.to_string(),
+                    size: if s.hit_kill { 0.032 } else { 0.026 },
+                    color: col.a(f),
+                    align: Align::Center,
+                });
             }
         }
 
@@ -611,14 +656,21 @@ impl Hud {
             let f = 1.0 - t / DAMAGE_TIME;
             // red screen flash + a thick wedge of ticks pointing at the attacker (far outside the reticle)
             out.push(Prim::Vignette { start: 0.35, max_a: DAMAGE_FLASH_A * f, tint: p.magenta.a(1.0) });
-            let (r0, r1) = (0.16, 0.24);
-            for off in [-0.12f32, -0.06, 0.0, 0.06, 0.12] {
-                let (sn, cs) = (bearing + off).sin_cos();
-                let w = 1.0 - off.abs() * 3.0;
+            // wedge width and tick count grow with the size of the hit (unknown size draws a mid-size wedge)
+            let frac = if s.damage_frac > 0.0 { s.damage_frac } else { 0.3 };
+            let half = 0.1 + 0.5 * frac; // radians either side of the bearing
+            let (r0, r1) = (0.16, 0.24 + 0.04 * frac);
+            let n = 3 + (frac * 8.0).round() as i32;
+            for k in 0..n {
+                let u = if n > 1 { k as f32 / (n - 1) as f32 * 2.0 - 1.0 } else { 0.0 };
+                let (sn, cs) = (bearing + u * half).sin_cos();
+                let w = 1.0 - u.abs() * 0.6;
+                // the centre tick reaches furthest: a clear arrowhead pointing at the attacker
+                let reach = r1 + 0.03 * (1.0 - u.abs());
                 out.push(Prim::Line {
                     a: (cx + sn * r0 * 0.5625, cy - cs * r0),
-                    b: (cx + sn * r1 * 0.5625, cy - cs * r1),
-                    color: p.magenta.a(f * w.clamp(0.4, 1.0)),
+                    b: (cx + sn * reach * 0.5625, cy - cs * reach),
+                    color: p.magenta.a(f * w),
                     glow: 0.012,
                 });
             }
@@ -652,6 +704,15 @@ impl Hud {
         if let Some((msg, t)) = &s.toast {
             let fade = ((TOAST_TIME - t) / 0.4).clamp(0.0, 1.0);
             out.push(Prim::Text { pos: (0.5, 0.84), text: msg.clone(), size: 0.03, color: p.gold.a(fade), align: Align::Center });
+        }
+        // Weapon slots under the cooldown arcs (only when the game supplies them).
+        if let Some((have, max)) = s.shuriken_ammo {
+            let c = if have == 0 { p.magenta } else { p.cyan };
+            out.push(Prim::Text { pos: (0.45, 0.985), text: format!("{have}/{max}"), size: 0.02, color: c.a(0.9), align: Align::Center });
+        }
+        if let Some((blocks, ready)) = s.block_slot {
+            cooldown_arc(&mut out, (0.6, 0.94), 0.026, ready, Glyph::Void, p);
+            out.push(Prim::Text { pos: (0.6, 0.985), text: format!("x{blocks}"), size: 0.02, color: p.text.a(0.9), align: Align::Center });
         }
         killfeed(&mut out, s, p);
         if s.show_scoreboard {
@@ -1372,5 +1433,35 @@ mod tests {
         };
         assert!(arm(1.0) > arm(0.0) + 0.02);
         assert!(arm(2.0) == arm(1.0), "clamped");
+    }
+
+    #[test]
+    fn hit_number_wedge_size_low_hp_beat_and_weapon_slots() {
+        let p = Palette::TRON;
+        let texts = |s: &HudState| -> Vec<String> {
+            Hud::build(s).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        };
+        let hit = HudState { hp: 1.0, since_hit: Some(0.05), hit_kind: Some(DamageKind::Slash), hit_amount: 42, ..Default::default() };
+        assert!(texts(&hit).contains(&"42".to_string()));
+        assert!(!texts(&HudState { hit_amount: 0, ..hit.clone() }).contains(&"0".to_string()), "unknown amount hides the number");
+
+        let wedge = |frac: f32| {
+            let s = HudState { hp: 1.0, since_damage: Some((0.1, 0.0)), damage_frac: frac, ..Default::default() };
+            Hud::build_with(&s, &p).iter().filter(|x| matches!(x, Prim::Line { glow, .. } if (*glow - 0.012).abs() < 1e-6)).count()
+        };
+        assert!(wedge(0.8) > wedge(0.1), "a bigger hit draws a wider wedge");
+
+        for t in [0.0f32, 0.1, 0.18, 0.4, 0.7] {
+            let s = HudState { hp: 0.1, time: t, ..Default::default() };
+            for pr in Hud::build(&s) {
+                if let Prim::Vignette { max_a, .. } = pr {
+                    assert!(max_a <= VIGNETTE_MAX_A + 1e-6, "low-hp beat stays under the cap");
+                }
+            }
+        }
+
+        let slots = HudState { hp: 1.0, shuriken_ammo: Some((3, 5)), block_slot: Some((7, 1.0)), ..Default::default() };
+        let t = texts(&slots);
+        assert!(t.contains(&"3/5".to_string()) && t.contains(&"x7".to_string()));
     }
 }

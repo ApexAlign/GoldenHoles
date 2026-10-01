@@ -367,7 +367,7 @@ pub fn pick_spawn_for(
     world.queries.update(&world.colliders);
     match crate::spawn::choose(world, spawns, &enemies, *spawn_counter) {
         Some(k) => {
-            *spawn_counter = crate::spawn::push_history(*spawn_counter, k);
+            *spawn_counter = crate::spawn::push_history(*spawn_counter, k, true);
             spawns[k]
         }
         None => players[i].vitals.spawn,

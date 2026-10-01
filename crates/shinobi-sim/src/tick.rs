@@ -247,7 +247,7 @@ impl Server {
             .collect();
         let k = crate::spawn::choose(&self.world, &self.spawns, &enemies, self.spawn_counter);
         if let Some(k) = k {
-            self.spawn_counter = crate::spawn::push_history(self.spawn_counter, k);
+            self.spawn_counter = crate::spawn::push_history(self.spawn_counter, k, for_player.is_some());
         }
         k.map_or([0.0, self.cfg.half_height + self.cfg.radius, 0.0], |k| self.spawns[k])
     }

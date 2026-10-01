@@ -43,7 +43,14 @@ pub fn choose(world: &PhysicsWorld, spawns: &[[f32; 3]], enemies: &[[f32; 3]], r
     }
     let hidden: Vec<usize> =
         (0..spawns.len()).filter(|&i| enemies.iter().all(|e| blocked(world, *e, spawns[i]))).collect();
-    let pool: Vec<usize> = if hidden.is_empty() { (0..spawns.len()).collect() } else { hidden };
+    let mut pool: Vec<usize> = if hidden.is_empty() { (0..spawns.len()).collect() } else { hidden };
+    // a lone hidden spawn that was also the previous pick would repeat back to back (campers keep it the only
+    // hidden one): let the far visible spawns share the rotation for that one pick
+    if pool.len() == 1 && last_was_respawn(rotation) && age(rotation, pool[0]) == 0 && spawns.len() > 1 {
+        let near = |i: usize| enemies.iter().map(|e| dist(*e, spawns[i])).fold(f32::INFINITY, f32::min);
+        let far_best = (0..spawns.len()).map(near).fold(0.0f32, f32::max);
+        pool = (0..spawns.len()).filter(|&i| near(i) >= far_best * NEAR_BEST).collect();
+    }
 
     let nearest = |i: usize| enemies.iter().map(|e| dist(*e, spawns[i])).fold(f32::INFINITY, f32::min);
     let best = pool.iter().map(|&i| nearest(i)).fold(0.0f32, f32::max);
@@ -60,16 +67,24 @@ pub fn choose(world: &PhysicsWorld, spawns: &[[f32; 3]], enemies: &[[f32; 3]], r
     least_recent(candidates, rotation)
 }
 
-/// `history`: the last 8 picks packed 4 bits each (most recent in the low nibble, spawn index + 1, 0 = empty).
+/// `history`: the last 7 picks packed 4 bits each (most recent in the low nibble, spawn index + 1, 0 = empty),
+/// bit 31 = the most recent pick was a respawn (not a join).
 /// Callers record a pick with `push_history`.
-pub fn push_history(history: u32, picked: usize) -> u32 {
-    (history << 4) | (picked.min(14) as u32 + 1)
+pub fn push_history(history: u32, picked: usize, respawn: bool) -> u32 {
+    let picks = ((history << 4) | (picked.min(14) as u32 + 1)) & PICKS_MASK;
+    picks | (respawn as u32) << 31
 }
 
-/// How many picks ago `i` was used (0 = last pick); 8 = not in the history.
+const PICKS_MASK: u32 = 0x0FFF_FFFF;
+
+fn last_was_respawn(history: u32) -> bool {
+    history >> 31 != 0
+}
+
+/// How many picks ago `i` was used (0 = last pick); 7 = not in the history.
 fn age(history: u32, i: usize) -> u32 {
     let tag = i.min(14) as u32 + 1;
-    (0..8).find(|n| (history >> (4 * n)) & 0xF == tag).unwrap_or(8)
+    (0..7).find(|n| (history >> (4 * n)) & 0xF == tag).unwrap_or(7)
 }
 
 /// The candidate used longest ago (never = oldest); ties -> lowest index.

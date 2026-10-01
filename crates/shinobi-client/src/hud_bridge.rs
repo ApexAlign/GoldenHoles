@@ -29,9 +29,9 @@ impl HudBridge {
             } else if h.taken {
                 // bearing to the attacker if we can see them, else straight ahead
                 let src = view.remotes.iter().find(|(id, _)| *id == h.other).map(|(_, s)| s.pos);
-                self.fx.on_hurt(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)));
+                self.fx.on_hurt_amount(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)), h.amount);
             } else {
-                self.fx.on_hit(damage_kind(h.kind), h.kill);
+                self.fx.on_hit_amount(damage_kind(h.kind), h.kill, h.amount);
             }
         }
 
