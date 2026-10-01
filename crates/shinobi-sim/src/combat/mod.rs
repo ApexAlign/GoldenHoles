@@ -138,6 +138,13 @@ pub struct CombatSystem {
 }
 
 impl CombatSystem {
+    /// Own in-flight projectiles (position, direction) for the renderer.
+    pub fn projectiles(&self) -> Vec<([f32; 3], [f32; 3])> {
+        let mut v = Vec::new();
+        self.loadout.projectiles(&mut v);
+        v
+    }
+
     pub fn new(loadout: weapon::Loadout) -> Self {
         Self { loadout, powerups: powerup::PowerupState::default() }
     }

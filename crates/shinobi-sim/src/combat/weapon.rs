@@ -41,6 +41,8 @@ pub trait Weapon: Send + Sync {
     fn active(&self) -> bool {
         false
     }
+    /// In-flight projectiles as (position, direction) for rendering.
+    fn projectiles(&self, _out: &mut Vec<([f32; 3], [f32; 3])>) {}
     /// Drop in-flight state (owner died).
     fn reset(&mut self) {}
     /// Advance in-flight state (projectiles). Runs every tick.
@@ -86,6 +88,12 @@ impl Loadout {
     }
 
     /// Owner died: nothing they threw may keep flying (or resume on respawn).
+    pub fn projectiles(&self, out: &mut Vec<([f32; 3], [f32; 3])>) {
+        for s in &self.slots {
+            s.weapon.projectiles(out);
+        }
+    }
+
     pub fn reset(&mut self) {
         for s in &mut self.slots {
             s.weapon.reset();
