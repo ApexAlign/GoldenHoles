@@ -14,8 +14,11 @@ use crate::hud::{
 };
 use crate::netclient::NetClient;
 
-/// Team-match data. Stub input until the network layer carries teams: the shell (or a test) fills it, and
-/// the bridge turns it into the score bar, team-coloured names and ally tags. `None` = free-for-all.
+/// Kills that win a team match (docs/8v8.md); the server does not send the limit.
+pub const TEAM_SCORE_LIMIT: u16 = 50;
+
+/// Team-match data for the score bar, team-coloured names and ally tags. Normally derived from the `NetClient`
+/// each frame (`from_net`); set `HudBridge::teams` to override it (tests, offline shots). `None` = free-for-all.
 #[derive(Clone, Debug, Default)]
 pub struct TeamInfo {
     /// The local player's team (0 cyan, 1 orange).
@@ -24,6 +27,23 @@ pub struct TeamInfo {
     pub score_limit: u16,
     /// Team per player id.
     pub team_of: HashMap<u16, u8>,
+}
+
+impl TeamInfo {
+    /// Teams as the server told us, for the players visible this frame. `None` before our own team is known or
+    /// when the server runs no teams (free-for-all, `TEAM_NONE`).
+    pub fn from_net(net: &NetClient, view: &RenderView) -> Option<Self> {
+        let my_team = net.my_team().filter(|t| *t < shinobi_sim::team::TEAM_COUNT)?;
+        let mut ids: Vec<u16> = view.remotes.iter().map(|(id, _)| *id).collect();
+        ids.extend(view.board.iter().flat_map(|b| b.rows.iter().map(|r| r.id as u16)));
+        for e in &view.events {
+            if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
+                ids.extend([*killer, *victim]);
+            }
+        }
+        let team_of = ids.into_iter().filter_map(|id| net.team_of(id).filter(|t| *t < shinobi_sim::team::TEAM_COUNT).map(|t| (id, t))).collect();
+        Some(Self { my_team, scores: net.team_scores(), score_limit: TEAM_SCORE_LIMIT, team_of })
+    }
 }
 
 #[derive(Default)]
@@ -41,6 +61,7 @@ impl HudBridge {
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
         self.fx.tick(dt);
+        let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
         let me = view.local_pos.unwrap_or([0.0; 3]);
         for h in &view.hits {
@@ -61,7 +82,7 @@ impl HudBridge {
         for e in &view.events {
             self.fx.on_net_event(e, local_id, name);
             if let Some(mut k) = KillEntry::from_net(e, local_id, name) {
-                if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&self.teams, e) {
+                if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&teams, e) {
                     k.killer_team = (!k.void).then(|| t.team_of.get(killer).copied()).flatten();
                     k.victim_team = t.team_of.get(victim).copied();
                 }
@@ -89,12 +110,12 @@ impl HudBridge {
         let mut scoreboard = scoreboard;
         let mut team_scores = None;
         let mut ally_tags = Vec::new();
-        if let (Some(t), Some(b)) = (&self.teams, view.board.as_ref()) {
+        if let (Some(t), Some(b)) = (&teams, view.board.as_ref()) {
             for (row, r) in scoreboard.iter_mut().zip(b.rows.iter()) {
                 row.team = t.team_of.get(&(r.id as u16)).copied();
             }
         }
-        if let Some(t) = &self.teams {
+        if let Some(t) = &teams {
             team_scores = Some(TeamScores { mine: t.my_team, scores: t.scores, limit: t.score_limit });
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let (yaw, pitch) = view.look_angles();
@@ -306,6 +327,7 @@ mod tests {
         assert!(!s.ally_tags[0].clamped);
         // no team info -> free-for-all: nothing team-shaped
         b.teams = None;
+        assert!(TeamInfo::from_net(&net(), &v).is_none(), "no server team yet -> free-for-all");
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.team_scores.is_none() && s.ally_tags.is_empty());
     }

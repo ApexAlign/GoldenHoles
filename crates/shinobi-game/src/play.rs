@@ -35,6 +35,7 @@ pub struct PlayerCam;
 struct RemoteEnt {
     root: Entity,
     parts: [Entity; PARTS],
+    team: Option<crate::team::Team>,
 }
 
 #[derive(Resource, Default)]
@@ -72,6 +73,8 @@ pub struct ShotImage(pub Handle<Image>);
 struct Look {
     cube: Handle<Mesh>,
     hostile: Handle<StandardMaterial>,
+    cyan: Handle<StandardMaterial>,
+    orange: Handle<StandardMaterial>,
 }
 
 pub struct PlayPlugin;
@@ -147,6 +150,8 @@ pub fn setup(
     commands.insert_resource(Look {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         hostile: mats.add(unlit(pal.magenta)),
+        cyan: mats.add(unlit(pal.cyan)),
+        orange: mats.add(unlit(pal.orange)),
     });
 
     // camera: LUT-free tonemapping (tonemapping_luts feature is not enabled), 90 deg vertical FOV, bloom
@@ -346,8 +351,21 @@ fn sync_remotes(
                     ))
                     .id()
             });
-            RemoteEnt { root, parts }
+            RemoteEnt { root, parts, team: None }
         });
+        // team colour: re-skin the body parts only when the team changes (or first becomes known)
+        let team = crate::team::remote_team(&net, *id);
+        if ent.team != team {
+            ent.team = team;
+            let m = match team {
+                Some(crate::team::Team::Cyan) => look.cyan.clone(),
+                Some(crate::team::Team::Orange) => look.orange.clone(),
+                None => look.hostile.clone(),
+            };
+            for e in &ent.parts {
+                commands.entity(*e).insert(MeshMaterial3d(m.clone()));
+            }
+        }
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
             r.translation = Vec3::from(d.pos);
