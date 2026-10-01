@@ -213,7 +213,7 @@ pub fn player_hits(
     for e in events {
         if let CombatEvent::Damage { collider, amount, kind, point, .. } = *e {
             if let Some(v) = victim_of(collider) {
-                if v != attacker {
+                if v != attacker && !crate::tick::allied(atk.team, players[v].team) {
                     // `point` is the disc centre at impact; the hitbox is at its rewound position right now
                     let centre_y = world.colliders.get(collider).map_or(point.y, |c| c.translation().y);
                     let amount = if kind == DamageKind::Shuriken && point.y - centre_y >= head.min_height { amount * head.mult } else { amount };
@@ -232,7 +232,7 @@ pub fn player_hits(
         let (a0, a1) = (origin + dir * lead, origin + dir * (reach - lead).max(lead));
         let body = Body { radius: half_width, half_height };
         for (j, p) in players.iter().enumerate() {
-            if j == attacker || !hittable(p, tick) || out.iter().any(|h| h.victim == j && h.cause == Cause::Weapon(DamageKind::Slash)) {
+            if j == attacker || crate::tick::allied(atk.team, p.team) || !hittable(p, tick) || out.iter().any(|h| h.victim == j && h.cause == Cause::Weapon(DamageKind::Slash)) {
                 continue;
             }
             let Some((p0, p1)) = rewound_segment(&p.history, rt) else { continue };
@@ -333,7 +333,7 @@ pub fn apply_hits(
 pub fn tick_respawns(
     players: &mut [Player],
     world: &mut PhysicsWorld,
-    spawns: &[[f32; 3]],
+    spawns: crate::spawn::SpawnSet,
     spawn_counter: &mut u32,
     tick: u32,
     invuln_ticks: u32,
@@ -355,20 +355,20 @@ pub fn pick_spawn_for(
     players: &[Player],
     i: usize,
     world: &mut PhysicsWorld,
-    spawns: &[[f32; 3]],
+    spawns: crate::spawn::SpawnSet,
     spawn_counter: &mut u32,
 ) -> [f32; 3] {
     let enemies: Vec<[f32; 3]> = players
         .iter()
         .enumerate()
-        .filter(|(j, q)| *j != i && q.vitals.alive())
+        .filter(|(j, q)| *j != i && q.vitals.alive() && !crate::tick::allied(players[i].team, q.team))
         .map(|(_, q)| q.pos(world))
         .collect();
     world.queries.update(&world.colliders);
-    match crate::spawn::choose(world, spawns, &enemies, *spawn_counter) {
+    match crate::spawn::choose_among(world, spawns.pos, &spawns.allowed(players[i].team), &enemies, *spawn_counter) {
         Some(k) => {
             *spawn_counter = crate::spawn::push_history(*spawn_counter, k, true);
-            spawns[k]
+            spawns.pos[k]
         }
         None => players[i].vitals.spawn,
     }

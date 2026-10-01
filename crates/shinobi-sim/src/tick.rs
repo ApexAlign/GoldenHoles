@@ -78,6 +78,14 @@ pub struct Player {
     pub team: u8,
 }
 
+/// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
+pub const NO_TEAM: u8 = u8::MAX;
+
+/// Same real team (never true for `NO_TEAM`). Teammates never hurt each other.
+pub fn allied(a: u8, b: u8) -> bool {
+    a != NO_TEAM && a == b
+}
+
 impl Player {
     pub fn pos(&self, w: &PhysicsWorld) -> [f32; 3] {
         let t = w.bodies[self.ch.body].translation();
@@ -116,6 +124,8 @@ pub struct Server {
     pub match_events: Vec<MatchEvent>,
     /// Spawn points (body-centre positions). Empty = every player respawns at its own `vitals.spawn`.
     pub spawns: Vec<[f32; 3]>,
+    /// Team of each spawn point (parallel to `spawns`; `NO_TEAM` = shared). See `set_team_spawns`.
+    pub spawn_teams: Vec<u8>,
     spawn_counter: u32,
     /// Player-built blocks (see `blocks.rs`).
     pub blocks: crate::blocks::Blocks,
@@ -157,6 +167,7 @@ impl Server {
             match_state: MatchState::default(),
             match_events: Vec::new(),
             spawns: Vec::new(),
+            spawn_teams: Vec::new(),
             spawn_counter: 0,
             blocks: crate::blocks::Blocks::default(),
             block_events: Vec::new(),
@@ -241,6 +252,17 @@ impl Server {
 
     pub fn set_spawns(&mut self, spawns: Vec<[f32; 3]>) {
         self.spawns = spawns;
+        self.spawn_teams.clear();
+    }
+
+    /// Spawn points with a team each (`NO_TEAM` = either side), e.g. from level `spawn x y z [team]` lines.
+    pub fn set_team_spawns(&mut self, spawns: Vec<[f32; 3]>, teams: Vec<u8>) {
+        self.spawns = spawns;
+        self.spawn_teams = teams;
+    }
+
+    fn spawn_set(&self) -> crate::spawn::SpawnSet<'_> {
+        crate::spawn::SpawnSet { pos: &self.spawns, teams: &self.spawn_teams }
     }
 
     /// Where a player should appear (join or respawn): farthest from living enemies, unseen if possible.
@@ -249,13 +271,15 @@ impl Server {
     /// Refreshes the query structure itself, so it is safe to call between frames.
     pub fn pick_spawn(&mut self, for_player: Option<u16>) -> [f32; 3] {
         self.world.queries.update(&self.world.colliders);
+        let team = for_player.and_then(|id| self.players.iter().find(|p| p.id == id)).map_or(NO_TEAM, |p| p.team);
         let enemies: Vec<[f32; 3]> = self
             .players
             .iter()
-            .filter(|p| p.vitals.alive() && Some(p.id) != for_player)
+            .filter(|p| p.vitals.alive() && Some(p.id) != for_player && !allied(team, p.team))
             .map(|p| p.pos(&self.world))
             .collect();
-        let k = crate::spawn::choose(&self.world, &self.spawns, &enemies, self.spawn_counter);
+        let allowed = self.spawn_set().allowed(team);
+        let k = crate::spawn::choose_among(&self.world, &self.spawns, &allowed, &enemies, self.spawn_counter);
         if let Some(k) = k {
             self.spawn_counter = crate::spawn::push_history(self.spawn_counter, k, for_player.is_some());
         }
@@ -335,14 +359,14 @@ impl Server {
             tick,
             &mut self.players,
             &mut self.world,
-            &self.spawns,
+            crate::spawn::SpawnSet { pos: &self.spawns, teams: &self.spawn_teams },
             &mut self.spawn_counter,
             &mut self.pickups,
             self.balance.player.invuln_ticks,
             &mut self.match_events,
         );
         let frozen = self.match_state.frozen();
-        pvp::tick_respawns(&mut self.players, &mut self.world, &self.spawns, &mut self.spawn_counter, tick, self.balance.player.invuln_ticks, &mut self.pvp_events);
+        pvp::tick_respawns(&mut self.players, &mut self.world, crate::spawn::SpawnSet { pos: &self.spawns, teams: &self.spawn_teams }, &mut self.spawn_counter, tick, self.balance.player.invuln_ticks, &mut self.pvp_events);
         let mut hits = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
@@ -383,7 +407,11 @@ impl Server {
             }
             let mut ev = Vec::new();
             {
+                let team = self.players[i].team;
+                let allies: Vec<ColliderHandle> =
+                    self.players.iter().enumerate().filter(|(j, q)| *j != i && allied(team, q.team)).map(|(_, q)| q.vitals.hitbox).collect();
                 let p = &mut self.players[i];
+                p.combat.allies = allies;
                 p.combat.update(
                     dt,
                     now,

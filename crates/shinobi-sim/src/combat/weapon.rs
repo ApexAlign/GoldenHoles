@@ -19,12 +19,15 @@ pub struct FireCtx<'a> {
     pub now: f32,
     pub input: &'a mut PlayerInput,
     pub events: &'a mut Vec<CombatEvent>,
+    /// Hitboxes of the owner's teammates: neither blades nor discs touch them (friendly fire off).
+    pub allies: &'a [ColliderHandle],
 }
 
 pub struct TickCtx<'a> {
     pub world: &'a PhysicsWorld,
     pub body: RigidBodyHandle,
     pub events: &'a mut Vec<CombatEvent>,
+    pub allies: &'a [ColliderHandle],
 }
 
 /// Modular weapon: owns its own state (projectiles, combo flip, ...).
@@ -122,17 +125,18 @@ impl Loadout {
         ch: &CharacterSystem,
         player_input: &mut PlayerInput,
         events: &mut Vec<CombatEvent>,
+        allies: &[ColliderHandle],
     ) {
         for s in &mut self.slots {
             s.cooldown_left = (s.cooldown_left - dt).max(0.0);
-            s.weapon.tick(dt, &mut TickCtx { world, body: ch.body, events });
+            s.weapon.tick(dt, &mut TickCtx { world, body: ch.body, events, allies });
 
             let pressed = match s.weapon.trigger() {
                 Trigger::Primary => input.fire,
                 Trigger::Secondary => input.slice,
             };
             if pressed && s.cooldown_left <= 0.0 {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events };
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies };
                 if s.weapon.fire(&mut ctx) {
                     s.cooldown_left = s.weapon.cooldown();
                 }

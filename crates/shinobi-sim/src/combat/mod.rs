@@ -138,6 +138,8 @@ pub enum CombatEvent {
 
 pub struct CombatSystem {
     pub loadout: weapon::Loadout,
+    /// Teammates' hitbox colliders, refreshed by the server every tick (empty = free-for-all).
+    pub allies: Vec<ColliderHandle>,
     pub powerups: powerup::PowerupState,
 }
 
@@ -150,7 +152,7 @@ impl CombatSystem {
     }
 
     pub fn new(loadout: weapon::Loadout) -> Self {
-        Self { loadout, powerups: powerup::PowerupState::default() }
+        Self { loadout, allies: Vec::new(), powerups: powerup::PowerupState::default() }
     }
 
     /// LMB/fire = neon shurikens, slice = cyber-katana.
@@ -205,7 +207,7 @@ impl CombatSystem {
         player_input: &mut PlayerInput,
         events: &mut Vec<CombatEvent>,
     ) {
-        self.loadout.update(dt, now, input, aim, world, ch, player_input, events);
+        self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies);
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }
 }

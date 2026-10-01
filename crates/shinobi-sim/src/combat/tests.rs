@@ -224,3 +224,38 @@ fn slice_assist_catches_a_near_miss_but_not_a_wild_one() {
     assert_eq!(damaged(&ev, DamageKind::Slash), vec![1]);
     assert!((input.move_dir - vector![0.0, 0.0, -1.0]).norm() < 1e-5, "lunge direction stays on the aim");
 }
+
+#[test]
+fn allies_are_ignored_by_the_blade_and_discs_fly_through_them() {
+    use super::shuriken::{advance_disc_skipping, Disc, DiscStep, ShurikenCfg};
+    let mut w = world();
+    let origin = vector![0.0, 1.0, 0.0];
+    let (ch, cfg) = add_player(&mut w, origin);
+    add_enemy(&mut w, vector![0.0, 1.0, -2.0], 1); // ally
+    let ally = w.colliders.iter().find(|(_, c)| c.user_data == 1).map(|(h, _)| h).unwrap();
+    add_enemy(&mut w, vector![0.0, 1.0, -8.0], 2); // enemy behind the ally
+    w.queries.update(&w.colliders);
+
+    // blade: without allies both... only the ally is in reach; with it skipped nothing is hit and the lunge goes ahead
+    let mut sys = CombatSystem::ninja(&cfg);
+    sys.allies = vec![ally];
+    let mut input = PlayerInput::default();
+    let mut ev = Vec::new();
+    sys.update(DT, 0.0, &CombatInput::new(false, true), &Aim::level(origin, 0.0), &w, &ch, &mut input, &mut ev);
+    assert!(damaged(&ev, DamageKind::Slash).is_empty(), "blade ignores the ally");
+    assert!(input.dash_pressed, "no ally in the way: the lunge still happens");
+
+    // disc: passes the ally, hits the enemy behind it, and never bounced off the ally
+    let scfg = ShurikenCfg::default();
+    let mut d = Disc { pos: Point::new(0.0, 1.0, -0.5), dir: vector![0.0, 0.0, -1.0], bounces: 0, age: 0.0 };
+    let mut evs = Vec::new();
+    let mut hit = None;
+    for _ in 0..30 {
+        if let DiscStep::Hit { collider, .. } = advance_disc_skipping(&w, &mut d, &scfg, DT, Some(ch.body), &[ally], &mut evs) {
+            hit = Some(w.colliders[collider].user_data);
+            break;
+        }
+    }
+    assert_eq!(hit, Some(2));
+    assert_eq!(d.bounces, 0);
+}
