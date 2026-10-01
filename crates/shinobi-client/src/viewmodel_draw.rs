@@ -79,6 +79,36 @@ const THROW_FLY: f32 = 0.18;
 const THROW_HIDDEN: f32 = 0.30;
 const SPIN_IDLE: f32 = 5.0; // rad/s
 
+/// Seconds a hit confirmation pulses the held weapons.
+pub const HIT_PULSE_SECS: f32 = 0.22;
+
+/// Hit confirmation on the held weapons: jolts them forward and flares their brightness. `amount()` is 1 on the
+/// hit, easing to 0 over `HIT_PULSE_SECS`; a kill pulses harder (`strength` 1.6).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HitPulse {
+    t: f32,
+    strength: f32,
+}
+
+impl HitPulse {
+    pub fn on_hit(&mut self, kill: bool) {
+        self.t = 0.0;
+        self.strength = if kill { 1.6 } else { 1.0 };
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.t = (self.t + dt).min(HIT_PULSE_SECS);
+    }
+
+    pub fn amount(&self) -> f32 {
+        if self.t >= HIT_PULSE_SECS {
+            return 0.0;
+        }
+        let u = 1.0 - self.t / HIT_PULSE_SECS;
+        self.strength * u * u
+    }
+}
+
 /// Held shuriken (left hand, view space). Pure state machine; `FIRE` calls `throw_now`.
 #[derive(Clone, Copy, Debug)]
 pub struct ShurikenViewModel {
@@ -104,7 +134,7 @@ impl Default for ShurikenViewModel {
 }
 
 impl ShurikenViewModel {
-    pub const REST: [f32; 3] = [-0.30, -0.24, -0.55];
+    pub const REST: [f32; 3] = [-0.24, -0.2, -0.5];
 
     pub fn throw_now(&mut self) {
         self.t = 0.0;
@@ -121,7 +151,9 @@ impl ShurikenViewModel {
         let r = Self::REST;
         let (offset, scale) = if self.t < THROW_FLY {
             let p = self.t / THROW_FLY;
-            ([0.25 * p, 0.10 * p, -2.2 * p * p], 1.0 - 0.4 * p)
+            // wind-up: the star is cocked back toward the camera for the first quarter, then snaps forward
+            let wind = (1.0 - p / 0.25).max(0.0);
+            ([0.25 * p - 0.05 * wind, 0.10 * p + 0.03 * wind, -2.2 * p * p + 0.09 * wind], 1.0 - 0.4 * p)
         } else if self.t < THROW_HIDDEN {
             ([0.0; 3], 0.0)
         } else if self.t < THROW_CYCLE {
@@ -208,6 +240,28 @@ mod tests {
             sh.update(0.005);
         }
         assert_eq!(sh.draw().scale, 1.0, "cycle ends back at rest");
+    }
+
+    #[test]
+    fn hit_pulse_peaks_on_hit_and_decays_to_zero() {
+        let mut p = HitPulse::default();
+        assert_eq!(p.amount(), 0.0);
+        p.on_hit(false);
+        assert_eq!(p.amount(), 1.0);
+        p.update(HIT_PULSE_SECS * 0.5);
+        assert!(p.amount() > 0.0 && p.amount() < 1.0);
+        p.update(HIT_PULSE_SECS);
+        assert_eq!(p.amount(), 0.0);
+        p.on_hit(true);
+        assert!(p.amount() > 1.0, "a kill pulses harder");
+    }
+
+    #[test]
+    fn throw_winds_up_toward_the_camera_before_snapping_forward() {
+        let mut sh = ShurikenViewModel::default();
+        sh.throw_now();
+        sh.update(0.005);
+        assert!(sh.draw().pos[2] > ShurikenViewModel::REST[2], "cocked back first");
     }
 
     #[test]

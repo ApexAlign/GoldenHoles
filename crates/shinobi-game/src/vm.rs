@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use shinobi_client::hud::Palette;
 use shinobi_client::viewmodel::{KatanaViewModel, ViewCfg};
-use shinobi_client::viewmodel_draw::{katana_draw, ShurikenViewModel};
+use shinobi_client::viewmodel_draw::{katana_draw, HitPulse, ShurikenViewModel};
 
 use crate::net::{Net, ViewRes};
 use crate::play::{FxRes, ShotImage};
@@ -23,6 +23,7 @@ const LAYER: usize = 1;
 pub struct Vm {
     pub katana: KatanaViewModel,
     pub shuriken: ShurikenViewModel,
+    pub pulse: HitPulse,
     flip: bool,
 }
 
@@ -32,13 +33,15 @@ pub struct VmEnts {
     ribbons_mesh: Handle<Mesh>,
     ribbons: Entity,
     shuriken: Entity,
+    /// (material, base colour, gain) flared by hit confirmation
+    glow: Vec<(Handle<StandardMaterial>, shinobi_client::hud::Rgba, f32)>,
 }
 
 pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), flip: false })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false })
             .add_systems(Startup, spawn.after(crate::play::setup));
     }
 }
@@ -52,7 +55,7 @@ fn degenerate() -> Mesh {
 
 /// Four-point throwing star in the XY plane (fan around the centre).
 fn star_mesh() -> Mesh {
-    let (outer, inner, n) = (0.075f32, 0.026f32, 8usize);
+    let (outer, inner, n) = (0.14f32, 0.05f32, 8usize);
     let mut pos = vec![[0.0f32, 0.0, 0.0]];
     for i in 0..n {
         let a = i as f32 / n as f32 * std::f32::consts::TAU;
@@ -103,9 +106,9 @@ fn spawn(
     // blade: core + hot edge + hilt, parented to one root that follows the katana pose
     let len = ViewCfg::default().blade_len;
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    let core = mats.add(unlit(pal.cyan, 1.4));
-    let edge = mats.add(unlit(pal.orange, 3.2));
-    let hilt = mats.add(unlit(pal.magenta, 1.6));
+    let (core, edge, hilt) = (mats.add(unlit(pal.cyan, 1.4)), mats.add(unlit(pal.orange, 3.2)), mats.add(unlit(pal.magenta, 1.6)));
+    let star = mats.add(unlit(pal.cyan, 3.0));
+    let glow = vec![(core.clone(), pal.cyan, 1.4), (edge.clone(), pal.orange, 3.2), (hilt.clone(), pal.magenta, 1.6), (star.clone(), pal.cyan, 3.0)];
     let blade = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
     for (mat, scale, t) in [
         (core, Vec3::new(0.045, 0.012, len), Vec3::new(0.0, 0.0, -len * 0.5)),
@@ -138,13 +141,13 @@ fn spawn(
     let shuriken = commands
         .spawn((
             Mesh3d(meshes.add(star_mesh())),
-            MeshMaterial3d(mats.add(unlit(pal.cyan, 2.4))),
+            MeshMaterial3d(star),
             Transform::from_translation(Vec3::from(ShurikenViewModel::REST)),
             layer,
         ))
         .id();
 
-    commands.insert_resource(VmEnts { blade, ribbons_mesh, ribbons, shuriken });
+    commands.insert_resource(VmEnts { blade, ribbons_mesh, ribbons, shuriken, glow });
 }
 
 pub fn update(
@@ -155,6 +158,7 @@ pub fn update(
     mut vm: ResMut<Vm>,
     ents: Res<VmEnts>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
     mut tf: Query<&mut Transform>,
     mut vis: Query<&mut Visibility>,
 ) {
@@ -174,8 +178,20 @@ pub fn update(
     if std::mem::take(&mut fx.fire_edge) {
         vm.shuriken.throw_now();
     }
+    // a landed hit (own hit message from the server) jolts and flares both held weapons
+    for h in view.0.hits.iter().filter(|h| !h.taken) {
+        vm.pulse.on_hit(h.kill);
+    }
     vm.katana.update(dt);
     vm.shuriken.update(dt);
+    vm.pulse.update(dt);
+    let pulse = vm.pulse.amount();
+    for (m, c, g) in &ents.glow {
+        if let Some(mut mat) = mats.get_mut(m) {
+            let k = g * (1.0 + 2.5 * pulse);
+            mat.base_color = Color::linear_rgb(c.0 * k, c.1 * k, c.2 * k);
+        }
+    }
 
     let server_time = net.0.local_tick() / 60.0;
     let draw = katana_draw(&vm.katana, &Palette::TRON, server_time, 0.5 + 0.5 * (server_time as f32 * 7.85).sin());
@@ -186,7 +202,7 @@ pub fn update(
     let t = pose.translation;
     let q = pose.rotation;
     if let Ok(mut b) = tf.get_mut(ents.blade) {
-        b.translation = Vec3::new(t.x, t.y - w.y_dip, t.z + w.back);
+        b.translation = Vec3::new(t.x, t.y - w.y_dip, t.z + w.back - 0.06 * pulse);
         b.rotation = Quat::from_rotation_x(w.pitch) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
     }
 
@@ -225,9 +241,9 @@ pub fn update(
     // shuriken
     let s = vm.shuriken.draw();
     if let Ok(mut st) = tf.get_mut(ents.shuriken) {
-        st.translation = Vec3::from(s.pos);
-        st.rotation = Quat::from_rotation_x(s.tilt) * Quat::from_rotation_z(s.spin);
-        st.scale = Vec3::splat(s.scale.max(1e-4));
+        st.translation = Vec3::new(s.pos[0], s.pos[1] - w.y_dip, s.pos[2] + w.back - 0.05 * pulse);
+        st.rotation = Quat::from_rotation_x(w.pitch + s.tilt) * Quat::from_rotation_z(s.spin);
+        st.scale = Vec3::splat((s.scale * (1.0 + 0.3 * pulse)).max(1e-4));
     }
     if let Ok(mut v) = vis.get_mut(ents.shuriken) {
         *v = if s.scale <= 0.001 { Visibility::Hidden } else { Visibility::Visible };

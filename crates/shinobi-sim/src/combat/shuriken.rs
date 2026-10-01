@@ -115,6 +115,10 @@ impl Weapon for ShurikenLauncher {
         !self.discs.is_empty()
     }
 
+    fn projectiles(&self, out: &mut Vec<([f32; 3], [f32; 3])>) {
+        out.extend(self.discs.iter().map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
+    }
+
     fn reset(&mut self) {
         self.discs.clear();
     }

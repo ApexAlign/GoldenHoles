@@ -228,6 +228,8 @@ pub struct RenderView {
     /// Reliable events (walls, obstacles) received since the previous view.
     pub events: Vec<NetEvent>,
     pub aim: Aim,
+    /// The local player's own shurikens in flight (predicted): world position, direction.
+    pub discs: Vec<([f32; 3], [f32; 3])>,
 }
 
 pub struct ClientGame {
@@ -580,6 +582,7 @@ impl ClientGame {
             remotes,
             events: self.net.take_events(),
             aim: self.aim,
+            discs: self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles()),
         }
     }
 
