@@ -162,16 +162,6 @@ pub struct PhysicsWorld {
     pub queries: QueryPipeline,
 }
 
-// ---------- Trail point (legacy render type) ----------
-/// A position sample with a birth time. The character no longer records or collides trails (the game is a shooter;
-/// Tron is visual style only); the type stays only because the client's ribbon renderer and the game shell still
-/// build on it, and goes with them.
-#[derive(Clone, Copy, Default)]
-pub struct TrailPoint {
-    pub pos: Vector<Real>,
-    pub born: f32,
-}
-
 // ---------- Character ----------
 pub struct CharacterSystem {
     pub cfg: Cfg,
