@@ -20,13 +20,13 @@ use std::time::Duration;
 
 use shinobi_proto::intent::{ClientPacket, PlayerIntent};
 use shinobi_proto::TICK_HZ;
-use shinobi_sim::tick::{Accumulator, FrameReport, Server};
+use shinobi_sim::tick::{allied, Accumulator, FrameReport, Server};
 
 use crate::fsm::{Assignment, BotMem, Perception, ThinkCtx};
 use crate::nav::{find_perches, Perch};
 use crate::skill::{Archetype, BotSkill};
 use crate::tickets::{AttackTickets, Request, TicketCfg};
-use crate::view::{Frustum, WorldView};
+use crate::view::{Frustum, PlayerView, WorldView};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BotHostCfg {
@@ -82,6 +82,43 @@ impl BotHost {
         let pos = self.bots.binary_search_by_key(&id, |b| b.id).unwrap_or_else(|i| i);
         self.bots.insert(pos, BotMem::new(id, archetype, skill.params(), self.cfg.seed));
         true
+    }
+
+    /// `add_bot` onto a given team.
+    pub fn add_bot_on(&mut self, server: &mut Server, id: u16, archetype: Archetype, skill: BotSkill, team: u8) -> bool {
+        if !self.add_bot(server, id, archetype, skill) {
+            return false;
+        }
+        server.set_team(id, team);
+        // spawn where the team's points are (add_bot picked a spot before the team was known)
+        let at = server.pick_spawn(Some(id));
+        if let Some(p) = server.players.iter().find(|p| p.id == id) {
+            let body = p.ch.body;
+            server.world.bodies[body].set_position(shinobi_sim::rapier3d::prelude::Isometry::translation(at[0], at[1], at[2]), true);
+            shinobi_sim::character::sync_body_colliders(&mut server.world, body);
+        }
+        true
+    }
+
+    /// Keep every team at `per_side` players: bots join short teams (ids from `first_id` up, skipping used ones),
+    /// and surplus bots leave teams that humans have filled (highest id first). Returns `(added, removed)`.
+    pub fn fill_teams(&mut self, server: &mut Server, per_side: usize, first_id: u16, archetype: Archetype, skill: BotSkill) -> (Vec<u16>, Vec<u16>) {
+        let (mut added, mut removed) = (Vec::new(), Vec::new());
+        let mut next = first_id;
+        for team in shinobi_sim::team::TEAM_CYAN..shinobi_sim::team::TEAM_COUNT {
+            while server.team_size(team) > per_side {
+                let Some(id) = self.bots.iter().rev().map(|b| b.id).find(|id| server.players.iter().any(|p| p.id == *id && p.team == team)) else { break };
+                self.remove_bot(server, id);
+                removed.push(id);
+            }
+            while server.team_size(team) < per_side {
+                while !self.add_bot_on(server, next, archetype, skill, team) {
+                    next = next.checked_add(1).expect("bot ids exhausted");
+                }
+                added.push(next);
+            }
+        }
+        (added, removed)
     }
 
     pub fn remove_bot(&mut self, server: &mut Server, id: u16) -> bool {
@@ -219,10 +256,13 @@ impl BotHost {
                 targets.push(None);
                 continue;
             };
-            let pool: Vec<_> = if humans.is_empty() {
-                world.players.iter().filter(|p| p.alive && p.id != b.id).collect()
+            // never an ally: humans on the other side first, else any living enemy (bot-vs-bot)
+            let foe = |p: &PlayerView| p.id != b.id && !allied(me.team, p.team);
+            let human_foes: Vec<&PlayerView> = humans.iter().copied().filter(|p| foe(p)).collect();
+            let pool: Vec<&PlayerView> = if human_foes.is_empty() {
+                world.players.iter().filter(|p| p.alive && foe(p)).collect()
             } else {
-                humans.clone()
+                human_foes
             };
             let dist = |id: u16| pool.iter().find(|p| p.id == id).map(|p| (p.pos - me.pos).norm());
             let best = pool

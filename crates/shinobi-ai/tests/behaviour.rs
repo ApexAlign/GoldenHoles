@@ -183,3 +183,38 @@ fn five_minute_ffa_soak_earns_zero_anticheat_strikes_and_no_kicks() {
     assert_eq!(h.bot_count(), 3);
 }
 
+
+#[test]
+fn bots_never_target_or_hurt_teammates_and_fill_both_sides_to_the_team_size() {
+    use shinobi_sim::team::{TEAM_CYAN, TEAM_ORANGE};
+    let mut s = common::flat_server(vec![[-20.0, 0.81, 0.0], [20.0, 0.81, 0.0]]);
+    let mut h = common::host(7);
+    s.add_player(1, [0.0, 0.81, 0.0]); // a human, balanced onto Cyan
+    let human_team = s.players[0].team;
+    let (added, removed) = h.fill_teams(&mut s, 4, 201, Archetype::Light, BotSkill::Normal);
+    assert_eq!(added.len(), 7, "4 per side minus the human");
+    assert!(removed.is_empty());
+    assert_eq!((s.team_size(TEAM_CYAN), s.team_size(TEAM_ORANGE)), (4, 4));
+    // a second human on the human's side pushes one bot of that team out
+    s.add_player_on(2, [5.0, 0.81, 0.0], human_team);
+    let (_, removed) = h.fill_teams(&mut s, 4, 201, Archetype::Light, BotSkill::Normal);
+    assert_eq!(removed.len(), 1);
+    assert_eq!((s.team_size(TEAM_CYAN), s.team_size(TEAM_ORANGE)), (4, 4));
+
+    let (mut friendly, mut foe) = (0.0f32, 0.0f32);
+    for _ in 0..1800 {
+        common::step(&mut h, &mut s);
+        for e in &s.pvp_events {
+            if let shinobi_sim::pvp::PvpEvent::Hit { attacker, victim, amount, .. } = *e {
+                let t = |id| s.players.iter().find(|p| p.id == id).map(|p| p.team);
+                if t(attacker).is_some() && t(attacker) == t(victim) {
+                    friendly += amount;
+                } else {
+                    foe += amount;
+                }
+            }
+        }
+    }
+    assert!(foe > 0.0, "the sides actually fought");
+    assert_eq!(friendly, 0.0, "no friendly damage in 30 s of bot fighting");
+}

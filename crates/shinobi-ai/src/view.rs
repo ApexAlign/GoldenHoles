@@ -27,6 +27,8 @@ pub struct PlayerView {
     pub dash_ready: bool,
     pub double_used_hint: bool,
     pub is_bot: bool,
+    /// `Player.team` (replicated to every client, so fair to read).
+    pub team: u8,
 }
 
 impl PlayerView {
@@ -72,6 +74,7 @@ impl<'a> WorldView<'a> {
                     dash_ready: p.ch.dash_ready(),
                     double_used_hint: p.ch.double_jumped,
                     is_bot: is_bot(p.id),
+                    team: p.team,
                 }
             })
             .collect();
