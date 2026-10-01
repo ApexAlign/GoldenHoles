@@ -60,6 +60,16 @@ impl TouchSession {
         self.sync_buttons(out);
     }
 
+    /// Handedness, stick size and deadzone from the player's settings. Releases held buttons (they move).
+    /// Call again after `resize`, which rebuilds the stick controller.
+    pub fn apply_settings(&mut self, s: &crate::settings::Settings, out: &mut Vec<ButtonEvent>) {
+        let s = s.clamped();
+        let mut scratch = crate::input::ButtonLatch::default();
+        self.ui.apply_settings(&s, &mut scratch);
+        s.apply_to_touch(&mut self.ctl, self.ui.layout.w, self.ui.layout.h);
+        self.sync_buttons(out);
+    }
+
     fn sync_buttons(&mut self, out: &mut Vec<ButtonEvent>) {
         for (i, b) in TouchButton::ALL.iter().enumerate() {
             let now = self.ui.is_down(*b);
@@ -106,6 +116,15 @@ mod tests {
     fn center(s: &TouchSession, b: TouchButton) -> (f32, f32) {
         let c = s.ui.layout.slot(b).center;
         (c[0], c[1])
+    }
+
+    #[test]
+    fn settings_flip_handedness_and_reach_the_stick_controller() {
+        let mut s = TouchSession::new(W, H);
+        let mut out = Vec::new();
+        let st = crate::settings::Settings { left_handed: true, stick_deadzone: 0.3, ..Default::default() };
+        s.apply_settings(&st, &mut out);
+        assert!(s.ui.layout.left_handed && s.ctl.left_handed && (s.ctl.deadzone - 0.3).abs() < 1e-6);
     }
 
     #[test]

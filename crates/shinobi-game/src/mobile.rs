@@ -125,6 +125,7 @@ pub fn touch_input(
     mut reader: MessageReader<TouchInput>,
     mut touch: ResMut<TouchRes>,
     mut pending: ResMut<PendingInput>,
+    settings: Res<crate::hud_view::SettingsRes>,
     window: Option<Single<&Window>>,
 ) {
     let t = &mut *touch;
@@ -132,6 +133,7 @@ pub fn touch_input(
         let (lw, lh) = (w.width(), w.height());
         if (lw - t.s.ui.layout.w).abs() > 0.5 || (lh - t.s.ui.layout.h).abs() > 0.5 {
             t.s.resize(lw, lh, &mut pending.0.buttons);
+            t.s.apply_settings(&settings.0, &mut pending.0.buttons); // resize rebuilds the stick controller
         }
     }
     for ev in reader.read() {

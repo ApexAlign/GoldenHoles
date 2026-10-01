@@ -13,7 +13,8 @@ use shinobi_client::conn_watch::ConnWatch;
 use shinobi_client::hud::{Hud, HudState, Palette};
 use shinobi_client::hud_bridge::HudBridge;
 use shinobi_client::hud_geom::tessellate;
-use shinobi_client::screens::{self, Screen};
+use shinobi_client::screens::{self, MenuItem, Screen, SettingRow};
+use shinobi_client::settings::Settings;
 use shinobi_client::overlay;
 
 use crate::net::Net;
@@ -28,9 +29,15 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
+        let (settings, warnings) = Settings::load();
+        for w in warnings {
+            eprintln!("settings: {w}");
+        }
         app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default() })
+            .insert_resource(SettingsRes(settings))
+            .init_resource::<MenuRes>()
             .add_systems(Startup, spawn.after(crate::play::setup))
-            .add_systems(Update, update);
+            .add_systems(Update, (menu_input.before(crate::play::input), sync_settings, update).chain());
     }
 }
 
@@ -84,6 +91,164 @@ fn spawn(
     commands.insert_resource(HudMesh(mesh));
 }
 
+/// Player settings: loaded at startup, edited from the pause menu, saved when the settings screen closes.
+#[derive(Resource)]
+pub struct SettingsRes(pub Settings);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Menu {
+    Closed,
+    Main(usize),
+    Settings(usize),
+    Board,
+}
+
+/// Pause menu state. Opens when the pointer lock is lost (Esc / focus loss); `resume` asks `play::input` to
+/// re-grab the pointer with a swallowed click.
+#[derive(Resource)]
+pub struct MenuRes {
+    pub menu: Menu,
+    pub resume: bool,
+}
+
+impl Default for MenuRes {
+    fn default() -> Self {
+        Self { menu: Menu::Closed, resume: false }
+    }
+}
+
+impl MenuRes {
+    pub fn open(&self) -> bool {
+        self.menu != Menu::Closed
+    }
+}
+
+fn cursor_norm(window: &Option<Single<&Window>>) -> Option<(f32, f32)> {
+    let w = window.as_ref()?;
+    let c = w.cursor_position()?;
+    Some((c.x / w.width().max(1.0), c.y / w.height().max(1.0)))
+}
+
+fn save(s: &Settings) {
+    if let Err(e) = s.save() {
+        eprintln!("settings: save failed: {e}");
+    }
+}
+
+/// Keyboard + mouse for the pause menu / settings / scoreboard screens.
+fn menu_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Option<Single<&Window>>,
+    lock: Res<crate::play::Lock>,
+    mut menu: ResMut<MenuRes>,
+    mut settings: ResMut<SettingsRes>,
+    mut exit: MessageWriter<AppExit>,
+    mut prev_locked: Local<bool>,
+) {
+    let locked = lock.p.locked();
+    if *prev_locked && !locked && menu.menu == Menu::Closed {
+        menu.menu = Menu::Main(0);
+    }
+    *prev_locked = locked;
+
+    let up = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);
+    let down = keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyS);
+    let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space);
+    let esc = keys.just_pressed(KeyCode::Escape);
+    let click = mouse.just_pressed(MouseButton::Left);
+    let cur = cursor_norm(&window);
+
+    match menu.menu {
+        Menu::Closed => {}
+        Menu::Main(sel) => {
+            let mut sel = sel;
+            if up || down {
+                sel = screens::menu_step(sel, down);
+            }
+            if let Some((x, y)) = cur {
+                if let Some(i) = MenuItem::ALL.iter().position(|m| Some(*m) == screens::menu_hit(x, y)) {
+                    if click {
+                        sel = i;
+                    }
+                }
+            }
+            let hit = cur.and_then(|(x, y)| screens::menu_hit(x, y)).is_some();
+            let activate = enter || (click && hit);
+            menu.menu = Menu::Main(sel);
+            if esc {
+                menu.menu = Menu::Closed;
+                menu.resume = true;
+            } else if activate {
+                match MenuItem::ALL[sel] {
+                    MenuItem::Resume => {
+                        menu.menu = Menu::Closed;
+                        menu.resume = true;
+                    }
+                    MenuItem::Settings => menu.menu = Menu::Settings(0),
+                    MenuItem::Scoreboard => menu.menu = Menu::Board,
+                    MenuItem::Disconnect => {
+                        exit.write(AppExit::Success);
+                    }
+                }
+            }
+        }
+        Menu::Settings(sel) => {
+            let n = SettingRow::ALL.len();
+            let mut sel = sel;
+            if up {
+                sel = (sel + n - 1) % n;
+            }
+            if down {
+                sel = (sel + 1) % n;
+            }
+            let row = SettingRow::ALL[sel];
+            let st = &mut settings.0;
+            if let Some(f) = screens::setting_frac(st, row) {
+                let step = 0.05;
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    screens::settings_apply(st, row, f - step, false);
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    screens::settings_apply(st, row, f + step, false);
+                }
+            } else if enter || keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight) {
+                screens::settings_apply(st, row, 0.0, true);
+            }
+            if mouse.pressed(MouseButton::Left) {
+                if let Some((row, frac)) = cur.and_then(|(x, y)| screens::settings_hit(x, y)) {
+                    sel = SettingRow::ALL.iter().position(|r| *r == row).unwrap_or(sel);
+                    screens::settings_apply(st, row, frac, click);
+                }
+            }
+            menu.menu = Menu::Settings(sel);
+            if esc {
+                save(&settings.0);
+                menu.menu = Menu::Main(1);
+            }
+        }
+        Menu::Board => {
+            if esc || enter || click {
+                menu.menu = Menu::Main(2);
+            }
+        }
+    }
+}
+
+/// Settings -> predicted game (look sensitivity, FOV, feel) and the touch overlay. Runs when they change.
+fn sync_settings(
+    settings: Res<SettingsRes>,
+    mut net: ResMut<Net>,
+    mut touch: ResMut<crate::mobile::TouchRes>,
+    mut pending: ResMut<crate::net::PendingInput>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    net.0.game.apply_settings(&settings.0);
+    touch.s.apply_settings(&settings.0, &mut pending.0.buttons);
+}
+
 /// Controllers that live across frames: the HUD state bridge and the connection watcher.
 #[derive(Resource)]
 struct HudCtl {
@@ -104,6 +269,8 @@ fn update(
     hud: Res<HudMesh>,
     touch: Option<Res<crate::mobile::TouchRes>>,
     lock: Res<crate::play::Lock>,
+    menu: Res<MenuRes>,
+    settings: Res<SettingsRes>,
     label: Option<Res<ServerLabel>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut ctl: ResMut<HudCtl>,
@@ -135,6 +302,13 @@ fn update(
     if screen != Screen::InGame {
         // connecting / unreachable / connection lost / kicked: never a blank view
         prims.extend(screens::draw(&screen, &pal, t));
+    } else if menu.open() && shot.is_none() {
+        match menu.menu {
+            Menu::Main(selected) => prims.extend(screens::draw(&Screen::Paused { selected }, &pal, t)),
+            Menu::Settings(sel) => prims.extend(screens::draw_settings(&settings.0, sel, &pal)),
+            Menu::Board => prims.extend(screens::draw(&Screen::Scoreboard { rows: state.scoreboard.clone() }, &pal, t)),
+            Menu::Closed => {}
+        }
     } else if !lock.p.locked() && shot.is_none() && window.is_some() {
         prims.extend(overlay::click_to_play(&pal, t));
     }

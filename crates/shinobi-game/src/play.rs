@@ -230,7 +230,7 @@ fn apply_cursor(c: &mut CursorOptions, lock: &PointerLock) {
     c.visible = s.visible;
 }
 
-fn input(
+pub fn input(
     mut pending: ResMut<PendingInput>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -238,6 +238,7 @@ fn input(
     cursor: Option<Single<&mut CursorOptions>>,
     mut focus: MessageReader<WindowFocused>,
     mut lock: ResMut<Lock>,
+    mut menu: ResMut<crate::hud_view::MenuRes>,
 ) {
     let Some(mut cursor) = cursor else { return };
     let lock = &mut *lock;
@@ -250,7 +251,8 @@ fn input(
     if keys.just_pressed(KeyCode::Escape) {
         events.push(LockEvent::Escape);
     }
-    if mouse.just_pressed(MouseButton::Left) {
+    // clicks on the pause menu must not grab the pointer; RESUME asks for the grab explicitly
+    if (mouse.just_pressed(MouseButton::Left) && !menu.open()) || std::mem::take(&mut menu.resume) {
         events.push(LockEvent::LeftClick);
     }
     let mut swallow = false;
