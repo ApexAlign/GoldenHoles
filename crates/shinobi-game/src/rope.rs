@@ -11,14 +11,14 @@ use bevy::prelude::*;
 use shinobi_client::hud::Palette;
 
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
-use crate::net::ViewRes;
-use crate::team::LocalTeam;
+use crate::net::{Net, ViewRes};
+use crate::team::{LocalTeam, Team};
 
 const SEGS: usize = 28;
 const HALF_W: f32 = 0.035;
 
-#[derive(Resource)]
-struct Rope {
+/// One rope: the entity/mesh it draws into plus its attach/release edge state.
+struct Slot {
     entity: Entity,
     mesh: Handle<Mesh>,
     /// Anchor and eye of the previous frame while attached (to place the release snap).
@@ -27,13 +27,20 @@ struct Rope {
     snap: Option<(f32, Vec3, Vec3)>,
 }
 
+/// Slot `None` is our own rope; `Some(id)` is a remote player's.
+#[derive(Resource, Default)]
+struct Ropes {
+    slots: std::collections::HashMap<Option<u16>, Slot>,
+    mat: Option<Handle<StandardMaterial>>,
+}
+
 const SNAP_S: f32 = 0.18;
 
 pub struct RopePlugin;
 
 impl Plugin for RopePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup).add_systems(Update, update);
+        app.init_resource::<Ropes>().add_systems(Startup, setup).add_systems(Update, update);
     }
 }
 
@@ -44,20 +51,15 @@ fn empty() -> Mesh {
         .with_inserted_indices(Indices::U32(vec![0, 1, 2]))
 }
 
-fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
-    let mesh = meshes.add(empty());
-    let mat = mats.add(StandardMaterial {
+fn setup(mut ropes: ResMut<Ropes>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    ropes.mat = Some(mats.add(StandardMaterial {
         base_color: Color::WHITE,
         unlit: true,
         alpha_mode: AlphaMode::Add,
         double_sided: true,
         cull_mode: None,
         ..default()
-    });
-    let entity = commands
-        .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::default(), Visibility::Hidden, NoFrustumCulling))
-        .id();
-    commands.insert_resource(Rope { entity, mesh, last: None, snap: None });
+    }));
 }
 
 /// Hand position: ahead of and beside the eye, below it, so the cable leaves the wrist rather than the crosshair.
@@ -83,7 +85,7 @@ pub fn cable(hand: Vec3, anchor: Vec3, tension: f32, t: f32) -> Vec<(Vec3, f32)>
         .collect()
 }
 
-fn geometry(pts: &[(Vec3, f32)], fade: f32, pal: &Palette) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
+fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3]) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
     let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
     for k in 0..pts.len() - 1 {
         let fwd = (pts[k + 1].0 - pts[k].0).normalize_or(Vec3::NEG_Z);
@@ -94,7 +96,7 @@ fn geometry(pts: &[(Vec3, f32)], fade: f32, pal: &Palette) -> (Vec<[f32; 3]>, Ve
             for (p, pulse) in [pts[k], pts[k + 1]] {
                 let w = HALF_W * (1.0 + 1.5 * pulse);
                 let g = (1.5 + 5.0 * pulse) * fade;
-                let c = [pal.cyan.0 * g, pal.cyan.1 * g + 0.4 * pulse, pal.cyan.2 * g, fade];
+                let c = [tc[0] * g + 0.4 * pulse, tc[1] * g + 0.4 * pulse, tc[2] * g + 0.4 * pulse, fade];
                 pos.push((p + axis * w).to_array());
                 pos.push((p - axis * w).to_array());
                 col.extend([c, c]);
@@ -106,55 +108,99 @@ fn geometry(pts: &[(Vec3, f32)], fade: f32, pal: &Palette) -> (Vec<[f32; 3]>, Ve
 }
 
 fn update(
+    mut commands: Commands,
     time: Res<Time>,
+    net: Res<Net>,
     view: Res<ViewRes>,
-    mut rope: ResMut<Rope>,
+    local: Res<LocalTeam>,
+    mut ropes: ResMut<Ropes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<&mut Visibility>,
     mut impacts: ResMut<ImpactQueue>,
-    local: Res<LocalTeam>,
 ) {
     let (t, dt) = (time.elapsed_secs(), time.delta_secs());
     let pal = Palette::TRON;
-    let cur = view.0.rope.map(|(e, a)| (Vec3::from(e), Vec3::from(a)));
+    let Some(mat) = ropes.mat.clone() else { return };
 
-    // edges: attach flash at the anchor, release snap
-    match (rope.last, cur) {
-        (None, Some((_, a))) => impacts.0.push(Impact { pos: a, team: local.0, kind: ImpactKind::Gone }),
-        (Some((a, e)), None) => rope.snap = Some((0.0, a, e)),
-        _ => {}
+    // current ropes: ours from the prediction, others from the wire (anchor) + their drawn position
+    let mut now: Vec<(Option<u16>, Option<(Vec3, Vec3)>, Team)> =
+        vec![(None, view.0.rope.map(|(e, a)| (Vec3::from(e), Vec3::from(a))), local.0)];
+    for (id, smp) in &view.0.remotes {
+        if let Some(a) = net.0.game.net.rope_anchor(*id) {
+            let eye = Vec3::from(smp.pos) + Vec3::Y * 0.5;
+            let team = crate::team::remote_team(&net, *id).unwrap_or(Team::Orange);
+            now.push((Some(*id), Some((eye, Vec3::from(a))), team));
+        }
     }
-    rope.last = cur.map(|(e, a)| (a, e));
-
-    let draw = if let Some((eye, anchor)) = cur {
-        let hand = hand_from(eye, anchor);
-        Some((cable(hand, anchor, 1.0, t), 1.0))
-    } else if let Some((age, a, e)) = rope.snap.as_mut() {
-        *age += dt;
-        if *age >= SNAP_S {
-            rope.snap = None;
-            None
-        } else {
-            let (k, a, e) = (1.0 - *age / SNAP_S, *a, *e);
-            Some((cable(hand_from(e, a), a, 0.0, t), k))
+    // slots that exist but have no live rope this frame must still run their release snap
+    for id in ropes.slots.keys().copied().collect::<Vec<_>>() {
+        if !now.iter().any(|(i, _, _)| *i == id) {
+            let team = id.and_then(|i| crate::team::remote_team(&net, i)).unwrap_or(Team::Orange);
+            now.push((id, None, team));
         }
-    } else {
-        None
-    };
+    }
 
-    let Ok(mut v) = vis.get_mut(rope.entity) else { return };
-    match draw {
-        Some((pts, fade)) => {
-            let (pos, col, idx) = geometry(&pts, fade, &pal);
-            if let Some(mut m) = meshes.get_mut(&rope.mesh) {
-                *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-                    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-                    .with_inserted_indices(Indices::U32(idx));
+    for (id, cur, team) in now {
+        if cur.is_none() && !ropes.slots.contains_key(&id) {
+            continue;
+        }
+        let slot = ropes.slots.entry(id).or_insert_with(|| {
+            let mesh = meshes.add(empty());
+            let entity = commands
+                .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
+                .id();
+            Slot { entity, mesh, last: None, snap: None }
+        });
+        // edges: attach flash at the anchor (shooter's team colour), release snap
+        match (slot.last, cur) {
+            (None, Some((_, a))) => impacts.0.push(Impact { pos: a, team, kind: ImpactKind::Gone }),
+            (Some((a, e)), None) => slot.snap = Some((0.0, a, e)),
+            _ => {}
+        }
+        slot.last = cur.map(|(e, a)| (a, e));
+
+        let draw = if let Some((eye, anchor)) = cur {
+            Some((cable(hand_from(eye, anchor), anchor, 1.0, t), 1.0))
+        } else if let Some((age, a, e)) = slot.snap.as_mut() {
+            *age += dt;
+            if *age >= SNAP_S {
+                slot.snap = None;
+                None
+            } else {
+                let (k, a, e) = (1.0 - *age / SNAP_S, *a, *e);
+                Some((cable(hand_from(e, a), a, 0.0, t), k))
             }
-            *v = Visibility::Visible;
+        } else {
+            None
+        };
+
+        let Ok(mut v) = vis.get_mut(slot.entity) else { continue };
+        match draw {
+            Some((pts, fade)) => {
+                let (pos, col, idx) = geometry(&pts, fade, team.hdr(&pal, 1.0));
+                if let Some(mut m) = meshes.get_mut(&slot.mesh) {
+                    *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
+                        .with_inserted_indices(Indices::U32(idx));
+                }
+                *v = Visibility::Visible;
+            }
+            None => *v = Visibility::Hidden,
         }
-        None => *v = Visibility::Hidden,
+    }
+
+    // drop slots of players who left (hidden, no snap running)
+    let gone: Vec<_> = ropes
+        .slots
+        .iter()
+        .filter(|(id, sl)| id.map_or(false, |i| !view.0.remotes.iter().any(|(r, _)| *r == i)) && sl.last.is_none() && sl.snap.is_none())
+        .map(|(id, _)| *id)
+        .collect();
+    for id in gone {
+        if let Some(sl) = ropes.slots.remove(&id) {
+            commands.entity(sl.entity).despawn();
+        }
     }
 }
 
