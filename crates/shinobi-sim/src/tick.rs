@@ -414,6 +414,16 @@ impl Server {
 
             let p = &mut self.players[i];
             crate::movement::step_player_with(&mut p.ch, &input, &mut self.world, now, dt, &mut self.solid_queries);
+            match p.ch.grapple_event {
+                crate::character::GrappleEvent::Attached { origin, anchor } => {
+                    self.events.push((id, CombatEvent::GrappleAttach { origin: Point::from(origin), anchor: Point::from(anchor) }));
+                }
+                crate::character::GrappleEvent::Released => {
+                    let c = p.pos(&self.world);
+                    self.events.push((id, CombatEvent::GrappleRelease { pos: Point::new(c[0], c[1], c[2]) }));
+                }
+                crate::character::GrappleEvent::None => {}
+            }
 
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
@@ -456,6 +466,14 @@ pub fn ultimate_pressed(it: &PlayerIntent) -> bool {
     it.ultimate
 }
 
+/// View direction from the quantised aim (libm, so client prediction equals the server).
+pub fn view_dir(aim_yaw: u16, aim_pitch: u16) -> Vector<Real> {
+    let (yaw, pitch) = (dq_yaw(aim_yaw), dq_pitch(aim_pitch));
+    let (sy, cy) = (libm::sinf(yaw), libm::cosf(yaw));
+    let (sp, cp) = (libm::sinf(pitch), libm::cosf(pitch));
+    Vector::new(-sy * cp, sp, -cy * cp)
+}
+
 /// Wire intent -> sim input. View-frame stick is rotated by the *server's* yaw here.
 pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
     let (x, z) = it.world_move();
@@ -467,6 +485,7 @@ pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
         roll_pressed: it.buttons.has(Buttons::ROLL),
         wall_cling: it.buttons.has(Buttons::WALL_CLING),
         slide: it.buttons.has(Buttons::SLIDE),
+        grapple_aim: if it.zip { Some(view_dir(it.aim_yaw, it.aim_pitch)) } else { None },
     }
 }
 

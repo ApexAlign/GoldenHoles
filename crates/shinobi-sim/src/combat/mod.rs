@@ -130,6 +130,10 @@ pub enum CombatEvent {
     Recoil { pitch_deg: f32, yaw_deg: f32 },
     PickedUp { id: u32, kind: powerup::PowerupKind },
     UltimateStart { origin: Point<Real> },
+    /// Wrist grapple hooked: rope runs from the eye `origin` to the static `anchor` (docs/grapple.md).
+    GrappleAttach { origin: Point<Real>, anchor: Point<Real> },
+    /// Rope released (zip again, jump, arrived, timeout, line of sight lost).
+    GrappleRelease { pos: Point<Real> },
 }
 
 pub struct CombatSystem {

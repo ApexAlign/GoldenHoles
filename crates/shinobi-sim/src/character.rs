@@ -50,6 +50,15 @@ pub struct Cfg {
     /// predicted combat aim and the server's combat aim all read it, so shots leave where the crosshair is.
     /// Cosmetic/aim only; it never affects movement.
     pub eye_above_center: f32,
+    /// Wrist grapple (see docs/grapple.md).
+    pub grapple_range: f32,
+    pub grapple_min_len: f32,
+    pub grapple_speed: f32,
+    pub grapple_accel: f32,
+    pub grapple_cd: f32,
+    pub grapple_arrive: f32,
+    pub grapple_max_time: f32,
+    pub grapple_jump_boost: f32,
 }
 
 impl Default for Cfg {
@@ -92,6 +101,14 @@ impl Default for Cfg {
             slide_cd: 0.5,
             kcc_offset: 0.01,
             eye_above_center: 0.6,
+            grapple_range: 40.0,
+            grapple_min_len: 2.5,
+            grapple_speed: 26.0,
+            grapple_accel: 80.0,
+            grapple_cd: 0.5,
+            grapple_arrive: 2.0,
+            grapple_max_time: 4.0,
+            grapple_jump_boost: 5.0,
         }
     }
 }
@@ -107,6 +124,8 @@ pub struct PlayerInput {
     pub wall_cling: bool,
     /// Held: slide (ground only, needs `slide_start_speed`). Keeps the capsule; speed boost + friction decay.
     pub slide: bool,
+    /// One-tick edge: fire (or, while attached, release) the wrist grapple along this view direction.
+    pub grapple_aim: Option<Vector<Real>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -135,6 +154,23 @@ pub struct SlideState {
     pub time: f32,
 }
 
+/// Wrist-grapple rope. `len` only ever shortens; `time` is the attached time in seconds.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct GrappleState {
+    pub anchor: Vector<Real>,
+    pub len: f32,
+    pub time: f32,
+}
+
+/// One-tick edge describing what the grapple did this `update` (feeds `CombatEvent` / rope visuals).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum GrappleEvent {
+    #[default]
+    None,
+    Attached { origin: Vector<Real>, anchor: Vector<Real> },
+    Released,
+}
+
 /// Everything `update` reads besides the world and the input. Exact (f32) copy: restoring one and replaying the
 /// same inputs reproduces the original run bit-for-bit. See `own_state::OwnState` for the compact wire form.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -153,6 +189,8 @@ pub struct CharacterSnapshot {
     pub wall_cd: f32,
     pub slide_cd: f32,
     pub slice_cd: f32,
+    pub grapple: Option<GrappleState>,
+    pub grapple_cd: f32,
 }
 
 pub struct PhysicsWorld {
@@ -183,6 +221,10 @@ pub struct CharacterSystem {
     slide_cd: f32,
     /// Katana cooldown mirror (seconds), written by whoever runs combat after each combat tick.
     slice_cd: f32,
+    pub grapple: Option<GrappleState>,
+    grapple_cd: f32,
+    /// Edge: what the grapple did in the last `update`.
+    pub grapple_event: GrappleEvent,
 }
 
 /// Parented colliders only follow their body during `PhysicsPipeline::step`, which this sim never runs, so any
@@ -244,6 +286,9 @@ impl CharacterSystem {
             slide: None,
             slide_cd: 0.0,
             slice_cd: 0.0,
+            grapple: None,
+            grapple_cd: 0.0,
+            grapple_event: GrappleEvent::None,
         }
     }
 
@@ -289,6 +334,8 @@ impl CharacterSystem {
             wall_cd: self.wall_cd,
             slide_cd: self.slide_cd,
             slice_cd: self.slice_cd,
+            grapple: self.grapple,
+            grapple_cd: self.grapple_cd,
         }
     }
 
@@ -309,6 +356,9 @@ impl CharacterSystem {
         self.wall_cd = s.wall_cd;
         self.slide_cd = s.slide_cd;
         self.slice_cd = s.slice_cd;
+        self.grapple = s.grapple;
+        self.grapple_cd = s.grapple_cd;
+        self.grapple_event = GrappleEvent::None;
         self.double_jumped = false;
     }
 
@@ -356,6 +406,7 @@ impl CharacterSystem {
         let pos = *w.bodies[self.body].translation();
 
         self.double_jumped = false;
+        self.grapple_event = GrappleEvent::None;
         // timers + input buffer
         self.coyote = (self.coyote - dt).max(0.0);
         self.jump_buf = if input.jump_pressed {
@@ -366,12 +417,20 @@ impl CharacterSystem {
         self.dash_cd = (self.dash_cd - dt).max(0.0);
         self.wall_cd = (self.wall_cd - dt).max(0.0);
         self.slide_cd = (self.slide_cd - dt).max(0.0);
+        self.grapple_cd = (self.grapple_cd - dt).max(0.0);
         let dir_in = flat_norm(input.move_dir);
         if dir_in.norm_squared() > 0.0 {
             self.facing = dir_in;
         }
         let grounded_state = self.state == MoveState::Grounded;
         let mut jumped = false;
+
+        // ---- wrist grapple: fire / release ----
+        if self.grapple.is_some() {
+            self.grapple_release_check(w, pos, input, &mut jumped);
+        } else if let Some(aim) = input.grapple_aim {
+            self.grapple_fire(w, pos, aim);
+        }
 
         // ---- evasion start (dash any time, roll on ground) ----
         if self.evasion.is_none() {
@@ -537,6 +596,11 @@ impl CharacterSystem {
             }
         }
 
+        // ---- wrist grapple: reel + taut rope (slack during a dash/roll) ----
+        if self.evasion.is_none() {
+            self.grapple_pull(dt, pos);
+        }
+
         // ---- KCC ----
         let shape = Capsule::new_y(cfg.half_height, cfg.radius);
         let desired = self.vel * dt;
@@ -597,6 +661,92 @@ impl CharacterSystem {
         self.was_grounded = grounded;
 
         w.bodies[self.body].set_next_kinematic_translation(new_pos);
+    }
+
+    /// Static geometry only: sensors, this body, and anything parented to a non-fixed body (players, enemies) are skipped.
+    fn grapple_cast(&self, w: &PhysicsWorld, o: Vector<Real>, d: Vector<Real>, max: f32) -> Option<f32> {
+        if !(o.iter().all(|v| v.is_finite()) && d.iter().all(|v| v.is_finite()) && d.norm_squared() > 1e-12) {
+            return None;
+        }
+        let pred = |_h: ColliderHandle, c: &Collider| c.parent().map_or(true, |b| w.bodies.get(b).map_or(true, |rb| rb.is_fixed()));
+        let filter = QueryFilter::default().exclude_rigid_body(self.body).exclude_sensors().predicate(&pred);
+        let ray = Ray::new(Point::from(o), d);
+        w.queries.cast_ray(&w.bodies, &w.colliders, &ray, max, true, filter).map(|(_, t)| t)
+    }
+
+    fn grapple_fire(&mut self, w: &PhysicsWorld, pos: Vector<Real>, aim: Vector<Real>) {
+        let cfg = self.cfg;
+        if self.grapple_cd > 0.0 || aim.norm_squared() < 1e-6 {
+            return;
+        }
+        let dir = aim.normalize();
+        let eye = pos + Vector::y() * cfg.eye_above_center;
+        if let Some(toi) = self.grapple_cast(w, eye, dir, cfg.grapple_range) {
+            if toi >= cfg.grapple_min_len {
+                let anchor = eye + dir * toi;
+                self.grapple = Some(GrappleState { anchor, len: toi, time: 0.0 });
+                self.grapple_event = GrappleEvent::Attached { origin: eye, anchor };
+            }
+        }
+    }
+
+    fn grapple_release(&mut self) {
+        self.grapple = None;
+        self.grapple_cd = self.cfg.grapple_cd;
+        self.grapple_event = GrappleEvent::Released;
+    }
+
+    /// Detach conditions, evaluated at the start of the tick (velocity is kept on release).
+    fn grapple_release_check(&mut self, w: &PhysicsWorld, pos: Vector<Real>, input: &PlayerInput, jumped: &mut bool) {
+        let cfg = self.cfg;
+        let Some(g) = self.grapple else { return };
+        let eye = pos + Vector::y() * cfg.eye_above_center;
+        let to = g.anchor - eye;
+        let d = to.norm();
+        let mut release = input.grapple_aim.is_some() || g.time > cfg.grapple_max_time || d < cfg.grapple_arrive;
+        if !release && self.jump_buf > 0.0 {
+            release = true;
+            if !matches!(self.state, MoveState::WallRun { .. }) {
+                self.jump_buf = 0.0;
+                self.vel.y = self.vel.y.max(0.0) + cfg.grapple_jump_boost;
+                *jumped = true;
+            }
+        }
+        if !release && d > 0.4 {
+            // line of sight: anything solid before the anchor cuts the rope
+            if self.grapple_cast(w, eye, to / d, d - 0.3).is_some() {
+                release = true;
+            }
+        }
+        if release {
+            self.grapple_release();
+        }
+    }
+
+    /// Reel toward the anchor (keeping any faster existing speed), then remove outward velocity on a taut rope.
+    fn grapple_pull(&mut self, dt: f32, pos: Vector<Real>) {
+        let cfg = self.cfg;
+        let Some(mut g) = self.grapple else { return };
+        let eye = pos + Vector::y() * cfg.eye_above_center;
+        let to = g.anchor - eye;
+        let d = to.norm();
+        if d < 1e-3 {
+            return;
+        }
+        let dir = to / d;
+        let along = self.vel.dot(&dir);
+        if along < cfg.grapple_speed {
+            self.vel += dir * (cfg.grapple_accel * dt).min(cfg.grapple_speed - along);
+        }
+        g.time += dt;
+        g.len = g.len.min(d);
+        if d >= g.len - 1e-3 {
+            let out = -self.vel.dot(&dir);
+            if out > 0.0 {
+                self.vel += dir * out;
+            }
+        }
+        self.grapple = Some(g);
     }
 
     /// Three flat rays per side; all must hit a near-vertical, coplanar wall.
@@ -1027,6 +1177,164 @@ mod tests {
         for (k, i) in inputs[40..].iter().enumerate() {
             tick(&mut ch, &mut w, i, &mut now);
             assert_eq!(w.bodies[ch.body].translation().map(f32::to_bits), reference[k].map(f32::to_bits), "tick {k}");
+        }
+    }
+
+    // ---------- wrist grapple ----------
+
+    /// Airborne at (0,5,0); a big wall faces it at z = -30 (its face is the z = -29 plane).
+    fn grapple_scene() -> (PhysicsWorld, CharacterSystem) {
+        let mut w = world();
+        boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
+        boxc(&mut w, [0.0, -50.0, 0.0], [100.0, 0.5, 100.0]); // far floor, never reached
+        let ch = player(&mut w, [0.0, 5.0, 0.0]);
+        (w, ch)
+    }
+
+    fn fire(dir: [f32; 3]) -> PlayerInput {
+        PlayerInput { grapple_aim: Some(vector![dir[0], dir[1], dir[2]]), ..Default::default() }
+    }
+
+    #[test]
+    fn grapple_hooks_static_geometry_and_reels_the_player_in() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now);
+        let g = ch.grapple.expect("hooked");
+        assert!(matches!(ch.grapple_event, GrappleEvent::Attached { .. }));
+        assert!((g.anchor.z + 29.0).abs() < 0.01, "anchor on the wall face: {:?}", g.anchor);
+        let idle = PlayerInput::default();
+        let mut released = false;
+        for _ in 0..240 {
+            tick(&mut ch, &mut w, &idle, &mut now);
+            if ch.grapple.is_none() {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "arrives and releases");
+        assert_eq!(ch.grapple_event, GrappleEvent::Released);
+        let p = *w.bodies[ch.body].translation();
+        assert!(p.z < -20.0, "was pulled most of the way to the wall: z = {}", p.z);
+        assert!(ch.vel.z < -5.0, "momentum kept on release: {:?}", ch.vel);
+    }
+
+    #[test]
+    fn grapple_ignores_players_and_out_of_range_and_too_close() {
+        let (mut w, mut ch) = grapple_scene();
+        let _other = player(&mut w, [0.0, 5.0, -8.0]); // a player in the line of fire is not hookable
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.0, -1.0]), &mut now);
+        // the ray passes through the other capsule and hooks the wall behind it, never the player
+        let g = ch.grapple.expect("wall behind the player is hooked");
+        assert!(g.anchor.z < -28.0, "{:?}", g.anchor);
+
+        let mut w2 = world();
+        boxc(&mut w2, [0.0, 5.0, -80.0], [30.0, 40.0, 1.0]);
+        let mut far = player(&mut w2, [0.0, 5.0, 0.0]);
+        tick(&mut far, &mut w2, &fire([0.0, 0.0, -1.0]), &mut now);
+        assert!(far.grapple.is_none(), "beyond grapple_range");
+
+        let mut w3 = world();
+        boxc(&mut w3, [0.0, 5.0, -2.0], [30.0, 40.0, 0.5]); // face 1.5 m away < min_len
+        let mut near = player(&mut w3, [0.0, 5.0, 0.0]);
+        tick(&mut near, &mut w3, &fire([0.0, 0.0, -1.0]), &mut now);
+        assert!(near.grapple.is_none(), "closer than grapple_min_len");
+    }
+
+    #[test]
+    fn grapple_releases_on_zip_or_jump_and_respects_cooldown() {
+        for jump in [false, true] {
+            let (mut w, mut ch) = grapple_scene();
+            let mut now = 0.0;
+            tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+            assert!(ch.grapple.is_some());
+            for _ in 0..10 {
+                tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+            }
+            let vy_before = ch.vel.y;
+            let input = if jump {
+                PlayerInput { jump_pressed: true, jump_held: true, ..Default::default() }
+            } else {
+                fire([0.0, 0.2, -1.0])
+            };
+            tick(&mut ch, &mut w, &input, &mut now);
+            assert!(ch.grapple.is_none(), "jump = {jump}");
+            if jump {
+                assert!(ch.vel.y > vy_before, "release hop");
+            }
+            // cooldown: an immediate re-fire does nothing
+            tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+            assert!(ch.grapple.is_none(), "cooldown blocks refire");
+            for _ in 0..40 {
+                tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+            }
+            tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+            assert!(ch.grapple.is_some(), "refire after cooldown");
+        }
+    }
+
+    #[test]
+    fn grapple_rope_is_cut_when_line_of_sight_breaks() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.0, -1.0]), &mut now);
+        assert!(ch.grapple.is_some());
+        boxc(&mut w, [0.0, 5.0, -10.0], [10.0, 10.0, 0.5]); // slab drops between player and anchor
+        tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        assert!(ch.grapple.is_none());
+    }
+
+    #[test]
+    fn grapple_survives_a_dash_and_keeps_pulling_after() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+        let dash = PlayerInput { dash_pressed: true, move_dir: vector![1.0, 0.0, 0.0], ..Default::default() };
+        tick(&mut ch, &mut w, &dash, &mut now);
+        for _ in 0..8 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(ch.grapple.is_some(), "a dash leaves the rope slack, not cut");
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(ch.vel.z < -5.0, "reel resumes after the dash: {:?}", ch.vel);
+    }
+
+    #[test]
+    fn grapple_replay_from_a_snapshot_is_bit_exact() {
+        let script = |i: u32| match i {
+            0 => fire([0.2, 0.25, -1.0]),
+            30 => PlayerInput { dash_pressed: true, move_dir: vector![-1.0, 0.0, 0.0], ..Default::default() },
+            60 => PlayerInput { jump_pressed: true, jump_held: true, ..Default::default() },
+            _ => PlayerInput { move_dir: vector![0.5, 0.0, -0.5], ..Default::default() },
+        };
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        for i in 0..40 {
+            tick(&mut ch, &mut w, &script(i), &mut now);
+        }
+        let snap = ch.snapshot(&w);
+        let wire = crate::own_state::OwnState::from_snapshot(&snap);
+        let mut a = Vec::new();
+        for i in 40..120 {
+            tick(&mut ch, &mut w, &script(i), &mut now);
+            a.push((*w.bodies[ch.body].translation(), ch.vel));
+        }
+        // replay from the exact snapshot and from the compact wire blob: identical to the bit
+        for use_wire in [false, true] {
+            let (mut w2, mut ch2) = grapple_scene();
+            if use_wire {
+                ch2.restore_own(&mut w2, &wire);
+            } else {
+                ch2.restore(&mut w2, &snap);
+            }
+            let mut now2 = 0.0;
+            for (k, i) in (40..120).enumerate() {
+                tick(&mut ch2, &mut w2, &script(i), &mut now2);
+                assert_eq!((*w2.bodies[ch2.body].translation(), ch2.vel), a[k], "wire = {use_wire}, tick {i}");
+            }
         }
     }
 }

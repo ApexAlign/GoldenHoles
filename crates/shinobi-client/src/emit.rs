@@ -250,7 +250,16 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
-            CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } => {}
+            // hook impact spark; the rope itself is drawn from `CharacterSystem.grapple` (Graphics owns the look)
+            CombatEvent::GrappleAttach { anchor, .. } => {
+                let mut em = self.mk(EmitterKind::HitSpark, p.cyan, 3.0);
+                em.origin = [anchor.x, anchor.y, anchor.z];
+                em.count = 10;
+                em.spread = std::f32::consts::PI * 0.5;
+                em.seed = tick;
+                self.out.push(em);
+            }
+            CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } => {}
         }
     }
 
