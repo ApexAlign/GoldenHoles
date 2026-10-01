@@ -22,6 +22,37 @@ impl Drop for ServerProc {
 }
 
 fn start_server(args: &[&str], envs: &[(&str, &str)]) -> (ServerProc, String) {
+    // the free port is only probed, not held: another test may grab it first, then the server exits -> retry
+    for _ in 0..10 {
+        let (mut srv, addr) = spawn_server(args, envs);
+        if wait_ready(&mut srv.0, &addr) {
+            return (srv, addr);
+        }
+    }
+    panic!("no free port for the server");
+}
+
+/// Blocks until the spawned server answers a HELLO (probe from a throwaway socket: no player slot is taken), so
+/// process start-up time under load never eats into a test's own timeouts. `false` = it exited (port taken).
+fn wait_ready(child: &mut Child, addr: &str) -> bool {
+    let probe = UdpSocket::bind("127.0.0.1:0").unwrap();
+    probe.connect(addr).unwrap();
+    probe.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    let mut buf = [0u8; 64];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            return false;
+        }
+        let _ = probe.send(&shinobi_proto::datagram::encode_hello(0));
+        if probe.recv(&mut buf).is_ok() {
+            return true;
+        }
+    }
+    panic!("server never answered a HELLO");
+}
+
+fn spawn_server(args: &[&str], envs: &[(&str, &str)]) -> (ServerProc, String) {
     let port = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let addr = format!("127.0.0.1:{port}");
     let child = Command::new(env!("CARGO_BIN_EXE_shinobi-server"))
@@ -49,8 +80,26 @@ enum Reply {
     Nothing,
 }
 
+/// Discards replies still queued from earlier sends: under load a retry's answer can arrive after the next
+/// exchange began and would be mistaken for its reply.
+fn drain(s: &UdpSocket) {
+    let mut buf = [0u8; 2048];
+    s.set_nonblocking(true).unwrap();
+    while s.recv(&mut buf).is_ok() {}
+    s.set_nonblocking(false).unwrap();
+}
+
 /// Sends `bytes`, returns the first meaningful reply (retrying the send for server start-up).
 fn exchange(s: &UdpSocket, bytes: &[u8]) -> Reply {
+    drain(s);
+    let reply = exchange_once(s, bytes);
+    // late duplicates of this reply (from retries) must not leak into the next exchange
+    std::thread::sleep(Duration::from_millis(30));
+    drain(s);
+    reply
+}
+
+fn exchange_once(s: &UdpSocket, bytes: &[u8]) -> Reply {
     let deadline = Instant::now() + Duration::from_millis(shinobi_proto::datagram::CONNECT_TIMEOUT_MS);
     let mut buf = [0u8; 2048];
     while Instant::now() < deadline {

@@ -29,6 +29,36 @@ fn start_server() -> (ServerProc, String) {
 }
 
 fn start_server_with(envs: &[(&str, &str)]) -> (ServerProc, String) {
+    for _ in 0..10 {
+        let (mut srv, addr) = spawn_server(envs);
+        if wait_ready(&mut srv.0, &addr) {
+            return (srv, addr);
+        }
+    }
+    panic!("no free port for the server");
+}
+
+/// Blocks until the spawned server answers a HELLO (probe from a throwaway socket: no player slot is taken), so
+/// process start-up time under load never eats into a test's own timeouts. `false` = it exited (port taken).
+fn wait_ready(child: &mut Child, addr: &str) -> bool {
+    let probe = UdpSocket::bind("127.0.0.1:0").unwrap();
+    probe.connect(addr).unwrap();
+    probe.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    let mut buf = [0u8; 64];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            return false;
+        }
+        let _ = probe.send(&shinobi_proto::datagram::encode_hello(0));
+        if probe.recv(&mut buf).is_ok() {
+            return true;
+        }
+    }
+    panic!("server never answered a HELLO");
+}
+
+fn spawn_server(envs: &[(&str, &str)]) -> (ServerProc, String) {
     // pick a free port; tiny race window is acceptable for a test
     let port = UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let addr = format!("127.0.0.1:{port}");
@@ -197,9 +227,10 @@ fn handshake_snapshots_and_position_follows_intents() {
     let start = runner.pos_of(runner.id).unwrap();
     let idle_start = runner.pos_of(idler.id).unwrap();
 
-    // runner holds full stick for ~1.5 s; idler keeps sending neutral input
-    let run_until = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < run_until {
+    // runner holds full stick until it has really moved (wait for the condition, not a fixed time: slow CI
+    // hosts simulate fewer ticks per wall second); idler keeps sending neutral input
+    let run_until = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < run_until && horiz(runner.pos_of(runner.id).unwrap(), start) <= 6.0 {
         runner.send_intent(0, -127);
         idler.send_intent(0, 0);
         std::thread::sleep(Duration::from_millis(16));
@@ -209,10 +240,29 @@ fn handshake_snapshots_and_position_follows_intents() {
             eprintln!("t={} est={} snaps={} pos={:?}", runner.snaps.last().map_or(0, |s| s.tick), runner.est_tick(), runner.snaps.len(), runner.pos_of(runner.id));
         }
     }
-    std::thread::sleep(Duration::from_millis(100));
-    runner.pump();
-    idler.pump();
+    // both stand still; wait until both clients' newest snapshots agree on where the runner stopped
+    let settle = Instant::now() + Duration::from_secs(5);
+    loop {
+        runner.send_intent(0, 0);
+        idler.send_intent(0, 0);
+        std::thread::sleep(Duration::from_millis(16));
+        runner.pump();
+        idler.pump();
+        let (a, b) = (runner.pos_of(runner.id).unwrap(), idler.pos_of(runner.id).unwrap());
+        if horiz(a, b) < 0.05 || Instant::now() > settle {
+            break;
+        }
+    }
 
+    // slow-cadence data (scoreboard once a second, own blocks, delta chain) arrives eventually: wait for it
+    let data_by = Instant::now() + Duration::from_secs(8);
+    while (runner.board.is_none() || runner.own_blocks <= 10 || runner.snaps.len() <= 10) && Instant::now() < data_by {
+        runner.send_intent(0, 0);
+        idler.send_intent(0, 0);
+        std::thread::sleep(Duration::from_millis(16));
+        runner.pump();
+        idler.pump();
+    }
     let moved = horiz(runner.pos_of(runner.id).unwrap(), start);
     let idled = horiz(runner.pos_of(idler.id).unwrap(), idle_start);
     assert!(moved > 3.0, "runner barely moved: {moved} m");
