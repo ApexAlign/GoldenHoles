@@ -26,6 +26,12 @@ pub struct ShurikenCfg {
     pub max_life: f32,
     pub max_discs: usize,
     pub recoil_pitch_deg: f32,
+    /// Aim assist: a throw whose aim passes within this many degrees of a visible target is bent toward it
+    /// (0 = off). Server and client prediction run the same code, so the shot you see is the shot that lands.
+    pub assist_cone_deg: f32,
+    /// How far (0..=1) the throw is pulled from the crosshair toward the target's centre.
+    pub assist_strength: f32,
+    pub assist_range: f32,
     /// Collider groups this disc damages when it touches them.
     pub targets: Group,
     /// Collider groups it can touch at all (everything else is ignored).
@@ -40,10 +46,13 @@ impl Default for ShurikenCfg {
             max_bounces: 2,
             cooldown: 0.18,
             muzzle: 0.8,
-            radius: 0.2,
+            radius: 0.35,
             max_life: 6.0,
             max_discs: 32,
             recoil_pitch_deg: 1.2,
+            assist_cone_deg: 6.0,
+            assist_strength: 0.75,
+            assist_range: 60.0,
             targets: TARGETS,
             mask: projectile_groups(),
         }
@@ -90,7 +99,7 @@ impl Weapon for ShurikenLauncher {
         if self.discs.len() >= self.cfg.max_discs {
             return false;
         }
-        let dir = ctx.aim.forward();
+        let dir = assisted_dir(&self.cfg, ctx);
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
         self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0 });
         ctx.events.push(CombatEvent::ShurikenThrown { pos, dir });
@@ -122,6 +131,53 @@ impl Weapon for ShurikenLauncher {
             }
             DiscStep::Gone => false,
         });
+    }
+}
+
+/// The crosshair direction, bent toward the best target inside the assist cone (smallest angle off the
+/// crosshair, line of sight required). Never reaches past the cone, so it only forgives near-misses.
+fn assisted_dir(cfg: &ShurikenCfg, ctx: &FireCtx) -> Vector<Real> {
+    let fwd = ctx.aim.forward();
+    if cfg.assist_cone_deg <= 0.0 || cfg.assist_strength <= 0.0 {
+        return fwd;
+    }
+    let eye = ctx.aim.origin;
+    // already on target (or about to hit a wall first): leave the shot alone, so headshots stay headshots
+    let filter = QueryFilter::default().predicate(&passes_projectile).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask)).exclude_rigid_body(ctx.ch.body);
+    let ray = Ray::new(Point::from(eye), fwd);
+    let first = ctx.world.queries.cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, cfg.assist_range, true, filter);
+    if first.map_or(false, |(h, _)| ctx.world.colliders.get(h).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets))) {
+        return fwd;
+    }
+    let min_cos = cfg.assist_cone_deg.to_radians().cos();
+    let mut best: Option<(f32, Vector<Real>)> = None;
+    for (_, c) in ctx.world.colliders.iter() {
+        if !c.collision_groups().memberships.intersects(cfg.targets) || c.parent() == Some(ctx.ch.body) {
+            continue;
+        }
+        let centre = c.position().translation.vector;
+        let to = centre - eye;
+        let dist = to.norm();
+        if !(0.5..=cfg.assist_range).contains(&dist) {
+            continue;
+        }
+        let to = to / dist;
+        let cos = to.dot(&fwd);
+        if cos < min_cos || best.map_or(false, |(b, _)| cos <= b) {
+            continue;
+        }
+        if crate::spawn::blocked(ctx.world, [eye.x, eye.y, eye.z], [centre.x, centre.y, centre.z]) {
+            continue;
+        }
+        best = Some((cos, to));
+    }
+    match best {
+        Some((_, to)) => {
+            let v = fwd * (1.0 - cfg.assist_strength) + to * cfg.assist_strength;
+            let n = v.norm();
+            if n > 1e-4 { v / n } else { fwd }
+        }
+        None => fwd,
     }
 }
 
