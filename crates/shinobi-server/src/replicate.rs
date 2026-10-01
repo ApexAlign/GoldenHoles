@@ -577,7 +577,10 @@ fn board_bytes(server: &Server, tick: u32) -> Vec<u8> {
 }
 
 pub use shinobi_proto::snapshot::PROJECTILE_ID_BASE;
-const PROJECTILE_ID_MAX: usize = 0x4000;
+/// Discs replicated per snapshot (ids `PROJECTILE_ID_BASE..+cap`): ~6 B each as a delta, so 128 discs + 16 players
+/// stay under one 1200 B datagram. Realistic 8v8 peaks around 20; beyond the cap the extra discs are simply not drawn
+/// by clients (they still hit on the server).
+const PROJECTILE_ID_MAX: usize = 128;
 
 fn build_snapshot(tick: u32, server: &Server) -> Snapshot {
     let mut entities: Vec<_> = server
@@ -674,6 +677,72 @@ mod tests {
         let delta = encode_delta(Some(&base), &mk(103, 3)).len();
         eprintln!("16 players + 96 discs: full {full} B, delta(3 ticks) {delta} B");
         assert!(delta < 1200 && full < 1200 * 2, "delta snapshot {delta} B too big for MTU budget");
+    }
+
+    /// 8v8 with real bots fighting (discs in flight), ropes forced on, every player a peer on a perfect link.
+    /// Steady-state datagrams must fit one MTU; prints size / cost numbers (`cargo test eight_v_eight -- --nocapture`).
+    #[test]
+    fn eight_v_eight_snapshot_bandwidth_and_step_cost() {
+        use crate::config::BotSkill;
+        use crate::setup::Setup;
+        use crate::supervise::{make_bots, BotPlan};
+        use shinobi_sim::character::GrappleState;
+        use shinobi_sim::events::EventInbox;
+        let cfg = Cfg::default();
+        let mut s = Setup::standard().build(cfg);
+        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        let plan = BotPlan { count: 0, skill: BotSkill::Hard, seed: 11, team_size: 8 };
+        let mut bots = make_bots(&plan, &mut s);
+        assert_eq!(s.players.len(), 16);
+        let mut r = Replicator::new(&cfg, 1);
+        let ids: Vec<u16> = s.players.iter().map(|p| p.id).collect();
+        for id in &ids {
+            r.add_peer(&s, *id, s.tick);
+        }
+        let mut inboxes: HashMap<u16, EventInbox> = ids.iter().map(|id| (*id, EventInbox::default())).collect();
+        let (mut max_len, mut sum, mut n, mut max_discs, mut full_max) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut step_ns = 0u128;
+        const TICKS: u32 = 900;
+        for t in 0..TICKS {
+            // four players keep a rope up for 1 s out of every 3 s
+            for (k, p) in s.players.iter_mut().take(4).enumerate() {
+                let up = (t + k as u32 * 40) % 180 < 60;
+                p.ch.grapple = up.then(|| GrappleState {
+                    anchor: shinobi_sim::rapier3d::prelude::Vector::new(5.0 + k as f32, 8.0, -4.0),
+                    len: 10.0,
+                    time: 0.0,
+                });
+            }
+            let t0 = std::time::Instant::now();
+            bots.advance(&mut s, Duration::from_nanos(16_666_667));
+            r.post_frame(&mut s);
+            step_ns += t0.elapsed().as_nanos();
+            max_discs = max_discs.max(s.projectiles().len());
+            if r.due(s.tick, shinobi_proto::SNAPSHOT_DIVISOR) {
+                let tick = s.tick - 1;
+                for (id, bytes) in r.build_round(&s) {
+                    let (events, ..) = datagram::split_snapshot_v3(&bytes).unwrap();
+                    let inbox = inboxes.get_mut(&id).unwrap();
+                    read_events(events, inbox, |_| {}).unwrap();
+                    let ack = inbox.ack();
+                    r.on_client_ack(id, tick, ack);
+                    if t < 60 {
+                        full_max = full_max.max(bytes.len());
+                    } else {
+                        max_len = max_len.max(bytes.len());
+                        sum += bytes.len();
+                        n += 1;
+                    }
+                }
+            }
+        }
+        let ms = step_ns as f64 / TICKS as f64 / 1e6;
+        eprintln!(
+            "8v8: steady datagram max {max_len} B, mean {} B over {n}; first-second max {full_max} B; most discs in flight {max_discs}; sim+replicate {ms:.2} ms/tick",
+            sum / n.max(1)
+        );
+        assert!(max_len <= 1200, "steady-state 8v8 datagram {max_len} B exceeds one MTU");
+        assert!(ms < 16.0, "{ms:.2} ms per tick leaves no headroom at 60 Hz");
     }
 
     #[test]
