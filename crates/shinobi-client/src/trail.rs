@@ -32,6 +32,8 @@ pub struct WallVertex {
     pub v: f32,
     /// Already includes fade + server-time pulse; 0 = cull.
     pub alpha: f32,
+    /// 1 = just recorded (head), 0 = about to expire (tail). Drives the hot-to-cool colour ramp.
+    pub heat: f32,
 }
 
 fn ticks(born: f32) -> u32 {
@@ -65,10 +67,20 @@ pub fn wall_strip(
     for p in live {
         let alpha = lightwall_alpha_age(cfg, now - p.born, ticks(p.born), server_time);
         let base = p.pos;
-        out.push(WallVertex { pos: base, v: 0.0, alpha });
-        out.push(WallVertex { pos: [base[0], base[1] + height, base[2]], v: 1.0, alpha });
+        let heat = (1.0 - (now - p.born) / cfg.life_s).clamp(0.0, 1.0);
+        // taper: full height at the head, thinning to a point at the tail (a comet streak, not a wall)
+        let h = height * (0.15 + 0.85 * heat);
+        out.push(WallVertex { pos: base, v: 0.0, alpha, heat });
+        out.push(WallVertex { pos: [base[0], base[1] + h, base[2]], v: 1.0, alpha, heat });
     }
     out
+}
+
+/// Colour for a ribbon vertex: tail `cool` -> head `hot`, brighter on the top rim. Returns linear RGB (HDR, for bloom).
+pub fn ribbon_color(cool: [f32; 3], hot: [f32; 3], heat: f32, rim: bool) -> [f32; 3] {
+    let k = if rim { 1.6 } else { 0.35 };
+    let t = heat.clamp(0.0, 1.0);
+    [0, 1, 2].map(|i| (cool[i] + (hot[i] - cool[i]) * t) * k)
 }
 
 #[cfg(test)]
@@ -92,7 +104,22 @@ mod tests {
         let xs: Vec<_> = s.iter().step_by(2).map(|v| v.pos[0]).collect();
         assert_eq!(xs, vec![0.0, 1.0, 2.0]);
         assert_eq!((s[0].v, s[1].v), (0.0, 1.0));
-        assert!((s[1].pos[1] - 2.1).abs() < 1e-5, "top = foot + wall height");
+        // ages 0.3 / 0.2 / 0.1 of 4 s life -> nearly full height at the newest sample
+        let h = |i: usize| s[i * 2 + 1].pos[1] - s[i * 2].pos[1];
+        assert!(h(0) < h(1) && h(1) < h(2), "taper: tail thinner than head");
+        assert!(h(2) <= 1.6 && h(2) > 1.5);
+    }
+
+    #[test]
+    fn heat_runs_from_tail_to_head_and_colour_ramps() {
+        let a = [pt(0.0, 3.0), pt(1.0, 3.9)];
+        let s = wall_strip((&a, &[]), 4.0, 1.0, &cfg(), 0.0);
+        assert!(s[0].heat < s[2].heat && s[2].heat > 0.9);
+        let cool = ribbon_color([0.0, 0.1, 1.0], [1.0, 0.1, 0.5], 0.0, true);
+        let hot = ribbon_color([0.0, 0.1, 1.0], [1.0, 0.1, 0.5], 1.0, true);
+        assert_eq!(cool[0], 0.0);
+        assert!((hot[0] - 1.6).abs() < 1e-6);
+        assert!(ribbon_color([1.0; 3], [1.0; 3], 0.5, false)[0] < ribbon_color([1.0; 3], [1.0; 3], 0.5, true)[0]);
     }
 
     #[test]

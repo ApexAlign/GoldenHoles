@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use shinobi_client::fx::LightWallCfg;
 use shinobi_client::hud::Palette;
-use shinobi_client::trail::{wall_strip, TrailPoint};
+use shinobi_client::trail::{ribbon_color, wall_strip, TrailPoint};
 
 use crate::net::{Net, ViewRes};
 
@@ -129,9 +129,9 @@ fn update_walls(
         let colors: Vec<[f32; 4]> = strip
             .iter()
             .map(|v| {
-                // hot rim on the top edge, dimmer body, like lightwall.wgsl
-                let rim = if v.v > 0.5 { 1.0 } else { 0.22 };
-                [pal.magenta.0 * rim * 1.6, pal.magenta.1 * rim * 1.6, pal.magenta.2 * rim * 1.6, v.alpha]
+                // cool tail -> hot head, hot rim on the top edge
+                let c = ribbon_color([pal.cyan.0, pal.cyan.1, pal.cyan.2], [pal.magenta.0, pal.magenta.1, pal.magenta.2], v.heat, v.v > 0.5);
+                [c[0], c[1], c[2], v.alpha]
             })
             .collect();
         if let Some(mut m) = meshes.get_mut(&w.mesh) {
