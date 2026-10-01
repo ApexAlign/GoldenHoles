@@ -129,7 +129,7 @@ impl Weapon for ShurikenLauncher {
 
     fn tick(&mut self, dt: f32, ctx: &mut TickCtx) {
         let cfg = self.cfg;
-        self.discs.retain_mut(|d| match advance_disc(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.events) {
+        self.discs.retain_mut(|d| match advance_disc_skipping(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.allies, ctx.events) {
             DiscStep::Flying => true,
             DiscStep::Hit { collider, point } => {
                 let target = ctx.world.colliders.get(collider).map_or(0, |c| c.user_data);
@@ -151,7 +151,8 @@ fn assisted_dir(cfg: &ShurikenCfg, ctx: &FireCtx) -> Vector<Real> {
     }
     let eye = ctx.aim.origin;
     // already on target (or about to hit a wall first): leave the shot alone, so headshots stay headshots
-    let filter = QueryFilter::default().predicate(&passes_projectile).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask)).exclude_rigid_body(ctx.ch.body);
+    let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !ctx.allies.contains(&h);
+    let filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask)).exclude_rigid_body(ctx.ch.body);
     let ray = Ray::new(Point::from(eye), fwd);
     let first = ctx.world.queries.cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, cfg.assist_range, true, filter);
     if first.map_or(false, |(h, _)| ctx.world.colliders.get(h).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets))) {
@@ -159,8 +160,8 @@ fn assisted_dir(cfg: &ShurikenCfg, ctx: &FireCtx) -> Vector<Real> {
     }
     let min_cos = cfg.assist_cone_deg.to_radians().cos();
     let mut best: Option<(f32, Vector<Real>)> = None;
-    for (_, c) in ctx.world.colliders.iter() {
-        if !c.collision_groups().memberships.intersects(cfg.targets) || c.parent() == Some(ctx.ch.body) {
+    for (h, c) in ctx.world.colliders.iter() {
+        if !c.collision_groups().memberships.intersects(cfg.targets) || c.parent() == Some(ctx.ch.body) || ctx.allies.contains(&h) {
             continue;
         }
         let centre = c.position().translation.vector;
@@ -208,8 +209,22 @@ pub fn advance_disc(
     exclude: Option<RigidBodyHandle>,
     events: &mut Vec<CombatEvent>,
 ) -> DiscStep {
+    advance_disc_skipping(world, d, cfg, dt, exclude, &[], events)
+}
+
+/// `advance_disc` that flies straight through the `skip` colliders (teammates' hitboxes): no hit, no bounce.
+pub fn advance_disc_skipping(
+    world: &PhysicsWorld,
+    d: &mut Disc,
+    cfg: &ShurikenCfg,
+    dt: f32,
+    exclude: Option<RigidBodyHandle>,
+    skip: &[ColliderHandle],
+    events: &mut Vec<CombatEvent>,
+) -> DiscStep {
     let shape = Ball::new(cfg.radius);
-    let mut filter = QueryFilter::default().predicate(&passes_projectile).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask));
+    let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !skip.contains(&h);
+    let mut filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask));
     if let Some(b) = exclude {
         filter = filter.exclude_rigid_body(b);
     }

@@ -120,8 +120,10 @@ impl Weapon for Katana {
         let short = c.blade_len.min(full);
 
         // Short-lived hit boxes: query-only, they exist for exactly this call.
+        let not_ally = |h: ColliderHandle, _: &Collider| !ctx.allies.contains(&h);
         let filter = QueryFilter::default()
             .exclude_rigid_body(ctx.ch.body)
+            .predicate(&not_ally)
             .groups(InteractionGroups::new(GROUP_MELEE, TARGETS));
         let boxhits_at = |dir: Vector<Real>, reach: f32| -> Vec<ColliderHandle> {
             let rot = UnitQuaternion::face_towards(&dir, &Vector::y());

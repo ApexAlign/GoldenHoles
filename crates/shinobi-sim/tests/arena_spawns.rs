@@ -23,6 +23,8 @@ fn arena(n: u16) -> Server {
     for id in 1..=n {
         let at = s.pick_spawn(None);
         s.add_player(id, at);
+        // add_player auto-balances teams; here the last player (the one picking) is alone against everybody else
+        s.players.last_mut().unwrap().team = u8::from(id == n);
     }
     s
 }

@@ -35,15 +35,39 @@ pub fn blocked(world: &PhysicsWorld, from: [f32; 3], to: [f32; 3]) -> bool {
 ///    take the one used longest ago (`rotation` is the packed pick history, see `push_history`), so repeated
 ///    respawns spread over the arena yet never choose a spawn that is clearly worse than the best.
 pub fn choose(world: &PhysicsWorld, spawns: &[[f32; 3]], enemies: &[[f32; 3]], rotation: u32) -> Option<usize> {
-    if spawns.is_empty() {
+    let all: Vec<usize> = (0..spawns.len()).collect();
+    choose_among(world, spawns, &all, enemies, rotation)
+}
+
+/// Spawn points with an optional team each (`NO_TEAM` = usable by anyone), as the level declares them.
+#[derive(Clone, Copy)]
+pub struct SpawnSet<'a> {
+    pub pos: &'a [[f32; 3]],
+    /// Parallel to `pos`; shorter (or empty) = the rest are `NO_TEAM`.
+    pub teams: &'a [u8],
+}
+
+impl SpawnSet<'_> {
+    /// Indices a player of `team` may spawn at: its own team's points plus the shared ones. If its team has
+    /// no point at all (a one-sided level), every point is allowed rather than none.
+    pub fn allowed(&self, team: u8) -> Vec<usize> {
+        let t = |i: usize| self.teams.get(i).copied().unwrap_or(crate::tick::NO_TEAM);
+        let mine: Vec<usize> = (0..self.pos.len()).filter(|&i| t(i) == crate::tick::NO_TEAM || t(i) == team).collect();
+        if team == crate::tick::NO_TEAM || mine.is_empty() { (0..self.pos.len()).collect() } else { mine }
+    }
+}
+
+/// `choose` restricted to the `allowed` spawn indices (team spawns). `enemies` = living non-allies.
+pub fn choose_among(world: &PhysicsWorld, spawns: &[[f32; 3]], allowed: &[usize], enemies: &[[f32; 3]], rotation: u32) -> Option<usize> {
+    if allowed.is_empty() {
         return None;
     }
     if enemies.is_empty() {
-        return least_recent((0..spawns.len()).collect(), rotation);
+        return least_recent(allowed.to_vec(), rotation);
     }
     let hidden: Vec<usize> =
-        (0..spawns.len()).filter(|&i| enemies.iter().all(|e| blocked(world, *e, spawns[i]))).collect();
-    let mut pool: Vec<usize> = if hidden.is_empty() { (0..spawns.len()).collect() } else { hidden };
+        allowed.iter().copied().filter(|&i| enemies.iter().all(|e| blocked(world, *e, spawns[i]))).collect();
+    let mut pool: Vec<usize> = if hidden.is_empty() { allowed.to_vec() } else { hidden };
     // a lone hidden spawn that was also the previous pick would repeat back to back (campers keep it the only
     // hidden one): let the far visible spawns share the rotation for that one pick
     if pool.len() == 1 && last_was_respawn(rotation) && age(rotation, pool[0]) == 0 && spawns.len() > 1 {
@@ -199,5 +223,64 @@ mod tests {
         let b = s.players.iter().find(|p| p.id == B).unwrap().pos(&s.world);
         let want = [HIDDEN[0], HIDDEN[1], HIDDEN[2]];
         assert!(dist(b, want) < 0.5, "respawned at the hidden point, not home: {b:?}");
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    use std::time::Duration;
+
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, PITCH_LEVEL};
+
+    fn slice_duel(team_a: u8, team_b: u8) -> f32 {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.0, 0.81, 0.0]);
+        s.add_player(2, [0.0, 0.81, -3.0]);
+        s.players[0].team = team_a;
+        s.players[1].team = team_b;
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, buttons: Buttons(Buttons::SLICE), aim_pitch: PITCH_LEVEL, ..Default::default() };
+        let pkt = ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() };
+        s.ingest(1, &pkt.encode().unwrap());
+        for _ in 0..20 {
+            s.frame(Duration::from_nanos(16_666_667));
+        }
+        s.players[1].vitals.hp
+    }
+
+    #[test]
+    fn team_spawns_are_used_only_by_their_team_and_allies_do_not_count_as_enemies() {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        let (c0, c1, o0, o1) = ([-30.0, 0.81, 0.0], [-30.0, 0.81, 8.0], [30.0, 0.81, 0.0], [30.0, 0.81, 8.0]);
+        s.set_team_spawns(vec![c0, c1, o0, o1], vec![0, 0, 1, 1]);
+        s.add_player(1, c0);
+        s.players[0].team = 0;
+        s.add_player(2, o0);
+        s.players[1].team = 1;
+        s.add_player(3, [0.0, 0.81, 0.0]);
+        s.players[2].team = 1;
+        for _ in 0..6 {
+            assert!([o0, o1].contains(&s.pick_spawn(Some(3))), "orange respawns at orange points");
+        }
+        s.players[2].team = 0;
+        for _ in 0..6 {
+            assert!([c0, c1].contains(&s.pick_spawn(Some(3))), "cyan respawns at cyan points");
+        }
+        // a one-sided level (no point for team 1) still spawns team 1 somewhere
+        s.set_team_spawns(vec![c0, c1], vec![0, 0]);
+        s.players[2].team = 1;
+        assert!([c0, c1].contains(&s.pick_spawn(Some(3))));
+    }
+
+    #[test]
+    fn teammates_cannot_slice_each_other_but_enemies_and_no_team_can() {
+        let full = slice_duel(0, 0);
+        assert!(slice_duel(0, 1) < full, "enemies are hurt");
+        assert!(slice_duel(crate::tick::NO_TEAM, crate::tick::NO_TEAM) < full, "no team = free-for-all");
+        assert_eq!(full, slice_duel(1, 1), "teammates unhurt");
     }
 }
