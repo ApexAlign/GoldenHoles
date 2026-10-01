@@ -74,6 +74,8 @@ pub struct Player {
     pub pitch: u16,
     /// hp / kills / deaths / respawn timers (see `pvp.rs`).
     pub vitals: Vitals,
+    /// `team::TEAM_CYAN` / `TEAM_ORANGE`. Set by `add_player` (auto-balanced); rules (friendly fire, spawns) read it.
+    pub team: u8,
 }
 
 impl Player {
@@ -195,6 +197,7 @@ impl Server {
             &mut self.world.bodies,
         );
         let vitals = pvp::new_vitals(&mut self.world, &cfg, id, spawn, self.balance.player.max_hp);
+        let team = self.balanced_team();
         self.players.push(Player {
             id,
             ch: CharacterSystem::new(body, cfg),
@@ -209,6 +212,7 @@ impl Server {
             yaw: 0,
             pitch: 0,
             vitals,
+            team,
         });
     }
 
