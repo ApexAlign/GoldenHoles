@@ -20,11 +20,15 @@ pub struct BlockCfg {
     pub size: f32,
     /// Live blocks per owner; the oldest is evicted past this.
     pub max_per_owner: usize,
+    /// Furthest point (m, along the aim) a block can be placed at.
+    pub range: f32,
+    /// Ticks between two placements by the same owner.
+    pub cooldown_ticks: u32,
 }
 
 impl Default for BlockCfg {
     fn default() -> Self {
-        Self { size: 1.0, max_per_owner: 64 }
+        Self { size: 1.0, max_per_owner: 64, range: 6.0, cooldown_ticks: 12 }
     }
 }
 
@@ -34,6 +38,17 @@ pub enum PlaceError {
     Occupied,
     /// A player body overlaps the cell (would entomb them).
     Blocked,
+    /// Owner placed too recently (`BlockCfg::cooldown_ticks`).
+    Cooldown,
+}
+
+/// What `Server` reports after a build attempt, in tick order (`Server::block_events`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockEvent {
+    Placed { tick: u32, owner: u16, cell: Cell },
+    /// Removed: evicted by the owner's cap, or the owner left.
+    Removed { tick: u32, cell: Cell },
+    Refused { tick: u32, owner: u16, why: PlaceError },
 }
 
 struct Block {
@@ -46,6 +61,8 @@ pub struct Blocks {
     pub cfg: BlockCfg,
     cells: HashMap<Cell, Block>,
     order: HashMap<u16, VecDeque<Cell>>,
+    /// First tick each owner may place again.
+    ready_at: HashMap<u16, u32>,
 }
 
 impl Blocks {
@@ -80,6 +97,52 @@ impl Blocks {
         let mut v: Vec<_> = self.cells.iter().map(|(c, b)| (b.owner, *c)).collect();
         v.sort_by_key(|&(_, c)| c);
         v
+    }
+
+    /// Cell a build press aimed from `origin` along unit `dir` would fill: against the first solid hit (the cell
+    /// in front of the face that was struck), else mid-air at `range` (bridging). `skip` = the builder's body.
+    pub fn target_cell(&self, world: &PhysicsWorld, origin: [f32; 3], dir: [f32; 3], skip: RigidBodyHandle) -> Cell {
+        let o = Point::new(origin[0], origin[1], origin[2]);
+        let d = vector![dir[0], dir[1], dir[2]];
+        let filter = QueryFilter::default()
+            .exclude_rigid_body(skip)
+            .exclude_sensors()
+            .groups(InteractionGroups::new(crate::combat::GROUP_MELEE, crate::combat::solid_groups()));
+        let p = match world.queries.cast_ray_and_get_normal(&world.bodies, &world.colliders, &Ray::new(o, d), self.cfg.range, true, filter) {
+            Some((_, hit)) => o + d * hit.time_of_impact + hit.normal * (self.cfg.size * 0.25),
+            None => o + d * self.cfg.range,
+        };
+        self.cell_of([p.x, p.y, p.z])
+    }
+
+    /// One build press at `tick`: cooldown, then `place`. Records the outcome in `events`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_build(
+        &mut self,
+        world: &mut PhysicsWorld,
+        tick: u32,
+        owner: u16,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        skip: RigidBodyHandle,
+        players: &[[f32; 3]],
+        events: &mut Vec<BlockEvent>,
+    ) {
+        if self.ready_at.get(&owner).is_some_and(|&t| (tick.wrapping_sub(t) as i32) < 0) {
+            events.push(BlockEvent::Refused { tick, owner, why: PlaceError::Cooldown });
+            return;
+        }
+        let cell = self.target_cell(world, origin, dir, skip);
+        match self.place(world, owner, cell, players) {
+            Ok(evicted) => {
+                self.ready_at.insert(owner, tick.wrapping_add(self.cfg.cooldown_ticks));
+                events.push(BlockEvent::Placed { tick, owner, cell });
+                if let Some(e) = evicted {
+                    events.push(BlockEvent::Removed { tick, cell: e });
+                }
+            }
+            Err(why) => events.push(BlockEvent::Refused { tick, owner, why }),
+        }
     }
 
     /// Place a block. Refuses an occupied cell or one overlapping a player capsule (`players`: body centres).
@@ -129,6 +192,7 @@ impl Blocks {
 
     /// Remove every block of `owner` (they left the match).
     pub fn clear_owner(&mut self, world: &mut PhysicsWorld, owner: u16) -> usize {
+        self.ready_at.remove(&owner);
         let cells: Vec<Cell> = self.order.remove(&owner).map(|q| q.into_iter().collect()).unwrap_or_default();
         cells.into_iter().filter(|c| self.remove_collider(world, *c)).count()
     }
@@ -189,7 +253,7 @@ mod tests {
     #[test]
     fn cap_evicts_the_oldest_and_clear_owner_frees_all() {
         let mut s = server();
-        let mut b = Blocks::new(BlockCfg { size: 1.0, max_per_owner: 3 });
+        let mut b = Blocks::new(BlockCfg { max_per_owner: 3, ..BlockCfg::default() });
         for x in 0..3 {
             assert_eq!(b.place(&mut s.world, 1, [x, 0, 0], &[]), Ok(None));
         }
@@ -199,5 +263,57 @@ mod tests {
         assert_eq!(b.place(&mut s.world, 2, [9, 0, 9], &[]), Ok(None));
         assert_eq!(b.clear_owner(&mut s.world, 1), 3);
         assert_eq!(b.iter(), vec![(2, [9, 0, 9])]);
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{ClientPacket, PlayerIntent, PITCH_LEVEL};
+    use std::time::Duration;
+
+    const A: u16 = 1;
+
+    fn press(s: &mut Server, build: bool, pitch: u16) {
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, aim_pitch: pitch, build, ..Default::default() };
+        let pkt = ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() };
+        s.ingest(A, &pkt.encode().unwrap());
+        s.frame(Duration::from_nanos(16_666_667));
+    }
+
+    fn server() -> Server {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(A, [0.5, 0.81, 0.5]);
+        s
+    }
+
+    #[test]
+    fn build_press_places_a_block_ahead_and_the_cooldown_refuses_a_second() {
+        let mut s = server();
+        press(&mut s, true, PITCH_LEVEL);
+        let placed: Vec<_> = s.block_events.iter().filter(|e| matches!(e, BlockEvent::Placed { .. })).collect();
+        assert_eq!(placed.len(), 1, "{:?}", s.block_events);
+        assert_eq!(s.blocks.len(), 1);
+        press(&mut s, true, PITCH_LEVEL);
+        assert!(s.block_events.iter().any(|e| matches!(e, BlockEvent::Refused { why: PlaceError::Cooldown, .. })));
+        assert_eq!(s.blocks.len(), 1);
+    }
+
+    #[test]
+    fn identical_inputs_build_identical_blocks() {
+        let run = || {
+            let mut s = server();
+            for t in 0..40 {
+                press(&mut s, t % 14 == 0, PITCH_LEVEL);
+            }
+            s.blocks.iter()
+        };
+        let (a, b) = (run(), run());
+        assert!(!a.is_empty());
+        assert_eq!(a, b);
     }
 }

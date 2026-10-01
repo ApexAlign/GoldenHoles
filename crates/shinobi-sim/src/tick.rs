@@ -115,6 +115,10 @@ pub struct Server {
     /// Spawn points (body-centre positions). Empty = every player respawns at its own `vitals.spawn`.
     pub spawns: Vec<[f32; 3]>,
     spawn_counter: u32,
+    /// Player-built blocks (see `blocks.rs`).
+    pub blocks: crate::blocks::Blocks,
+    /// Placed / Removed / Refused of the most recent `frame` (cleared each frame).
+    pub block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
     pub pickup_events: Vec<PickupEvent>,
     /// Movement-only broad phase (solid colliders), rebuilt once per tick before the player loop.
@@ -152,6 +156,8 @@ impl Server {
             match_events: Vec::new(),
             spawns: Vec::new(),
             spawn_counter: 0,
+            blocks: crate::blocks::Blocks::default(),
+            block_events: Vec::new(),
             pickup_events: Vec::new(),
             solid_queries: QueryPipeline::new(),
             ac: AntiCheatCfg::standard(&cfg),
@@ -302,6 +308,7 @@ impl Server {
         self.events.clear();
         self.pvp_events.clear();
         self.pickup_events.clear();
+        self.block_events.clear();
         self.match_events.clear();
         let adv = self.acc.advance(elapsed);
         let mut report = FrameReport { ticks: adv.steps, discarded: adv.discarded, kicked: Vec::new() };
@@ -395,6 +402,15 @@ impl Server {
             ev.extend(synthesized);
             let id = self.players[i].id;
             self.events.extend(ev.into_iter().map(|e| (id, e)));
+
+            if it.build {
+                // one-tick edge: place a block at the aimed spot (server-side range / cooldown / overlap checks)
+                let bodies: Vec<[f32; 3]> = self.players.iter().filter(|q| q.vitals.alive()).map(|q| q.pos(&self.world)).collect();
+                let f = aim.forward();
+                let skip = self.players[i].ch.body;
+                self.blocks.try_build(&mut self.world, tick, id, [origin.x, origin.y, origin.z], [f.x, f.y, f.z], skip, &bodies, &mut self.block_events);
+                self.world.queries.update(&self.world.colliders);
+            }
 
             let p = &mut self.players[i];
             crate::movement::step_player_with(&mut p.ch, &input, &mut self.world, now, dt, &mut self.solid_queries);
