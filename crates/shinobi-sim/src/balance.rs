@@ -40,6 +40,9 @@ pub struct ShurikenBalance {
     pub max_life: f32,
     pub max_discs: u32,
     pub recoil_pitch_deg: f32,
+    pub assist_cone_deg: f32,
+    pub assist_strength: f32,
+    pub assist_range: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -191,6 +194,9 @@ impl Default for Balance {
                     max_life: s.max_life,
                     max_discs: s.max_discs as u32,
                     recoil_pitch_deg: s.recoil_pitch_deg,
+                    assist_cone_deg: s.assist_cone_deg,
+                    assist_strength: s.assist_strength,
+                    assist_range: s.assist_range,
                 },
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.2, half_width: 1.0, half_height: 1.0 },
                 knockback_slash: 9.0,
@@ -354,6 +360,9 @@ impl Balance {
             max_life: b.max_life,
             max_discs: b.max_discs as usize,
             recoil_pitch_deg: b.recoil_pitch_deg,
+            assist_cone_deg: b.assist_cone_deg,
+            assist_strength: b.assist_strength,
+            assist_range: b.assist_range,
             ..ShurikenCfg::default()
         }
     }
@@ -435,6 +444,9 @@ impl Balance {
         s!("combat.shuriken.max_life", F, self.combat.shuriken.max_life);
         s!("combat.shuriken.max_discs", U, self.combat.shuriken.max_discs);
         s!("combat.shuriken.recoil_pitch_deg", F, self.combat.shuriken.recoil_pitch_deg);
+        s!("combat.shuriken.assist_cone_deg", F, self.combat.shuriken.assist_cone_deg);
+        s!("combat.shuriken.assist_strength", F, self.combat.shuriken.assist_strength);
+        s!("combat.shuriken.assist_range", F, self.combat.shuriken.assist_range);
         s!("combat.katana.damage", F, self.combat.katana.damage);
         s!("combat.katana.blade_len", F, self.combat.katana.blade_len);
         s!("combat.katana.half_width", F, self.combat.katana.half_width);

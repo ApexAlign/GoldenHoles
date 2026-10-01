@@ -616,6 +616,27 @@ mod tests {
         assert_eq!(shot_damage(1.0, 1950), base);
     }
 
+    fn near_miss_hits(assist: bool) -> bool {
+        // target 1.5 m off the crosshair at 20 m (~4.3 deg): a clean miss without assist
+        let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [1.5, 0.81, -20.0])]);
+        if !assist {
+            let mut b = sim.s.balance.clone();
+            b.combat.shuriken.assist_strength = 0.0;
+            sim.s.set_balance(b).unwrap();
+        }
+        sim.tick(&[(A, press(Buttons::FIRE), 0), (B, IDLE, 0)]);
+        for _ in 0..60 {
+            sim.tick(&[(A, IDLE, 0), (B, IDLE, 0)]);
+        }
+        sim.pvp.iter().any(|e| matches!(e, PvpEvent::Hit { victim: B, kind: DamageKind::Shuriken, .. }))
+    }
+
+    #[test]
+    fn aim_assist_forgives_a_near_miss_and_can_be_turned_off() {
+        assert!(near_miss_hits(true), "assist bends the throw onto the target");
+        assert!(!near_miss_hits(false), "without assist the same throw misses");
+    }
+
     #[test]
     fn shuriken_hits_a_player() {
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [0.0, 0.81, -8.0])]);
