@@ -106,6 +106,10 @@ pub struct MatchState {
     pub team_banked: [u16; 2],
     /// Winning team of the last finished team match (`None` = draw / none yet).
     pub last_winner_team: Option<u8>,
+    /// Team match tied at the end: sudden death lasts this long; the first team kill wins, else a draw.
+    pub sudden_death_ticks: u32,
+    /// `Some((deadline tick, scores when it began))` while sudden death runs.
+    sudden: Option<(u32, [u16; 2])>,
     last_count: Option<(PhaseKind, u32)>,
 }
 
@@ -130,6 +134,8 @@ impl MatchState {
             team_frag_limit: 50,
             team_banked: [0; 2],
             last_winner_team: None,
+            sudden_death_ticks: 60 * TICK_HZ,
+            sudden: None,
             last_count: None,
         }
     }
@@ -163,6 +169,11 @@ impl MatchState {
             Phase::Intermission { since } => (since, self.cfg.intermission_ticks),
         };
         Some(len.saturating_sub(since(now, from)))
+    }
+
+    /// True while a tied team match is in sudden death (for HUDs / the console).
+    pub fn in_sudden_death(&self) -> bool {
+        self.sudden.is_some()
     }
 
     /// Team kills: current players' frags plus those of players who left.
@@ -262,10 +273,26 @@ impl MatchState {
         };
         let time = since(tick, s).saturating_add(1) >= self.cfg.time_limit_ticks;
         // training never ends; co-op has no frag race (time limit still applies)
-        let frag = frag && self.cfg.mode == GameMode::Deathmatch;
-        if self.cfg.mode == GameMode::Training || !(frag || time) {
+        let mut frag = frag && self.cfg.mode == GameMode::Deathmatch;
+        let mut end_now = frag || time;
+        if self.team_mode && self.cfg.mode == GameMode::Deathmatch {
+            match self.sudden {
+                // sudden death: the first team kill decides, otherwise the clock runs out into a draw
+                Some((deadline, base)) => {
+                    end_now = teams != base || (deadline.wrapping_sub(tick.wrapping_add(1)) as i32) <= 0;
+                    frag = false;
+                }
+                None if end_now && teams[0] == teams[1] => {
+                    self.sudden = Some((tick.wrapping_add(1).wrapping_add(self.sudden_death_ticks), teams));
+                    return;
+                }
+                None => {}
+            }
+        }
+        if self.cfg.mode == GameMode::Training || !end_now {
             return;
         }
+        self.sudden = None;
         let winner_team = match teams[0].cmp(&teams[1]) {
             _ if !self.team_mode => None,
             std::cmp::Ordering::Greater => Some(crate::team::TEAM_CYAN),
@@ -302,6 +329,7 @@ impl MatchState {
     ) {
         self.team_banked = [0; 2];
         self.last_winner_team = None;
+        self.sudden = None;
         // everyone is "dead" for the selection pass so players are placed one after another, each avoiding
         // those already placed (order = player order: deterministic)
         for p in players.iter_mut() {
@@ -422,6 +450,38 @@ mod tests {
         step(&mut s, 3, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { winner: None, reason: EndReason::FragLimit, .. })));
         assert_eq!(s.match_state.last_winner_team, Some(crate::team::TEAM_CYAN));
+    }
+
+    #[test]
+    fn tied_team_match_goes_to_sudden_death_first_kill_wins_else_draw() {
+        let tied = |ev: &[MatchEvent]| ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { .. }));
+        // 1) time runs out 2-2 -> sudden death, then a kill by Orange ends it
+        let mut s = server(4); // 1,3 Cyan; 2,4 Orange
+        s.match_state = MatchState::new(cfg()).with_teams(50);
+        s.match_state.sudden_death_ticks = 120;
+        live(&mut s);
+        player(&mut s, 1).vitals.kills = 2;
+        player(&mut s, 2).vitals.kills = 2;
+        let mut ev = Vec::new();
+        step(&mut s, 620, &mut ev); // past the 600-tick limit
+        assert!(!tied(&ev), "a tie does not end the match");
+        assert!(s.match_state.in_sudden_death() && matches!(s.match_state.phase, Phase::Live { .. }));
+        player(&mut s, 4).vitals.kills = 1;
+        step(&mut s, 3, &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { reason: EndReason::TimeLimit, .. })));
+        assert_eq!(s.match_state.last_winner_team, Some(crate::team::TEAM_ORANGE));
+        assert!(!s.match_state.in_sudden_death());
+        // 2) nobody scores: draw when sudden death runs out
+        let mut s = server(4);
+        s.match_state = MatchState::new(cfg()).with_teams(50);
+        s.match_state.sudden_death_ticks = 60;
+        live(&mut s);
+        let mut ev = Vec::new();
+        step(&mut s, 600 + 40, &mut ev);
+        assert!(s.match_state.in_sudden_death() && !tied(&ev));
+        step(&mut s, 80, &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { winner: None, .. })));
+        assert_eq!(s.match_state.last_winner_team, None, "draw");
     }
 
     #[test]
