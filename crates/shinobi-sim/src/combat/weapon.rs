@@ -43,6 +43,8 @@ pub trait Weapon: Send + Sync {
     }
     /// Drop in-flight state (owner died).
     fn reset(&mut self) {}
+    /// Append in-flight discs (for snapshots / rendering).
+    fn collect_discs(&self, _out: &mut Vec<super::shuriken::Disc>) {}
     /// Advance in-flight state (projectiles). Runs every tick.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx) {}
 }
@@ -83,6 +85,15 @@ impl Loadout {
         for s in &mut self.slots {
             s.weapon.apply_balance(b, ch);
         }
+    }
+
+    /// Every in-flight disc of this loadout.
+    pub fn discs(&self) -> Vec<super::shuriken::Disc> {
+        let mut v = Vec::new();
+        for s in &self.slots {
+            s.weapon.collect_discs(&mut v);
+        }
+        v
     }
 
     /// Owner died: nothing they threw may keep flying (or resume on respawn).
