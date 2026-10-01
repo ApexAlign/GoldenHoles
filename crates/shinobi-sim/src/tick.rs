@@ -145,6 +145,8 @@ pub struct Server {
     pub blocks: crate::blocks::Blocks,
     /// Placed / Removed / Refused of the most recent `frame` (cleared each frame).
     pub block_events: Vec<crate::blocks::BlockEvent>,
+    /// `Removed` events of blocks dropped between frames (a player left); delivered with the next frame's events.
+    pending_block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
     pub pickup_events: Vec<PickupEvent>,
     /// Movement-only broad phase (solid colliders), rebuilt once per tick before the player loop.
@@ -186,6 +188,7 @@ impl Server {
             kill_tags: Vec::new(),
             blocks: crate::blocks::Blocks::default(),
             block_events: Vec::new(),
+            pending_block_events: Vec::new(),
             pickup_events: Vec::new(),
             solid_queries: QueryPipeline::new(),
             ac: AntiCheatCfg::standard(&cfg),
@@ -319,6 +322,11 @@ impl Server {
     pub fn remove_player(&mut self, id: u16) -> bool {
         let Some(i) = self.players.iter().position(|p| p.id == id) else { return false };
         let mut p = self.players.remove(i);
+        // their blocks go with them (each reported as Removed on the next frame)
+        let tick = self.tick;
+        let gone: Vec<_> = self.blocks.iter().into_iter().filter(|(o, _)| *o == id).map(|(_, c)| c).collect();
+        self.blocks.clear_owner(&mut self.world, id);
+        self.pending_block_events.extend(gone.into_iter().map(|cell| crate::blocks::BlockEvent::Removed { tick, cell }));
         // a leaver's frags stay on their team's score
         let team = crate::team::valid(p.team) as usize;
         self.match_state.team_banked[team] = self.match_state.team_banked[team].saturating_add(p.vitals.kills);
@@ -355,6 +363,7 @@ impl Server {
         self.pvp_events.clear();
         self.pickup_events.clear();
         self.block_events.clear();
+        self.block_events.append(&mut self.pending_block_events);
         self.kill_tags.clear();
         self.match_events.clear();
         let adv = self.acc.advance(elapsed);

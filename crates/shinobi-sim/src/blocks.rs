@@ -317,3 +317,25 @@ mod build_tests {
         assert_eq!(a, b);
     }
 }
+
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use std::time::Duration;
+
+    #[test]
+    fn a_leavers_blocks_vanish_and_are_reported_on_the_next_frame() {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 0.5]);
+        s.add_player(2, [20.5, 0.81, 0.5]);
+        s.blocks.place(&mut s.world, 1, [5, 0, 5], &[]).unwrap();
+        s.blocks.place(&mut s.world, 2, [9, 0, 9], &[]).unwrap();
+        assert!(s.remove_player(1));
+        assert_eq!(s.blocks.iter(), vec![(2, [9, 0, 9])]);
+        s.frame(Duration::from_nanos(16_666_667));
+        assert!(s.block_events.iter().any(|e| matches!(e, BlockEvent::Removed { cell: [5, 0, 5], .. })), "{:?}", s.block_events);
+    }
+}
