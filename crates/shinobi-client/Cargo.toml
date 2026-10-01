@@ -1,0 +1,10 @@
+[package]
+name = "shinobi-client"
+description = "Client-side: input normalization (PC + touch), camera, viewmodel, HUD, interpolation, prediction. Renderer/GPU glue plugs in here."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+shinobi-proto.workspace = true
+shinobi-sim.workspace = true # prediction + math types only; never the server loop

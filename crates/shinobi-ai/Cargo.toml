@@ -1,0 +1,10 @@
+[package]
+name = "shinobi-ai"
+description = "Server-side PvP bot brains: flank FSM, first-person FOV avoidance, Tron light-wall hazard sweeps, attack-ticket director. Pure intent producers over the authoritative sim."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+shinobi-proto.workspace = true
+shinobi-sim.workspace = true

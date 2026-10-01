@@ -1,0 +1,63 @@
+# SHINOBI ARENA - 80 x 80 m, 1-4 humans plus bots. Generated from the Cfg jump maths, pinned by crates/shinobi-sim/tests/arena.rs.
+# x right, z toward the camera at yaw 0, y up. Tiers: 1.2 m (single jump), 2.4 m (double jump), 3.6 m (one more hop).
+# Cfg limits used: single jump apex 1.6 m, jump + double jump ~2.8 m, autostep 0.35 m, wall-run 11 m/s for 1.5 s (16.5 m),
+# wall-jump push 9 m/s over a 0.68 s hop (6.1 m), ramps 20 deg (limit 45).
+
+# --- shell: floor, ceiling (wall-jump zigzags must not climb out), perimeter 16 m tall ---
+box 0 -0.5 0  40 0.5 40
+box 0 16.5 0  41 0.5 41
+box -40.5 8 0  0.5 8 41
+box 40.5 8 0  0.5 8 41
+box 0 8 -40.5  41 8 0.5
+box 0 8 40.5  41 8 0.5
+
+# --- central ziggurat: tier 1 platform (top 1.2), tier 2 (2.4), tier 3 (3.6); 20 deg ramps east and west ---
+box 0 0.6 0  8 0.6 8
+box 0 1.8 0  3.5 0.6 3.5
+box 0 3 0  1.5 0.6 1.5
+box -9.5923 0.4591 0  1.7498 0.15 3  0.35   # west ramp, rises toward +x
+box 9.5923 0.4591 0  1.7498 0.15 3  -0.35   # east ramp, rises toward -x
+
+# --- wall-run corridors: 5.6 m between inner faces, 28 m long, 6 m tall; run along z ---
+box -25.3 3 -16  0.5 3 14   # A west wall, inner face x=-24.8
+box -18.7 3 -16  0.5 3 14   # A east wall, inner face x=-19.2
+box 18.7 3 16  0.5 3 14     # B west wall, inner face x=19.2
+box 25.3 3 16  0.5 3 14     # B east wall, inner face x=24.8
+
+# --- sniper ledges at the corridor exits (top 2.4, then a 3.6 step) ---
+box -22 1.2 -34.75  3.5 1.2 4.75
+box -22 3 -37  2 0.6 2.5
+box 22 1.2 34.75  3.5 1.2 4.75
+box 22 3 37  2 0.6 2.5
+
+# --- cover: pillars (3 m) and low walls (1 m, one jump) for shuriken dodging ---
+box -12 1.5 12  0.6 1.5 0.6
+box 12 1.5 -12  0.6 1.5 0.6
+box -12 1.5 -12  0.6 1.5 0.6
+box 12 1.5 12  0.6 1.5 0.6
+box -14 0.5 0  0.4 0.5 3
+box 14 0.5 0  0.4 0.5 3
+box 0 0.5 -16  3 0.5 0.4
+box 0 0.5 16  3 0.5 0.4
+box -32 0.5 -14  0.4 0.5 4
+box 32 0.5 14  0.4 0.5 4
+
+# --- 8 spawns, spread (corners, edges), capsule centre 0.81 above the floor ---
+spawn -34 0.81 -34
+spawn 34 0.81 -34
+spawn -34 0.81 34
+spawn 34 0.81 34
+spawn 0 0.81 -30
+spawn 0 0.81 30
+spawn -32 0.81 0
+spawn 32 0.81 0
+
+# --- 8 pickups: risk (open lanes, tier tops) vs reward ---
+pickup 0 4.6 0 25        # ziggurat top: everyone sees you up there
+pickup 6 2.2 6 15        # platform corner
+pickup -22 1 -16 20      # corridor A mid: wall-run lane
+pickup 22 1 16 20        # corridor B mid
+pickup -22 4.6 -37 30    # ledge A top step
+pickup 22 4.6 37 30      # ledge B top step
+pickup -30 1 14 15       # open flank
+pickup 30 1 -14 15       # open flank

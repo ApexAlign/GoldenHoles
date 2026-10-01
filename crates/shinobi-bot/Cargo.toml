@@ -1,0 +1,11 @@
+[package]
+name = "shinobi-bot"
+description = "Headless scripted bot clients (NetClient + UdpSocket, 60 Hz) for soak and load testing the server."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+shinobi-proto.workspace = true
+shinobi-sim.workspace = true
+shinobi-client.workspace = true

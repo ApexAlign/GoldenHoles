@@ -1,0 +1,601 @@
+//! One renderer-agnostic per-tick client controller. A render shell (Bevy, or a test) feeds it input events,
+//! datagrams and a clock, and draws what `view()` returns; there is no gameplay logic outside this file.
+//!
+//! ```text
+//! shell:   button_event / look / touch_event        (any rate)
+//!          on_datagram(bytes, local_tick)           (whenever the socket yields one)
+//!          on_own_state(OwnAck)                     (owner-only movement state, see own_state.rs)
+//!          sim_tick(&InputFrame, local_tick) -> Option<datagram to send>   (exactly once per 60 Hz tick)
+//!          view(local_tick) -> RenderView           (once per rendered frame)
+//! ```
+//!
+//! Timeline: every `sim_tick` stamps an intent with the server tick it should execute on (`NetClient::pace_tick`),
+//! predicts it locally through the same `step_player` the server runs, and records the result. When the server's
+//! own-state for an acked tick arrives, `Reconciler` compares it with what was predicted; on a mismatch the
+//! character is restored to the server's state and the buffered intents are replayed. The drawn position is
+//! `simulated + visual_offset`, which decays to zero, so a correction never pops on screen.
+
+use std::collections::VecDeque;
+
+use shinobi_proto::bits::DecodeResult;
+use shinobi_proto::datagram::KickReason;
+use shinobi_proto::gameplay::{Board, HitMsg};
+use shinobi_proto::intent::{Buttons, PlayerIntent};
+use shinobi_proto::quant::{dq_pitch, dq_yaw};
+use shinobi_proto::snapshot::EntityId;
+use shinobi_proto::TICK_DT;
+use shinobi_sim::character::{Cfg, CharacterSystem, MoveState, PhysicsWorld, PlayerInput};
+use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
+use shinobi_sim::combat::shuriken::ShurikenCfg;
+use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_PLAYER};
+use shinobi_sim::events::NetEvent;
+use shinobi_sim::level::LevelDesc;
+use shinobi_sim::movement::{refresh_solid, step_player_with};
+use shinobi_sim::own_state::OwnState;
+use shinobi_sim::rapier3d::prelude::*;
+use shinobi_sim::tick::to_player_input;
+
+use crate::camera::{CameraFeel, CameraInput, CameraPose, FpsCamera, FpsCameraCfg, WeaponPose};
+use crate::settings::Settings;
+
+/// Vertical sprint-bob amplitude (m) when the head-bob setting is on. Off by default.
+const HEAD_BOB_AMP: f32 = 0.018;
+use crate::input::{build_intent, Aim, ButtonLatch, TouchController, TouchEvent};
+use crate::interp::Sample;
+use crate::netclient::NetClient;
+use crate::reconcile::Reconciler;
+
+/// Physical actions a shell maps its keys / touch buttons / gamepad onto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    Jump,
+    Dash,
+    Roll,
+    Slice,
+    Fire,
+    Cling,
+    Slide,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ButtonEvent {
+    pub action: Action,
+    pub down: bool,
+}
+
+/// Everything the shell observed since the previous `sim_tick`.
+#[derive(Clone, Default, Debug)]
+pub struct InputFrame {
+    /// View-frame stick: x strafe right, z forward, each -1..1 (`input::keys_to_stick` gives this for WASD).
+    pub stick: (f32, f32),
+    /// Accumulated look motion in device units (Pointer Lock `movementX/Y`); right/down positive.
+    pub look: (f32, f32),
+    /// Presses and releases in the order they happened. A tap shorter than a tick still registers.
+    pub buttons: Vec<ButtonEvent>,
+}
+
+/// Owner-only authoritative movement state for one simulated tick. `tick` is the intent tick the server had just
+/// executed. `pos` is the snapshot's (quantised) entity position and is IGNORED when `own.pos` is present, which
+/// it always is: the reconciler uses the exact one so prediction can match bit-for-bit.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct OwnAck {
+    pub tick: u32,
+    pub pos: [f32; 3],
+    pub own: OwnState,
+}
+
+#[derive(Clone, Copy)]
+pub struct ClientGameCfg {
+    pub sim: Cfg,
+    pub camera: FpsCameraCfg,
+    /// Ticks of headroom the intent clock gets over the server-clock estimate. It must cover RTT plus jitter
+    /// (the estimate lags the real server tick by one one-way trip), and stay under `MAX_FUTURE_TICKS` (12).
+    pub lead_ticks: u32,
+    /// Look sensitivity, radians per device unit.
+    pub rad_per_unit: f32,
+}
+
+impl Default for ClientGameCfg {
+    fn default() -> Self {
+        Self {
+            sim: Cfg::default(),
+            camera: FpsCameraCfg::default(),
+            lead_ticks: 8,
+            rad_per_unit: 0.0022,
+        }
+    }
+}
+
+/// Local predicted character.
+struct Predicted {
+    world: PhysicsWorld,
+    ch: CharacterSystem,
+    /// Local copy of the combat state machine: cosmetics (slash / throw / recoil) and the katana lunge. Its
+    /// `PlayerInput` mutation drives movement; the katana cooldown is mirrored into `ch` (and so into `OwnState`).
+    /// Replays do not re-run it: `lunge_input` makes the same movement decision from the restored cooldown.
+    combat: CombatSystem,
+    katana: KatanaCfg,
+    /// Movement broad phase, kept across ticks (rebuilt each tick, but without reallocating).
+    solid: QueryPipeline,
+    now: f32,
+    pos: [f32; 3],
+    prev_pos: [f32; 3],
+    /// Client clock (ticks) at the most recent `sim_tick`; interpolation alpha is measured from here.
+    sim_local: f64,
+}
+
+impl Predicted {
+    fn step(&mut self, input: &PlayerInput) -> [f32; 3] {
+        refresh_solid(&mut self.solid, &self.world.colliders);
+        step_player_with(&mut self.ch, input, &mut self.world, self.now, TICK_DT, &mut self.solid);
+        self.now += TICK_DT;
+        let t = self.world.bodies[self.ch.body].translation();
+        self.prev_pos = self.pos;
+        self.pos = [t.x, t.y, t.z];
+        self.pos
+    }
+}
+
+/// The tick's `PlayerInput` as the server will build it: stick + buttons, plus the katana lunge decision made
+/// from the (restored or live) cooldown mirror in `ch`. Shared by the catch-up and the replay hook.
+fn lunge_input(katana: &KatanaCfg, it: &PlayerIntent, ch: &mut CharacterSystem) -> PlayerInput {
+    let mut input = to_player_input(it);
+    let mut cd = ch.slice_cooldown();
+    let aim = CombatAim { origin: vector![0.0, 0.0, 0.0], yaw: dq_yaw(it.aim_yaw), pitch: 0.0 };
+    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), aim.flat_forward(), &mut input);
+    ch.set_slice_cooldown(cd);
+    input
+}
+
+/// Movement flags for edge detection.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct MoveFlags {
+    grounded: bool,
+    wall_running: bool,
+    dashing: bool,
+    sliding: bool,
+}
+
+/// A predicted katana swing (cosmetic; the authoritative result arrives with the hit messages).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PredictedSlash {
+    /// The dash lunge fired (false: on cooldown, short swing only).
+    pub lunge: bool,
+    pub dir: [f32; 3],
+    pub flip: bool,
+}
+
+/// Local-player effects state for the shell's particles, audio and viewmodel.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct LocalFx {
+    // -- continuous, as of the newest predicted tick --
+    pub grounded: bool,
+    pub wall_running: bool,
+    pub dashing: bool,
+    pub rolling: bool,
+    pub sliding: bool,
+    /// Horizontal speed, m/s.
+    pub speed: f32,
+    pub dash_ready: bool,
+    /// Katana / shuriken cooldown remaining, 1.0 = just used, 0.0 = ready.
+    pub slice_cooldown: f32,
+    pub throw_cooldown: f32,
+    // -- edges since the previous `view()`; a tick that falls between two views is never lost --
+    pub jumped: bool,
+    pub double_jumped: bool,
+    pub landed: bool,
+    pub wall_run_started: bool,
+    pub dash_started: bool,
+    pub dash_ended: bool,
+    pub slide_started: bool,
+    /// Fall speed (m/s) of the hardest landing in the interval; 0 = none. Drives landing audio / dust.
+    pub landing_speed: f32,
+    /// The server moved the local player by more than the smoothing limit (respawn, match-start reset): the
+    /// shell should cut, not slide, camera effects.
+    pub teleported: bool,
+    pub slash: Option<PredictedSlash>,
+    /// Shuriken thrown this interval: its direction.
+    pub threw: Option<[f32; 3]>,
+}
+
+/// What the shell draws. `Default` so shells and tests can use `..Default::default()` and new fields never break them.
+#[derive(Clone, Debug, Default)]
+pub struct RenderView {
+    pub fx: LocalFx,
+    /// Feedback strengths from the settings. The camera already applies `roll`, `thrust` and `fov_kick`; the shell
+    /// multiplies `FxState` output by `shake` (look kick, vignette punch) and `warp` (lens warp, dash FOV add).
+    pub feel: CameraFeel,
+    /// No WELCOME within the connect timeout (server down / blocked / version mismatch).
+    pub connect_failed: bool,
+    /// Exact own health in server units (None before the first extras block).
+    pub hp: Option<f32>,
+    /// Hits since the previous view: dealt (hit marker) and taken (damage direction).
+    pub hits: Vec<HitMsg>,
+    pub board: Option<Board>,
+    pub connected: bool,
+    pub kicked: Option<KickReason>,
+    pub camera: CameraPose,
+    pub weapon: WeaponPose,
+    /// Camera position: local position plus eye height and the camera's vertical thrust.
+    pub eye: [f32; 3],
+    /// Local player centre as drawn (interpolated between sim ticks, plus the decaying correction offset).
+    /// Falls back to the server snapshot until the predictor has its first authoritative state.
+    pub local_pos: Option<[f32; 3]>,
+    /// Remaining reconcile smoothing; zero when prediction and server agree.
+    pub correction_offset: [f32; 3],
+    /// Other players, interpolated at the render tick.
+    pub remotes: Vec<(EntityId, Sample)>,
+    /// Reliable events (walls, obstacles) received since the previous view.
+    pub events: Vec<NetEvent>,
+    pub aim: Aim,
+}
+
+pub struct ClientGame {
+    pub cfg: ClientGameCfg,
+    pub net: NetClient,
+    pub aim: Aim,
+    pub settings: Settings,
+    screen: (f32, f32),
+    pub reconciler: Reconciler,
+    pub camera: FpsCamera,
+    level: LevelDesc,
+    latch: ButtonLatch,
+    touch: TouchController,
+    pred: Option<Predicted>,
+    /// Intents sent before the predictor has an authoritative starting state; replayed once it has.
+    pending: VecDeque<PlayerIntent>,
+    pose: (CameraPose, WeaponPose),
+    /// Edge FX accumulated across sim ticks since the last `view()` (replays never add to it).
+    fx_edges: LocalFx,
+    throw_cd_left: f32,
+    prev_flags: MoveFlags,
+    /// Number of corrections applied (replays), for stats / debug overlay.
+    pub corrections: u32,
+}
+
+impl ClientGame {
+    pub fn new(level: LevelDesc, cfg: ClientGameCfg) -> Self {
+        Self {
+            camera: FpsCamera::new(cfg.camera),
+            cfg,
+            net: NetClient::default(),
+            aim: Aim::default(),
+            settings: Settings::default(),
+            screen: (1280.0, 720.0),
+            reconciler: Reconciler::default(),
+            level,
+            latch: ButtonLatch::default(),
+            touch: TouchController::new(1280.0, 90.0),
+            pred: None,
+            pending: VecDeque::new(),
+            pose: (CameraPose::default(), WeaponPose::default()),
+            fx_edges: LocalFx::default(),
+            throw_cd_left: 0.0,
+            prev_flags: MoveFlags::default(),
+            corrections: 0,
+        }
+    }
+
+    // ---- input (any rate) ----
+
+    pub fn button_event(&mut self, e: ButtonEvent) {
+        match e.action {
+            Action::Jump => self.latch.set_jump(e.down),
+            Action::Dash => self.latch.set(Buttons::DASH, e.down),
+            Action::Roll => self.latch.set(Buttons::ROLL, e.down),
+            Action::Slice => self.latch.set(Buttons::SLICE, e.down),
+            Action::Fire => self.latch.set(Buttons::FIRE, e.down),
+            Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
+            Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
+        }
+    }
+
+    /// Mouse look in device units (Pointer Lock `movementX/Y`); sensitivity and invert-Y come from the settings.
+    pub fn look(&mut self, dx: f32, dy: f32) {
+        self.settings.look(&mut self.aim, dx, dy, false);
+    }
+
+    pub fn touch_event(&mut self, e: TouchEvent) {
+        self.touch.event(e);
+    }
+
+    pub fn set_screen_width(&mut self, w: f32) {
+        self.touch.screen_w = w;
+        self.screen.0 = w;
+    }
+
+    /// Window size: sizes the touch stick (a fraction of the screen height) and halves.
+    pub fn set_screen(&mut self, w: f32, h: f32) {
+        self.screen = (w, h);
+        self.settings.apply_to_touch(&mut self.touch, w, h);
+    }
+
+    /// Apply player settings live: look sensitivity (mouse and touch pad), invert-Y, base FOV, touch stick,
+    /// and the feedback strengths (`Settings::feel`: FX intensity / reduced motion). Safe to call every frame.
+    pub fn apply_settings(&mut self, s: &Settings) {
+        let s = s.clamped();
+        self.settings = s;
+        self.cfg.rad_per_unit = s.mouse_sens;
+        self.camera.cfg.base_fov = s.fov_deg;
+        self.cfg.camera.base_fov = s.fov_deg;
+        self.camera.feel = s.feel();
+        self.camera.cfg.bob_amp = if s.head_bob { HEAD_BOB_AMP } else { 0.0 };
+        s.apply_to_touch(&mut self.touch, self.screen.0, self.screen.1);
+    }
+
+    // ---- network in ----
+
+    pub fn on_datagram(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
+        self.net.on_datagram(buf, local_tick)
+    }
+
+    /// Authoritative own-state for an acked intent tick. Creates the predictor on the first one.
+    pub fn on_own_state(&mut self, ack: OwnAck) {
+        let Some(pred) = &mut self.pred else {
+            self.start_prediction(ack);
+            return;
+        };
+        let sim = pred.pos;
+        let off = self.reconciler.visual_offset;
+        let rendered = [sim[0] + off[0], sim[1] + off[1], sim[2] + off[2]];
+        let katana = pred.katana;
+        let r = self.reconciler.on_server_own_state(
+            ack.tick,
+            ack.pos,
+            &ack.own,
+            rendered,
+            &mut pred.ch,
+            &mut pred.world,
+            &mut |it, ch| lunge_input(&katana, it, ch),
+        );
+        if let Some(p) = r {
+            self.corrections += 1;
+            pred.pos = p;
+            pred.prev_pos = p; // the offset already keeps the screen where it was
+            pred.combat.set_slice_cooldown_left(pred.ch.slice_cooldown());
+            // a jump the reconciler refused to smooth (offset reset) is a server teleport: respawn, match start
+            let jump = (0..3).map(|i| (rendered[i] - p[i]).powi(2)).sum::<f32>().sqrt();
+            if jump > self.reconciler.snap_dist {
+                self.fx_edges.teleported = true;
+            }
+        }
+    }
+
+    fn start_prediction(&mut self, ack: OwnAck) {
+        let cfg = self.cfg.sim;
+        let mut world = PhysicsWorld {
+            bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            islands: IslandManager::new(),
+            queries: QueryPipeline::new(),
+        };
+        self.level.insert_into(&mut world);
+        let body = world.bodies.insert(
+            RigidBodyBuilder::kinematic_position_based().translation(vector![ack.own.pos[0], ack.own.pos[1], ack.own.pos[2]]).build(),
+        );
+        world.colliders.insert_with_parent(
+            ColliderBuilder::capsule_y(cfg.half_height, cfg.radius)
+                .collision_groups(InteractionGroups::new(GROUP_PLAYER, Group::ALL))
+                .build(),
+            body,
+            &mut world.bodies,
+        );
+        let mut ch = CharacterSystem::new(body, cfg);
+        ch.restore_own(&mut world, &ack.own);
+        let combat = CombatSystem::ninja(&cfg);
+        let katana = KatanaCfg::for_character(&cfg);
+        let mut p = Predicted {
+            world,
+            ch,
+            combat,
+            katana,
+            solid: QueryPipeline::new(),
+            now: (ack.tick + 1) as f32 * TICK_DT,
+            pos: ack.own.pos,
+            prev_pos: ack.own.pos,
+            sim_local: 0.0,
+        };
+        // catch up: every intent already sent after the acked tick
+        let replay: Vec<_> = self.pending.drain(..).filter(|i| i.tick > ack.tick).collect();
+        for it in replay {
+            let input = lunge_input(&p.katana, &it, &mut p.ch);
+            let pos = p.step(&input);
+            self.reconciler.record(it, pos);
+        }
+        p.combat.set_slice_cooldown_left(p.ch.slice_cooldown());
+        p.prev_pos = p.pos;
+        self.pred = Some(p);
+    }
+
+    // ---- the 60 Hz tick ----
+
+    /// Exactly once per fixed sim tick. Returns the datagram to send (HELLO while connecting, then one intent
+    /// packet per tick), or `None` (kicked, or waiting for the server clock).
+    pub fn sim_tick(&mut self, frame: &InputFrame, local_tick: f64) -> Option<Vec<u8>> {
+        for e in &frame.buttons {
+            self.button_event(*e);
+        }
+        let (dx, dy) = frame.look;
+        if dx != 0.0 || dy != 0.0 {
+            self.settings.look(&mut self.aim, dx, dy, false);
+        }
+        let (tx, ty) = self.touch.take_look();
+        if tx != 0.0 || ty != 0.0 {
+            self.settings.look(&mut self.aim, tx, ty, true); // the aim pad has its own sensitivity
+        }
+        let stick = if frame.stick != (0.0, 0.0) { frame.stick } else { self.touch.stick() };
+        self.reconciler.decay(TICK_DT);
+
+        if self.net.kicked().is_some() {
+            return None;
+        }
+        if self.net.player_id().is_none() {
+            // retransmit policy + cookie handling live in NetClient (v3 handshake)
+            return self.net.hello_due(local_tick).map(|h| h.to_vec());
+        }
+        let tick = self.net.pace_tick(local_tick, self.cfg.lead_ticks)?;
+        let intent = build_intent(tick, stick, &self.aim, self.latch.sample());
+
+        match &mut self.pred {
+            Some(p) => {
+                // combat first, like the server: cosmetics + cooldown mirror (lunge is not applied, see Predicted)
+                let mut ev = Vec::new();
+                let mut sink = to_player_input(&intent);
+                let pressed = intent.buttons.has(Buttons::FIRE) || intent.buttons.has(Buttons::SLICE) || intent.ultimate;
+                if pressed || p.combat.busy() {
+                    p.world.queries.update(&p.world.colliders); // only combat reads it; idle ticks skip the rebuild
+                }
+                let aim = CombatAim {
+                    origin: vector![p.pos[0], p.pos[1] + self.cfg.sim.eye_above_center, p.pos[2]],
+                    yaw: dq_yaw(intent.aim_yaw),
+                    pitch: dq_pitch(intent.aim_pitch),
+                };
+                p.combat.update(
+                    TICK_DT,
+                    p.now,
+                    &CombatInput {
+                        fire: intent.buttons.has(Buttons::FIRE),
+                        slice: intent.buttons.has(Buttons::SLICE),
+                        ultimate: intent.ultimate,
+                    },
+                    &aim,
+                    &p.world,
+                    &p.ch,
+                    &mut sink,
+                    &mut ev,
+                );
+                p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
+                let vy_before = p.ch.vel.y; // fall speed for the landing dip (the controller zeroes it on landing)
+                let pos = p.step(&sink);
+                p.sim_local = local_tick;
+                self.reconciler.record(intent, pos);
+
+                // cooldown mirror + cosmetic edges
+                self.throw_cd_left = (self.throw_cd_left - TICK_DT).max(0.0);
+                for e in ev {
+                    match e {
+                        CombatEvent::Slash { flip, dir, lunge, .. } => {
+                            self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip });
+                        }
+                        CombatEvent::ShurikenThrown { dir, .. } => {
+                            self.throw_cd_left = ShurikenCfg::default().cooldown;
+                            self.fx_edges.threw = Some([dir.x, dir.y, dir.z]);
+                        }
+                        CombatEvent::Recoil { pitch_deg, .. } => self.camera.fire_kick(pitch_deg.to_radians(), 0.02),
+                        _ => {}
+                    }
+                }
+                let flags = MoveFlags {
+                    grounded: p.ch.state == MoveState::Grounded,
+                    wall_running: matches!(p.ch.state, MoveState::WallRun { .. }),
+                    dashing: p.ch.evading().is_some(),
+                    sliding: p.ch.sliding(),
+                };
+                let prev = self.prev_flags;
+                let edges = &mut self.fx_edges;
+                edges.jumped |= prev.grounded && !flags.grounded && p.ch.vel.y > 0.0;
+                edges.landed |= !prev.grounded && flags.grounded;
+                edges.double_jumped |= p.ch.double_jumped;
+                edges.wall_run_started |= !prev.wall_running && flags.wall_running;
+                edges.dash_started |= !prev.dashing && flags.dashing;
+                edges.slide_started |= !prev.sliding && flags.sliding;
+                let landed_speed = if !prev.grounded && flags.grounded { (-vy_before).max(0.0) } else { 0.0 };
+                let dash_ended = prev.dashing && !flags.dashing;
+                edges.landing_speed = edges.landing_speed.max(landed_speed);
+                edges.dash_ended |= dash_ended;
+                self.prev_flags = flags;
+
+                // camera last: it needs this tick's edges
+                let mut cam_in = CameraInput::from_character(&p.ch, &self.aim);
+                cam_in.landed_speed = landed_speed;
+                cam_in.dash_ended = dash_ended;
+                self.pose = self.camera.update_aim(TICK_DT, cam_in, &self.aim);
+            }
+            None => {
+                self.pending.push_back(intent);
+                while self.pending.len() > 128 {
+                    self.pending.pop_front();
+                }
+                self.pose = self.camera.update_aim(TICK_DT, CameraInput::default(), &self.aim);
+            }
+        }
+        self.net.next_packet(intent, local_tick)
+    }
+
+    // ---- render ----
+
+    pub fn view(&mut self, local_tick: f64) -> RenderView {
+        let own_id = self.net.player_id();
+        let remotes = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
+            (Some(rt), Some(newest)) => newest
+                .entities
+                .iter()
+                .filter(|(id, _)| Some(*id) != own_id)
+                .filter_map(|(id, _)| self.net.interp.sample(*id, rt).map(|s| (*id, s)))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let off = self.reconciler.visual_offset;
+        let local_pos = match &self.pred {
+            Some(p) => {
+                let a = (local_tick - p.sim_local).clamp(0.0, 1.0) as f32;
+                let l = |i: usize| p.prev_pos[i] + (p.pos[i] - p.prev_pos[i]) * a + off[i];
+                Some([l(0), l(1), l(2)])
+            }
+            None => own_id
+                .zip(self.net.render_tick(local_tick))
+                .and_then(|(id, rt)| self.net.interp.sample(id, rt))
+                .map(|s| s.pos),
+        };
+        let mut fx = std::mem::take(&mut self.fx_edges);
+        if let Some(p) = &self.pred {
+            fx.grounded = p.ch.state == MoveState::Grounded;
+            fx.wall_running = matches!(p.ch.state, MoveState::WallRun { .. });
+            fx.dashing = p.ch.evading().is_some();
+            fx.rolling = p.ch.evading() == Some(true);
+            fx.sliding = p.ch.sliding();
+            fx.speed = (p.ch.vel.x * p.ch.vel.x + p.ch.vel.z * p.ch.vel.z).sqrt();
+            fx.dash_ready = p.ch.dash_ready();
+        }
+        if let Some(p) = &self.pred {
+            fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);
+        }
+        fx.throw_cooldown = (self.throw_cd_left / ShurikenCfg::default().cooldown.max(1e-3)).clamp(0.0, 1.0);
+        let (camera, weapon) = self.pose;
+        let eye = local_pos.map_or([0.0; 3], |p| [p[0], p[1] + self.cfg.sim.eye_above_center + camera.y_offset, p[2]]);
+        RenderView {
+            fx,
+            feel: self.camera.feel,
+            connect_failed: self.net.connect_failed(local_tick),
+            hp: self.net.hp(),
+            hits: self.net.take_hits(),
+            board: self.net.board().cloned(),
+            connected: own_id.is_some(),
+            kicked: self.net.kicked(),
+            camera,
+            weapon,
+            eye,
+            local_pos,
+            correction_offset: off,
+            remotes,
+            events: self.net.take_events(),
+            aim: self.aim,
+        }
+    }
+
+    // ---- introspection (tests, debug overlay) ----
+
+    /// The touch stick as the next intent would read it (tests, debug overlay).
+    pub fn touch_stick_for_test(&self) -> (f32, f32) {
+        self.touch.stick()
+    }
+
+    /// Simulated (undrawn-offset) predicted centre, once prediction has started.
+    pub fn predicted_pos(&self) -> Option<[f32; 3]> {
+        self.pred.as_ref().map(|p| p.pos)
+    }
+
+    pub fn predicting(&self) -> bool {
+        self.pred.is_some()
+    }
+}

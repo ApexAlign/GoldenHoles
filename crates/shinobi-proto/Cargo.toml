@@ -1,0 +1,9 @@
+[package]
+name = "shinobi-proto"
+description = "Wire format: bit-packed intent/snapshot codecs. std-only, no physics, no rendering."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true # platform-independent sin/cos for the movement path

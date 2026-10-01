@@ -1,0 +1,11 @@
+[package]
+name = "shinobi-sim"
+description = "Authoritative simulation: Rapier 3D, character controller, combat, anti-cheat, fixed-step accumulator. Low-poly colliders only."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rapier3d.workspace = true
+libm.workspace = true
+shinobi-proto.workspace = true

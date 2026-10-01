@@ -1,0 +1,212 @@
+//! Neon shurikens: physical discs (no hitscan) that mirror-bounce off solids.
+//!
+//! Discs are stepped with swept ball casts + explicit reflection (`v - 2(v.n)n`) instead of the
+//! solver: bounce count and speed are exact and deterministic for server/client. They never enter
+//! the shared `PhysicsWorld` body set, so they can't disturb kinematic players/enemies.
+use rapier3d::parry::query::ShapeCastOptions;
+use rapier3d::prelude::*;
+
+use crate::character::PhysicsWorld;
+
+use super::{
+    passes_projectile, projectile_groups, TARGETS,
+    weapon::{FireCtx, TickCtx, Trigger, Weapon},
+    CombatEvent, DamageKind, GROUP_PROJECTILE,
+};
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShurikenCfg {
+    pub speed: f32,
+    pub damage: f32,
+    /// Solid hits survived; the disc dies on hit number `max_bounces + 1`.
+    pub max_bounces: u8,
+    pub cooldown: f32,
+    pub muzzle: f32,
+    pub radius: f32,
+    pub max_life: f32,
+    pub max_discs: usize,
+    pub recoil_pitch_deg: f32,
+    /// Collider groups this disc damages when it touches them.
+    pub targets: Group,
+    /// Collider groups it can touch at all (everything else is ignored).
+    pub mask: Group,
+}
+
+impl Default for ShurikenCfg {
+    fn default() -> Self {
+        Self {
+            speed: 40.0,
+            damage: 25.0,
+            max_bounces: 2,
+            cooldown: 0.18,
+            muzzle: 0.8,
+            radius: 0.2,
+            max_life: 6.0,
+            max_discs: 32,
+            recoil_pitch_deg: 1.2,
+            targets: TARGETS,
+            mask: projectile_groups(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Disc {
+    pub pos: Point<Real>,
+    pub dir: Vector<Real>,
+    pub bounces: u8,
+    pub age: f32,
+}
+
+#[derive(Default)]
+pub struct ShurikenLauncher {
+    pub cfg: ShurikenCfg,
+    discs: Vec<Disc>,
+}
+
+impl ShurikenLauncher {
+    pub fn new(cfg: ShurikenCfg) -> Self {
+        Self { cfg, discs: Vec::new() }
+    }
+
+    /// For the renderer (spin the mesh by `age`).
+    pub fn discs(&self) -> &[Disc] {
+        &self.discs
+    }
+}
+
+impl Weapon for ShurikenLauncher {
+    fn name(&self) -> &'static str {
+        "Neon Shuriken"
+    }
+    fn trigger(&self) -> Trigger {
+        Trigger::Primary
+    }
+    fn cooldown(&self) -> f32 {
+        self.cfg.cooldown
+    }
+
+    fn fire(&mut self, ctx: &mut FireCtx) -> bool {
+        if self.discs.len() >= self.cfg.max_discs {
+            return false;
+        }
+        let dir = ctx.aim.forward();
+        let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0 });
+        ctx.events.push(CombatEvent::ShurikenThrown { pos, dir });
+        ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
+        true
+    }
+
+    fn apply_balance(&mut self, b: &crate::balance::Balance, _ch: &crate::character::Cfg) {
+        self.cfg = b.shuriken_cfg();
+    }
+
+    fn active(&self) -> bool {
+        !self.discs.is_empty()
+    }
+
+    fn reset(&mut self) {
+        self.discs.clear();
+    }
+
+    fn tick(&mut self, dt: f32, ctx: &mut TickCtx) {
+        let cfg = self.cfg;
+        self.discs.retain_mut(|d| match advance_disc(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.events) {
+            DiscStep::Flying => true,
+            DiscStep::Hit { collider, point } => {
+                let target = ctx.world.colliders.get(collider).map_or(0, |c| c.user_data);
+                ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage, kind: DamageKind::Shuriken, point });
+                ctx.events.push(CombatEvent::ShurikenGone { pos: point });
+                false
+            }
+            DiscStep::Gone => false,
+        });
+    }
+}
+
+pub enum DiscStep {
+    Flying,
+    /// Struck something in `cfg.targets` (disc is spent; caller decides the damage).
+    Hit { collider: ColliderHandle, point: Point<Real> },
+    /// Expired or out of bounces (`ShurikenGone` already pushed).
+    Gone,
+}
+
+/// Advance one disc by `dt`: swept ball casts with explicit mirror reflection. Used by player shurikens and
+/// enemy throwers alike; `cfg.targets` / `cfg.mask` choose who it can hurt and what it ignores.
+/// Pushes `ShurikenBounce` / `ShurikenGone` (expiry, spent bounces). A `Hit` is returned, not pushed.
+pub fn advance_disc(
+    world: &PhysicsWorld,
+    d: &mut Disc,
+    cfg: &ShurikenCfg,
+    dt: f32,
+    exclude: Option<RigidBodyHandle>,
+    events: &mut Vec<CombatEvent>,
+) -> DiscStep {
+    let shape = Ball::new(cfg.radius);
+    let mut filter = QueryFilter::default().predicate(&passes_projectile).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask));
+    if let Some(b) = exclude {
+        filter = filter.exclude_rigid_body(b);
+    }
+    d.age += dt;
+    if d.age > cfg.max_life {
+        events.push(CombatEvent::ShurikenGone { pos: d.pos });
+        return DiscStep::Gone;
+    }
+    let mut remaining = cfg.speed * dt;
+    // a few reflections per tick cover tight corners without looping forever
+    for _ in 0..4 {
+        if remaining <= 1e-5 {
+            break;
+        }
+        let hit = world.queries.cast_shape(
+            &world.bodies,
+            &world.colliders,
+            &Isometry::from(d.pos.coords),
+            &d.dir,
+            &shape,
+            ShapeCastOptions {
+                max_time_of_impact: remaining,
+                target_distance: 0.0,
+                stop_at_penetration: true,
+                compute_impact_geometry_on_penetration: true,
+            },
+            filter,
+        );
+        let Some((handle, h)) = hit else {
+            d.pos += d.dir * remaining;
+            break;
+        };
+        d.pos += d.dir * h.time_of_impact;
+        remaining -= h.time_of_impact;
+
+        if world.colliders.get(handle).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets)) {
+            return DiscStep::Hit { collider: handle, point: d.pos };
+        }
+
+        d.bounces += 1;
+        if d.bounces > cfg.max_bounces {
+            events.push(CombatEvent::ShurikenGone { pos: d.pos });
+            return DiscStep::Gone;
+        }
+        let mut n = h.normal1.into_inner(); // world collider's normal, world space
+        // a disc spawned inside geometry reports a degenerate normal: just bounce it straight back
+        if !(n.iter().all(|c| c.is_finite()) && n.norm() > 0.5) {
+            n = -d.dir;
+        }
+        if d.dir.dot(&n) > 0.0 {
+            n = -n;
+        }
+        d.dir = d.dir - n * (2.0 * d.dir.dot(&n));
+        let len = d.dir.norm();
+        if !(len.is_finite() && len > 0.5) || !d.pos.coords.iter().all(|c| c.is_finite()) {
+            events.push(CombatEvent::ShurikenGone { pos: d.pos });
+            return DiscStep::Gone; // never feed NaN to the query pipeline
+        }
+        d.dir /= len;
+        d.pos += n * 1e-3; // step off the surface
+        events.push(CombatEvent::ShurikenBounce { pos: d.pos, normal: n });
+    }
+    DiscStep::Flying
+}

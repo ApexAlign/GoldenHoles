@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+# Bevy app lives outside the workspace: heavy deps stay out of every agent's `cargo test --workspace`.
+exclude = ["crates/shinobi-game"]
+members = [
+    "crates/shinobi-proto",
+    "crates/shinobi-sim",
+    "crates/shinobi-client",
+    "crates/shinobi-server",
+    "crates/shinobi-bot",
+    "crates/shinobi-ai",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# enhanced-determinism: identical float bits on x86 / ARM / wasm (client prediction == server).
+# libm is already in the lockfile (nalgebra dep); used for trig on the movement path (std sin/cos differ per libc).
+# Pinned: sim determinism + wire compat depend on exact solver behaviour.
+# Only shinobi-sim links it; shinobi-client reaches math types via `shinobi_sim::rapier3d`.
+rapier3d = { version = "=0.22.0", features = ["enhanced-determinism"] }
+libm = "0.2"
+shinobi-proto = { path = "crates/shinobi-proto" }
+shinobi-sim = { path = "crates/shinobi-sim" }
+shinobi-client = { path = "crates/shinobi-client" }
+
+[profile.dev]
+opt-level = 1 # rapier is unusable at opt-level 0
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

@@ -1,0 +1,7 @@
+[package]
+name = "golden_shinobi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rapier3d = "=0.22.0"

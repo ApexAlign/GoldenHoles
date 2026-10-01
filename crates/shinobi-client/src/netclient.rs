@@ -1,0 +1,522 @@
+//! Client network session, sans-IO: the platform layer (UDP / WebTransport / test harness) moves bytes,
+//! this decides what they mean. Feed datagrams into `on_datagram`, send whatever `next_packet` returns.
+//!
+//! Handshake (v3, see `shinobi_proto::datagram`): call `hello_due(local_tick)` every tick and send what it returns
+//! (HELLO every `HELLO_RETRY_MS`, cookie 0 until a CHALLENGE arrives, newest cookie after). `state()` becomes
+//! `Connected` on WELCOME; `connect_failed()` after `CONNECT_TIMEOUT_MS`. Then each sim tick: `next_packet`.
+
+use std::collections::VecDeque;
+
+use shinobi_proto::bits::{BitReader, DecodeError, DecodeResult};
+use shinobi_proto::datagram::{
+    decode_challenge, decode_kick, encode_hello, split_snapshot_v3, KickReason, Welcome, CONNECT_TIMEOUT_MS,
+    HELLO_LEN, HELLO_RETRY_MS, TAG_CHALLENGE, TAG_KICK, TAG_SNAPSHOT, TAG_WELCOME,
+};
+use shinobi_proto::gameplay::{Board, HitMsg, OwnExtras};
+use shinobi_proto::intent::{ClientPacket, PlayerIntent, MAX_REDUNDANCY};
+use shinobi_proto::quant::dq_pos3;
+use shinobi_proto::snapshot::decode_delta;
+use shinobi_proto::TICK_HZ;
+use shinobi_sim::events::{EventInbox, NetEvent};
+use shinobi_sim::own_state::OwnState;
+
+use crate::interp::InterpBuffer;
+
+/// Owner-only authoritative movement state for the reconciler: everything is from the same server moment.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnUpdate {
+    /// Newest of our intents the server had executed (`PlayerIntent::tick`).
+    pub acked_tick: u32,
+    pub own: OwnState,
+    /// Our entity position from the same snapshot, metres (None if the entity is missing from it).
+    pub server_pos: Option<[f32; 3]>,
+}
+
+const MS_PER_TICK: f64 = 1000.0 / TICK_HZ as f64;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConnState {
+    Connecting,
+    Connected { player_id: u16 },
+}
+
+pub struct NetClient {
+    state: ConnState,
+    seq: u16,
+    /// Newest first, contiguous ticks; resent for loss tolerance.
+    recent: VecDeque<PlayerIntent>,
+    pub interp: InterpBuffer,
+    inbox: EventInbox,
+    events: Vec<NetEvent>,
+    /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
+    anchor: Option<(u32, f64)>,
+    kicked: Option<KickReason>,
+    own: Option<OwnUpdate>,
+    /// Handshake: echoed in HELLO; 0 until the server's CHALLENGE.
+    cookie: u64,
+    connect_started: Option<f64>,
+    last_hello: Option<f64>,
+    /// Snapshot tick of the newest datagram whose owner extras (hits, hp) we applied: drops duplicates/reordered.
+    last_extras_tick: Option<u32>,
+    hp_x10: Option<u16>,
+    hits: Vec<HitMsg>,
+    board: Option<Board>,
+    /// Last tick handed out by `pace_tick`.
+    cursor: Option<u32>,
+    /// Datagrams that failed to decode (for a debug overlay / disconnect heuristics).
+    pub bad_datagrams: u32,
+}
+
+impl Default for NetClient {
+    fn default() -> Self {
+        Self {
+            state: ConnState::Connecting,
+            seq: 0,
+            recent: VecDeque::new(),
+            interp: InterpBuffer::default(),
+            inbox: EventInbox::default(),
+            events: Vec::new(),
+            anchor: None,
+            kicked: None,
+            own: None,
+            cookie: 0,
+            connect_started: None,
+            last_hello: None,
+            last_extras_tick: None,
+            hp_x10: None,
+            hits: Vec::new(),
+            board: None,
+            cursor: None,
+            bad_datagrams: 0,
+        }
+    }
+}
+
+impl NetClient {
+    pub fn state(&self) -> ConnState {
+        self.state
+    }
+
+    pub fn player_id(&self) -> Option<u16> {
+        match self.state {
+            ConnState::Connected { player_id } => Some(player_id),
+            ConnState::Connecting => None,
+        }
+    }
+
+    /// `Some(reason)` once the server dropped us (anti-cheat, flood, timeout, full). Terminal: reconnect with a
+    /// fresh `NetClient` (cheat/flood bans last ~10 s server-side).
+    pub fn kicked(&self) -> Option<KickReason> {
+        self.kicked
+    }
+
+    /// HELLO with the current cookie (0 until the server's CHALLENGE).
+    pub fn hello(&self) -> [u8; HELLO_LEN] {
+        encode_hello(self.cookie)
+    }
+
+    /// Retransmit policy: `Some(HELLO)` when one is due (first call, then every `HELLO_RETRY_MS`) while
+    /// connecting; `None` once connected, kicked or failed. Call every tick.
+    pub fn hello_due(&mut self, local_tick: f64) -> Option<[u8; HELLO_LEN]> {
+        if self.state != ConnState::Connecting || self.kicked.is_some() || self.connect_failed(local_tick) {
+            return None;
+        }
+        self.connect_started.get_or_insert(local_tick);
+        let due = self.last_hello.map_or(true, |t| (local_tick - t) * MS_PER_TICK >= HELLO_RETRY_MS as f64);
+        due.then(|| {
+            self.last_hello = Some(local_tick);
+            self.hello()
+        })
+    }
+
+    /// No WELCOME within `CONNECT_TIMEOUT_MS` of the first HELLO (server down, blocked, or version mismatch
+    /// without a KICK getting through).
+    pub fn connect_failed(&self, local_tick: f64) -> bool {
+        self.state == ConnState::Connecting
+            && self.connect_started.map_or(false, |t| (local_tick - t) * MS_PER_TICK >= CONNECT_TIMEOUT_MS as f64)
+    }
+
+    /// `local_tick`: client clock in (fractional) sim ticks; any monotonic clock at 60 ticks/s works.
+    pub fn on_datagram(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
+        let r = match buf.first() {
+            // before everything else: valid even while still connecting (server full) and repeated by the server
+            Some(&TAG_KICK) => decode_kick(buf).map(|why| {
+                self.kicked.get_or_insert(why);
+            }),
+            _ if self.kicked.is_some() => Ok(()), // dropped by the server: ignore stragglers
+            Some(&TAG_CHALLENGE) => decode_challenge(buf).map(|c| {
+                // newest wins while connecting; ignored once connected (stale retransmits)
+                if self.state == ConnState::Connecting {
+                    self.cookie = c;
+                }
+            }),
+            Some(&TAG_WELCOME) => self.on_welcome(buf, local_tick),
+            Some(&TAG_SNAPSHOT) if self.player_id().is_some() => self.on_snapshot(buf, local_tick),
+            _ => Err(DecodeError::Malformed),
+        };
+        if r.is_err() {
+            self.bad_datagrams += 1;
+        }
+        r
+    }
+
+    fn on_welcome(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
+        let w = Welcome::decode(buf)?;
+        // Welcome is re-sent if the first was lost; ignore repeats so the clock anchor isn't reset.
+        if self.state == ConnState::Connecting {
+            self.state = ConnState::Connected { player_id: w.player_id };
+            self.anchor = Some((w.server_tick, local_tick));
+        }
+        Ok(())
+    }
+
+    fn on_snapshot(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
+        let (ev_bytes, own_bytes, board_bytes, snap_bytes) = split_snapshot_v3(buf)?;
+        // decode everything before applying any of it: a corrupt datagram must not half-apply
+        let snap = decode_delta(snap_bytes, |t| self.interp.get(t))?;
+        let mut pending = Vec::new();
+        self.inbox.read(&mut BitReader::new(ev_bytes), |e| pending.push(e))?;
+        let extras = if own_bytes.is_empty() {
+            None
+        } else {
+            Some(OwnExtras::read(&mut BitReader::new(own_bytes), OwnState::read)?)
+        };
+        let board = if board_bytes.is_empty() { None } else { Some(Board::decode(board_bytes)?) };
+
+        self.events.extend(pending);
+        if let Some(b) = board {
+            self.board = Some(b);
+        }
+        // hits are unreliable and flushed once; a duplicated or reordered datagram must not replay them
+        if let Some((x, state)) = extras {
+            if self.last_extras_tick.map_or(true, |t| snap.tick > t) {
+                self.last_extras_tick = Some(snap.tick);
+                self.hp_x10 = Some(x.hp_x10);
+                self.hits.extend(x.hits);
+                if let Some(own) = state {
+                    let me = self.player_id();
+                    let server_pos = me.and_then(|id| snap.get(id)).map(|e| dq_pos3(e.pos));
+                    self.own = Some(OwnUpdate { acked_tick: x.acked_tick, own, server_pos });
+                }
+            }
+        }
+        if self.anchor.map_or(true, |(t, _)| snap.tick >= t) {
+            self.anchor = Some((snap.tick, local_tick));
+        }
+        self.interp.push(snap, local_tick);
+        Ok(())
+    }
+
+    /// Exact own health in `0.0..=100.0`-style units (server hp x10 / 10); `None` before the first extras block.
+    pub fn hp(&self) -> Option<f32> {
+        self.hp_x10.map(|h| h as f32 / 10.0)
+    }
+
+    /// Hits since last call: `taken == false` = you dealt it (hit marker), `true` = you took it.
+    pub fn take_hits(&mut self) -> Vec<HitMsg> {
+        std::mem::take(&mut self.hits)
+    }
+
+    /// Latest scoreboard + match phase.
+    pub fn board(&self) -> Option<&Board> {
+        self.board.as_ref()
+    }
+
+    /// Latest owner-state update since the last call (feed to `Reconciler::on_server_own_state`).
+    pub fn take_own_state(&mut self) -> Option<OwnUpdate> {
+        self.own.take()
+    }
+
+    /// Best guess of the server's current tick.
+    pub fn server_tick_estimate(&self, local_tick: f64) -> Option<f64> {
+        self.anchor.map(|(t, at)| t as f64 + (local_tick - at))
+    }
+
+    /// Tick to stamp on the intent produced now. The server only executes an intent on its exact tick and drops
+    /// stale ones, so input must arrive slightly early: the clock estimate plus `lead_ticks` of headroom for
+    /// one-way latency + jitter (~3-6 ticks on a good link; grow it with measured RTT).
+    pub fn input_tick(&self, local_tick: f64, lead_ticks: u32) -> Option<u32> {
+        self.server_tick_estimate(local_tick).map(|s| s.ceil() as u32 + lead_ticks)
+    }
+
+    /// Call once per sim tick to get the tick for that tick's intent. Increments by 1 so redundancy stays
+    /// contiguous, and re-anchors to `input_tick` only when it drifted by more than `MAX_DRIFT_TICKS`
+    /// (hitch, clock correction), so jitter in the clock estimate never makes tick numbers skip or repeat.
+    pub fn pace_tick(&mut self, local_tick: f64, lead_ticks: u32) -> Option<u32> {
+        const MAX_DRIFT_TICKS: i64 = 8;
+        let want = self.input_tick(local_tick, lead_ticks)?;
+        let next = match self.cursor {
+            Some(c) if (c as i64 + 1 - want as i64).abs() <= MAX_DRIFT_TICKS => c + 1,
+            _ => want,
+        };
+        self.cursor = Some(next);
+        Some(next)
+    }
+
+    /// Tick the interpolated world should be drawn at.
+    pub fn render_tick(&self, local_tick: f64) -> Option<f64> {
+        self.server_tick_estimate(local_tick).map(|s| self.interp.render_tick(s))
+    }
+
+    /// Reliable events (walls, obstacles) received since last call, in order.
+    pub fn take_events(&mut self) -> Vec<NetEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Build the datagram for this tick's intent (with redundancy, acks and view time). `None` until connected.
+    pub fn next_packet(&mut self, intent: PlayerIntent, local_tick: f64) -> Option<Vec<u8>> {
+        self.player_id()?;
+        if self.kicked.is_some() {
+            return None;
+        }
+        // redundancy needs contiguous ticks; a gap (hitch, pause) restarts the window
+        if self.recent.front().map_or(false, |p| p.tick.wrapping_add(1) != intent.tick) {
+            self.recent.clear();
+        }
+        self.recent.push_front(intent);
+        self.recent.truncate(MAX_REDUNDANCY);
+
+        let render = self.render_tick(local_tick).unwrap_or(0.0);
+        let pkt = ClientPacket {
+            seq: self.seq,
+            ack_snapshot_tick: self.interp.newest_tick().unwrap_or(0),
+            ack_event_seq: self.inbox.ack(),
+            view: InterpBuffer::view_state(render),
+            intents: self.recent.iter().copied().collect(),
+        };
+        self.seq = self.seq.wrapping_add(1);
+        pkt.encode().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shinobi_proto::bits::BitWriter;
+    use shinobi_proto::datagram::frame_snapshot_v3;
+    use shinobi_proto::gameplay::{Board, HitMsg, OwnExtras};
+    use shinobi_proto::intent::Buttons;
+    use shinobi_proto::snapshot::{encode_delta, EntityState, Snapshot};
+    use shinobi_sim::events::EventOutbox;
+
+    fn snap(tick: u32, x: i32) -> Snapshot {
+        Snapshot { tick, entities: vec![(1, EntityState { pos: [x, 512, 0], ..Default::default() })] }
+    }
+
+    /// What the server sends when nothing is pending: a zero event count.
+    fn no_events() -> Vec<u8> {
+        let mut w = BitWriter::new();
+        EventOutbox::default().write_pending(&mut w, 256);
+        w.finish()
+    }
+
+    fn welcome(c: &mut NetClient, id: u16, tick: u32) {
+        c.on_datagram(&Welcome { player_id: id, server_tick: tick }.encode(), 0.0).unwrap();
+    }
+
+    fn intent(tick: u32) -> PlayerIntent {
+        PlayerIntent { tick, buttons: Buttons(Buttons::WALL_CLING), move_z: 100, ..Default::default() }
+    }
+
+    #[test]
+    fn handshake_then_snapshots_then_events_ack() {
+        let mut c = NetClient::default();
+        assert!(c.next_packet(intent(1), 0.0).is_none(), "no input before WELCOME");
+        assert!(c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &[]), 0.0).is_err(), "snapshot before WELCOME rejected");
+        welcome(&mut c, 7, 1000);
+        assert_eq!(c.player_id(), Some(7));
+        let first = ClientPacket::decode(&c.next_packet(intent(1), 0.0).unwrap()).unwrap();
+        assert_eq!(first.ack_snapshot_tick, 0, "0 = no snapshot yet: server must send a full one");
+
+        // full snapshot + one reliable wall event in the same datagram
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::WallKill { id: 3, tick: 1002 });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 256);
+        let dgram = frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(1002, 4000)));
+        c.on_datagram(&dgram, 2.0).unwrap();
+        assert_eq!(c.take_events(), vec![NetEvent::WallKill { id: 3, tick: 1002 }]);
+        assert!(c.take_events().is_empty());
+        assert_eq!(c.interp.newest_tick(), Some(1002));
+
+        // redelivery (server resends until acked) applies once
+        c.on_datagram(&dgram, 2.1).unwrap_or(());
+        assert!(c.take_events().is_empty());
+
+        // next delta decodes against the stored baseline
+        let d2 = encode_delta(Some(&snap(1002, 4000)), &snap(1004, 4200));
+        c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &d2), 4.0).unwrap();
+        assert_eq!(c.interp.newest_tick(), Some(1004));
+
+        // outgoing packet acks what we hold
+        let bytes = c.next_packet(intent(10), 4.0).unwrap();
+        let pkt = ClientPacket::decode(&bytes).unwrap();
+        assert_eq!(pkt.ack_snapshot_tick, 1004);
+        assert_eq!(pkt.ack_event_seq, 1);
+        assert_eq!(pkt.intents[0], intent(10));
+    }
+
+    #[test]
+    fn redundancy_window_and_gap_reset() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut last = None;
+        for t in 1..=6 {
+            last = c.next_packet(intent(t), t as f64);
+        }
+        let pkt = ClientPacket::decode(&last.unwrap()).unwrap();
+        assert_eq!(pkt.intents.len(), MAX_REDUNDANCY);
+        assert_eq!(pkt.intents.iter().map(|i| i.tick).collect::<Vec<_>>(), vec![6, 5, 4, 3]);
+        let pkt = ClientPacket::decode(&c.next_packet(intent(50), 50.0).unwrap()).unwrap();
+        assert_eq!(pkt.intents.len(), 1, "tick gap restarts the window");
+        assert_eq!(pkt.seq, 6);
+    }
+
+    #[test]
+    fn corrupt_or_baselineless_datagrams_are_counted_not_applied() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let orphan = encode_delta(Some(&snap(90, 0)), &snap(92, 10)); // baseline we never received
+        assert_eq!(c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &orphan), 1.0), Err(DecodeError::BaselineMissing(90)));
+        assert!(c.on_datagram(&[TAG_SNAPSHOT, 9], 1.0).is_err());
+        assert!(c.on_datagram(&[], 1.0).is_err());
+        assert_eq!(c.bad_datagrams, 3);
+        assert_eq!(c.interp.newest_tick(), None);
+    }
+
+    fn own_block(has_state: bool, acked: u32, hp_x10: u16, hits: Vec<HitMsg>) -> Vec<u8> {
+        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits };
+        let mut w = BitWriter::new();
+        x.write(&mut w, |w| OwnState::default().write(w));
+        w.finish()
+    }
+
+    #[test]
+    fn own_extras_surface_with_position_hp_and_hits() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0); // our entity id = 1 (see snap())
+        let hit = HitMsg { other: 2, amount: 30, kind: 0, taken: false, kill: false };
+        let d = frame_snapshot_v3(&no_events(), &own_block(true, 77, 755, vec![hit]), &[], &encode_delta(None, &snap(10, 6400)));
+        c.on_datagram(&d, 1.0).unwrap();
+        let u = c.take_own_state().expect("own update");
+        assert_eq!(u.acked_tick, 77);
+        assert!(u.server_pos.is_some());
+        assert!(c.take_own_state().is_none(), "taken once");
+        assert_eq!(c.hp(), Some(75.5));
+        assert_eq!(c.take_hits(), vec![hit]);
+        // the same datagram again (network duplication) must not replay the hit marker
+        c.on_datagram(&d, 1.1).unwrap_or(());
+        assert!(c.take_hits().is_empty());
+        // dead: extras only, no movement state
+        let d2 = frame_snapshot_v3(&no_events(), &own_block(false, 0, 0, vec![]), &[], &encode_delta(None, &snap(12, 6400)));
+        c.on_datagram(&d2, 2.0).unwrap_or(());
+        assert!(c.take_own_state().is_none());
+        assert_eq!(c.hp(), Some(0.0));
+        // truncated own block: whole datagram rejected, nothing applied
+        let bad = frame_snapshot_v3(&no_events(), &[0x80], &[], &encode_delta(None, &snap(14, 0)));
+        assert!(c.on_datagram(&bad, 3.0).is_err());
+        assert_ne!(c.interp.newest_tick(), Some(14));
+    }
+
+    #[test]
+    fn board_surfaces_and_bad_board_is_rejected() {
+        use shinobi_proto::gameplay::{BoardRow, PHASE_LIVE};
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        assert!(c.board().is_none());
+        let b = Board {
+            phase: PHASE_LIVE,
+            map: 2,
+            ticks_left: Some(900),
+            winner: 0,
+            rows: vec![BoardRow { id: 1, kills: 3, deaths: 1, alive: true }],
+        };
+        let d = frame_snapshot_v3(&no_events(), &[], &b.encode(), &encode_delta(None, &snap(10, 0)));
+        c.on_datagram(&d, 1.0).unwrap();
+        assert_eq!(c.board(), Some(&b));
+        let bad = frame_snapshot_v3(&no_events(), &[], &[0xFF], &encode_delta(None, &snap(12, 0)));
+        let _ = c.on_datagram(&bad, 2.0);
+        assert_eq!(c.board(), Some(&b), "a corrupt board never replaces the good one");
+    }
+
+    #[test]
+    fn handshake_cookie_and_retransmit_policy() {
+        use shinobi_proto::datagram::{decode_hello, encode_challenge, VERSION};
+        let mut c = NetClient::default();
+        let h = c.hello_due(0.0).expect("first HELLO immediately");
+        assert_eq!(decode_hello(&h).unwrap().cookie, 0);
+        assert!(c.hello_due(3.0).is_none(), "not before HELLO_RETRY_MS (100 ms = 6 ticks)");
+        c.on_datagram(&encode_challenge(0xDEAD_BEEF), 4.0).unwrap();
+        let h = c.hello_due(6.0).expect("retry due");
+        let hello = decode_hello(&h).unwrap();
+        assert_eq!((hello.cookie, hello.version), (0xDEAD_BEEF, VERSION));
+        c.on_datagram(&encode_challenge(7), 7.0).unwrap(); // newest cookie wins
+        assert_eq!(decode_hello(&c.hello()).unwrap().cookie, 7);
+        assert!(!c.connect_failed(299.0));
+        assert!(c.connect_failed(300.0), "5 s without WELCOME");
+        assert!(c.hello_due(400.0).is_none(), "gives up");
+        // WELCOME ends the handshake; later CHALLENGEs are ignored
+        let mut c = NetClient::default();
+        c.hello_due(0.0);
+        welcome(&mut c, 3, 10);
+        c.on_datagram(&encode_challenge(99), 1.0).unwrap();
+        assert_eq!(decode_hello(&c.hello()).unwrap().cookie, 0);
+        assert!(c.hello_due(50.0).is_none());
+        assert!(!c.connect_failed(1000.0));
+    }
+
+    #[test]
+    fn kick_is_terminal_and_not_a_bad_datagram() {
+        use shinobi_proto::datagram::encode_kick;
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        assert!(c.next_packet(intent(1), 0.0).is_some());
+        c.on_datagram(&encode_kick(KickReason::Cheat), 1.0).unwrap();
+        c.on_datagram(&encode_kick(KickReason::Flood), 1.1).unwrap(); // repeats keep the first reason
+        assert_eq!(c.kicked(), Some(KickReason::Cheat));
+        assert_eq!(c.bad_datagrams, 0);
+        assert!(c.next_packet(intent(2), 2.0).is_none(), "no input after a kick");
+        assert!(c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &encode_delta(None, &snap(9, 0))), 3.0).is_ok());
+        assert_eq!(c.interp.newest_tick(), None, "stragglers after a kick are ignored");
+        // kick while still connecting (server full)
+        let mut c = NetClient::default();
+        c.on_datagram(&encode_kick(KickReason::ServerFull), 0.0).unwrap();
+        assert_eq!(c.kicked(), Some(KickReason::ServerFull));
+        assert!(c.on_datagram(&[TAG_KICK], 0.0).is_err(), "truncated kick is malformed");
+    }
+
+    #[test]
+    fn pace_tick_is_contiguous_and_reanchors_on_big_drift() {
+        let mut c = NetClient::default();
+        assert_eq!(c.pace_tick(0.0, 4), None);
+        welcome(&mut c, 1, 100);
+        assert_eq!(c.pace_tick(0.0, 4), Some(104));
+        // clock estimate jitters by +-2 ticks: tick numbers still just count up
+        assert_eq!(c.pace_tick(1.0, 4), Some(105));
+        assert_eq!(c.pace_tick(3.0, 4), Some(106));
+        assert_eq!(c.pace_tick(2.0, 4), Some(107));
+        // 3 s hitch: want ~ 284, far from 108 -> re-anchor
+        assert_eq!(c.pace_tick(180.0, 4), Some(284));
+        assert_eq!(c.pace_tick(181.0, 4), Some(285));
+    }
+
+    #[test]
+    fn input_tick_leads_the_server_clock() {
+        let mut c = NetClient::default();
+        assert_eq!(c.input_tick(0.0, 4), None);
+        welcome(&mut c, 1, 500);
+        assert_eq!(c.input_tick(10.0, 4), Some(514));
+        assert_eq!(c.input_tick(10.5, 4), Some(515), "rounds up, never stamps behind the estimate");
+    }
+
+    #[test]
+    fn clock_estimate_follows_snapshots_and_repeat_welcome_is_ignored() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 500);
+        assert_eq!(c.server_tick_estimate(10.0), Some(510.0));
+        c.on_datagram(&Welcome { player_id: 9, server_tick: 9999 }.encode(), 11.0).unwrap();
+        assert_eq!(c.player_id(), Some(1));
+        c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &encode_delta(None, &snap(600, 0))), 20.0).unwrap();
+        assert_eq!(c.server_tick_estimate(25.0), Some(605.0));
+    }
+}

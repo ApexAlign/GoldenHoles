@@ -1,0 +1,13 @@
+# Demo arena for the recorded clip (server format: `box cx cy cz hx hy hz [rot_z]`, `spawn x y z`, `pickup x y z [respawn]`).
+# Run:  shinobi-server 127.0.0.1:7777 --level levels/demo.lvl --bots 3
+# The game client must load the same geometry (it predicts against it) once LevelDesc::from_text lands.
+box 0 -0.5 0   200 0.5 200      # floor (top face at y = 0, same as the built-in level)
+box 14 5 -45   0.6 5 45         # right wall: x 13.4..14.6, z -90..0, y 0..10 (wall-run)
+box -14 5 -45  0.6 5 45         # left wall
+box 0 1 -25    3 1 0.6          # low barrier to jump over
+spawn 0 0.81 0
+spawn 5 0.81 4
+spawn -5 0.81 4
+spawn 0 0.81 8
+pickup 10 1 0
+pickup -10 1 0

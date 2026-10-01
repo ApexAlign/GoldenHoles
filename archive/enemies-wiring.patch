@@ -1,0 +1,175 @@
+--- a/crates/shinobi-sim/src/tick.rs
++++ b/crates/shinobi-sim/src/tick.rs
+@@ -16,8 +16,9 @@
+ use crate::combat::{Aim, CombatEvent, CombatInput, CombatSystem, GROUP_PLAYER};
+ use crate::lagcomp::PoseHistory;
+ use crate::balance::Balance;
++use crate::enemies::{Enemies, EnemyDamage, EnemyEvent, EnemyKind, ENEMY_ID_BASE};
+ use crate::hazards::Hazards;
+-use crate::match_state::{MatchEvent, MatchState};
++use crate::match_state::{GameMode, MatchEvent, MatchState, PhaseKind};
+ use crate::pickups::{PickupEvent, Pickups};
+ use crate::pvp::{self, PvpEvent, Vitals};
+ 
+@@ -105,6 +106,10 @@
+     pub pickups: Pickups,
+     /// Every combat / enemy / match tunable (see `balance.rs`). Change with `set_balance`.
+     pub balance: Balance,
++    /// NPC goons (waves / training dummies); see `enemies.rs`. Mode comes from `match_state.cfg.mode`.
++    pub enemies: Enemies,
++    /// Spawned / Windup / Hurt / Killed / Dropped / Wave* of the most recent `frame`.
++    pub enemy_events: Vec<EnemyEvent>,
+     pub separation: crate::separation::SepCfg,
+     /// Warmup / Live / Intermission flow (see `match_state.rs`).
+     pub match_state: MatchState,
+@@ -139,6 +144,8 @@
+             hazards: Hazards::default(),
+             pickups: Pickups::default(),
+             balance: Balance::default(),
++            enemies: Enemies::default(),
++            enemy_events: Vec::new(),
+             separation: Default::default(),
+             match_state: MatchState::default(),
+             match_events: Vec::new(),
+@@ -218,6 +225,22 @@
+         Ok(())
+     }
+ 
++    /// Spawn one NPC enemy (any mode). `None` at the `enemy.max_alive` cap.
++    pub fn spawn_enemy(&mut self, kind: EnemyKind, pos: [f32; 3]) -> Option<u16> {
++        let (tick, bal, cfg) = (self.tick, self.balance.clone(), self.cfg);
++        self.enemies.spawn(&mut self.world, &cfg, &bal, kind, pos, tick, &mut self.enemy_events)
++    }
++
++    /// Where co-op waves come in (empty = the player spawn list).
++    pub fn set_wave_spawns(&mut self, points: Vec<[f32; 3]>) {
++        self.enemies.spawn_points = points;
++    }
++
++    /// Where training dummies stand and respawn.
++    pub fn set_training_points(&mut self, points: Vec<[f32; 3]>) {
++        self.enemies.training_points = points;
++    }
++
+     pub fn set_spawns(&mut self, spawns: Vec<[f32; 3]>) {
+         self.spawns = spawns;
+     }
+@@ -291,6 +314,7 @@
+         self.pvp_events.clear();
+         self.pickup_events.clear();
+         self.match_events.clear();
++        self.enemy_events.clear();
+         let adv = self.acc.advance(elapsed);
+         let mut report = FrameReport { ticks: adv.steps, discarded: adv.discarded, kicked: Vec::new() };
+         for _ in 0..adv.steps {
+@@ -319,8 +343,20 @@
+             &mut self.match_events,
+         );
+         let frozen = self.match_state.frozen();
++        if self.match_events.iter().any(|e| matches!(e, MatchEvent::MatchStart { tick: t, .. } if *t == tick)) {
++            self.enemies.clear_all(&mut self.world); // fresh match, fresh arena
++        }
+         pvp::tick_respawns(&mut self.players, &mut self.world, &self.spawns, &mut self.spawn_counter, tick, self.balance.player.invuln_ticks, &mut self.pvp_events);
+         let mut hits = Vec::new();
++        let mut enemy_dmg: Vec<EnemyDamage> = Vec::new();
++        let mode = self.match_state.cfg.mode;
++        if !frozen {
++            // goons act first, while every hitbox still sits at "now"; their attacks join this tick's hits
++            let live = self.match_state.kind() == PhaseKind::Live;
++            let (bal, cfg) = (&self.balance, &self.cfg);
++            self.enemies.update_modes(tick, mode, live, &mut self.world, &self.players, &self.spawns, bal, cfg, &mut self.enemy_events);
++            self.enemies.update(tick, dt, &mut self.world, &self.players, bal, cfg, &mut self.enemy_events, &mut hits);
++        }
+         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
+         self.world.queries.update(&self.world.colliders);
+         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
+@@ -354,7 +390,7 @@
+             // (skipped when nothing can query: the rebuild is the expensive part with many players)
+             let acting = it.buttons.has(Buttons::FIRE) || it.buttons.has(Buttons::SLICE) || self.players[i].combat.busy();
+             if acting {
+-                pvp::rewind_hitboxes(&mut self.world, &self.players, i, tick, &self.cfg);
++                pvp::rewind_hitboxes(&mut self.world, &self.players, i, tick, &self.cfg, &self.enemies);
+             }
+             let mut ev = Vec::new();
+             {
+@@ -376,6 +412,7 @@
+             }
+             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg));
+             let id = self.players[i].id;
++            self.enemies.collect_from_events(id, before, &ev, &self.balance, &mut enemy_dmg);
+             self.events.extend(ev.into_iter().map(|e| (id, e)));
+ 
+             let p = &mut self.players[i];
+@@ -398,19 +435,30 @@
+         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement
+         crate::separation::separate(&self.players, &mut self.world, &self.cfg, &self.separation);
+ 
++        // the last attacker may have left hitboxes rewound: back to "now" before anything else queries them
++        pvp::restore_hitboxes(&self.players, &mut self.world);
++        self.enemies.restore_hitboxes(&mut self.world);
++
+         // environment: obstacles and light-walls (positions after this tick's movement)
+         self.world.queries.update(&self.world.colliders);
+         if !frozen {
+             hits.extend(self.hazards.hits(&self.world, &self.players, tick, &self.cfg, &mut self.pvp_events));
++            self.enemies.collect_from_hazards(&self.hazards, &mut enemy_dmg);
++        }
++        if mode == GameMode::CoopWaves {
++            // co-op: no friendly fire from weapons (enemies and hazards still hurt)
++            hits.retain(|h| h.attacker >= ENEMY_ID_BASE || matches!(h.cause, pvp::Cause::Hazard(_)));
+         }
+ 
+         // every attacker has run: settle damage once, then record the tick
+         pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
++        self.enemies.apply_damage(tick, &mut self.world, &self.balance, &enemy_dmg, &mut self.pickups, &mut self.enemy_events);
+         self.match_state.end_tick(tick, &self.players, &mut self.match_events);
+         if !frozen {
+             self.pickups.update(tick, &self.world, &mut self.players, &self.cfg, &mut self.pickup_events);
+         }
+         pvp::finish_tick(&mut self.players, &mut self.world, tick);
++        self.enemies.finish_tick(&mut self.world, tick);
+         self.tick = tick.wrapping_add(1);
+         self.now += dt;
+     }
+--- a/crates/shinobi-sim/src/pvp.rs
++++ b/crates/shinobi-sim/src/pvp.rs
+@@ -147,7 +147,14 @@
+ 
+ /// Put every hitbox where `attacker`'s screen showed it, hide the attacker's own and anyone who cannot be
+ /// hurt (dead, spawn-protected, roll i-frames), then rebuild the query structure.
+-pub fn rewind_hitboxes(world: &mut PhysicsWorld, players: &[Player], attacker: usize, tick: u32, cfg: &Cfg) {
++pub fn rewind_hitboxes(
++    world: &mut PhysicsWorld,
++    players: &[Player],
++    attacker: usize,
++    tick: u32,
++    cfg: &Cfg,
++    enemies: &crate::enemies::Enemies,
++) {
+     let rt = rewind_time(tick, players[attacker].queue.latest_view);
+     for (j, p) in players.iter().enumerate() {
+         let Some(col) = world.colliders.get_mut(p.vitals.hitbox) else { continue };
+@@ -164,9 +171,23 @@
+         col.set_position(Isometry::translation(pos[0], pos[1], pos[2]));
+     }
+     let _ = cfg;
++    enemies.rewind_hitboxes(world, rt);
+     world.queries.update(&world.colliders);
+ }
+ 
++/// Every player hitbox back at "now" (position and enabled state). Run before anything that queries the
++/// world after the attackers (hazards), since the last attacker may have left them rewound.
++pub fn restore_hitboxes(players: &[Player], world: &mut PhysicsWorld) {
++    for p in players {
++        let t = world.bodies[p.ch.body].translation();
++        let alive = p.vitals.alive();
++        if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
++            col.set_position(Isometry::translation(t.x, t.y, t.z));
++            col.set_collision_groups(if alive { hitbox_groups() } else { InteractionGroups::none() });
++        }
++    }
++}
++
+ /// Player hits produced by one attacker's combat events this tick:
+ /// * `Damage` events whose collider is a player hitbox (shuriken, slash box, ultimate), and
+ /// * a swept slash test (`swept_hit`) for targets that moved across the tick and slipped between the two
