@@ -158,6 +158,8 @@ pub struct TeamScores {
     pub scores: [u16; 2],
     /// Kills that win the match.
     pub limit: u16,
+    /// `TEAM_RESULT_*`: 0 running, 1 cyan won, 2 orange won, 3 draw, 4 sudden death in progress.
+    pub result: u8,
 }
 
 /// A friendly name tag, already projected: normalized screen position (clamped into the central band when the
@@ -744,7 +746,7 @@ impl Hud {
             out.push(Prim::Text { pos: (0.5, 0.84), text: msg.clone(), size: 0.03, color: p.gold.a(fade), align: Align::Center });
         }
         if let Some(ts) = s.team_scores {
-            team_bar(&mut out, &ts, p);
+            team_bar(&mut out, &ts, s.time, p);
         }
         for t in &s.ally_tags {
             ally_tag(&mut out, t, s.team_scores.map_or(0, |x| x.mine), p);
@@ -792,7 +794,7 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 
 /// Top-centre team score bar: cyan score left, orange right, each side's bar fills outward from the middle
 /// toward the kill limit. The local team's side is brighter. Inside x 0.36..0.64 (clear of the side columns).
-fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, p: &Palette) {
+fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, time: f32, p: &Palette) {
     let (cx, y, half) = (0.5, 0.032, 0.11);
     let lim = ts.limit.max(1) as f32;
     for team in 0..2u8 {
@@ -814,7 +816,15 @@ fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, p: &Palette) {
             align: if team == 0 { Align::Right } else { Align::Left },
         });
     }
-    out.push(Prim::Text { pos: (cx, y + 0.026), text: format!("FIRST TO {}", ts.limit), size: 0.016, color: p.text.a(0.5), align: Align::Center });
+    let (label, col, a) = match ts.result {
+        1 => ("CYAN WINS".to_string(), p.cyan, 1.0),
+        2 => ("ORANGE WINS".to_string(), p.orange, 1.0),
+        3 => ("DRAW".to_string(), p.gold, 1.0),
+        4 => ("SUDDEN DEATH".to_string(), p.gold, 0.7 + 0.3 * (time * 6.0).sin().abs()),
+        _ => (format!("FIRST TO {}", ts.limit), p.text, 0.5),
+    };
+    let size = if ts.result == 0 { 0.016 } else { 0.022 };
+    out.push(Prim::Text { pos: (cx, y + 0.028), text: label, size, color: col.a(a), align: Align::Center });
 }
 
 /// Ally marker: team-coloured diamond with the name above and distance below. Clamped tags (ally off screen or
@@ -1635,7 +1645,7 @@ mod tests {
         let row = |n: &str, k, team| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local: false, alive: true, team };
         let s = HudState {
             hp: 1.0,
-            team_scores: Some(TeamScores { mine: 1, scores: [12, 30], limit: 50 }),
+            team_scores: Some(TeamScores { mine: 1, scores: [12, 30], limit: 50, result: 0 }),
             ally_tags: vec![
                 AllyTag { pos: (0.4, 0.4), name: "ALLY".into(), dist: 20.0, clamped: false },
                 AllyTag { pos: (SIDE_CLEAR + 0.04, 0.5), name: "EDGE".into(), dist: 60.0, clamped: true },
@@ -1660,6 +1670,17 @@ mod tests {
                     assert!(pos.0 >= SIDE_CLEAR && pos.0 <= 1.0 - SIDE_CLEAR, "{text} in a side column");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn team_bar_announces_sudden_death_and_the_result() {
+        let label = |result| {
+            let s = HudState { hp: 1.0, team_scores: Some(TeamScores { mine: 0, scores: [50, 50], limit: 50, result }), ..Default::default() };
+            Hud::build(&s).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect::<Vec<_>>()
+        };
+        for (r, t) in [(0, "FIRST TO 50"), (1, "CYAN WINS"), (2, "ORANGE WINS"), (3, "DRAW"), (4, "SUDDEN DEATH")] {
+            assert!(label(r).contains(&t.to_string()), "{t}");
         }
     }
 }

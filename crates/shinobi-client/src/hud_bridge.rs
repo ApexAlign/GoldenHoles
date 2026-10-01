@@ -25,6 +25,8 @@ pub struct TeamInfo {
     pub my_team: u8,
     pub scores: [u16; 2],
     pub score_limit: u16,
+    /// `TEAM_RESULT_*` from the server (running / winner / draw / sudden death).
+    pub result: u8,
     /// Team per player id.
     pub team_of: HashMap<u16, u8>,
 }
@@ -42,7 +44,7 @@ impl TeamInfo {
             }
         }
         let team_of = ids.into_iter().filter_map(|id| net.team_of(id).filter(|t| *t < shinobi_sim::team::TEAM_COUNT).map(|t| (id, t))).collect();
-        Some(Self { my_team, scores: net.team_scores(), score_limit: TEAM_SCORE_LIMIT, team_of })
+        Some(Self { my_team, scores: net.team_scores(), score_limit: TEAM_SCORE_LIMIT, result: net.team_result(), team_of })
     }
 }
 
@@ -116,7 +118,7 @@ impl HudBridge {
             }
         }
         if let Some(t) = &teams {
-            team_scores = Some(TeamScores { mine: t.my_team, scores: t.scores, limit: t.score_limit });
+            team_scores = Some(TeamScores { mine: t.my_team, scores: t.scores, limit: t.score_limit, result: t.result });
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let (yaw, pitch) = view.look_angles();
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
@@ -317,9 +319,9 @@ mod tests {
         let smp = |x: f32, z: f32| shinobi_client_sample([x, 0.5, z]);
         v.remotes = vec![(2, smp(0.0, -12.0)), (3, smp(3.0, -12.0)), (4, smp(0.0, 12.0))];
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 3, kills: 2, deaths: 1, alive: true }] });
-        b.teams = Some(TeamInfo { my_team: 0, scores: [4, 9], score_limit: 50, team_of: [(2, 0), (3, 1), (4, 0)].into_iter().collect() });
+        b.teams = Some(TeamInfo { my_team: 0, scores: [4, 9], score_limit: 50, result: 0, team_of: [(2, 0), (3, 1), (4, 0)].into_iter().collect() });
         let s = b.update(0.016, &v, &net(), false);
-        assert_eq!(s.team_scores, Some(TeamScores { mine: 0, scores: [4, 9], limit: 50 }));
+        assert_eq!(s.team_scores, Some(TeamScores { mine: 0, scores: [4, 9], limit: 50, result: 0 }));
         assert_eq!(s.scoreboard.iter().map(|r| r.team).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
         // ally 2 ahead: tagged; enemy 3 ahead: never; ally 4 behind: not projected
         assert_eq!(s.ally_tags.len(), 1);
