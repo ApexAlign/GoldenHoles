@@ -26,6 +26,7 @@ const LIFE_S: f32 = 0.7;
 const FEET_BELOW: f32 = 0.81 - HIP_ABOVE_FEET;
 
 struct Wall {
+    team: crate::team::Team,
     pts: VecDeque<TrailPoint>,
     entity: Entity,
     mesh: Handle<Mesh>,
@@ -102,7 +103,7 @@ fn update_walls(
                     NoFrustumCulling, // geometry changes every frame; its Aabb would be stale
                 ))
                 .id();
-            Wall { pts: VecDeque::new(), entity, mesh }
+            Wall { team: crate::team::remote_team(*id), pts: VecDeque::new(), entity, mesh }
         });
 
         let p = Vec3::new(pos[0], pos[1] - FEET_BELOW, pos[2]);
@@ -117,6 +118,7 @@ fn update_walls(
             w.pts.pop_front();
         }
 
+        let team = w.team;
         let (a, b) = w.pts.as_slices();
         let strip = wall_strip((a, b), now, WALL_HEIGHT, &cfg, server_time);
         if strip.is_empty() {
@@ -130,7 +132,7 @@ fn update_walls(
             .iter()
             .map(|v| {
                 // cool tail -> hot head, hot rim on the top edge
-                let c = ribbon_color([pal.cyan.0, pal.cyan.1, pal.cyan.2], [pal.magenta.0, pal.magenta.1, pal.magenta.2], v.heat, v.v > 0.5);
+                let c = ribbon_color(team.hdr(&pal, 0.25), team.hdr(&pal, 1.0), v.heat, v.v > 0.5);
                 [c[0], c[1], c[2], v.alpha]
             })
             .collect();
