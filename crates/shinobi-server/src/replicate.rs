@@ -241,7 +241,9 @@ impl Replicator {
         if !ms.team_mode {
             return None;
         }
-        let result = if ms.kind() == PhaseKind::Intermission {
+        let result = if ms.in_sudden_death() {
+            shinobi_sim::events::TEAM_RESULT_SUDDEN
+        } else if ms.kind() == PhaseKind::Intermission {
             match ms.last_winner_team {
                 Some(0) => TEAM_RESULT_CYAN,
                 Some(_) => TEAM_RESULT_ORANGE,
@@ -739,12 +741,25 @@ mod tests {
         assert!(blocks_for(&mut r, &s, 3).contains(&placed));
     }
 
-    /// Release-mode soak: 16 players all throwing shurikens (disc cap reached), 4 ropes up, every datagram built.
-    /// Prints per-tick cost percentiles. Run: `cargo test --release -p shinobi-server soak_8v8 -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "perf report: run in --release"]
-    fn soak_8v8_tick_cost_percentiles() {
+    struct SoakStats {
+        mean_ms: f64,
+        p50_ms: f64,
+        p99_ms: f64,
+        p999_ms: f64,
+        max_ms: f64,
+        slowest: Vec<(usize, f64)>,
+        max_discs: usize,
+        /// Largest datagram once the first 2 s (joins, first full snapshots) are over, and in the whole run.
+        max_steady: usize,
+        max_all: usize,
+    }
+
+    /// 16 players all throwing shurikens, 4 ropes up, a field of player blocks that keeps growing, every datagram
+    /// built and acked on a perfect link. `late_joiner`: a 17th peer joins at 1/3 of the run, mid-spam, and has the
+    /// whole block field replayed to it.
+    fn run_soak(ticks: u32, late_joiner: bool) -> SoakStats {
         use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, ViewState, PITCH_LEVEL};
+        use shinobi_sim::blocks::BlockEvent;
         use shinobi_sim::character::GrappleState;
         use shinobi_sim::events::EventInbox;
         let cfg = Cfg::default();
@@ -754,18 +769,36 @@ mod tests {
             let at = s.pick_spawn(None);
             s.add_player(id, at);
         }
+        // 400 blocks laid out far from the spawn ring before anyone connects
+        for k in 0..400i32 {
+            let cell = [-40 + k % 20, 0, 30 + k / 20];
+            s.blocks.place(&mut s.world, 1 + (k % 16) as u16, cell, &[]).unwrap();
+        }
         let mut r = Replicator::new(&cfg, 1);
         for id in 1..=16u16 {
             r.add_peer(&s, id, s.tick);
         }
         let mut inboxes: HashMap<u16, EventInbox> = (1..=16u16).map(|id| (id, EventInbox::default())).collect();
-        let (mut ticks_ns, mut max_discs, mut max_dgram, mut max_first) = (Vec::<u64>::new(), 0usize, 0usize, 0usize);
-        const TICKS: u32 = 3600; // one minute
-        for t in 0..TICKS {
+        let (mut ticks_ns, mut max_discs, mut max_steady, mut max_all) = (Vec::<u64>::new(), 0usize, 0usize, 0usize);
+        for t in 0..ticks {
+            if late_joiner && t == ticks / 3 {
+                s.add_player(17, [0.0, 0.81, 0.0]);
+                r.add_peer(&s, 17, s.tick);
+                inboxes.insert(17, EventInbox::default());
+            }
+            let n_players = s.players.len() as u16;
             for p in s.players.iter_mut().take(4) {
                 p.ch.grapple = Some(GrappleState { anchor: shinobi_sim::rapier3d::prelude::Vector::new(0.0, 9.0, -6.0), len: 8.0, time: 0.0 });
             }
-            for id in 1..=16u16 {
+            if t % 6 == 0 {
+                // the field keeps growing: place + announce (as `Server::frame` does for a build press)
+                let cell = [-60 + (t / 6 % 40) as i32, 1, 30 + (t / 240) as i32];
+                if s.blocks.place(&mut s.world, 2, cell, &[]).is_ok() {
+                    let tick = s.tick;
+                    s.block_events.push(BlockEvent::Placed { tick, owner: 2, cell });
+                }
+            }
+            for id in 1..=n_players {
                 let it = PlayerIntent {
                     tick: s.tick,
                     buttons: Buttons(Buttons::FIRE),
@@ -774,7 +807,12 @@ mod tests {
                     aim_pitch: PITCH_LEVEL,
                     ..Default::default()
                 };
-                let pkt = ClientPacket { ack_snapshot_tick: s.tick.saturating_sub(2), view: ViewState { from_tick: s.tick.saturating_sub(2), alpha: 0 }, intents: vec![it], ..Default::default() };
+                let pkt = ClientPacket {
+                    ack_snapshot_tick: s.tick.saturating_sub(2),
+                    view: ViewState { from_tick: s.tick.saturating_sub(2), alpha: 0 },
+                    intents: vec![it],
+                    ..Default::default()
+                };
                 s.ingest(id, &pkt.encode().unwrap());
             }
             let t0 = std::time::Instant::now();
@@ -788,10 +826,9 @@ mod tests {
             max_discs = max_discs.max(s.projectiles().len());
             let tick = s.tick.saturating_sub(1);
             for (id, bytes) in round {
-                if t < 120 {
-                    max_first = max_first.max(bytes.len()); // joins / first full snapshots
-                } else {
-                    max_dgram = max_dgram.max(bytes.len());
+                max_all = max_all.max(bytes.len());
+                if t >= 120 && !(late_joiner && (ticks / 3..ticks / 3 + 90).contains(&t)) {
+                    max_steady = max_steady.max(bytes.len());
                 }
                 let (events, ..) = datagram::split_snapshot_v3(&bytes).unwrap();
                 let inbox = inboxes.get_mut(&id).unwrap();
@@ -799,29 +836,54 @@ mod tests {
                 r.on_client_ack(id, tick, inbox.ack());
             }
         }
-        let worst_at: Vec<(usize, f64)> = {
+        let slowest = {
             let mut v: Vec<(usize, u64)> = ticks_ns.iter().copied().enumerate().collect();
             v.sort_by_key(|x| std::cmp::Reverse(x.1));
             v.into_iter().take(5).map(|(i, n)| (i, n as f64 / 1e6)).collect()
         };
-        eprintln!("slowest ticks (index, ms): {worst_at:.2?}");
         ticks_ns.sort_unstable();
         let pct = |q: f64| ticks_ns[((ticks_ns.len() as f64 * q) as usize).min(ticks_ns.len() - 1)] as f64 / 1e6;
-        let mean = ticks_ns.iter().sum::<u64>() as f64 / ticks_ns.len() as f64 / 1e6;
+        SoakStats {
+            mean_ms: ticks_ns.iter().sum::<u64>() as f64 / ticks_ns.len() as f64 / 1e6,
+            p50_ms: pct(0.5),
+            p99_ms: pct(0.99),
+            p999_ms: pct(0.999),
+            max_ms: pct(1.0),
+            slowest,
+            max_discs,
+            max_steady,
+            max_all,
+        }
+    }
+
+    /// The client reads datagrams into a 2048 B buffer (`udp_game::RX_BUF`): a bigger one is truncated and dropped.
+    /// Worst case: 16 players spamming + ropes + a 400-block field + a mid-spam joiner getting the whole field.
+    #[test]
+    fn worst_case_datagram_stays_under_the_client_rx_buffer() {
+        const RX_BUF: usize = 2048; // crates/shinobi-client/src/udp_game.rs and udp_session.rs
+        let st = run_soak(600, true);
+        eprintln!("worst case: largest steady datagram {} B, whole run {} B, discs in flight {}", st.max_steady, st.max_all, st.max_discs);
+        assert!(st.max_discs > 100, "the soak really is a firefight ({} discs)", st.max_discs);
+        assert!(st.max_all < RX_BUF, "a {} B datagram would be truncated by the client", st.max_all);
+        assert!(st.max_steady <= 1200, "steady-state datagram {} B exceeds one MTU", st.max_steady);
+    }
+
+    /// Release-mode soak: per-tick cost percentiles (sim + replication + every datagram).
+    /// Run: `cargo test --release -p shinobi-server soak_8v8 -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf report: run in --release"]
+    fn soak_8v8_tick_cost_percentiles() {
+        let st = run_soak(3600, true);
+        eprintln!("slowest ticks (index, ms): {:.2?}", st.slowest);
         eprintln!(
-            "soak 8v8 ({} build): {} ticks, mean {mean:.2} ms, p50 {:.2}, p99 {:.2}, p99.9 {:.2}, max {:.2} ms; most discs in flight {max_discs} (sim; up to {} replicated); largest steady datagram {max_dgram} B, first 2 s {max_first} B",
+            "soak 8v8 ({} build): 3600 ticks, mean {:.2} ms, p50 {:.2}, p99 {:.2}, p99.9 {:.2}, max {:.2} ms; most discs in flight {} (sim; up to {} replicated); largest steady datagram {} B, whole run {} B",
             if cfg!(debug_assertions) { "debug" } else { "release" },
-            TICKS,
-            pct(0.5),
-            pct(0.99),
-            pct(0.999),
-            pct(1.0),
-            max_discs.min(PROJECTILE_ID_MAX),
+            st.mean_ms, st.p50_ms, st.p99_ms, st.p999_ms, st.max_ms, st.max_discs, PROJECTILE_ID_MAX, st.max_steady, st.max_all
         );
         if !cfg!(debug_assertions) {
-            assert!(pct(0.99) < 16.6, "p99 tick {:.2} ms blows the 60 Hz budget", pct(0.99));
+            assert!(st.p99_ms < 16.6, "p99 tick {:.2} ms blows the 60 Hz budget", st.p99_ms);
         }
-        assert!(max_dgram <= 1200, "largest steady datagram {max_dgram} B");
+        assert!(st.max_all < 2048 && st.max_steady <= 1200);
     }
 
     #[test]
@@ -844,6 +906,11 @@ mod tests {
         assert!(got.contains(&NetEvent::TeamAssign { player: 1, team: 0 }), "{got:?}");
         assert!(got.contains(&NetEvent::TeamAssign { player: 2, team: 1 }), "{got:?}");
         assert!(got.iter().any(|e| matches!(e, NetEvent::TeamScore { score: [0, 0], result: TEAM_RESULT_RUNNING, .. })));
+        // a tie that goes to sudden death is announced once
+        s.match_state.start_sudden_death(s.tick, [0, 0]);
+        r.post_frame(&mut s);
+        let got = teams_for(&mut r, &s, 1);
+        assert!(got.iter().any(|e| matches!(e, NetEvent::TeamScore { result: shinobi_sim::events::TEAM_RESULT_SUDDEN, .. })), "{got:?}");
         // a kill changes the score once
         s.players[0].vitals.kills = 3;
         r.post_frame(&mut s);

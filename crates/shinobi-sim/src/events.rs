@@ -36,7 +36,7 @@ pub enum NetEvent {
     /// `player` is on `team` (`team::TEAM_*`); `TEAM_NONE` = left the match. Sent to everyone on join / switch, and
     /// replayed to late joiners, so every client always knows every player's team (own team included).
     TeamAssign { player: u16, team: u8 },
-    /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*`.
+    /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*` (running, who won, or sudden death in progress).
     TeamScore { tick: u32, score: [u16; 2], result: u8 },
     /// A player-built block appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). Replayed to late joiners.
     BlockPlaced { owner: u16, cell: [i32; 3] },
@@ -56,6 +56,8 @@ pub const TEAM_RESULT_RUNNING: u8 = 0;
 pub const TEAM_RESULT_CYAN: u8 = 1;
 pub const TEAM_RESULT_ORANGE: u8 = 2;
 pub const TEAM_RESULT_DRAW: u8 = 3;
+/// Tied at the end: sudden death is running (first team kill wins).
+pub const TEAM_RESULT_SUDDEN: u8 = 4;
 
 fn write_v3(w: &mut BitWriter, v: [i32; 3], base: [i32; 3]) {
     for i in 0..3 {
@@ -183,7 +185,7 @@ impl NetEvent {
                 w.write_varint(*tick);
                 w.write_varint(score[0] as u32);
                 w.write_varint(score[1] as u32);
-                w.write_bits(*result as u32 & 3, 2);
+                w.write_bits(*result as u32 & 7, 3);
             }
             Self::BlockPlaced { owner, cell } => {
                 w.write_bits(16, 5);
@@ -262,7 +264,7 @@ impl NetEvent {
                     u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?,
                     u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?,
                 ];
-                Self::TeamScore { tick, score, result: r.read_bits(2)? as u8 }
+                Self::TeamScore { tick, score, result: r.read_bits(3)? as u8 }
             }
             16 => Self::BlockPlaced { owner: r.read_bits(16)? as u16, cell: read_v3(r, [0; 3])? },
             17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
@@ -391,6 +393,7 @@ mod tests {
             NetEvent::TeamAssign { player: 201, team: 1 },
             NetEvent::TeamAssign { player: 9, team: TEAM_NONE },
             NetEvent::TeamScore { tick: 99_999, score: [49, 50], result: TEAM_RESULT_ORANGE },
+            NetEvent::TeamScore { tick: 100_000, score: [50, 50], result: TEAM_RESULT_SUDDEN },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

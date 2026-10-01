@@ -332,7 +332,12 @@ impl NetClient {
         self.team_score
     }
 
-    /// `shinobi_sim::events::TEAM_RESULT_*`: running, or who won the match that just ended.
+    /// The tied team match is in sudden death (first team kill wins).
+    pub fn in_sudden_death(&self) -> bool {
+        self.team_result == shinobi_sim::events::TEAM_RESULT_SUDDEN
+    }
+
+    /// `shinobi_sim::events::TEAM_RESULT_*`: running, sudden death, or who won the match that just ended.
     pub fn team_result(&self) -> u8 {
         self.team_result
     }
@@ -509,6 +514,12 @@ mod tests {
         ob.write_pending(&mut w, 480);
         c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
         assert_eq!(c.team_of(2), None, "left players are forgotten");
+        assert!(!c.in_sudden_death());
+        ob.push(NetEvent::TeamScore { tick: 12, score: [50, 50], result: shinobi_sim::events::TEAM_RESULT_SUDDEN });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(12, 0))), 1.2).unwrap();
+        assert!(c.in_sudden_death());
     }
 
     #[test]

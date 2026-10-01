@@ -171,6 +171,11 @@ impl MatchState {
         Some(len.saturating_sub(since(now, from)))
     }
 
+    /// Begin sudden death after `tick` with `scores` as the tie to break (end_tick does this on a tie).
+    pub fn start_sudden_death(&mut self, tick: u32, scores: [u16; 2]) {
+        self.sudden = Some((tick.wrapping_add(1).wrapping_add(self.sudden_death_ticks), scores));
+    }
+
     /// True while a tied team match is in sudden death (for HUDs / the console).
     pub fn in_sudden_death(&self) -> bool {
         self.sudden.is_some()
@@ -283,7 +288,7 @@ impl MatchState {
                     frag = false;
                 }
                 None if end_now && teams[0] == teams[1] => {
-                    self.sudden = Some((tick.wrapping_add(1).wrapping_add(self.sudden_death_ticks), teams));
+                    self.start_sudden_death(tick, teams);
                     return;
                 }
                 None => {}
