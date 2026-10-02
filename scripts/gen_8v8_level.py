@@ -8,8 +8,9 @@ ramps 20 deg (0.35 rad), grapple range 40 m, wall lane gap 5.6 m (proven in aren
 """
 import math, os
 
-HALF = 56.0      # playable half extent
-CEIL = 22.0
+HALF = 168.0      # playable half extent
+CEIL = 66.0
+
 out_boxes = []   # (comment, [boxes])
 spawns = []
 pickups = []
