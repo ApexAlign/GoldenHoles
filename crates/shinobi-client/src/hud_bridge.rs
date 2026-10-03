@@ -302,6 +302,7 @@ impl HudBridge {
         }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
+        hs.controls = view.controls.clone();
         hs
     }
 }

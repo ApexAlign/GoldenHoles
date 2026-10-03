@@ -311,6 +311,8 @@ pub struct HudState {
     /// Hold-to-show (Tab / touch button).
     pub show_scoreboard: bool,
     pub scoreboard: Vec<ScoreRow>,
+    /// First-30-seconds controls card rows (see `controls_card`); empty once it has faded.
+    pub controls: Vec<crate::controls_card::ControlRow>,
     pub dead: bool,
     /// Match phase + whole seconds left (None = warmup waiting for players).
     pub match_clock: Option<(PhaseKind, Option<u32>)>,
@@ -914,6 +916,7 @@ impl Hud {
         if s.show_scoreboard {
             scoreboard(&mut out, s, p);
         }
+        out.extend(crate::controls_card::prims(&s.controls, p));
         out
     }
 }

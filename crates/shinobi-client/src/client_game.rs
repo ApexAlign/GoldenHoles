@@ -39,6 +39,7 @@ use shinobi_sim::own_state::OwnState;
 use shinobi_sim::rapier3d::prelude::*;
 use shinobi_sim::tick::{to_player_input, view_dir};
 
+use crate::controls_card::{ControlRow, ControlsCard, Use};
 use crate::camera::{CameraFeel, CameraInput, CameraPose, FpsCamera, FpsCameraCfg, WeaponPose};
 use crate::settings::Settings;
 
@@ -413,6 +414,8 @@ pub struct RenderView {
     pub disc_owners: Vec<u16>,
     /// Own wrist-grapple rope as (hand/eye, anchor) while attached, from the prediction.
     pub rope: Option<([f32; 3], [f32; 3])>,
+    /// First-30-seconds controls card rows still showing (key, label, opacity).
+    pub controls: Vec<ControlRow>,
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
     pub build_ghost: Option<BuildGhost>,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
@@ -451,6 +454,8 @@ pub struct ClientGame {
     build_edge: Option<PieceKind>,
     /// Direction of the newest predicted katana swing (the hit kick opposes it).
     last_slash_dir: Option<[f32; 3]>,
+    /// The first-30-seconds controls card.
+    controls: ControlsCard,
     /// Piece the ghost previews: the one last printed (floor until the first press).
     build_sel: PieceKind,
     /// What `N` prints: floor, or ramp after a quick second tap (during the placement cooldown).
@@ -490,6 +495,7 @@ impl ClientGame {
             zip_edge: false,
             build_edge: None,
             last_slash_dir: None,
+            controls: ControlsCard::default(),
             build_sel: PieceKind::Floor,
             n_variant: PieceKind::Floor,
             n_press_tick: None,
@@ -509,6 +515,17 @@ impl ClientGame {
     // ---- input (any rate) ----
 
     pub fn button_event(&mut self, e: ButtonEvent) {
+        if e.down {
+            match e.action {
+                Action::Jump => self.controls.mark(Use::Jump),
+                Action::Dash => self.controls.mark(Use::Dash),
+                Action::Grapple => self.controls.mark(Use::Grapple),
+                Action::BuildFloor | Action::BuildWall => self.controls.mark(Use::Build),
+                Action::Slice => self.controls.mark(Use::Katana),
+                Action::Fire => self.controls.mark(Use::Shuriken),
+                _ => {}
+            }
+        }
         match e.action {
             Action::Jump => self.latch.set_jump(e.down),
             Action::Dash => self.latch.set(Buttons::DASH, e.down),
@@ -689,6 +706,12 @@ impl ClientGame {
         let tick = self.net.pace_tick(local_tick, self.cfg.lead_ticks)?;
         if self.net.stamp_held() {
             return None; // the intent lead just shrank: this local tick maps onto the previous stamp, nothing to predict
+        }
+        if self.pred.is_some() {
+            self.controls.tick(TICK_DT);
+            if stick != (0.0, 0.0) {
+                self.controls.mark(Use::Move);
+            }
         }
         let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
         intent.zip = std::mem::take(&mut self.zip_edge);
@@ -938,6 +961,7 @@ impl ClientGame {
             discs,
             disc_owners,
             rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
+            controls: self.controls.rows(),
         }
     }
 
