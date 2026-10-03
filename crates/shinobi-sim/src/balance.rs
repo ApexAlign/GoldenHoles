@@ -27,6 +27,8 @@ pub struct PlayerBalance {
     pub respawn_ticks: u32,
     /// Spawn protection. Must be >= `MAX_REWIND_TICKS` (a laggy rewound shot must not hit a fresh respawn).
     pub invuln_ticks: u32,
+    /// Protection on first join (longer than a respawn so a new player can find their feet). Same minimum.
+    pub first_spawn_invuln_ticks: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -261,6 +263,7 @@ impl Default for Balance {
                 max_hp: crate::pvp::MAX_HP,
                 respawn_ticks: crate::pvp::RESPAWN_TICKS,
                 invuln_ticks: crate::pvp::INVULN_TICKS,
+                first_spawn_invuln_ticks: 180,
             },
             combat: CombatBalance {
                 shuriken: ShurikenBalance {
@@ -523,6 +526,7 @@ impl Balance {
         s!("player.max_hp", F, self.player.max_hp);
         s!("player.respawn_ticks", U, self.player.respawn_ticks);
         s!("player.invuln_ticks", U, self.player.invuln_ticks);
+        s!("player.first_spawn_invuln_ticks", U, self.player.first_spawn_invuln_ticks);
 
         s!("combat.shuriken.speed", F, self.combat.shuriken.speed);
         s!("combat.shuriken.damage", F, self.combat.shuriken.damage);
@@ -696,6 +700,12 @@ impl Balance {
             e.push(format!(
                 "player.invuln_ticks must be >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.invuln_ticks
+            ));
+        }
+        if self.player.first_spawn_invuln_ticks < MAX_REWIND_TICKS {
+            e.push(format!(
+                "player.first_spawn_invuln_ticks must be >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
+                self.player.first_spawn_invuln_ticks
             ));
         }
         if self.matches.min_players == 0 {

@@ -77,6 +77,11 @@ pub fn choose_among(world: &PhysicsWorld, spawns: &[[f32; 3]], allowed: &[usize]
     }
 
     let nearest = |i: usize| enemies.iter().map(|e| dist(*e, spawns[i])).fold(f32::INFINITY, f32::min);
+    // a spawn at least FAR_DIST from every enemy beats a closer one, so a join/respawn never lands mid-fight
+    let far: Vec<usize> = pool.iter().copied().filter(|&i| nearest(i) >= FAR_DIST).collect();
+    if !far.is_empty() {
+        pool = far;
+    }
     let best = pool.iter().map(|&i| nearest(i)).fold(0.0f32, f32::max);
     // every spawn nearly as good as the best is a fair candidate; rotating through them (instead of always taking
     // the single farthest) stops the same corner being used for every respawn when enemies camp
@@ -128,7 +133,9 @@ pub const NEAR_BEST: f32 = 0.7;
 /// Rotation needs at least this many candidates to avoid back-to-back repeats.
 pub const MIN_POOL: usize = 3;
 /// Spawns padding the pool below `MIN_POOL` must be at least this far (metres) from every enemy.
-pub const SAFE_DIST: f32 = 15.0;
+pub /// Preferred minimum distance (m) from every enemy for a spawn, when the map has one.
+const FAR_DIST: f32 = 60.0;
+const SAFE_DIST: f32 = 15.0;
 
 #[cfg(test)]
 mod tests {
