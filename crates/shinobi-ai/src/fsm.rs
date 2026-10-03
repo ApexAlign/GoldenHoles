@@ -60,6 +60,9 @@ pub struct ThinkCtx<'a, 'w> {
     pub frustum: Frustum,
     /// Ground-layer path grid (big maps); `None` until the host has built one.
     pub nav: Option<&'a crate::nav::NavGrid>,
+    /// A* plans still allowed this tick (shared by all bots, `PLAN_PER_TICK` per tick): a replan that finds none
+    /// left is postponed to a later tick, so a burst of bots needing paths never turns into one long frame.
+    pub plan_budget: &'a std::cell::Cell<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -770,7 +773,7 @@ impl BotMem {
                     && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
                     && (!t.los || !nav.straight_walkable([me.pos.x, me.pos.z], [t.view.pos.x, t.view.pos.z])) =>
             {
-                self.path_dir(world, nav, me.pos, t.view.pos, tick, t.view.id)
+                self.path_dir(world, nav, me.pos, t.view.pos, tick, t.view.id, ctx.plan_budget)
             }
             _ => {
                 self.path.clear();
@@ -786,18 +789,28 @@ impl BotMem {
 
     /// Direction along a path to `goal`, replanned when the goal moved to another cell, the plan is old, or the bot
     /// strayed from it. Waypoints are consumed as the bot reaches them.
-    fn path_dir(&mut self, world: &WorldView, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32, target: u16) -> Option<V3> {
-        const REPLAN_TICKS: u32 = 45;
+    fn path_dir(&mut self, world: &WorldView, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32, target: u16, budget: &std::cell::Cell<u32>) -> Option<V3> {
+        const REPLAN_TICKS: u32 = 60;
+        /// Search cap per plan: a far goal returns the best partial route instead of flooding the map.
+        const PLAN_NODES: usize = 12_000;
         const REACH: f32 = 0.8; // a baffled door is ~1 m wide: pass through the corner waypoint, do not cut it
         let goal2 = [goal.x, goal.z];
-        let moved = (self.path_goal[0] - goal2[0]).hypot(self.path_goal[1] - goal2[1]) > 4.0;
-        if self.path.is_empty() || moved || tick.wrapping_sub(self.path_at) >= REPLAN_TICKS {
+        let moved = (self.path_goal[0] - goal2[0]).hypot(self.path_goal[1] - goal2[1]) > 6.0;
+        if (self.path.is_empty() || moved || tick.wrapping_sub(self.path_at) >= REPLAN_TICKS) && budget.get() > 0 {
+            budget.set(budget.get() - 1);
             self.path_at = tick;
             self.path_goal = goal2;
-            self.path = match nav.path([from.x, from.z], goal2, 40_000) {
-                Some(p) => p,
+            self.path = match nav.path_search([from.x, from.z], goal2, PLAN_NODES) {
+                Some(r) => {
+                    // search exhausted (not just capped) and it still ends far from them: no walkable way, so let
+                    // the director pick someone else for a while; the partial route still gets the bot closer
+                    if !r.complete && r.expanded < PLAN_NODES && r.end_gap > 8.0 {
+                        self.unreachable.retain(|(_, until)| *until > tick);
+                        self.unreachable.push((target, tick + 360));
+                    }
+                    r.waypoints
+                }
                 None => {
-                    // no walkable way to them (or too far to search): let the director pick someone else for a while
                     self.unreachable.retain(|(_, until)| *until > tick);
                     self.unreachable.push((target, tick + 360));
                     Vec::new()

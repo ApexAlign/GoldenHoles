@@ -114,6 +114,59 @@ pub struct NavGrid {
     /// sheer step between two cells of different height.
     ye: Vec<f32>,
     ys: Vec<f32>,
+    /// Per cell: bit k set when `DIRS[k]` is a walkable move (precomputed once, so A* never re-derives it).
+    adj: Vec<u8>,
+    /// Per cell: walkable with a blocked cell on one of its four sides (path cost penalty).
+    hug: Vec<bool>,
+}
+
+/// `(searches, nodes expanded)` on this thread since the previous call; resets the counters.
+pub fn take_plan_stats() -> (u32, u64) {
+    STATS.with(|st| st.replace((0, 0)))
+}
+
+/// Result of `NavGrid::path_search`.
+pub struct PathResult {
+    pub waypoints: Vec<[f32; 2]>,
+    /// The goal was reached (else the waypoints lead to the closest cell the search got to).
+    pub complete: bool,
+    /// Nodes expanded (cost indicator).
+    pub expanded: usize,
+    /// Distance (m) from the end of the route to the goal (0 when complete).
+    pub end_gap: f32,
+}
+
+/// Neighbour offsets; bit k of `NavGrid::adj[cell]` says whether the move `DIRS[k]` is walkable.
+const DIRS: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
+
+/// Reused A* buffers (one set per thread, regrown to the largest grid seen): searching allocates nothing.
+struct Scratch {
+    g: Vec<f32>,
+    came: Vec<u32>,
+    stamp: Vec<u32>,
+    gen: u32,
+}
+
+impl Scratch {
+    fn reset(&mut self, n: usize) {
+        if self.g.len() < n {
+            self.g.resize(n, 0.0);
+            self.came.resize(n, u32::MAX);
+            self.stamp.resize(n, 0);
+        }
+        self.gen = self.gen.wrapping_add(1);
+        if self.gen == 0 {
+            self.stamp.iter_mut().for_each(|s| *s = 0);
+            self.gen = 1;
+        }
+    }
+}
+
+thread_local! {
+    /// (A* searches, nodes expanded) on this thread since the last `take_plan_stats`: lets a test assert the per-tick
+    /// planning budget instead of timing it.
+    static STATS: std::cell::Cell<(u32, u64)> = const { std::cell::Cell::new((0, 0)) };
+    static SCRATCH: std::cell::RefCell<Scratch> = const { std::cell::RefCell::new(Scratch { g: Vec::new(), came: Vec::new(), stamp: Vec::new(), gen: 0 }) };
 }
 
 /// Largest ground-height difference between neighbouring cells a walking bot crosses on a smooth ramp.
@@ -170,7 +223,24 @@ impl NavGrid {
                 }
             }
         }
-        NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys }
+        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n] };
+        for iz in 0..n as i32 {
+            for ix in 0..n as i32 {
+                if grid.ground(ix, iz).is_none() {
+                    continue;
+                }
+                let i = iz as usize * n + ix as usize;
+                grid.hug[i] = grid.hugs_wall((ix, iz));
+                let mut mask = 0u8;
+                for (k, (dx, dz)) in DIRS.iter().enumerate() {
+                    if grid.passable((ix, iz), (ix + dx, iz + dz)) {
+                        mask |= 1 << k;
+                    }
+                }
+                grid.adj[i] = mask;
+            }
+        }
+        grid
     }
 
     pub fn walkable_count(&self) -> usize {
@@ -257,61 +327,91 @@ impl NavGrid {
     }
 
     /// Waypoints (world x, z) from `from` to `to`, string-pulled; `None` when either end is not on the grid or
-    /// no path exists. `max_nodes` bounds the search (a bot gives up for a moment rather than stalling a tick).
+    /// no path exists. `max_nodes` bounds the search. See `path_search` for the partial-path variant.
     pub fn path(&self, from: [f32; 2], to: [f32; 2], max_nodes: usize) -> Option<Vec<[f32; 2]>> {
+        let r = self.path_search(from, to, max_nodes)?;
+        r.complete.then_some(r.waypoints)
+    }
+
+    /// A* from `from` to `to` over flat, reused buffers (no per-call allocation or hashing). When the node budget
+    /// runs out or the goal is unreachable the result is the best partial route (to the visited cell closest to
+    /// the goal) with `complete == false`, so a bot still moves the right way. `None` only when an end is off the
+    /// grid. Deterministic: ties break on node index.
+    pub fn path_search(&self, from: [f32; 2], to: [f32; 2], max_nodes: usize) -> Option<PathResult> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
         let (s, g) = (self.snap(from[0], from[1])?, self.snap(to[0], to[1])?);
         if s == g {
-            return Some(vec![to]);
+            return Some(PathResult { waypoints: vec![to], complete: true, expanded: 0, end_gap: 0.0 });
         }
+        let nx = self.nx as i32;
+        let idx = |c: (i32, i32)| (c.1 * nx + c.0) as usize;
         let h = |c: (i32, i32)| (((c.0 - g.0).pow(2) + (c.1 - g.1).pow(2)) as f32).sqrt();
-        // f scaled to integers (millicells) so the heap order is total and deterministic
-        let key = |f: f32| (f * 1000.0) as u32;
-        let mut best = std::collections::HashMap::new();
-        let mut came: std::collections::HashMap<(i32, i32), (i32, i32)> = std::collections::HashMap::new();
-        let mut heap = BinaryHeap::new();
-        best.insert(s, 0.0f32);
-        heap.push(Reverse((key(h(s)), s.0, s.1)));
-        let mut expanded = 0usize;
-        while let Some(Reverse((_, cx, cz))) = heap.pop() {
-            let c = (cx, cz);
-            if c == g {
-                let mut cells = vec![c];
-                let mut cur = c;
-                while let Some(p) = came.get(&cur) {
-                    cells.push(*p);
-                    cur = *p;
+        let key = |f: f32| (f * 1000.0) as u32; // millicells: integer heap order, deterministic
+        STATS.with(|st| st.set((st.get().0 + 1, st.get().1)));
+        SCRATCH.with(|sc| {
+            let sc = &mut *sc.borrow_mut();
+            sc.reset(self.nx * self.nz);
+            let gen = sc.gen;
+            let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
+            let si = idx(s);
+            sc.g[si] = 0.0;
+            sc.stamp[si] = gen;
+            sc.came[si] = u32::MAX;
+            heap.push(Reverse((key(h(s)), si as u32)));
+            let mut best = (h(s), si);
+            let mut expanded = 0usize;
+            let mut goal_hit = false;
+            while let Some(Reverse((_, ci))) = heap.pop() {
+                let ci = ci as usize;
+                let c = ((ci % self.nx) as i32, (ci / self.nx) as i32);
+                if ci == idx(g) {
+                    goal_hit = true;
+                    best = (0.0, ci);
+                    break;
                 }
-                cells.reverse();
-                return Some(self.pull(&cells, to));
-            }
-            expanded += 1;
-            if expanded > max_nodes {
-                return None;
-            }
-            let gc = best[&c];
-            for dz in -1..=1i32 {
-                for dx in -1..=1i32 {
-                    if dx == 0 && dz == 0 {
+                expanded += 1;
+                if expanded > max_nodes {
+                    break;
+                }
+                let hc = h(c);
+                if hc < best.0 {
+                    best = (hc, ci);
+                }
+                let gc = sc.g[ci];
+                let mask = self.adj[ci];
+                for (k, (dx, dz)) in DIRS.iter().enumerate() {
+                    if mask & (1 << k) == 0 {
                         continue;
                     }
-                    let n = (cx + dx, cz + dz);
-                    if !self.passable(c, n) {
-                        continue;
-                    }
+                    let n = (c.0 + dx, c.1 + dz);
+                    let ni = idx(n);
                     // hugging a wall costs extra: routes keep a body width from corners where the map allows it
-                    let hug = if self.hugs_wall(n) { 0.8 } else { 0.0 };
-                    let ng = gc + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 } + hug;
-                    if best.get(&n).map_or(true, |&b| ng < b - 1e-4) {
-                        best.insert(n, ng);
-                        came.insert(n, c);
-                        heap.push(Reverse((key(ng + h(n)), n.0, n.1)));
+                    let hug = if self.hug[ni] { 0.8 } else { 0.0 };
+                    let ng = gc + if *dx != 0 && *dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 } + hug;
+                    if sc.stamp[ni] != gen || ng < sc.g[ni] - 1e-4 {
+                        sc.stamp[ni] = gen;
+                        sc.g[ni] = ng;
+                        sc.came[ni] = ci as u32;
+                        heap.push(Reverse((key(ng + h(n)), ni as u32)));
                     }
                 }
             }
-        }
-        None
+            STATS.with(|st| st.set((st.get().0, st.get().1 + expanded as u64)));
+            let end = best.1;
+            if end == si && !goal_hit {
+                return Some(PathResult { waypoints: Vec::new(), complete: false, expanded, end_gap: h(s) * self.cell });
+            }
+            let mut cells = vec![((end % self.nx) as i32, (end / self.nx) as i32)];
+            let mut cur = end;
+            while sc.came[cur] != u32::MAX {
+                cur = sc.came[cur] as usize;
+                cells.push(((cur % self.nx) as i32, (cur / self.nx) as i32));
+            }
+            cells.reverse();
+            let tail = if goal_hit { to } else { let (x, z) = self.center(cells.last().unwrap().0, cells.last().unwrap().1); [x, z] };
+            Some(PathResult { waypoints: self.pull(&cells, tail), complete: goal_hit, expanded, end_gap: best.0 * self.cell })
+        })
     }
 
     /// Straight walkable run between two cells (supercover-ish: sample every half cell).

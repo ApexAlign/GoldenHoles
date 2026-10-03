@@ -72,3 +72,34 @@ fn no_bot_stays_stuck_on_ffa() {
 fn no_bot_stays_stuck_on_ffa_xl() {
     check("ffa_xl.lvl");
 }
+
+/// Planning cost is bounded PER TICK, not just on average: a burst of bots needing paths at once (match start, a
+/// whole wave retargeting) must never become one long frame. Deterministic budget check instead of a wall-clock one.
+#[test]
+fn path_planning_never_exceeds_its_per_tick_budget() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/ffa.lvl");
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let f = parse_level_file(&text).expect("level parses");
+    let mut s = Server::new(shinobi_sim::character::Cfg::default());
+    f.level.apply_to_server(&mut s);
+    s.set_spawns(f.level.spawns.clone());
+    s.set_balance(Balance::demo()).unwrap();
+    let mut h = host(31);
+    h.rebuild_perches(&s);
+    for i in 0..16u16 {
+        assert!(h.add_bot(&mut s, 201 + i, Archetype::Light, BotSkill::Normal));
+    }
+    let _ = shinobi_ai::nav::take_plan_stats();
+    let (mut worst_calls, mut worst_nodes, mut total_calls) = (0u32, 0u64, 0u32);
+    for _ in 0..60 * 60 {
+        step(&mut h, &mut s);
+        let (calls, nodes) = shinobi_ai::nav::take_plan_stats();
+        worst_calls = worst_calls.max(calls);
+        worst_nodes = worst_nodes.max(nodes);
+        total_calls += calls;
+    }
+    // 2 plans of at most 12 000 nodes per tick (shinobi_ai::host::PLAN_PER_TICK, fsm PLAN_NODES)
+    assert!(worst_calls <= 2, "{worst_calls} A* searches in one tick (budget 2)");
+    assert!(worst_nodes <= 2 * 12_001, "{worst_nodes} nodes expanded in one tick (budget 24 000)");
+    assert!(total_calls > 20, "bots did plan paths ({total_calls}): the test is exercising the planner");
+}

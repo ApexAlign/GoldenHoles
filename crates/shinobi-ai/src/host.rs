@@ -58,6 +58,9 @@ impl Default for BotHostCfg {
     }
 }
 
+/// A* plans the whole host may run per tick (bots over budget wait a tick: no frame is ever a burst of searches).
+const PLAN_PER_TICK: u32 = 2;
+
 /// Enemy this close with a clear line counts as "the human has action".
 const ACTION_RANGE: f32 = 35.0;
 /// A rubber-band summons lasts at most this long (seconds) if no fight starts.
@@ -357,6 +360,7 @@ impl BotHost {
         let world = WorldView::build(server, |id| ids.binary_search(&id).is_ok());
         let tick = world.tick;
         self.rubber_band(&world, tick);
+        let budget = std::cell::Cell::new(PLAN_PER_TICK);
 
         // ---- director: targets (every bot is its own faction: nearest / weakest living enemy, sticky), then ranks
         // per target and archetype. Teammates (team mode only) are never targets; FFA players have no team.
@@ -420,7 +424,7 @@ impl BotHost {
                 percs.push(Perception::default());
                 continue;
             };
-            let ctx = ThinkCtx { world: &world, me, assign: assigns[i], has_ticket: false, perches: &self.perches, frustum, nav: self.nav.as_ref() };
+            let ctx = ThinkCtx { world: &world, me, assign: assigns[i], has_ticket: false, perches: &self.perches, frustum, nav: self.nav.as_ref(), plan_budget: &budget };
             let p = b.perceive(&ctx);
             if let Some(r) = b.strike_request(&ctx, &p) {
                 requests.push(r);
@@ -444,6 +448,7 @@ impl BotHost {
                 perches: &self.perches,
                 frustum,
                 nav: self.nav.as_ref(),
+                plan_budget: &budget,
             };
             let o = b.think(&ctx, &percs[i]);
             if o.release_ticket {

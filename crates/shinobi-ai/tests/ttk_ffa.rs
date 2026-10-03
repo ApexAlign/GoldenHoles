@@ -56,8 +56,11 @@ fn ffa_bots_on_a_level() {
     let mut by_phase: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new(); // phase -> (still, samples)
     let mut last: BTreeMap<u16, [f32; 3]> = BTreeMap::new();
     let t0 = std::time::Instant::now();
+    let mut step_ms: Vec<f32> = Vec::new();
     for t in 0..secs * 60 {
+        let t_step = std::time::Instant::now();
         step(&mut h, &mut s);
+        step_ms.push(t_step.elapsed().as_secs_f32() * 1000.0);
         for e in &s.pvp_events {
             match *e {
                 PvpEvent::Hit { .. } => hits += 1,
@@ -96,6 +99,12 @@ fn ffa_bots_on_a_level() {
     let mean = nearest.iter().sum::<f32>() / nearest.len().max(1) as f32;
     let avg_life = life_ticks.iter().map(|t| *t as f32).sum::<f32>() / life_ticks.len().max(1) as f32 / 60.0;
     println!("== FFA {n} bots on {name}, {secs} s (sim cost {cpu:.1} s wall, {:.2} ms/tick) ==", cpu * 1000.0 / (secs * 60) as f32);
+    {
+        let mut v = step_ms.clone();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let over = v.iter().filter(|m| **m > 6.0).count();
+        println!("step time: avg {:.2} ms, p99 {:.2} ms, max {:.2} ms, {over} steps over 6 ms (first 10 s max {:.2} ms)", v.iter().sum::<f32>() / v.len() as f32, v[v.len() * 99 / 100], v[v.len() - 1], step_ms.iter().take(600).cloned().fold(0.0, f32::max));
+    }
     println!("kills/min {:.1} ({kills} kills, {hits} hits), avg life {avg_life:.1} s", kills as f32 / mins);
     println!("nearest-enemy distance: mean {mean:.1} m, median {:.1} m, p90 {:.1} m", nearest[nearest.len() / 2], nearest[nearest.len() * 9 / 10]);
     println!("standing still (<1.5 m per sample): {:.0}%", 100.0 * still as f32 / samples.max(1) as f32);
