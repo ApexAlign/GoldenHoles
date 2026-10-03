@@ -152,7 +152,13 @@ fn menu_input(
     mut settings: ResMut<SettingsRes>,
     mut exit: MessageWriter<AppExit>,
     mut prev_locked: Local<bool>,
+    net: Res<crate::net::Net>,
 ) {
+    // the server dropped us (kick / ban): there is no reconnect, so Enter / Esc closes the game to re-launch it
+    if net.0.game.net.kicked().is_some() && (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Space)) {
+        exit.write(AppExit::Success);
+        return;
+    }
     let locked = lock.p.locked();
     if *prev_locked && !locked && menu.menu == Menu::Closed {
         menu.menu = Menu::Main(0);
