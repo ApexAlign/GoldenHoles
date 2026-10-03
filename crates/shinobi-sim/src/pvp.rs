@@ -475,7 +475,7 @@ mod tests {
         aim_yaw: 0,
         aim_pitch: 2048,
         ultimate: false,
-        build: false, build_wall: false,
+        build: false, build_wall: false, build_ramp: false,
         zip: false,
     };
 

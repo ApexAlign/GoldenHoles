@@ -77,6 +77,8 @@ pub struct PlayerIntent {
     pub build: bool,
     /// With `build`: place a wall (`M`) instead of a floor (`N`). Meaningless without `build`.
     pub build_wall: bool,
+    /// With `build` (and not `build_wall`): place a ramp instead of a floor. Meaningless without `build`.
+    pub build_ramp: bool,
     /// One-tick edge: fire the zipline gun at the aimed hookable anchor (server validates range, line of sight,
     /// cooldown, line cap). Own wire bit, cleared on lost-packet repeat.
     pub zip: bool,
@@ -85,7 +87,7 @@ pub struct PlayerIntent {
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, zip: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false }
     }
 }
 
@@ -116,6 +118,7 @@ impl PlayerIntent {
             && self.ultimate == o.ultimate
             && self.build == o.build
             && self.build_wall == o.build_wall
+            && self.build_ramp == o.build_ramp
             && self.zip == o.zip
     }
 
@@ -126,24 +129,27 @@ impl PlayerIntent {
         w.write_bits(self.aim_yaw as u32, 16);
         w.write_bits(self.aim_pitch.min(PITCH_MAX) as u32, PITCH_BITS);
         w.write_bool(self.ultimate);
+        // the piece kind rides only on a build press (it is an edge): idle intents stay one bit lighter
         w.write_bool(self.build);
-        w.write_bool(self.build_wall);
+        if self.build {
+            w.write_bool(self.build_wall);
+            w.write_bool(self.build_ramp);
+        }
         w.write_bool(self.zip);
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
-        Ok(Self {
-            tick,
-            buttons: Buttons(r.read_bits(8)? as u8),
-            move_x: r.read_bits(8)? as u8 as i8,
-            move_z: r.read_bits(8)? as u8 as i8,
-            aim_yaw: r.read_bits(16)? as u16,
-            aim_pitch: r.read_bits(PITCH_BITS)? as u16,
-            ultimate: r.read_bool()?,
-            build: r.read_bool()?,
-            build_wall: r.read_bool()?,
-            zip: r.read_bool()?,
-        })
+        let (buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate) = (
+            Buttons(r.read_bits(8)? as u8),
+            r.read_bits(8)? as u8 as i8,
+            r.read_bits(8)? as u8 as i8,
+            r.read_bits(16)? as u16,
+            r.read_bits(PITCH_BITS)? as u16,
+            r.read_bool()?,
+        );
+        let build = r.read_bool()?;
+        let (build_wall, build_ramp) = if build { (r.read_bool()?, r.read_bool()?) } else { (false, false) };
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip: r.read_bool()? })
     }
 }
 
@@ -418,7 +424,7 @@ impl IntentQueue {
                 tick,
                 buttons: Buttons(l.buttons.0 & !Buttons::EDGES),
                 ultimate: false,
-                build: false, build_wall: false,
+                build: false, build_wall: false, build_ramp: false,
                 zip: false,
                 ..l
             })
@@ -440,7 +446,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, zip: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false }
     }
 
     #[test]
@@ -704,5 +710,28 @@ mod tests {
         q.push_packet(&ClientPacket { intents: vec![it], ..Default::default() }, 60);
         assert!(q.take_for_tick(60).unwrap().zip);
         assert!(!q.take_for_tick(61).unwrap().zip, "lost-packet repeat must not fire a second zipline");
+    }
+}
+
+#[cfg(test)]
+mod build_kind_tests {
+    use super::*;
+
+    #[test]
+    fn piece_kind_bits_roundtrip_and_cost_nothing_on_idle_intents() {
+        let base = PlayerIntent { tick: 50, ..Default::default() };
+        let variants = [
+            base,
+            PlayerIntent { build: true, ..base },
+            PlayerIntent { build: true, build_wall: true, ..base },
+            PlayerIntent { build: true, build_ramp: true, ..base },
+        ];
+        for it in variants {
+            let pkt = ClientPacket { intents: vec![it], ..Default::default() };
+            assert_eq!(ClientPacket::decode(&pkt.encode().unwrap()).unwrap(), pkt, "{it:?}");
+        }
+        let idle = ClientPacket { intents: vec![base], ..Default::default() }.encode().unwrap().len();
+        let wall = ClientPacket { intents: vec![variants[2]], ..Default::default() }.encode().unwrap().len();
+        assert!(wall <= idle + 1, "a build press costs at most one extra byte ({idle} -> {wall})");
     }
 }

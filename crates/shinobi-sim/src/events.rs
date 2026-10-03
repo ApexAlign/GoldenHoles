@@ -39,7 +39,7 @@ pub enum NetEvent {
     /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*` (running, who won, or sudden death in progress).
     TeamScore { tick: u32, score: [u16; 2], result: u8 },
     /// A player-built piece appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). `kind`: 0 floor,
-    /// 1 wall; `axis`: a wall's normal (0 = X, 1 = Z); `scale_q`: size in 1/16ths (16 = 1.0). Replayed to late joiners.
+    /// 1 wall, 2 ramp; `axis`: a wall's normal (0 = X, 1 = Z) or the direction a ramp rises toward (0 +X, 1 +Z, 2 -X, 3 -Z); `scale_q`: size in 1/16ths (16 = 1.0). Replayed to late joiners.
     BlockPlaced { owner: u16, cell: [i32; 3], kind: u8, axis: u8, scale_q: u8 },
     /// The server's build rules (sent to every joiner): clients predict placement with exactly these.
     BlockRules(crate::blocks::BlockRules),
@@ -196,8 +196,8 @@ impl NetEvent {
                 w.write_bits(16, 5);
                 w.write_bits(*owner as u32, 16);
                 write_v3(w, *cell, [0; 3]);
-                w.write_bits(*kind as u32 & 1, 1);
-                w.write_bits(*axis as u32 & 1, 1);
+                w.write_bits(*kind as u32 & 3, 2);
+                w.write_bits(*axis as u32 & 3, 2);
                 w.write_bits(*scale_q as u32, 8);
             }
             Self::BlockRules(r) => {
@@ -287,8 +287,8 @@ impl NetEvent {
             16 => Self::BlockPlaced {
                 owner: r.read_bits(16)? as u16,
                 cell: read_v3(r, [0; 3])?,
-                kind: r.read_bits(1)? as u8,
-                axis: r.read_bits(1)? as u8,
+                kind: r.read_bits(2)? as u8,
+                axis: r.read_bits(2)? as u8,
                 scale_q: r.read_bits(8)? as u8,
             },
             19 => Self::BlockDerez { cell: read_v3(r, [0; 3])? },

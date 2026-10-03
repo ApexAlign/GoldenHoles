@@ -500,7 +500,13 @@ impl Server {
                 let bodies: Vec<[f32; 3]> = self.players.iter().filter(|q| q.vitals.alive()).map(|q| q.pos(&self.world)).collect();
                 let f = aim.forward();
                 let skip = self.players[i].ch.body;
-                let kind = if it.build_wall { crate::blocks::PieceKind::Wall } else { crate::blocks::PieceKind::Floor };
+                let kind = if it.build_wall {
+                    crate::blocks::PieceKind::Wall
+                } else if it.build_ramp {
+                    crate::blocks::PieceKind::Ramp
+                } else {
+                    crate::blocks::PieceKind::Floor
+                };
                 let kills = self.players[i].vitals.kills as u32;
                 self.blocks.try_build(&mut self.world, tick, id, kind, kills, [origin.x, origin.y, origin.z], [f.x, f.y, f.z], skip, &bodies, &mut self.block_events);
                 self.world.queries.update(&self.world.colliders);

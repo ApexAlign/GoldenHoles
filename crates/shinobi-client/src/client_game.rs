@@ -233,8 +233,8 @@ impl Predicted {
         let cell = self.blocks.target_cell(&self.world, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], self.ch.body);
         let valid = self.blocks.is_free(cell) && !self.blocks.overlaps_player(cell, &[self.pos]);
         let piece = Piece::for_press(kind, [f.x, f.y, f.z]);
-        let (center, half) = self.blocks.geometry(cell, piece, self.blocks.cfg.scale_q(kills));
-        BuildGhost { cell, piece, center, half, valid, ready: self.blocks.ready(owner, tick) }
+        let slab = self.blocks.slab(cell, piece, self.blocks.cfg.scale_q(kills));
+        BuildGhost { cell, piece, center: slab.center, half: slab.half, rot: slab.rot, valid, ready: self.blocks.ready(owner, tick) }
     }
 
     fn step(&mut self, input: &PlayerInput) -> [f32; 3] {
@@ -369,9 +369,10 @@ pub struct LockOn {
 pub struct BuildGhost {
     pub cell: [i32; 3],
     pub piece: Piece,
-    /// Slab centre and half extents (draw a box of 2 * half at center).
+    /// Slab centre, half extents (draw a box of 2 * half at center) and scaled-axis rotation (ramps are tilted).
     pub center: [f32; 3],
     pub half: [f32; 3],
+    pub rot: [f32; 3],
     pub valid: bool,
     pub ready: bool,
 }
@@ -450,6 +451,10 @@ pub struct ClientGame {
     build_edge: Option<PieceKind>,
     /// Piece the ghost previews: the one last printed (floor until the first press).
     build_sel: PieceKind,
+    /// What `N` prints: floor, or ramp after a quick second tap (during the placement cooldown).
+    n_variant: PieceKind,
+    /// Tick of the last `N` tap that printed (a tap within the cooldown of it cycles the variant instead).
+    n_press_tick: Option<u32>,
     /// Tick of the newest intent sent (cooldown readiness for the ghost).
     last_input_tick: u32,
     /// Lock-on edges (acquire / lock / break) since the previous `view()`.
@@ -483,6 +488,8 @@ impl ClientGame {
             zip_edge: false,
             build_edge: None,
             build_sel: PieceKind::Floor,
+            n_variant: PieceKind::Floor,
+            n_press_tick: None,
             last_input_tick: 0,
             lock_edges: Vec::new(),
             touch: TouchController::new(1280.0, 90.0),
@@ -509,8 +516,16 @@ impl ClientGame {
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
             Action::BuildFloor if e.down => {
-                self.build_edge = Some(PieceKind::Floor);
-                self.build_sel = PieceKind::Floor;
+                let cd = self.pred.as_ref().map_or(BlockCfg::default().cooldown_ticks, |p| p.blocks.cfg.cooldown_ticks);
+                let again = self.n_press_tick.map_or(false, |t| self.last_input_tick.wrapping_sub(t) < cd);
+                if again {
+                    // N again while the last print is still cooling down: switch floor <-> ramp, print nothing
+                    self.n_variant = if self.n_variant == PieceKind::Floor { PieceKind::Ramp } else { PieceKind::Floor };
+                } else {
+                    self.build_edge = Some(self.n_variant);
+                    self.n_press_tick = Some(self.last_input_tick);
+                }
+                self.build_sel = self.n_variant;
             }
             Action::BuildWall if e.down => {
                 self.build_edge = Some(PieceKind::Wall);
@@ -677,6 +692,7 @@ impl ClientGame {
         let press = self.build_edge.take();
         intent.build = press.is_some();
         intent.build_wall = press == Some(PieceKind::Wall);
+        intent.build_ramp = press == Some(PieceKind::Ramp);
         self.last_input_tick = tick;
         let own_id_for_blocks = self.net.player_id().unwrap_or(0);
 
