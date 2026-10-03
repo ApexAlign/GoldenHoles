@@ -14,6 +14,7 @@ pub mod overlay;
 pub mod pointer_lock;
 pub mod hud;
 pub mod input;
+pub mod input_mode;
 pub mod interp;
 pub mod nav;
 pub mod netclient;

@@ -27,7 +27,7 @@ use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
 use shinobi_sim::balance::FeedbackBalance;
 use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
-use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceKind, SCALE_ONE};
+use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceKind};
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
@@ -449,6 +449,8 @@ pub struct ClientGame {
     zip_edge: bool,
     /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
     build_edge: Option<PieceKind>,
+    /// Direction of the newest predicted katana swing (the hit kick opposes it).
+    last_slash_dir: Option<[f32; 3]>,
     /// Piece the ghost previews: the one last printed (floor until the first press).
     build_sel: PieceKind,
     /// What `N` prints: floor, or ramp after a quick second tap (during the placement cooldown).
@@ -487,6 +489,7 @@ impl ClientGame {
             latch: ButtonLatch::default(),
             zip_edge: false,
             build_edge: None,
+            last_slash_dir: None,
             build_sel: PieceKind::Floor,
             n_variant: PieceKind::Floor,
             n_press_tick: None,
@@ -771,6 +774,7 @@ impl ClientGame {
                     match e {
                         CombatEvent::Slash { flip, dir, lunge, .. } => {
                             self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip });
+                            self.last_slash_dir = Some([dir.x, dir.y, dir.z]);
                         }
                         CombatEvent::ShurikenThrown { dir, .. } => {
                             self.throw_cd_left = ShurikenCfg::default().cooldown;
@@ -780,6 +784,12 @@ impl ClientGame {
                             self.fx_edges.slash_hit = Some(PredictedSlashHit { point: [point.x, point.y, point.z], killed });
                             let stop = if killed { self.cfg.hitstop_kill } else { self.cfg.hitstop_slash };
                             self.fx_edges.hit_stop = self.fx_edges.hit_stop.max(stop);
+                            // the camera reacts too (translation / roll / FOV only: the crosshair stays on the aim)
+                            let right = {
+                                let r = crate::camera::view_right(&self.aim);
+                                self.last_slash_dir.map_or(0.0, |d| d[0] * r.x + d[2] * r.z)
+                            };
+                            self.camera.hit_react(right, killed, stop);
                         }
                         CombatEvent::SlashMiss { .. } => self.fx_edges.slash_miss = true,
                         CombatEvent::Recoil { pitch_deg, .. } => self.camera.fire_kick(pitch_deg.to_radians(), 0.02),

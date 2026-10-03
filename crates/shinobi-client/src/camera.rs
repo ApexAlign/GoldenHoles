@@ -157,6 +157,9 @@ pub struct CameraPose {
     pub pitch: f32,    // rad, from `Aim` (+ = up)
     pub roll: f32,     // rad, apply to view matrix about forward axis
     pub y_offset: f32, // m, add to eye height
+    /// m, eye shift in the VIEW frame (right, up): the hit-stop shake and the directional kick of a katana hit. A
+    /// translation only: it never rotates the view, so the crosshair stays on the aim that goes out in intents.
+    pub offset: [f32; 2],
     pub fov: f32,      // deg
 }
 
@@ -183,11 +186,28 @@ pub struct FpsCamera {
     w_dip: f32,
     w_dip_v: f32,
     reset_left: f32,
+    hit: HitReact,
     slide_y: f32,
     slide_y_v: f32,
     bob_phase: f32,
     bob_amt: f32,
     bob_amt_v: f32,
+}
+
+/// A katana hit reaching the camera: `stop` seconds of tight shake (the hit-stop), then a spring-back. All of it is
+/// translation, roll and FOV; none of it touches yaw / pitch.
+#[derive(Clone, Copy, Default, Debug)]
+struct HitReact {
+    /// Seconds since the hit; `>= total` = finished.
+    age: f32,
+    stop: f32,
+    total: f32,
+    /// View-frame kick direction (right, up), unit-ish, away from where the blade went.
+    dir: [f32; 2],
+    kick: f32,
+    roll: f32,
+    fov: f32,
+    active: bool,
 }
 
 /// Critically damped smoothing (Unity SmoothDamp form).
@@ -213,9 +233,27 @@ impl FpsCamera {
             w_back: 0.0, w_back_v: 0.0,
             w_dip: 0.0, w_dip_v: 0.0,
             reset_left: 0.0,
+            hit: HitReact::default(),
             slide_y: 0.0, slide_y_v: 0.0,
             bob_phase: 0.0, bob_amt: 0.0, bob_amt_v: 0.0,
         }
+    }
+
+    /// A katana hit landed. `slash_right` = -1..1, how far to the right (in the view frame) the blade travelled; the
+    /// camera nudges the other way. `stop` = the hit-stop seconds (shake for that long), `killed` = a bigger kick.
+    /// Scaled by `feel.shake` (zero under reduced motion); the strongest request in a window wins.
+    pub fn hit_react(&mut self, slash_right: f32, killed: bool, stop: f32) {
+        let k = self.feel.shake;
+        if k <= 0.0 {
+            return;
+        }
+        let (kick, roll, fov) = if killed { (0.07, 0.07, 5.0) } else { (0.035, 0.035, 2.5) };
+        let incoming = kick * k;
+        if self.hit.active && self.hit.kick >= incoming {
+            return;
+        }
+        let sx = -slash_right.clamp(-1.0, 1.0);
+        self.hit = HitReact { age: 0.0, stop, total: stop + 0.18, dir: [0.7 * sx, -0.5], kick: incoming, roll: roll * k * if sx >= 0.0 { 1.0 } else { -1.0 }, fov: fov * k, active: true };
     }
 
     /// Call when the weapon fires.
@@ -285,6 +323,25 @@ impl FpsCamera {
         }
         let bob = self.bob_amt * self.bob_phase.sin();
 
+        // --- katana hit: shake during the hit-stop, then the kick springs back (translation / roll / FOV only) ---
+        let mut offset = [0.0f32; 2];
+        let mut hit_roll = 0.0;
+        let mut hit_fov = 0.0;
+        if self.hit.active {
+            self.hit.age += dt;
+            let h = self.hit;
+            if h.age >= h.total {
+                self.hit.active = false;
+            } else {
+                let env = if h.age < h.stop { 1.0 } else { 1.0 - (h.age - h.stop) / (h.total - h.stop).max(1e-3) };
+                let env = env.clamp(0.0, 1.0);
+                let shake = if h.age < h.stop { (h.age * 220.0).sin() * 0.35 } else { 0.0 };
+                offset = [h.dir[0] * h.kick * env + shake * h.kick, h.dir[1] * h.kick * env - shake * h.kick * 0.6];
+                hit_roll = h.roll * env;
+                hit_fov = -h.fov * env;
+            }
+        }
+
         // underdamped spring returns thrust offset to 0 (one small overshoot)
         let k = c.spring_k;
         let cdamp = 2.0 * c.spring_zeta * k.sqrt();
@@ -299,7 +356,7 @@ impl FpsCamera {
         self.w_dip = smooth_damp(self.w_dip, 0.0, &mut self.w_dip_v, 0.08, dt);
 
         (
-            CameraPose { yaw: 0.0, pitch: 0.0, roll: self.roll, y_offset: self.y + self.slide_y + bob, fov: c.base_fov + self.fov_extra },
+            CameraPose { yaw: 0.0, pitch: 0.0, roll: self.roll + hit_roll, y_offset: self.y + self.slide_y + bob, offset, fov: c.base_fov + self.fov_extra + hit_fov },
             WeaponPose { pitch: self.w_pitch, back: self.w_back, y_dip: self.w_dip },
         )
     }
@@ -385,5 +442,52 @@ mod tests {
         let mut cam = FpsCamera::new(FpsCameraCfg::default());
         let (p, _) = cam.update_aim(DT, CameraInput::default(), &aim);
         assert_eq!((p.yaw, p.pitch), (aim.yaw, aim.pitch));
+    }
+
+    #[test]
+    fn a_katana_hit_shakes_then_springs_back_and_never_rotates_the_view() {
+        let mut cam = FpsCamera::new(FpsCameraCfg::default());
+        let aim = Aim { yaw: 0.7, pitch: -0.2 };
+        cam.hit_react(1.0, false, 0.06);
+        let mut peak = 0.0f32;
+        let mut last = CameraPose::default();
+        for _ in 0..30 {
+            let (p, _) = cam.update_aim(DT, CameraInput::default(), &aim);
+            peak = peak.max(p.offset[0].abs().max(p.offset[1].abs()));
+            assert_eq!((p.yaw, p.pitch), (aim.yaw, aim.pitch), "the hit must not move the crosshair");
+            last = p;
+        }
+        assert!(peak > 0.02 && peak < 0.1, "peak kick {peak} m");
+        assert!(last.offset == [0.0, 0.0] && last.roll.abs() < 1e-4, "back to rest after 0.5 s: {last:?}");
+    }
+
+    #[test]
+    fn a_kill_kicks_harder_and_reduced_motion_removes_the_hit_reaction() {
+        let peak = |killed: bool, feel: CameraFeel| {
+            let mut cam = FpsCamera::new(FpsCameraCfg::default());
+            cam.feel = feel;
+            cam.hit_react(0.0, killed, 0.08);
+            let mut m = 0.0f32;
+            let mut roll = 0.0f32;
+            for _ in 0..30 {
+                let (p, _) = cam.update(DT, CameraInput::default());
+                m = m.max(p.offset[0].abs().max(p.offset[1].abs()));
+                roll = roll.max(p.roll.abs());
+            }
+            (m, roll)
+        };
+        let (hit, kill) = (peak(false, CameraFeel::default()), peak(true, CameraFeel::default()));
+        assert!(kill.0 > hit.0 * 1.5 && kill.1 > hit.1 * 1.5, "kill {kill:?} vs hit {hit:?}");
+        assert_eq!(peak(true, CameraFeel::OFF), (0.0, 0.0), "reduced motion: nothing");
+    }
+
+    #[test]
+    fn the_kick_goes_against_the_blade_direction() {
+        let first = |right: f32| {
+            let mut cam = FpsCamera::new(FpsCameraCfg::default());
+            cam.hit_react(right, false, 0.0);
+            cam.update(DT, CameraInput::default()).0.offset[0]
+        };
+        assert!(first(1.0) < 0.0 && first(-1.0) > 0.0, "kick opposes the slash: {} / {}", first(1.0), first(-1.0));
     }
 }

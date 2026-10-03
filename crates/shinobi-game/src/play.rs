@@ -15,6 +15,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, WindowFocused};
 use shinobi_client::client_game::{Action, ButtonEvent};
 use shinobi_client::hud::Palette;
 use shinobi_client::overlay;
+use shinobi_client::input_mode::{ModeInput, ModeMachine, ModeOut};
 use shinobi_client::pointer_lock::{ButtonTracker, LockEvent, PointerLock};
 use shinobi_client::input::keys_to_stick;
 use shinobi_client::remote::{ninja_draw, NinjaCfg};
@@ -87,6 +88,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Remotes>()
             .init_resource::<BodyMats>()
             .init_resource::<Lock>()
+            .init_resource::<ModeRes>()
             .add_systems(Update, update_title)
             .insert_resource(FxRes { state: FxState::new(FxCfg::default()), out: Default::default(), dash_held: false, slash_edge: false, slash: None, fire_edge: false, dj_edge: false, flip: false })
             .add_systems(Startup, setup)
@@ -242,11 +244,30 @@ pub struct Lock {
     pub tracker: ButtonTracker,
 }
 
-fn apply_cursor(c: &mut CursorOptions, lock: &PointerLock) {
+/// Input mode (Play / Scoreboard / BuildRadial / Console, see `shinobi_client::input_mode`): what the game may read while
+/// an interactive HUD overlay is up. HUD UI reads `ModeRes.out` (current mode, `cursor_free`, `radial_commit`) to draw the
+/// console / radial menu and to know the cursor is free; `radial_enabled` is theirs to switch on.
+#[derive(Resource, Default)]
+pub struct ModeRes {
+    pub machine: ModeMachine,
+    pub out: Option<ModeOut>,
+    /// Seconds a build key (N / M) has been held continuously.
+    build_hold: f32,
+}
+
+impl ModeRes {
+    pub fn mode(&self) -> shinobi_client::input_mode::Mode {
+        self.machine.mode()
+    }
+}
+
+fn apply_cursor(c: &mut CursorOptions, lock: &PointerLock, mode_free: bool) {
     let s = lock.cursor();
+    // an overlay mode (scoreboard, console, radial menu) frees the cursor even while the pointer is locked
+    let grab = s.grab && !mode_free;
     // bevy_winit falls back to Confined where Locked is unsupported (X11)
-    c.grab_mode = if s.grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
-    c.visible = s.visible;
+    c.grab_mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
+    c.visible = !grab;
 }
 
 pub fn input(
@@ -258,16 +279,31 @@ pub fn input(
     mut focus: MessageReader<WindowFocused>,
     mut lock: ResMut<Lock>,
     mut menu: ResMut<crate::hud_view::MenuRes>,
+    mut mode: ResMut<ModeRes>,
+    time: Res<Time>,
 ) {
     let Some(mut cursor) = cursor else { return };
     let lock = &mut *lock;
+
+    // input mode first: it may swallow this frame's Esc (closing the console / radial menu) before the pointer lock sees it
+    let build_down = keys.pressed(KeyCode::KeyN) || keys.pressed(KeyCode::KeyM);
+    mode.build_hold = if build_down { mode.build_hold + time.delta_secs() } else { 0.0 };
+    let build_held_secs = mode.build_hold;
+    let mode_out = mode.machine.update(&ModeInput {
+        locked: lock.p.locked(),
+        tab_held: keys.pressed(KeyCode::Tab),
+        build_held_secs,
+        backquote_pressed: keys.just_pressed(KeyCode::Backquote),
+        escape_pressed: keys.just_pressed(KeyCode::Escape),
+    });
+    mode.out = Some(mode_out);
 
     // window events -> state machine (focus first, then Esc, then the click, so one frame behaves sensibly)
     let mut events = Vec::new();
     for e in focus.read() {
         events.push(if e.focused { LockEvent::FocusGained } else { LockEvent::FocusLost });
     }
-    if keys.just_pressed(KeyCode::Escape) {
+    if keys.just_pressed(KeyCode::Escape) && !mode_out.consumed_escape {
         events.push(LockEvent::Escape);
     }
     // clicks on the pause menu must not grab the pointer; RESUME asks for the grab explicitly
@@ -278,7 +314,7 @@ pub fn input(
     for ev in events {
         let out = lock.p.on(ev);
         if out.changed {
-            apply_cursor(&mut cursor, &lock.p);
+            apply_cursor(&mut cursor, &lock.p, mode_out.flags.cursor_free);
         }
         if out.release_buttons {
             lock.tracker.release_all(&mut pending.0.buttons);
@@ -287,19 +323,36 @@ pub fn input(
         swallow |= out.swallow_click;
     }
 
+    // overlay modes: free / re-grab the cursor when the mode flips, and drop every held button when entering one that blocks actions
+    if mode_out.changed {
+        apply_cursor(&mut cursor, &lock.p, mode_out.flags.cursor_free);
+        if mode_out.release_buttons {
+            lock.tracker.release_all(&mut pending.0.buttons);
+        }
+    }
     let f = &mut pending.0;
+    if !mode_out.flags.allow_move {
+        f.stick = (0.0, 0.0);
+    }
     if !lock.p.locked() || swallow {
         f.stick = (0.0, 0.0);
         return;
     }
-    f.look.0 += motion.delta.x;
-    f.look.1 += motion.delta.y;
-    f.stick = keys_to_stick(
-        keys.pressed(KeyCode::KeyW),
-        keys.pressed(KeyCode::KeyA),
-        keys.pressed(KeyCode::KeyS),
-        keys.pressed(KeyCode::KeyD),
-    );
+    if mode_out.flags.allow_look {
+        f.look.0 += motion.delta.x;
+        f.look.1 += motion.delta.y;
+    }
+    if mode_out.flags.allow_move {
+        f.stick = keys_to_stick(
+            keys.pressed(KeyCode::KeyW),
+            keys.pressed(KeyCode::KeyA),
+            keys.pressed(KeyCode::KeyS),
+            keys.pressed(KeyCode::KeyD),
+        );
+    }
+    if !mode_out.flags.allow_actions {
+        return; // scoreboard / console / radial menu: clicks and keys belong to the overlay
+    }
 
     // the latch in ClientGame turns these into one-shot sim-tick edges, so a sub-tick tap is not lost
     let mut out = Vec::new();
@@ -411,7 +464,7 @@ fn sync_remotes(
 }
 
 /// Camera comes entirely from the predicted `RenderView`: eye position, aim, wall-run roll and FOV punch.
-fn follow_camera(view: Res<ViewRes>, vm: Res<crate::vm::Vm>, fx: Res<FxRes>, mut cam: Single<(&mut Transform, &mut Projection), With<PlayerCam>>) {
+fn follow_camera(view: Res<ViewRes>, vm: Res<crate::vm::Vm>, _fx: Res<FxRes>, mut cam: Single<(&mut Transform, &mut Projection), With<PlayerCam>>) {
     let v = &view.0;
     if !v.connected {
         return;
@@ -424,6 +477,9 @@ fn follow_camera(view: Res<ViewRes>, vm: Res<crate::vm::Vm>, fx: Res<FxRes>, mut
     // the crosshair up to ~0.8 deg off the real shot. Shake now lives in vignette/FOV/viewmodel only.
     let (yaw, pitch) = v.look_angles();
     tf.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, -v.camera.roll);
+    // katana hit shake / kick: a view-frame translation only, so the crosshair stays on the aim
+    let (right, up) = (tf.right(), tf.up());
+    tf.translation += right * v.camera.offset[0] + up * v.camera.offset[1];
     if let Projection::Perspective(p) = &mut **proj {
         // CameraPose is all-zero until the first sim tick has produced a pose: keep a sane FOV until then
         let base = if v.camera.fov > 1.0 { v.camera.fov } else { 90.0 };
