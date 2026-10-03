@@ -1,6 +1,6 @@
 //! Server configuration: CLI flags override environment variables override defaults.
 //! `shinobi-server [BIND] [--bind ADDR | --port N] [--max-players N] [--stats-secs S] [--seed N]
-//!                 [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]`
+//!                 [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--telemetry FILE] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]`
 //! Env: SHINOBI_BIND, SHINOBI_PORT, SHINOBI_MAX_PLAYERS, SHINOBI_STATS_SECS, SHINOBI_SEED, SHINOBI_LEVEL,
 //! SHINOBI_IDLE_MS, SHINOBI_COOKIE_BUCKET_MS, SHINOBI_BOTS, SHINOBI_BOT_SKILL, SHINOBI_BALANCE, SHINOBI_OBSTACLES.
 //! The effective config is printed at boot.
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub const USAGE: &str = "usage: shinobi-server [BIND] [--bind ADDR | --port N] [--max-players N] [--stats-secs S] \
-[--seed N] [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]   \
+[--seed N] [--level PATH] [--idle-ms N] [--cookie-bucket-ms N] [--bots N] [--teams] [--team-size N] [--telemetry FILE] [--bot-skill easy|normal|hard] [--balance PATH] [--obstacles]   \
 (env: SHINOBI_BIND, SHINOBI_PORT, SHINOBI_MAX_PLAYERS, SHINOBI_STATS_SECS, SHINOBI_SEED, SHINOBI_LEVEL, SHINOBI_IDLE_MS, \
 SHINOBI_COOKIE_BUCKET_MS, SHINOBI_BOTS, SHINOBI_BOT_SKILL, SHINOBI_BALANCE, SHINOBI_OBSTACLES)";
 
@@ -68,6 +68,8 @@ pub struct Config {
     pub teams: bool,
     /// Bots keep every team at this many players (humans take bot slots as they join). 0 = no fill.
     pub team_size: usize,
+    /// Append playtest telemetry (`TELEMETRY` text + JSON lines) to this file as well as the console.
+    pub telemetry: Option<PathBuf>,
     /// Balance tuning file (`key = value` lines); default = demo preset.
     pub balance: Option<PathBuf>,
     /// Moving neon obstacle waves (off by default: the game is a shooter).
@@ -88,6 +90,7 @@ impl Default for Config {
             bot_skill: BotSkill::Normal,
             teams: false,
             team_size: 0,
+            telemetry: None,
             balance: None,
             obstacles: false,
         }
@@ -156,6 +159,9 @@ impl Config {
         if let Some(v) = env("SHINOBI_BOTS") {
             c.bots = num("SHINOBI_BOTS", &v)?;
         }
+        if let Some(v) = env("SHINOBI_TELEMETRY") {
+            c.telemetry = Some(v.into());
+        }
         if let Some(v) = env("SHINOBI_TEAM_SIZE") {
             c.team_size = num("SHINOBI_TEAM_SIZE", &v)?;
         }
@@ -190,6 +196,7 @@ impl Config {
                     c.cookie_bucket = Duration::from_millis(num("--cookie-bucket-ms", &val("--cookie-bucket-ms")?)?)
                 }
                 "--bots" => c.bots = num("--bots", &val("--bots")?)?,
+                "--telemetry" => c.telemetry = Some(val("--telemetry")?.into()),
                 "--teams" => c.teams = true,
                 "--team-size" => c.team_size = num("--team-size", &val("--team-size")?)?,
                 "--obstacles" => c.obstacles = true,

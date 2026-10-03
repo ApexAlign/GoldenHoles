@@ -20,6 +20,7 @@ cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 
 One-liner for a local free-for-all against 7 bots: `./demo.sh` (builds, starts the server, opens the window;
 `BOTS=3 ./demo.sh` for fewer opponents).
 No window available? `scripts/demo_headless.sh` runs server + AI + scripted clients for 60 s and prints a health report.
+Playtesting? `scripts/play.sh` (builds, starts a free-for-all with 7 bots, records telemetry) and `docs/PLAYTEST.md`.
 Before pushing code: `scripts/check.sh` (workspace tests + `cargo check` of the Bevy game crate; `--fast` skips the game crate).
 
 ## Optional: team mode (8v8) + grapple
@@ -91,6 +92,8 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--teams`: opt-in team deathmatch, Cyan (team 0) vs Orange (team 1). Players join the smaller team (then the one
   with fewer kills). First team to 50 team kills wins, or the higher team score at the time limit; a tie goes to a
   60 s sudden death (first team kill wins, else a draw). Frags of players who leave stay on their team's score.
+- `--telemetry FILE`: append playtest telemetry (`TELEMETRY` text + JSON lines: shots, hit %, lock-on, grapple, building,
+  deaths by cause per player) to FILE; it is always printed to the console every 60 s and at match end.
 - `--team-size N` (e.g. `--team-size 8` for 8v8): implies `--teams` and keeps every team at N players with bots;
   a human joining takes a bot's slot, leaving brings a bot back. Use it instead of `--bots` (max N = 27).
   `TEAM_SIZE=8 ./demo.sh` starts a local 8v8.

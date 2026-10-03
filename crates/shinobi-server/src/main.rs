@@ -19,6 +19,7 @@ mod replicate;
 mod setup;
 mod stats;
 mod supervise;
+mod telemetry;
 
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -398,6 +399,27 @@ fn main() -> std::io::Result<()> {
 
         for line in rep.take_log() {
             eprintln!("{line}");
+        }
+        let (text, json) = rep.take_telemetry();
+        for line in &text {
+            eprintln!("{line}");
+        }
+        if let (Some(path), false) = (&conf.telemetry, text.is_empty()) {
+            use std::io::Write;
+            let stamp = format!("# {:.0}s since server start", epoch.elapsed().as_secs_f64());
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let write = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| {
+                writeln!(f, "{stamp}")?;
+                for l in text.iter().chain(json.iter()) {
+                    writeln!(f, "{l}")?;
+                }
+                Ok(())
+            });
+            if let Err(e) = write {
+                eprintln!("telemetry: cannot write {}: {e}", path.display());
+            }
         }
         if let Some(line) = stats.on_frame(now, report.ticks, sim_cost, repl_cost) {
             eprintln!("{line}");

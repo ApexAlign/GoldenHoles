@@ -75,6 +75,8 @@ pub struct Replicator {
     /// Smallest intent arrival margin per player since the last snapshot round (taken from the intent queues every
     /// frame, reported in the owner block so clients can size their intent lead).
     margins: HashMap<u16, i32>,
+    /// Playtest statistics (see `telemetry.rs`); reports come out through `take_telemetry`.
+    telemetry: crate::telemetry::Telemetry,
 }
 
 impl Replicator {
@@ -94,6 +96,7 @@ impl Replicator {
             last_team_score: None,
             disc_cap: PROJECTILE_ID_MAX,
             margins: HashMap::new(),
+            telemetry: Default::default(),
         }
     }
 
@@ -183,6 +186,8 @@ impl Replicator {
     /// teams, blocks) and obstacle waves.
     pub fn post_frame(&mut self, server: &mut Server) {
         let Some(tick) = server.tick.checked_sub(1) else { return };
+        // telemetry reads the event vectors first: the drain below takes them
+        self.telemetry.observe(server);
         // The sim clears these event vecs at the start of its next `frame()`: drain now or lose them.
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
@@ -190,6 +195,7 @@ impl Replicator {
         self.sync_blocks(server);
         for p in &mut server.players {
             if let Some(m) = p.queue.take_margin() {
+                self.telemetry.observe_margin(p.id, m);
                 let e = self.margins.entry(p.id).or_insert(m);
                 *e = (*e).min(m);
             }
@@ -308,6 +314,11 @@ impl Replicator {
                 _ => {}
             }
         }
+    }
+
+    /// Playtest telemetry produced since the last call: (console lines, JSON lines for the telemetry file).
+    pub fn take_telemetry(&mut self) -> (Vec<String>, Vec<String>) {
+        self.telemetry.take()
     }
 
     /// Console lines produced since the last call.
@@ -963,6 +974,7 @@ mod tests {
         for id in s.players.iter().map(|p| p.id).collect::<Vec<_>>() {
             r.add_peer(&s, id, s.tick);
         }
+        let mut telemetry: Vec<String> = Vec::new();
         let mut events: Vec<MatchEvent> = Vec::new();
         let (mut frozen_ticks, mut kills_at_second_start) = (0u32, None);
         for t in 0..9000u32 {
@@ -986,6 +998,7 @@ mod tests {
             bots.advance(&mut s, Duration::from_nanos(16_666_667));
             let frame_events: Vec<MatchEvent> = s.match_events.to_vec(); // post_frame drains them
             r.post_frame(&mut s);
+            telemetry.extend(r.take_telemetry().0);
             if s.match_state.frozen() {
                 frozen_ticks += 1;
             }
@@ -1018,6 +1031,12 @@ mod tests {
         assert_eq!(s.match_state.kind(), PhaseKind::Live);
         let log = r.take_log().join("\n");
         assert!(log.contains("MATCH"), "the server console narrates match flow:\n{log}");
+        // playtest telemetry: a FINAL report for the finished match, humans listed individually with real numbers
+        let t = telemetry.join("\n");
+        assert!(t.contains("match 1 FINAL") && t.contains("8 human(s), 8 bot(s)"), "{t}");
+        assert!(t.contains("p1 (human): kills") && t.contains("bots x8 (summed)"), "{t}");
+        let thrown: u32 = t.lines().find(|l| l.contains("shuriken: thrown")).and_then(|l| l.split("thrown ").nth(1)).and_then(|x| x.split_whitespace().next()).and_then(|x| x.parse().ok()).unwrap();
+        assert!(thrown > 20, "the scripted humans throw all match long: {thrown}\n{t}");
     }
 
     /// The client reads datagrams into a 2048 B buffer (`udp_game::RX_BUF`): a bigger one is truncated and dropped.

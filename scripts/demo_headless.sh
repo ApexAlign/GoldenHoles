@@ -16,7 +16,7 @@ trap 'kill $SRV 2>/dev/null || true; rm -rf "$TMP"' EXIT
 echo ">> building release server + bot ..."
 cargo build --release --offline -j "$JOBS" -q -p shinobi-server -p shinobi-bot
 echo ">> free-for-all server on 127.0.0.1:$PORT, level $LEVEL, $AI AI opponent(s), $CLIENTS scripted client(s), ${SECS}s"
-SHINOBI_STATS_SECS=$(( SECS < 30 ? 5 : 10 )) target/release/shinobi-server "127.0.0.1:$PORT" --level "$LEVEL" --bots "$AI" 2> "$TMP/server.log" &
+SHINOBI_STATS_SECS=$(( SECS < 30 ? 5 : 10 )) target/release/shinobi-server "127.0.0.1:$PORT" --level "$LEVEL" --bots "$AI" --telemetry "$TMP/telemetry.txt" 2> "$TMP/server.log" &
 SRV=$!
 sleep 1
 set +e
@@ -30,6 +30,9 @@ echo; echo "---- server stats ----"
 grep '^stats:' "$TMP/server.log" || echo "(no stats lines)"
 echo; echo "---- kill feed / match flow (last 15) ----"
 grep -E 'KILL|MATCH|PICKUP|RESPAWN' "$TMP/server.log" | tail -15 || true
+echo; echo "---- playtest telemetry (last report; every 60 s and at match end) ----"
+grep "^TELEMETRY" "$TMP/server.log" | tail -n 14 || echo "(none yet: first report after 60 s)"
+[ -f "$TMP/telemetry.txt" ] || echo "(telemetry file not written)"
 echo; echo "---- problems ----"
 grep -E 'PANIC contained|^kick player|^timeout player|: stall, discarded' "$TMP/server.log" || echo "none"
 
