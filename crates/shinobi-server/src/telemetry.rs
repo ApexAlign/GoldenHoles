@@ -14,8 +14,9 @@
 //! * grapple fired = attaches + misses. Pieces lost = the player's own pieces that de-rezzed (anyone's damage).
 //! * deaths by cause: shuriken / katana / grid beam / void (kill plane) / hazard (obstacle).
 //! * "headroom" = ticks by which the newest intent beat the server clock (the client's adaptive intent lead is
-//!   sized from it); late = share of reports where it arrived after its tick. Ping and the client's reconcile
-//!   correction count live on the client and are not visible to the server.
+//!   sized from it); late = share of reports where it arrived after its tick.
+//! * "client: ping / corrections" are measured by the game client (round trip from the server's echo, reconcile
+//!   corrections applied) and sent to the server about once a second (`ClientReport`); bots have no client.
 use std::collections::BTreeMap;
 
 use shinobi_sim::blocks::BlockEvent;
@@ -58,9 +59,22 @@ pub struct PlayerStats {
     pub margin_n: u32,
     pub margin_min: i32,
     pub late: u32,
+    /// Client-reported round trip (ms) samples, about one per second.
+    pub ping_sum: u64,
+    pub ping_n: u32,
+    pub ping_max: u16,
+    /// Client-reported reconcile corrections (counter modulo 65536): first and latest value this match.
+    corr_first: Option<u16>,
+    corr_last: u16,
+    report_tick: Option<u32>,
 }
 
 impl PlayerStats {
+    /// Reconcile corrections the client applied during this match.
+    pub fn corrections(&self) -> u32 {
+        self.corr_first.map_or(0, |f| self.corr_last.wrapping_sub(f) as u32)
+    }
+
     pub fn deaths_total(&self) -> u32 {
         self.deaths.iter().sum()
     }
@@ -90,6 +104,11 @@ impl PlayerStats {
         self.margin_n += o.margin_n;
         self.margin_min = if self.margin_n == o.margin_n { o.margin_min } else { self.margin_min.min(o.margin_min) };
         self.late += o.late;
+        self.ping_sum += o.ping_sum;
+        self.ping_n += o.ping_n;
+        self.ping_max = self.ping_max.max(o.ping_max);
+        self.corr_last = self.corr_last.wrapping_add(o.corrections() as u16);
+        self.corr_first.get_or_insert(0);
     }
 }
 
@@ -172,6 +191,19 @@ impl Telemetry {
                 }
             }
             s.was_locked = locked;
+            // the client's own ping / correction report, once per report
+            if let Some((r, at)) = p.client_report {
+                if s.report_tick != Some(at) {
+                    s.report_tick = Some(at);
+                    if r.ping_ms != shinobi_proto::intent::PING_UNKNOWN {
+                        s.ping_sum += r.ping_ms as u64;
+                        s.ping_n += 1;
+                        s.ping_max = s.ping_max.max(r.ping_ms);
+                    }
+                    s.corr_first.get_or_insert(r.corrections);
+                    s.corr_last = r.corrections;
+                }
+            }
         }
         let locked_on = |server: &Server, who: u16, victim: Option<u16>| {
             server.players.iter().find(|p| p.id == who).map_or(false, |p| {
@@ -328,6 +360,14 @@ impl Telemetry {
             s.built,
             s.lost
         ));
+        if net && s.ping_n > 0 {
+            self.text.push(format!(
+                "TELEMETRY    client: ping avg {:.0} max {} ms, reconcile corrections {} (client-measured)",
+                s.ping_sum as f64 / s.ping_n as f64,
+                s.ping_max,
+                s.corrections()
+            ));
+        }
         if net && s.margin_n > 0 {
             self.text.push(format!(
                 "TELEMETRY    net: intent headroom avg {:.1} min {} ticks, late {} of {} reports",
@@ -341,7 +381,7 @@ impl Telemetry {
 
     fn json_line(match_no: u32, last: bool, secs: f64, who: &str, human: bool, s: &PlayerStats) -> String {
         format!(
-            "{{\"match\":{match_no},\"final\":{last},\"secs\":{secs:.1},\"player\":\"{who}\",\"human\":{human},\"kills\":{},\"deaths\":{},\"deaths_by\":{{\"shuriken\":{},\"katana\":{},\"beam\":{},\"void\":{},\"hazard\":{}}},\"avg_life_s\":{:.1},\"thrown\":{},\"shuriken_hits\":{},\"headshots\":{},\"thrown_locked\":{},\"hits_locked\":{},\"lock_engaged\":{},\"locked_s\":{:.1},\"alive_s\":{:.1},\"swings\":{},\"katana_hits\":{},\"grapple_attach\":{},\"grapple_miss\":{},\"built\":{},\"lost\":{},\"headroom_avg\":{:.2},\"headroom_min\":{},\"late\":{},\"reports\":{}}}",
+            "{{\"match\":{match_no},\"final\":{last},\"secs\":{secs:.1},\"player\":\"{who}\",\"human\":{human},\"kills\":{},\"deaths\":{},\"deaths_by\":{{\"shuriken\":{},\"katana\":{},\"beam\":{},\"void\":{},\"hazard\":{}}},\"avg_life_s\":{:.1},\"thrown\":{},\"shuriken_hits\":{},\"headshots\":{},\"thrown_locked\":{},\"hits_locked\":{},\"lock_engaged\":{},\"locked_s\":{:.1},\"alive_s\":{:.1},\"swings\":{},\"katana_hits\":{},\"grapple_attach\":{},\"grapple_miss\":{},\"built\":{},\"lost\":{},\"ping_avg_ms\":{:.0},\"ping_max_ms\":{},\"corrections\":{},\"headroom_avg\":{:.2},\"headroom_min\":{},\"late\":{},\"reports\":{}}}",
             s.kills,
             s.deaths_total(),
             s.deaths[0],
@@ -364,6 +404,9 @@ impl Telemetry {
             s.grapple_miss,
             s.built,
             s.lost,
+            if s.ping_n > 0 { s.ping_sum as f64 / s.ping_n as f64 } else { 0.0 },
+            s.ping_max,
+            s.corrections(),
             if s.margin_n > 0 { s.margin_sum as f64 / s.margin_n as f64 } else { 0.0 },
             if s.margin_n > 0 { s.margin_min } else { 0 },
             s.late,
@@ -457,6 +500,34 @@ mod tests {
         assert!(all.contains("bots x1 (summed): kills 0 deaths 1"), "{all}");
         assert_eq!(json.len(), 2);
         assert!(json[0].starts_with("{\"match\":1,\"final\":true") && json[0].contains("\"player\":\"p1\"") && json[0].contains("\"thrown\":4"), "{}", json[0]);
+    }
+
+    /// The client's own report (ping, corrections) reaches the telemetry once per report, not once per frame.
+    #[test]
+    fn client_reported_ping_and_corrections_are_sampled_once_per_report() {
+        use shinobi_proto::intent::ClientReport;
+        let mut s = server();
+        let mut t = Telemetry::default();
+        s.tick = 5;
+        s.match_events = vec![MatchEvent::MatchStart { tick: 5, map: 0 }];
+        t.observe(&s);
+        s.match_events.clear();
+        for (tick, ping, corr) in [(70u32, 40u16, 65_534u16), (130, 100, 65_535), (190, 70, 2)] {
+            s.tick = tick;
+            s.players[0].client_report = Some((ClientReport { ping_ms: ping, corrections: corr }, tick));
+            t.observe(&s);
+            t.observe(&s); // a second frame with the same report must not double count
+        }
+        let p = t.stats(1).unwrap();
+        assert_eq!((p.ping_n, p.ping_max, p.ping_sum), (3, 100, 210));
+        assert_eq!(p.corrections(), 4, "65534 -> 2 wraps: 4 corrections");
+        s.tick = 200;
+        s.match_events = vec![MatchEvent::MatchEnd { tick: 200, winner: None, reason: EndReason::TimeLimit }];
+        t.observe(&s);
+        let (text, json) = t.take();
+        let all = text.join("\n");
+        assert!(all.contains("client: ping avg 70 max 100 ms, reconcile corrections 4"), "{all}");
+        assert!(json[0].contains("\"ping_avg_ms\":70") && json[0].contains("\"corrections\":4"), "{}", json[0]);
     }
 
     #[test]

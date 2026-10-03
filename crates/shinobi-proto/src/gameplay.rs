@@ -50,13 +50,17 @@ pub struct OwnExtras {
     /// Smallest headroom (ticks) of the newest intent over the server clock since the previous block; negative =
     /// the intent arrived after its tick. The client sizes its intent lead from it.
     pub lead_margin: i8,
+    /// `seq` of the newest client packet the server had received when this block was built, and how many ticks ago it
+    /// arrived: the client subtracts the age from its own send-to-now time to measure the round trip.
+    pub echo_seq: u16,
+    pub echo_age: u8,
 }
 
 /// `lead_margin` defaults to `LEAD_MARGIN_MAX`, which means "no measurement" (real margins are clamped to at most
 /// `LEAD_MARGIN_MAX - 1`): a block built without margin data (tests, other tools) must not steer the client's lead.
 impl Default for OwnExtras {
     fn default() -> Self {
-        Self { has_state: false, acked_tick: 0, hp_x10: 0, hits: Vec::new(), hit_seq: 0, intent_complete: 0, lead_margin: LEAD_MARGIN_MAX }
+        Self { has_state: false, acked_tick: 0, hp_x10: 0, hits: Vec::new(), hit_seq: 0, intent_complete: 0, lead_margin: LEAD_MARGIN_MAX, echo_seq: 0, echo_age: 0 }
     }
 }
 
@@ -75,6 +79,8 @@ impl OwnExtras {
         // trails / leads `acked_tick` by a few ticks: a zigzag delta is ~1 byte instead of a 3-byte tick
         w.write_zigzag(self.intent_complete.wrapping_sub(self.acked_tick) as i32);
         w.write_bits((self.lead_margin.clamp(LEAD_MARGIN_MIN, LEAD_MARGIN_MAX) as i32 - LEAD_MARGIN_MIN as i32) as u32, 5);
+        w.write_bits(self.echo_seq as u32, 16);
+        w.write_bits(self.echo_age as u32, 8);
         let n = self.hits.len().min(MAX_HITS);
         w.write_bits(n as u32, 4);
         if n > 0 {
@@ -104,6 +110,8 @@ impl OwnExtras {
         let hp_x10 = u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?;
         let intent_complete = acked_tick.wrapping_add(r.read_zigzag()? as u32);
         let lead_margin = (r.read_bits(5)? as i32 + LEAD_MARGIN_MIN as i32) as i8;
+        let echo_seq = r.read_bits(16)? as u16;
+        let echo_age = r.read_bits(8)? as u8;
         let n = r.read_bits(4)? as usize;
         let hit_seq = if n > 0 { r.read_bits(8)? as u8 } else { 0 };
         let mut hits = Vec::with_capacity(n);
@@ -116,7 +124,7 @@ impl OwnExtras {
                 kill: r.read_bool()?,
             });
         }
-        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin }, state))
+        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin, echo_seq, echo_age }, state))
     }
 }
 
@@ -197,7 +205,7 @@ mod tests {
     #[test]
     fn own_extras_roundtrip_with_and_without_state() {
         let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7 };
-        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3 };
+        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3, echo_seq: 65_000, echo_age: 3 };
         let mut w = BitWriter::new();
         full.write(&mut w, |w| {
             w.write_bits(0b1011, 4); // stand-in for OwnState
@@ -210,13 +218,13 @@ mod tests {
         assert_eq!(st, Some((0b1011, 99)));
 
         // dead: extras only, state closure never runs
-        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255, intent_complete: 0, lead_margin: 15 };
+        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255, intent_complete: 0, lead_margin: 15, echo_seq: 7, echo_age: 255 };
         let mut w = BitWriter::new();
         dead.write(&mut w, |_| panic!("no state when dead"));
         let bytes = w.finish();
         let (got, st): (_, Option<()>) = OwnExtras::read(&mut BitReader::new(&bytes), |_| panic!("no state")).unwrap();
         assert_eq!((got, st), (dead, None));
-        assert!(bytes.len() <= 7, "dead-player block is tiny: {}", bytes.len());
+        assert!(bytes.len() <= 10, "dead-player block is tiny: {}", bytes.len()); // incl. the 3-byte ping echo
     }
 
     #[test]

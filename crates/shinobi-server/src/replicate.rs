@@ -527,6 +527,8 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32
         hp_x10: if p.vitals.alive() { (p.vitals.hp * 10.0).round().clamp(1.0, u16::MAX as f32) as u16 } else { 0 },
         hits: hits.to_vec(),
         hit_seq,
+        echo_seq: p.last_pkt.map_or(0, |(s, _)| s),
+        echo_age: p.last_pkt.map_or(0, |(_, t)| server.tick.saturating_sub(t).min(255) as u8),
         intent_complete: p.queue.complete_tick(),
         lead_margin: margin.clamp(shinobi_proto::gameplay::LEAD_MARGIN_MIN as i32, shinobi_proto::gameplay::LEAD_MARGIN_MAX as i32 - 1) as i8,
     };

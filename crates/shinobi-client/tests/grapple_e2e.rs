@@ -77,7 +77,10 @@ fn snapshot_datagram(srv: &Server, margin: i8) -> Vec<u8> {
     let mut ev = BitWriter::new();
     EventOutbox::default().write_pending(&mut ev, 256);
     let mut own = BitWriter::new();
-    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0, intent_complete: srv.players[0].queue.complete_tick(), lead_margin: margin };
+    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0, intent_complete: srv.players[0].queue.complete_tick(), lead_margin: margin,
+        echo_seq: srv.players[0].last_pkt.map_or(0, |(s, _)| s),
+        echo_age: srv.players[0].last_pkt.map_or(0, |(_, t)| srv.tick.saturating_sub(t).min(255) as u8),
+    };
     extras.write(&mut own, |w| OwnState::from_snapshot(&p.ch.snapshot(&srv.world)).write(w));
     frame_snapshot_v3(&ev.finish(), &own.finish(), &[], &encode_delta(None, &snap))
 }
@@ -108,6 +111,8 @@ struct Out {
     /// (tick, lead) every time the adaptive intent lead changed, and where it ended.
     lead_log: Vec<(u32, u32)>,
     final_lead: Option<u32>,
+    /// Client-measured round trip (ms) at the end, and the correction count it would report.
+    final_ping: Option<f32>,
 }
 
 impl Out {
@@ -246,6 +251,7 @@ fn run_ex(one_way: f64, jitter: f64, loss: f64, seed: u64, ticks: u32, hook: boo
     }
     out.corrections = game.corrections;
     out.final_lead = game.net.lead();
+    out.final_ping = game.net.ping_ms();
     let last = pred_pos.keys().copied().max().unwrap_or(0);
     for (tick, p) in &pred_pos {
         // skip the very first ticks (prediction warm-up) and the last window (acks still in flight)
@@ -339,4 +345,16 @@ fn fast_link_keeps_the_lead_small() {
     let fin = o.final_lead.expect("lead known");
     assert!(fin <= 8, "lead {fin} on a zero-latency link");
     assert!(o.max() < 0.02 && o.corrections == 0, "{o:?}");
+}
+
+/// The client measures its own round trip from the server's echo: on a 50 ms one-way link (100 ms RTT, a tick is
+/// 16.7 ms) the smoothed ping settles near 100 ms, and on a zero-latency link near 0. The server sees the client's report.
+#[test]
+fn client_measured_ping_matches_the_link() {
+    let slow = run_ex(3.0, 0.0, 0.0, 5, 900, false, 8);
+    let fast = run_ex(0.0, 0.0, 0.0, 5, 900, false, 8);
+    let (s, f) = (slow.final_ping.expect("ping measured"), fast.final_ping.expect("ping measured"));
+    // 3 ticks each way = 100 ms; the harness delivers on whole ticks, so allow a tick or two of slack
+    assert!((80.0..140.0).contains(&s), "50 ms one way measured as {s} ms RTT");
+    assert!(f < 40.0, "zero-latency link measured as {f} ms");
 }

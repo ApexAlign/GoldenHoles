@@ -13,7 +13,7 @@ use shinobi_proto::datagram::{
     HELLO_LEN, HELLO_RETRY_MS, TAG_CHALLENGE, TAG_KICK, TAG_SNAPSHOT, TAG_WELCOME,
 };
 use shinobi_proto::gameplay::{Board, HitMsg, OwnExtras};
-use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, BASE_REDUNDANCY, MAX_REDUNDANCY};
+use shinobi_proto::intent::{Buttons, ClientPacket, ClientReport, PlayerIntent, BASE_REDUNDANCY, MAX_REDUNDANCY, PING_UNKNOWN};
 use shinobi_proto::quant::dq_pos3;
 use shinobi_proto::snapshot::decode_delta;
 use shinobi_proto::TICK_HZ;
@@ -107,6 +107,12 @@ pub struct NetClient {
     lead_slew: i32,
     /// The last `pace_tick` repeated the previous stamp (the lead just shrank): the shell must not simulate it.
     stamp_held: bool,
+    /// `(packet seq, local tick at send)` of recent datagrams, to turn the server's echo into a round-trip time.
+    sent: VecDeque<(u16, f64)>,
+    /// Smoothed round-trip time in ms (`ping_ms`).
+    ping: Option<f32>,
+    /// Reconcile corrections applied so far (set by the shell); reported to the server for telemetry.
+    corrections: u32,
     /// Datagrams that failed to decode (for a debug overlay / disconnect heuristics).
     pub bad_datagrams: u32,
 }
@@ -145,6 +151,9 @@ impl Default for NetClient {
             lead_settle: 0,
             lead_slew: 0,
             stamp_held: false,
+            sent: VecDeque::new(),
+            ping: None,
+            corrections: 0,
             bad_datagrams: 0,
         }
     }
@@ -288,6 +297,7 @@ impl NetClient {
                 self.hp_x10 = Some(x.hp_x10);
                 self.intent_complete = self.intent_complete.max(x.intent_complete);
                 self.on_lead_margin(x.lead_margin as i32);
+                self.on_echo(x.echo_seq, x.echo_age, local_tick);
                 let n = x.hits.len();
                 for (i, h) in x.hits.into_iter().enumerate() {
                     let seq = x.hit_seq.wrapping_sub((n - 1 - i) as u8);
@@ -378,6 +388,24 @@ impl NetClient {
     /// not produce an intent or simulate a predicted step for it, so prediction stays in step with the server.
     pub fn stamp_held(&self) -> bool {
         self.stamp_held
+    }
+
+    /// Server echo: it had received our packet `seq` `age` ticks before building this block. Round trip =
+    /// (now - when we sent it) - age, smoothed (EWMA 0.2). Unknown / stale sequence numbers are ignored.
+    fn on_echo(&mut self, seq: u16, age: u8, local_tick: f64) {
+        let Some(&(_, sent_at)) = self.sent.iter().rev().find(|(s, _)| *s == seq) else { return };
+        let ms = ((local_tick - sent_at - age as f64) * MS_PER_TICK).max(0.0) as f32;
+        self.ping = Some(self.ping.map_or(ms, |p| p * 0.8 + ms * 0.2));
+    }
+
+    /// Smoothed round-trip time in milliseconds (`None` until the first echo).
+    pub fn ping_ms(&self) -> Option<f32> {
+        self.ping
+    }
+
+    /// The shell tells us how many reconcile corrections it has applied; it goes to the server in the periodic report.
+    pub fn set_corrections(&mut self, n: u32) {
+        self.corrections = n;
     }
 
     /// Current intent lead in ticks (`None` before the first `pace_tick`).
@@ -519,7 +547,17 @@ impl NetClient {
         }
 
         let render = self.render_tick(local_tick).unwrap_or(0.0);
+        self.sent.push_back((self.seq, local_tick));
+        while self.sent.len() > 256 {
+            self.sent.pop_front();
+        }
+        // about once a second: ping + correction count for the server's playtest telemetry
+        let report = (self.seq % TICK_HZ as u16 == 0).then(|| ClientReport {
+            ping_ms: self.ping.map_or(PING_UNKNOWN, |p| p.round().clamp(0.0, 4094.0) as u16),
+            corrections: (self.corrections & 0xFFFF) as u16,
+        });
         let pkt = ClientPacket {
+            report,
             seq: self.seq,
             ack_snapshot_tick: self.interp.newest_tick().unwrap_or(0),
             ack_event_seq: self.inbox.ack(),
@@ -652,6 +690,49 @@ mod tests {
         c
     }
 
+    /// The server echoes the newest packet it received and how old it is; the client turns that into a smoothed ping.
+    #[test]
+    fn ping_comes_from_the_echo_minus_the_servers_wait() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        for t in 1..=3u32 {
+            c.next_packet(intent(t), 100.0 + t as f64).unwrap(); // seqs 0, 1, 2 sent at local 101, 102, 103
+        }
+        assert_eq!(c.ping_ms(), None);
+        // the block reaches us at local 109: packet seq 1 (sent at 102) had been at the server for 2 ticks
+        let x = OwnExtras { echo_seq: 1, echo_age: 2, ..Default::default() };
+        let mut w = BitWriter::new();
+        x.write(&mut w, |_| {});
+        let d = frame_snapshot_v3(&no_events(), &w.finish(), &[], &encode_delta(None, &snap(10, 0)));
+        c.on_datagram(&d, 109.0).unwrap();
+        let ms = c.ping_ms().expect("measured");
+        assert!((ms - (109.0 - 102.0 - 2.0) as f32 * 16.667).abs() < 0.5, "{ms}");
+        // an echo for a packet we no longer know changes nothing
+        let x = OwnExtras { echo_seq: 999, echo_age: 0, ..Default::default() };
+        let mut w = BitWriter::new();
+        x.write(&mut w, |_| {});
+        let before = c.ping_ms();
+        c.on_datagram(&frame_snapshot_v3(&no_events(), &w.finish(), &[], &encode_delta(None, &snap(12, 0))), 110.0).unwrap();
+        assert_eq!(c.ping_ms(), before);
+    }
+
+    /// About once a second the client attaches its ping and correction count to a packet.
+    #[test]
+    fn the_report_rides_every_sixtieth_packet() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        c.set_corrections(70_000); // wraps modulo 65536
+        let mut with = Vec::new();
+        for t in 1..=130u32 {
+            let p = ClientPacket::decode(&c.next_packet(intent(t), t as f64).unwrap()).unwrap();
+            if let Some(r) = p.report {
+                with.push((p.seq, r));
+            }
+        }
+        assert_eq!(with.iter().map(|w| w.0).collect::<Vec<_>>(), vec![0, 60, 120]);
+        assert_eq!(with[0].1, ClientReport { ping_ms: PING_UNKNOWN, corrections: (70_000u32 & 0xFFFF) as u16 });
+    }
+
     #[test]
     fn lead_grows_at_once_on_a_late_block_then_ignores_stale_samples() {
         let mut c = lead_client(8);
@@ -732,7 +813,7 @@ mod tests {
     }
 
     fn own_block_full(has_state: bool, acked: u32, hp_x10: u16, hits: Vec<HitMsg>, intent_complete: u32, lead_margin: i8) -> Vec<u8> {
-        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1, intent_complete, lead_margin };
+        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1, intent_complete, lead_margin, ..Default::default() };
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()

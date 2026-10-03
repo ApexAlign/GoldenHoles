@@ -76,6 +76,10 @@ pub struct Player {
     pub vitals: Vitals,
     /// `team::TEAM_CYAN` / `TEAM_ORANGE`. Set by `add_player` (auto-balanced); rules (friendly fire, spawns) read it.
     pub team: u8,
+    /// `(seq, server tick)` of the newest client packet received (echoed so the client can measure its round trip).
+    pub last_pkt: Option<(u16, u32)>,
+    /// The client's own ping / correction report and the server tick it arrived on (telemetry only).
+    pub client_report: Option<(shinobi_proto::intent::ClientReport, u32)>,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -243,6 +247,8 @@ impl Server {
             pitch: 0,
             vitals,
             team,
+            last_pkt: None,
+            client_report: None,
         });
     }
 
@@ -352,6 +358,13 @@ impl Server {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return Verdict::Ok };
         match ClientPacket::decode(bytes) {
             Ok(pkt) => {
+                // newest by sequence number (wrapping), so a reordered older packet does not move the echo backwards
+                if p.last_pkt.map_or(true, |(s, _)| (1..0x8000).contains(&pkt.seq.wrapping_sub(s))) {
+                    p.last_pkt = Some((pkt.seq, tick));
+                }
+                if let Some(r) = pkt.report {
+                    p.client_report = Some((r, tick));
+                }
                 let rejected = p.queue.push_packet(&pkt, tick);
                 p.guard.strike_n(rejected, &ac)
             }

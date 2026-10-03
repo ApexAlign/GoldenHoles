@@ -161,6 +161,19 @@ pub struct ViewState {
     pub alpha: u8,
 }
 
+/// Client-measured network quality, sent about once a second (`ClientPacket::report`) so the server's playtest
+/// telemetry can include numbers only the client has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ClientReport {
+    /// Smoothed round-trip time in ms (12 bits on the wire, `PING_UNKNOWN` = not measured yet).
+    pub ping_ms: u16,
+    /// Reconcile corrections the client has applied since it connected, modulo 65536.
+    pub corrections: u16,
+}
+
+/// `ClientReport::ping_ms` before the first measurement.
+pub const PING_UNKNOWN: u16 = 0xFFF;
+
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ClientPacket {
     pub seq: u16,
@@ -169,6 +182,8 @@ pub struct ClientPacket {
     /// Highest contiguous reliable event seq applied (walls / obstacles).
     pub ack_event_seq: u32,
     pub view: ViewState,
+    /// About once a second: client-side ping and correction count (telemetry only; never trusted for gameplay).
+    pub report: Option<ClientReport>,
     /// Newest first, contiguous ticks (`intents[i].tick == intents[0].tick - i`), 1..=MAX_REDUNDANCY entries.
     pub intents: Vec<PlayerIntent>,
 }
@@ -190,6 +205,11 @@ impl ClientPacket {
         // view tick trails the ack by a few ticks: zigzag delta is ~1 byte
         w.write_zigzag(self.view.from_tick.wrapping_sub(self.ack_snapshot_tick) as i32);
         w.write_bits(self.view.alpha as u32, 8);
+        w.write_bool(self.report.is_some());
+        if let Some(r) = self.report {
+            w.write_bits(r.ping_ms.min(PING_UNKNOWN) as u32, 12);
+            w.write_bits(r.corrections as u32, 16);
+        }
         w.write_bits((n - 1) as u32, 4);
         w.write_varint(newest);
         self.intents[0].write_body(&mut w);
@@ -210,6 +230,7 @@ impl ClientPacket {
         let ack_event_seq = r.read_varint()?;
         let view_delta = r.read_zigzag()?;
         let alpha = r.read_bits(8)? as u8;
+        let report = if r.read_bool()? { Some(ClientReport { ping_ms: r.read_bits(12)? as u16, corrections: r.read_bits(16)? as u16 }) } else { None };
         let n = r.read_bits(4)? as usize + 1;
         let newest = r.read_varint()?;
         if (n as u32) > newest.saturating_add(1) {
@@ -231,6 +252,7 @@ impl ClientPacket {
             ack_snapshot_tick,
             ack_event_seq,
             view: ViewState { from_tick: ack_snapshot_tick.wrapping_add(view_delta as u32), alpha },
+            report,
             intents,
         })
     }
@@ -456,6 +478,7 @@ mod tests {
             ack_snapshot_tick: 120_000,
             ack_event_seq: 77,
             view: ViewState { from_tick: 119_994, alpha: 200 },
+            report: Some(ClientReport { ping_ms: 87, corrections: 65_531 }),
             intents: vec![
                 intent(120_010, Buttons::DASH | Buttons::JUMP_HELD, 127),
                 intent(120_009, Buttons::JUMP_HELD, 127),
@@ -464,7 +487,7 @@ mod tests {
             ],
         };
         let bytes = pkt.encode().unwrap();
-        assert!(bytes.len() <= 40, "packet too fat: {}", bytes.len());
+        assert!(bytes.len() <= 46, "packet too fat: {}", bytes.len()); // this one also carries the once-a-second report (+29 bits)
         assert_eq!(ClientPacket::decode(&bytes).unwrap(), pkt);
     }
 
@@ -537,7 +560,7 @@ mod tests {
     #[test]
     fn long_redundancy_windows_roundtrip() {
         let intents: Vec<PlayerIntent> = (0..MAX_REDUNDANCY as u32).map(|i| intent(500 - i, if i % 5 == 0 { Buttons::DASH } else { 0 }, i as i8)).collect();
-        let p = ClientPacket { seq: 3, ack_snapshot_tick: 490, ack_event_seq: 1, view: ViewState { from_tick: 488, alpha: 9 }, intents };
+        let p = ClientPacket { seq: 3, ack_snapshot_tick: 490, ack_event_seq: 1, view: ViewState { from_tick: 488, alpha: 9 }, report: None, intents };
         let bytes = p.encode().unwrap();
         assert_eq!(ClientPacket::decode(&bytes).unwrap(), p);
         assert!(bytes.len() < 200, "16-intent window: {} B", bytes.len());

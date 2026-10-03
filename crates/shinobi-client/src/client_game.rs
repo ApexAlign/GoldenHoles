@@ -868,6 +868,7 @@ impl ClientGame {
                 self.pose = self.camera.update_aim(TICK_DT, CameraInput::default(), &self.aim);
             }
         }
+        self.net.set_corrections(self.corrections);
         self.net.next_packet(intent, local_tick)
     }
 
