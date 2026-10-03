@@ -353,7 +353,7 @@ fn both_bases_the_centre_and_the_shelves_are_walkable_from_every_spawn() {
             for (x, z, h, what) in [
                 (16.0 + 5.5, 0.0, 1.2, "tower tier 1"),
                 (16.0 + 3.5, 0.0, 2.4, "tower tier 2"),
-                (16.0 + 1.8, 1.8, 3.6, "tower tier 3"),
+                (16.0 + 2.1, 2.1, 3.6, "tower tier 3"),
                 (47.5, 20.0, 1.2, "shelf tier 1"),
                 (51.0, 20.0, 2.4, "shelf tier 2"),
                 (53.5, 14.0, 3.6, "shelf tier 3"),
@@ -499,7 +499,7 @@ fn a_grapple_from_the_lane_lifts_a_player_onto_the_flank_shelf_height() {
 
 #[test]
 fn the_pillar_pickups_are_grapple_only_and_the_grapple_gets_you_there() {
-    // From the tower's first tier, hook the pillar's top front edge, reel up, steer onto the 7.2 m top.
+    // From the tower's first tier, hook the pillar's top front edge, reel up, steer onto the 6.6 m top.
     let m = map();
     for sx in [-1.0f32, 1.0] {
         for sz in [-1.0f32, 1.0] {
@@ -511,7 +511,7 @@ fn the_pillar_pickups_are_grapple_only_and_the_grapple_gets_you_there() {
                 now += DT;
             }
             let eye = [cx, 1.2 + 0.81 + 0.6, from_z];
-            let edge = [cx, 7.19, sz * -1.2];
+            let edge = [cx, 6.59, sz * -1.5];
             step_player(&mut ch, &PlayerInput { grapple_aim: Some(aim(eye, edge)), ..Default::default() }, &mut w, now, DT);
             assert!(ch.grapple.is_some(), "pillar edge not hookable from the tier ({cx}, {from_z})");
             let mut on_top = false;
@@ -520,10 +520,56 @@ fn the_pillar_pickups_are_grapple_only_and_the_grapple_gets_you_there() {
                 let p = pos(&w, &ch);
                 let to = vector![cx - p.x, 0.0, -p.z];
                 let dir = if to.norm() > 0.2 && p.y > 5.0 { to.normalize() } else { vector![0.0, 0.0, 0.0] };
-                step_player(&mut ch, &PlayerInput { move_dir: dir, ..Default::default() }, &mut w, now, DT);
-                on_top |= ch.state == MoveState::Grounded && pos(&w, &ch).y > 7.5;
+                // skilled play: jump-release when close to the anchor for the hop boost
+                let close = ch.grapple.map_or(false, |g| (g.anchor - vector![p.x, p.y + 0.6, p.z]).norm() < 3.2);
+                step_player(&mut ch, &PlayerInput { move_dir: dir, jump_pressed: close, jump_held: close, ..Default::default() }, &mut w, now, DT);
+                on_top |= ch.state == MoveState::Grounded && pos(&w, &ch).y > 7.0;
             }
             assert!(on_top, "grapple + steering did not land on the pillar top at x = {cx}");
         }
+    }
+}
+
+#[test]
+fn rope_feel_budget_smooth_pull_capped_speed_no_face_plants() {
+    // Every anchor type on the map, from where a player would use it: while on the rope the acceleration stays at the
+    // designed pull (no spikes), the speed never passes the cap, the pull eases in, and the player is not driven into
+    // the surface at full reel speed (the closing speed inside the release radius is limited).
+    let m = map();
+    let cfg = Cfg::default();
+    for (label, stand, target) in [
+        ("flank slab from the flank gap", [36.0, 0.81, -10.0], [40.0, 12.6, -10.0]),
+        ("lane-mouth slab from inside the lane", [30.1, 0.81, -10.0], [30.0, 10.6, -24.0]),
+        ("lane-mouth slab from the yard", [30.0, 0.81, -30.0], [30.0, 10.6, -24.0]),
+        ("pylon from the flank gap", [36.0, 0.81, -22.0], [38.5, 9.0, -22.0]),
+        ("pillar edge from the tower tier", [16.0, 1.2 + 0.81, -6.5], [16.0, 6.59, -1.5]),
+    ] {
+        let (mut w, mut ch) = player_in(&m.file, stand);
+        let mut now = 0.0;
+        for _ in 0..10 {
+            step_player(&mut ch, &PlayerInput::default(), &mut w, now, DT);
+            now += DT;
+        }
+        let eye = [stand[0], stand[1] + cfg.eye_above_center, stand[2]];
+        step_player(&mut ch, &PlayerInput { grapple_aim: Some(aim(eye, target)), ..Default::default() }, &mut w, now, DT);
+        assert!(ch.grapple.is_some(), "{label}: no hook");
+        let (mut prev, mut max_a, mut max_v, mut first_a) = (ch.vel, 0.0f32, 0.0f32, None);
+        let mut ticks = 0;
+        while ch.grapple.is_some() && ticks < 400 {
+            now += DT;
+            step_player(&mut ch, &PlayerInput::default(), &mut w, now, DT);
+            ticks += 1;
+            let a = (ch.vel - prev).norm() / DT;
+            prev = ch.vel;
+            first_a.get_or_insert(a);
+            if ch.grapple.is_some() {
+                max_a = max_a.max(a);
+                max_v = max_v.max(ch.vel.norm());
+            }
+        }
+        assert!(ticks < 400, "{label}: rope never ended");
+        assert!(max_v <= cfg.grapple_max_speed + 0.5, "{label}: speed {max_v} over the cap");
+        assert!(max_a <= cfg.grapple_accel * 1.35 + cfg.gravity, "{label}: acceleration spike {max_a:.0} m/s^2 on the rope");
+        assert!(first_a.unwrap() < cfg.grapple_accel * 0.6 + cfg.gravity, "{label}: the pull must ease in, first tick {:.0} m/s^2", first_a.unwrap());
     }
 }

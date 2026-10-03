@@ -47,3 +47,21 @@ FX look-kick (up to 0.8 deg) was added to the rendered view only; slide eye drop
 not the shot origin (now `Cfg::slide_eye_drop` / `CharacterSystem::eye_above`, shared, and unscaled by feel).
 Residual by design: frame drawn `alpha` into a tick shows the eye up to one tick of travel ahead of the shot origin
 (<= 0.15 m at run speed); thrust/landing eye dips (cosmetic, <~0.1 m, transient). Tests: `tests/aim_accuracy.rs`.
+
+## Hardening (demo pass)
+- Rope speed is capped at `grapple_max_speed` (28 m/s, under a dash), the pull eases in over 0.25 s, and the closing
+  speed is limited inside the release radius (`grapple_arrive_speed` 14 m/s widening to the reel speed over 6 m), so
+  hooks yank rather than slam. The stick on the rope steers but cannot add speed above a run.
+- The anchor must still exist every tick (a block removed / evicted mid-swing releases cleanly); non-finite anchors
+  release. Moving geometry (kinematic bodies), players and sensors are never hookable.
+- Fired at nothing hookable: `GrappleEvent::Miss` -> `CombatEvent::GrappleMiss{origin,dir}` + `LocalFx.grapple_missed`;
+  a miss starts `grapple_miss_cd` (0.15 s) so E-spam is rate limited.
+- Death, respawn and anti-cheat snap-back clear the rope (`CharacterSystem::clear_grapple`).
+- Hooking takes over wall-run and slide (both overwrite velocity every tick); a dash/roll in progress keeps going and
+  leaves the rope slack.
+
+## For HUD / Graphics (read from `RenderView.fx`, a `LocalFx`)
+`grappling`, `grapple_ready` (off cooldown and not on the rope), `grapple_cooldown` (1.0 just used -> 0.0 ready),
+`grapple_hookable` (client-side ray in the predicted world: tint the crosshair when true), edges since the last view:
+`grapple_attached: Option<[f32;3]>` (anchor), `grapple_released`, `grapple_missed`. `RenderView.rope` = (eye, anchor).
+Rules for "hookable" are `CharacterSystem::grapple_probe` (static geometry only, 2.5..40 m).
