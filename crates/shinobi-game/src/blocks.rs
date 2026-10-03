@@ -10,6 +10,7 @@ use bevy::prelude::*;
 
 use shinobi_client::shaders::GridMaterial as GridData;
 use shinobi_client::hud::Palette;
+use shinobi_sim::blocks::{BlockInfo, SCALE_ONE};
 use shinobi_sim::level::LevelBox;
 
 use crate::grid::GridFloor;
@@ -24,9 +25,12 @@ const VOXELS: usize = 22;
 
 #[derive(Component)]
 struct PrintHead {
-    cell: Cell,
+    /// Vertical extent of the slab being printed (bottom, top); the scan layer sweeps through it.
+    y0: f32,
+    y1: f32,
     age: f32,
-    size: f32,
+    /// Full horizontal footprint (x, z) of the slab.
+    foot: Vec2,
 }
 
 #[derive(Component)]
@@ -42,7 +46,9 @@ struct Live {
     entity: Entity,
     owner: u16,
     age: f32,
-    size: f32,
+    center: Vec3,
+    /// Full extents of the finished slab.
+    full: Vec3,
 }
 
 #[derive(Resource, Default)]
@@ -100,8 +106,14 @@ fn hash01(mut x: u32) -> f32 {
     (x & 0xffff) as f32 / 65536.0
 }
 
-fn center(cell: Cell, size: f32) -> Vec3 {
-    Vec3::new(cell[0] as f32 + 0.5, cell[1] as f32 + 0.5, cell[2] as f32 + 0.5) * size
+fn slab(b: &BlockInfo, size: f32, thick: f32) -> (Vec3, Vec3) {
+    let scale = b.scale_q as f32 / SCALE_ONE as f32;
+    (Vec3::from(b.piece.center(b.cell, size, thick)), Vec3::from(b.piece.half_extents(size, thick, scale)) * 2.0)
+}
+
+/// Fragment cloud for the de-rez of a slab: random points inside it.
+fn cloud_point(seed: u32, full: Vec3) -> Vec3 {
+    Vec3::new(hash01(seed) - 0.5, hash01(seed ^ 0x1111) - 0.5, hash01(seed ^ 0x2222) - 0.5) * full
 }
 
 fn sync_blocks(
@@ -114,34 +126,36 @@ fn sync_blocks(
     mut grids: ResMut<Assets<GridFloor>>,
     mut tf: Query<&mut Transform>,
 ) {
-    let size = view.0.block_size.max(0.1);
+    let (size, thick) = (view.0.block_size.max(0.1), view.0.block_thickness.max(0.02));
     let Some(cube) = viz.cube.clone() else { return };
     let dt = time.delta_secs();
     let prev: HashMap<Cell, u16> = viz.live.iter().map(|(c, l)| (*c, l.owner)).collect();
-    let (added, removed) = diff(&prev, &view.0.blocks);
+    let now: Vec<(u16, Cell)> = view.0.blocks.iter().map(|b| (b.owner, b.cell)).collect();
+    let (added, removed) = diff(&prev, &now);
     let gd = GridData::tron(&Palette::TRON);
 
     for (owner, cell) in added {
+        let Some(info) = view.0.blocks.iter().find(|b| b.cell == cell) else { continue };
         let hue = colour_of(&net, owner);
-        let c = center(cell, size);
-        let b = LevelBox::new(c.to_array(), [size * 0.5; 3]);
+        let (c, full) = slab(info, size, thick);
+        let b = LevelBox::new(c.to_array(), (full * 0.5).to_array());
         let tint = hue.map(|v| v * 1.4);
         let entity = commands
             .spawn((
                 Mesh3d(cube.clone()),
                 MeshMaterial3d(grids.add(GridFloor::for_box(&gd, &b, tint, 1.0, 300.0))),
-                // starts flat at the bottom of the cell; `sync_blocks` grows it while printing
-                Transform::from_translation(Vec3::new(c.x, c.y - size * 0.5, c.z)).with_scale(Vec3::new(size, 0.001, size)),
+                // starts collapsed; the loop below grows it while printing
+                Transform::from_translation(c).with_scale(Vec3::new(0.001, 0.001, 0.001)),
             ))
             .id();
         let m = glow_mat(&mut viz, &mut mats, hue);
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(m),
-            Transform::from_translation(c).with_scale(Vec3::new(size * 1.04, 0.03, size * 1.04)),
-            PrintHead { cell, age: 0.0, size },
+            Transform::from_translation(c).with_scale(Vec3::new(full.x * 1.04, 0.03, full.z * 1.04)),
+            PrintHead { y0: c.y - full.y * 0.5, y1: c.y + full.y * 0.5, age: 0.0, foot: Vec2::new(full.x, full.z) },
         ));
-        viz.live.insert(cell, Live { entity, owner, age: 0.0, size });
+        viz.live.insert(cell, Live { entity, owner, age: 0.0, center: c, full });
     }
 
     for (owner, cell) in removed {
@@ -149,32 +163,33 @@ fn sync_blocks(
         commands.entity(l.entity).despawn();
         let hue = colour_of(&net, owner);
         let m = glow_mat(&mut viz, &mut mats, hue);
-        let c = center(cell, size);
         let seed = (cell[0].wrapping_mul(73856093) ^ cell[1].wrapping_mul(19349663) ^ cell[2].wrapping_mul(83492791)) as u32;
+        let span = l.full.max_element().max(size * 0.5);
         for i in 0..VOXELS as u32 {
             let s = seed.wrapping_add(i * 7919);
-            let off = Vec3::new(hash01(s) - 0.5, hash01(s ^ 0x1111) - 0.5, hash01(s ^ 0x2222) - 0.5) * size;
+            let off = cloud_point(s, l.full);
             let vel = Vec3::new(off.x, 0.4 + hash01(s ^ 0x3333) * 1.4, off.z) * 1.2;
             commands.spawn((
                 Mesh3d(cube.clone()),
                 MeshMaterial3d(m.clone()),
-                Transform::from_translation(c + off).with_scale(Vec3::splat(size * 0.1)),
-                Voxel { vel, age: 0.0, life: DEREZ_S * (0.6 + 0.4 * hash01(s ^ 0x4444)), size: size * (0.06 + 0.1 * hash01(s ^ 0x5555)), phase: hash01(s ^ 0x6666) * 6.28 },
+                Transform::from_translation(l.center + off).with_scale(Vec3::splat(span * 0.1)),
+                Voxel { vel, age: 0.0, life: DEREZ_S * (0.6 + 0.4 * hash01(s ^ 0x4444)), size: span * (0.06 + 0.1 * hash01(s ^ 0x5555)), phase: hash01(s ^ 0x6666) * 6.28 },
             ));
         }
     }
 
-    // grow printing blocks from flat to full height, anchored at the cell floor
-    for (cell, l) in viz.live.iter_mut() {
+    // grow printing slabs from a point to full size
+    for l in viz.live.values_mut() {
         if l.age >= PRINT_S {
             continue;
         }
         l.age += dt;
         let p = print_progress(l.age).max(0.001);
         if let Ok(mut t) = tf.get_mut(l.entity) {
-            let base = center(*cell, l.size).y - l.size * 0.5;
-            t.scale = Vec3::new(l.size, l.size * p, l.size);
-            t.translation.y = base + l.size * p * 0.5;
+            // the thin axis (slab thickness) is always full; the others grow
+            let thin = l.full.min_element();
+            let grow = |v: f32| if (v - thin).abs() < 1e-4 { v } else { v * p };
+            t.scale = Vec3::new(grow(l.full.x), grow(l.full.y), grow(l.full.z));
         }
     }
 }
@@ -187,10 +202,9 @@ fn animate_prints(mut commands: Commands, time: Res<Time>, mut q: Query<(Entity,
             commands.entity(e).despawn();
             continue;
         }
-        let floor = center(h.cell, h.size).y - h.size * 0.5;
-        t.translation.y = floor + h.size * print_progress(h.age);
+        t.translation.y = h.y0 + (h.y1 - h.y0) * print_progress(h.age) + 0.02;
         let fade = 1.0 - h.age / PRINT_S;
-        t.scale = Vec3::new(h.size * 1.04, 0.02 + 0.04 * fade, h.size * 1.04);
+        t.scale = Vec3::new(h.foot.x * 1.04, 0.02 + 0.04 * fade, h.foot.y * 1.04);
     }
 }
 

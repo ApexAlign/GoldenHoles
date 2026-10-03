@@ -77,8 +77,6 @@ pub struct ShotImage(pub Handle<Image>);
 struct Look {
     cube: Handle<Mesh>,
     hostile: Handle<StandardMaterial>,
-    cyan: Handle<StandardMaterial>,
-    orange: Handle<StandardMaterial>,
 }
 
 pub struct PlayPlugin;
@@ -155,8 +153,6 @@ pub fn setup(
     commands.insert_resource(Look {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         hostile: mats.add(unlit(pal.magenta)),
-        cyan: mats.add(unlit(pal.cyan)),
-        orange: mats.add(unlit(pal.orange)),
     });
 
     // camera: LUT-free tonemapping (tonemapping_luts feature is not enabled), 90 deg vertical FOV, bloom
