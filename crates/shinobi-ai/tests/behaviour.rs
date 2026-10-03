@@ -43,6 +43,10 @@ fn off_screen_bots_never_exceed_the_ticket_cap() {
     for id in 201..=205 {
         assert!(h.add_bot(&mut s, id, Archetype::Light, BotSkill::Hard));
     }
+    // the cap guards the human: the bots are one team against them (in FFA they would also fight each other)
+    for p in s.players.iter_mut() {
+        p.team = u8::from(p.id == 1);
+    }
     let cap = h.tickets.cfg.max_active;
     let (mut max_active, mut max_strikers, mut total_strikes) = (0usize, 0usize, 0u32);
     for _ in 0..900 {
