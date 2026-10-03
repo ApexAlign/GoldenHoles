@@ -274,6 +274,7 @@ impl HudBridge {
                 selected: match g.piece.kind {
                     shinobi_sim::blocks::PieceKind::Floor => BuildSlot::Floor,
                     shinobi_sim::blocks::PieceKind::Wall => BuildSlot::Wall,
+                    shinobi_sim::blocks::PieceKind::Ramp => BuildSlot::Ramp,
                 },
                 ready: if g.ready { 1.0 } else { 0.0 },
                 placed: view.blocks.iter().filter(|bl| bl.owner == local_id).count().min(BUILD_MAX as usize) as u8,
@@ -564,7 +565,7 @@ mod tests {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
         assert!(b.update(0.016, &v, &net(), false).build.is_none(), "no ghost, no readout");
-        v.build_ghost = Some(BuildGhost { cell: [0, 0, 0], piece: Piece::WALL_X, center: [0.0; 3], half: [1.0; 3], valid: false, ready: true });
+        v.build_ghost = Some(BuildGhost { cell: [0, 0, 0], piece: Piece::WALL_X, center: [0.0; 3], half: [1.0; 3], rot: [0.0; 3], valid: false, ready: true });
         v.blocks = vec![
             BlockInfo { owner: 0, cell: [0, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },
             BlockInfo { owner: 9, cell: [1, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },

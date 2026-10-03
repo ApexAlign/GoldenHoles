@@ -139,7 +139,7 @@ fn script(ticks: u32) -> Vec<PlayerIntent> {
         if t > 90 {
             yaw = yaw.wrapping_add((rng.pick(201) as i32 - 100) as u16); // <= ~0.55 deg/tick
         }
-        out.push(PlayerIntent { tick: t, buttons: Buttons(b), move_x: mx, move_z: mz, aim_yaw: yaw, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, zip: false });
+        out.push(PlayerIntent { tick: t, buttons: Buttons(b), move_x: mx, move_z: mz, aim_yaw: yaw, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false });
     }
     out
 }

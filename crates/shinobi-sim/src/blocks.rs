@@ -42,6 +42,8 @@ pub enum PieceKind {
     Floor,
     /// Upright slab through the cell centre (`M` key).
     Wall,
+    /// Tilted slab rising across the cell (`N` again: tap N twice quickly to cycle floor <-> ramp).
+    Ramp,
 }
 
 impl PieceKind {
@@ -51,16 +53,17 @@ impl PieceKind {
     }
 
     pub fn from_id(id: u8) -> Self {
-        if id == 1 {
-            PieceKind::Wall
-        } else {
-            PieceKind::Floor
+        match id {
+            1 => PieceKind::Wall,
+            2 => PieceKind::Ramp,
+            _ => PieceKind::Floor,
         }
     }
 }
 
-/// What a cell holds: the kind plus, for walls, the axis the slab's normal points along (0 = X, 1 = Z;
-/// floors always 0). Picked from the builder's aim, so it is deterministic from the intent.
+/// What a cell holds: the kind plus its grid-snapped orientation `axis`: for walls the axis the slab's normal
+/// points along (0 = X, 1 = Z); for ramps the direction it rises toward (0 = +X, 1 = +Z, 2 = -X, 3 = -Z); floors
+/// always 0. Picked from the builder's aim, so it is deterministic from the intent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Piece {
     pub kind: PieceKind,
@@ -79,32 +82,77 @@ impl Piece {
         Piece { kind: PieceKind::Wall, axis: u8::from(dir[2].abs() >= dir[0].abs()) }
     }
 
+    /// A ramp rising away from the builder: toward the dominant horizontal axis of the aim `dir`.
+    pub fn ramp_facing(dir: [f32; 3]) -> Piece {
+        let axis = if dir[0].abs() >= dir[2].abs() {
+            if dir[0] >= 0.0 { 0 } else { 2 }
+        } else if dir[2] >= 0.0 {
+            1
+        } else {
+            3
+        };
+        Piece { kind: PieceKind::Ramp, axis }
+    }
+
     /// The piece a press of `kind` places when aiming along `dir`.
     pub fn for_press(kind: PieceKind, dir: [f32; 3]) -> Piece {
         match kind {
             PieceKind::Floor => Piece::FLOOR,
             PieceKind::Wall => Piece::wall_facing(dir),
+            PieceKind::Ramp => Piece::ramp_facing(dir),
         }
     }
 
-    /// Half extents of the slab for a cell of edge `size`, slab `thick`ness, grown by `scale`.
+    /// Half extents of the slab (before rotation) for a cell of edge `size`, slab `thick`ness, grown by `scale`.
     pub fn half_extents(self, size: f32, thick: f32, scale: f32) -> [f32; 3] {
         let (h, t) = (size * 0.5 * scale, thick * 0.5);
         match (self.kind, self.axis) {
             (PieceKind::Floor, _) => [h, t, h],
             (PieceKind::Wall, 0) => [t, h, h],
             (PieceKind::Wall, _) => [h, h, t],
+            // a ramp's slab is as long as the slope: one cell run at RAMP_DEG
+            (PieceKind::Ramp, a) if a % 2 == 0 => [h / RAMP_DEG.to_radians().cos(), t, h],
+            (PieceKind::Ramp, _) => [h, t, h / RAMP_DEG.to_radians().cos()],
         }
     }
 
-    /// Centre of the slab for `cell`: floors sit on the cell's bottom face, walls are centred.
+    /// Centre of the slab for `cell`: floors sit on the cell's bottom face, walls are centred, ramps run from
+    /// the cell's bottom edge on the low side up to `size * tan(RAMP_DEG)` on the high side.
     pub fn center(self, cell: Cell, size: f32, thick: f32) -> [f32; 3] {
         let c = cell.map(|c| (c as f32 + 0.5) * size);
+        let bottom = cell[1] as f32 * size;
         match self.kind {
-            PieceKind::Floor => [c[0], cell[1] as f32 * size + thick * 0.5, c[2]],
+            PieceKind::Floor => [c[0], bottom + thick * 0.5, c[2]],
             PieceKind::Wall => c,
+            PieceKind::Ramp => {
+                let (rise, cos) = (size * RAMP_DEG.to_radians().tan(), RAMP_DEG.to_radians().cos());
+                [c[0], bottom + rise * 0.5 + thick * 0.5 / cos, c[2]]
+            }
         }
     }
+
+    /// Orientation as a scaled-axis rotation vector (axis * angle, radians); zero for floors and walls.
+    pub fn rotation(self) -> [f32; 3] {
+        let a = RAMP_DEG.to_radians();
+        match (self.kind, self.axis) {
+            (PieceKind::Ramp, 0) => [0.0, 0.0, a],  // rising toward +X: tilt about Z
+            (PieceKind::Ramp, 1) => [-a, 0.0, 0.0], // rising toward +Z: tilt about X
+            (PieceKind::Ramp, 2) => [0.0, 0.0, -a],
+            (PieceKind::Ramp, _) => [a, 0.0, 0.0],
+            _ => [0.0; 3],
+        }
+    }
+}
+
+/// Slope of a ramp, degrees. Under the character's 45 degree slope limit so it is walkable.
+pub const RAMP_DEG: f32 = 40.0;
+
+/// Where and how a piece sits: centre, half extents (before rotation) and the scaled-axis rotation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slab {
+    pub center: [f32; 3],
+    pub half: [f32; 3],
+    pub rot: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -267,8 +315,18 @@ impl Blocks {
 
     /// Slab centre and half extents of `piece` in `cell` at `scale_q`, for drawing a ghost or replicated piece.
     pub fn geometry(&self, cell: Cell, piece: Piece, scale_q: u8) -> ([f32; 3], [f32; 3]) {
+        let s = self.slab(cell, piece, scale_q);
+        (s.center, s.half)
+    }
+
+    /// Full placement of a piece (centre, half extents, rotation): what to draw and what the collider is.
+    pub fn slab(&self, cell: Cell, piece: Piece, scale_q: u8) -> Slab {
         let scale = scale_q as f32 / SCALE_ONE as f32;
-        (piece.center(cell, self.cfg.size, self.cfg.thickness), piece.half_extents(self.cfg.size, self.cfg.thickness, scale))
+        Slab {
+            center: piece.center(cell, self.cfg.size, self.cfg.thickness),
+            half: piece.half_extents(self.cfg.size, self.cfg.thickness, scale),
+            rot: piece.rotation(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -384,10 +442,11 @@ impl Blocks {
         if self.overlaps_player(cell, players) {
             return Err(PlaceError::Blocked);
         }
-        let (c, h) = self.geometry(cell, piece, scale_q);
+        let Slab { center: c, half: h, rot } = self.slab(cell, piece, scale_q);
         let handle = world.colliders.insert(
             ColliderBuilder::cuboid(h[0], h[1], h[2])
                 .translation(vector![c[0], c[1], c[2]])
+                .rotation(vector![rot[0], rot[1], rot[2]])
                 .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL))
                 .user_data(piece_user_data(cell))
                 .build(),
@@ -722,5 +781,63 @@ mod rules_tests {
         }
         assert_eq!(server.scale_q(1000), (1.9f32 * 16.0).round() as u8, "capped by scale_cap");
         assert_eq!(server.quantized(), server, "quantizing is idempotent");
+    }
+}
+
+#[cfg(test)]
+mod ramp_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use std::time::Duration;
+
+    #[test]
+    fn ramps_rise_toward_the_aim_axis_and_snap_to_the_grid() {
+        assert_eq!(Piece::ramp_facing([0.2, 0.0, -1.0]).axis, 3, "facing -Z rises toward -Z");
+        assert_eq!(Piece::ramp_facing([1.0, 0.3, 0.2]).axis, 0);
+        assert_eq!(Piece::ramp_facing([-1.0, 0.0, 0.9]).axis, 2);
+        assert_eq!(Piece::ramp_facing([0.1, 0.0, 1.0]).axis, 1);
+        assert_eq!(PieceKind::from_id(PieceKind::Ramp.id()), PieceKind::Ramp);
+        let b = Blocks::default();
+        let slab = b.slab([2, 0, 2], Piece { kind: PieceKind::Ramp, axis: 0 }, SCALE_ONE);
+        let rise = RAMP_DEG.to_radians().tan();
+        assert!((slab.center[1] - (rise * 0.5 + 0.1 / RAMP_DEG.to_radians().cos())).abs() < 1e-5, "{slab:?}");
+        assert_eq!((slab.center[0], slab.center[2]), (2.5, 2.5));
+        assert!(slab.rot[2] > 0.0 && slab.rot[0] == 0.0, "rising toward +X tilts about Z: {slab:?}");
+    }
+
+    /// A character can walk up a printed ramp (40 degrees < the 45 degree limit) and ends up higher than a floor.
+    #[test]
+    fn a_player_walks_up_a_printed_ramp() {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 4.5]);
+        // two ramps in a row rising toward -Z (axis 3): cells z = 2 and z = 1, then a floor on top at z = 0, y = 1
+        s.blocks.place(&mut s.world, 1, [0, 0, 2], Piece { kind: PieceKind::Ramp, axis: 3 }, SCALE_ONE, 0, &[]).unwrap();
+        s.world.queries.update(&s.world.colliders);
+        let it = shinobi_proto::intent::PlayerIntent { move_z: 127, ..Default::default() };
+        for _ in 0..90 {
+            let t = s.tick;
+            let pkt = shinobi_proto::intent::ClientPacket { ack_snapshot_tick: t, intents: vec![shinobi_proto::intent::PlayerIntent { tick: t, ..it }], ..Default::default() };
+            s.ingest(1, &pkt.encode().unwrap());
+            s.frame(Duration::from_nanos(16_666_667));
+        }
+        let p = s.players[0].pos(&s.world);
+        assert!(p[2] < 1.5, "walked across the ramp cell and beyond: {p:?}");
+        // while on the ramp the capsule centre was higher than standing height: sample mid-climb in a fresh run
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 4.0]);
+        s.blocks.place(&mut s.world, 1, [0, 0, 2], Piece { kind: PieceKind::Ramp, axis: 3 }, SCALE_ONE, 0, &[]).unwrap();
+        s.world.queries.update(&s.world.colliders);
+        let mut max_y = 0.0f32;
+        for _ in 0..90 {
+            let t = s.tick;
+            let pkt = shinobi_proto::intent::ClientPacket { ack_snapshot_tick: t, intents: vec![shinobi_proto::intent::PlayerIntent { tick: t, ..it }], ..Default::default() };
+            s.ingest(1, &pkt.encode().unwrap());
+            s.frame(Duration::from_nanos(16_666_667));
+            max_y = max_y.max(s.players[0].pos(&s.world)[1]);
+        }
+        assert!(max_y > 1.2, "the capsule climbed the ramp (peak centre height {max_y})");
     }
 }

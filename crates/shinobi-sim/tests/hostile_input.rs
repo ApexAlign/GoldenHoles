@@ -115,7 +115,7 @@ fn fuzz(seed: u64, grace_ticks: u32, players: u16, ticks: u32) {
                     aim_yaw: h.yaw,
                     aim_pitch: h.pitch,
                     ultimate: false,
-                    build: false, build_wall: false,
+                    build: false, build_wall: false, build_ramp: false,
                     zip: false,
                 })
                 .collect();

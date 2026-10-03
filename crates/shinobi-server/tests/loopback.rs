@@ -64,6 +64,8 @@ fn spawn_server(envs: &[(&str, &str)]) -> (ServerProc, String) {
     let addr = format!("127.0.0.1:{port}");
     let child = Command::new(env!("CARGO_BIN_EXE_shinobi-server"))
         .arg(&addr)
+        // a networking test: pin the small arena so the shipped default (the big FFA map) cannot change its spawn spread
+        .args(["--level", concat!(env!("CARGO_MANIFEST_DIR"), "/../../levels/arena.lvl")])
         .envs(envs.iter().copied())
         .stdout(Stdio::null())
         .stderr(if std::env::var("LB_DEBUG").is_ok() { Stdio::inherit() } else { Stdio::null() })
@@ -138,7 +140,7 @@ impl Client {
 
     fn send_intent(&mut self, move_x: i8, move_z: i8) {
         let t = self.est_tick();
-        let mk = |tick| PlayerIntent { tick, buttons: Buttons(0), move_x, move_z, aim_yaw: 0, aim_pitch: 0, ultimate: false, build: false, build_wall: false, zip: false };
+        let mk = |tick| PlayerIntent { tick, buttons: Buttons(0), move_x, move_z, aim_yaw: 0, aim_pitch: 0, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false };
         let pkt = ClientPacket {
             seq: self.seq,
             ack_snapshot_tick: self.snaps.last().map_or(0, |s| s.tick),

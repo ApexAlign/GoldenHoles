@@ -14,11 +14,9 @@ BOTS="${BOTS:-7}"   # free-for-all: you + 7 bots = 8 players
 TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs.
-# Defaults: free-for-all -> levels/ffa.lvl (levels/arena.lvl until that map exists), TEAM_SIZE (8v8) -> levels/8v8.lvl.
+# TEAM_SIZE (8v8) defaults to the 8v8 map; free-for-all defaults to the FFA map (levels/ffa.lvl, 224 m).
 if [ -z "${LEVEL:-}" ]; then
-  if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl
-  elif [ "$TEAM_SIZE" = "0" ] && [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl   # the free-for-all map, once it exists
-  else LEVEL=levels/arena.lvl; fi
+  if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; elif [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi
 fi
 LEVEL_ARGS=()
 [ -f "$LEVEL" ] && LEVEL_ARGS=(--level "$LEVEL")

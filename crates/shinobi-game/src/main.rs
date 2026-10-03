@@ -38,7 +38,7 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
 }
 
-/// `--level PATH` wins, else the server's default (`levels/arena.lvl` when found), else the built-in level.
+/// `--level PATH` wins, else the server's default (`levels/ffa.lvl` when found), else the built-in level.
 fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
     if path.as_deref() == Some("builtin") {
         eprintln!("level: built-in (forced)");

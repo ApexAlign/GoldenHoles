@@ -33,15 +33,18 @@ pub struct LevelDesc {
     pub spawns: Vec<[f32; 3]>,
 }
 
-/// Where the shipped arena lives relative to the repo / install root.
-pub const DEFAULT_LEVEL: &str = "levels/arena.lvl";
+/// Where the shipped free-for-all map lives relative to the repo / install root (the demo's default level).
+pub const DEFAULT_LEVEL: &str = "levels/ffa.lvl";
+/// Fallback when `DEFAULT_LEVEL` is not installed.
+pub const FALLBACK_LEVEL: &str = "levels/arena.lvl";
 
-/// The default level file when one exists: `levels/arena.lvl` from the working directory, then upward from the
+/// The default level file when one exists: `levels/ffa.lvl` (else `levels/arena.lvl`) from the working directory, then upward from the
 /// executable (so `target/release/shinobi-server` finds the repo's `levels/` however it was launched). Server and
 /// game must use this same rule, or the client predicts against a different world than the server runs.
 /// `None` means "use `LevelDesc::standard()`".
 pub fn default_level_path() -> Option<std::path::PathBuf> {
-    find_level(std::path::Path::new(DEFAULT_LEVEL), std::env::current_exe().ok().as_deref())
+    let exe = std::env::current_exe().ok();
+    find_level(std::path::Path::new(DEFAULT_LEVEL), exe.as_deref()).or_else(|| find_level(std::path::Path::new(FALLBACK_LEVEL), exe.as_deref()))
 }
 
 /// `rel` against the working directory, then against the first five ancestors of `exe`. Testable core of
