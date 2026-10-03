@@ -892,6 +892,11 @@ impl Hud {
         }
         if let Some(t) = &s.telemetry {
             telemetry_panel(&mut out, t, s.wall_run, p);
+            // below the floor plane: falling toward the void kill plane
+            if t.altitude < 0.0 && !s.dead {
+                let a = 0.55 + 0.45 * (s.time * 10.0).sin().abs();
+                out.push(Prim::Text { pos: (0.5, 0.2), text: "VOID".into(), size: 0.04, color: p.magenta.a(a), align: Align::Center });
+            }
         }
         if !s.radar.is_empty() || s.heading.is_some() {
             radar_panel(&mut out, &s.radar, p);
@@ -1056,7 +1061,7 @@ fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palet
     let (x, y0, w) = (0.03, 0.56, 0.15);
     let rows: [(&str, String, Rgba); 4] = [
         ("SPD", format!("{:.1} M/S", t.speed), p.cyan),
-        ("ALT", format!("{:.1} M", t.altitude), p.cyan),
+        ("ALT", format!("{:.1} M", t.altitude), if t.altitude < 0.0 { p.magenta } else { p.cyan }),
         ("ROPE", t.rope.map_or("--".into(), |r| format!("{r:.1} M")), if t.rope.is_some() { p.gold } else { p.text }),
         ("WALL", if wall_run { "RUN".into() } else { "--".into() }, if wall_run { p.orange } else { p.text }),
     ];
@@ -2148,5 +2153,15 @@ mod tests {
                 .count()
         };
         assert_eq!((lit(1.0), lit(0.5), lit(0.0)), (10, 5, 0));
+    }
+
+    #[test]
+    fn void_warning_shows_only_below_the_floor_plane() {
+        let p = Palette::TRON;
+        let has = |alt: f32, dead: bool| {
+            let s = HudState { hp: 1.0, dead, telemetry: Some(Telemetry { speed: 5.0, altitude: alt, rope: None }), ..Default::default() };
+            Hud::build_with(&s, &p).iter().any(|x| matches!(x, Prim::Text { text, .. } if text == "VOID"))
+        };
+        assert!(has(-3.0, false) && !has(2.0, false) && !has(22.0, false) && !has(-3.0, true));
     }
 }

@@ -60,8 +60,8 @@ pub struct LockInfo {
 }
 
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
-pub const RADAR_RANGE: f32 = 60.0;
-pub const RADAR_ENEMY_RANGE: f32 = 20.0;
+pub const RADAR_RANGE: f32 = 90.0;
+pub const RADAR_ENEMY_RANGE: f32 = 45.0;
 /// Free-for-all match ends at this many kills (docs/DEMO.md) unless `HudBridge::kill_limit` says otherwise.
 pub const FFA_KILL_LIMIT: u16 = 15;
 /// Structures a player may own at once (`BlockCfg::max_per_owner`).
@@ -507,8 +507,8 @@ mod tests {
         v.fx.speed = 9.0;
         v.local_pos = Some([0.0, 1.0, 0.0]);
         let smp = |x: f32, z: f32| crate::interp::Sample { pos: [x, 0.5, z], yaw: 0.0, extrapolated: false };
-        // near enemy (6 m ahead), far enemy (30 m right), an ally 30 m behind
-        v.remotes = vec![(2, smp(0.0, -6.0)), (3, smp(30.0, 0.0)), (4, smp(0.0, 30.0))];
+        // near enemy (6 m ahead), far enemy (60 m right), an ally 30 m behind
+        v.remotes = vec![(2, smp(0.0, -6.0)), (3, smp(60.0, 0.0)), (4, smp(0.0, 30.0))];
         b.teams = Some(TeamInfo { my_team: 0, scores: [0, 0], score_limit: 50, result: 0, team_of: [(2, 1), (3, 1), (4, 0)].into_iter().collect() });
         let s = b.update(0.016, &v, &net(), false);
         let t = s.telemetry.unwrap();
