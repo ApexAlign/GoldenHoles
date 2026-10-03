@@ -514,9 +514,9 @@ impl HudFx {
 
     fn match_over(&mut self, winner: Option<u16>, why: &str, local_id: u16, name: impl Fn(u16) -> String) {
         let (sub, c) = match winner {
-            Some(w) if w == local_id => (format!("WINNER: YOU \u{b7} {why}"), BannerColor::Gold),
-            Some(w) => (format!("WINNER: {} \u{b7} {why}", name(w)), BannerColor::Magenta),
-            None => (format!("DRAW \u{b7} {why}"), BannerColor::Cyan),
+            Some(w) if w == local_id => (format!("WINNER: YOU - {why}"), BannerColor::Gold),
+            Some(w) => (format!("WINNER: {} - {why}", name(w)), BannerColor::Magenta),
+            None => (format!("DRAW - {why}"), BannerColor::Cyan),
         };
         self.show("MATCH OVER", Some(&sub), c, 8.0);
     }
@@ -1481,7 +1481,7 @@ pub(crate) fn scoreboard(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     for (a, b) in [((r.x, r.y), (x1, r.y)), ((x1, r.y), (x1, y1)), ((x1, y1), (r.x, y1)), ((r.x, y1), (r.x, r.y))] {
         out.push(Prim::Line { a, b, color: p.cyan.a(0.8), glow: 0.006 });
     }
-    // Title: map + phase + timer, e.g. "MAP 2 \u{b7} LIVE 2:05".
+    // Title: map + phase + timer, e.g. "MAP 2 - LIVE 2:05".
     if let Some(title) = scoreboard_title(s) {
         out.push(Prim::Text { pos: (0.5, r.y + 0.035), text: title, size: 0.028, color: p.cyan.a(0.95), align: Align::Center });
     }
@@ -1554,7 +1554,7 @@ fn scoreboard_title(s: &HudState) -> Option<String> {
         PhaseKind::Intermission => "MATCH OVER",
     };
     let time = secs.map(|t| format!(" {}:{:02}", t / 60, t % 60)).unwrap_or_default();
-    let map = s.match_map.map(|m| format!("MAP {} \u{b7} ", m + 1)).unwrap_or_default();
+    let map = s.match_map.map(|m| format!("MAP {} - ", m + 1)).unwrap_or_default();
     Some(format!("{map}{label}{time}"))
 }
 
@@ -1963,9 +1963,9 @@ mod tests {
     fn match_end_banner_names_the_winner_and_colours_by_local_result() {
         let end = |w| MatchEvent::MatchEnd { tick: 1, winner: w, reason: EndReason::FragLimit };
         for (w, sub, col) in [
-            (Some(5), "WINNER: YOU \u{b7} FRAG LIMIT", BannerColor::Gold),
-            (Some(6), "WINNER: PLAYER 6 \u{b7} FRAG LIMIT", BannerColor::Magenta),
-            (None, "DRAW \u{b7} FRAG LIMIT", BannerColor::Cyan),
+            (Some(5), "WINNER: YOU - FRAG LIMIT", BannerColor::Gold),
+            (Some(6), "WINNER: PLAYER 6 - FRAG LIMIT", BannerColor::Magenta),
+            (None, "DRAW - FRAG LIMIT", BannerColor::Cyan),
         ] {
             let mut fx = HudFx::default();
             fx.on_match(&end(w), 5);
@@ -2075,7 +2075,7 @@ mod tests {
         fx.on_net_event(&NetEvent::MatchEnd { tick: 9, winner: 2, reason: 1 }, 1, name);
         fx.apply(&mut s);
         let b = s.banner.clone().unwrap();
-        assert_eq!((b.text.as_str(), b.sub.as_deref()), ("MATCH OVER", Some("WINNER: P2 \u{b7} TIME LIMIT")));
+        assert_eq!((b.text.as_str(), b.sub.as_deref()), ("MATCH OVER", Some("WINNER: P2 - TIME LIMIT")));
         fx.on_net_event(&NetEvent::MatchEnd { tick: 9, winner: 0, reason: 0 }, 1, name);
         fx.apply(&mut s);
         assert!(s.banner.unwrap().sub.unwrap().starts_with("DRAW"));
@@ -2129,7 +2129,7 @@ mod tests {
             ..Default::default()
         };
         let out = Hud::build(&s);
-        assert!(t(&out, "MAP 2 \u{b7} LIVE 2:05"));
+        assert!(t(&out, "MAP 2 - LIVE 2:05"));
         let dots: Vec<_> = out.iter().filter_map(|p| if let Prim::Ring { color, fill: true, .. } = p { Some(*color) } else { None }).collect();
         assert_eq!(dots.len(), 2);
         let pal = Palette::TRON;

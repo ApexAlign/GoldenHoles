@@ -62,8 +62,11 @@ pub struct LockInfo {
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
 pub const RADAR_RANGE: f32 = 90.0;
 pub const RADAR_ENEMY_RANGE: f32 = 45.0;
-/// Free-for-all match ends at this many kills (docs/DEMO.md) unless `HudBridge::kill_limit` says otherwise.
-pub const FFA_KILL_LIMIT: u16 = 15;
+/// Free-for-all kill limit when `HudBridge::kill_limit` is unset: the demo rule from `Balance::demo()`. The server
+/// does not send its limit yet, so a differently configured server shows this number wrongly.
+pub fn ffa_kill_limit() -> u16 {
+    shinobi_sim::balance::Balance::demo().matches.frag_limit.min(u16::MAX as u32) as u16
+}
 /// Structures a player may own at once (`BlockCfg::max_per_owner`).
 pub const BUILD_MAX: u8 = 64;
 pub const RADAR_FIRE_SECS: f32 = 2.0;
@@ -307,7 +310,7 @@ impl HudBridge {
         }
         hs.audio = self.audio;
         hs.ffa = teams.is_none();
-        hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(FFA_KILL_LIMIT)) } else { None };
+        hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(ffa_kill_limit())) } else { None };
         // build readout from the predicted ghost (an explicit `build` overrides it)
         hs.build = self.build.or_else(|| {
             let g = view.build_ghost?;
@@ -616,7 +619,7 @@ mod tests {
         let bh = s.build.expect("build readout");
         assert_eq!((bh.selected, bh.ghost, bh.max), (BuildSlot::Wall, Some(false), 64));
         assert_eq!(bh.placed, 1, "only our own pieces count (local id 0 offline)");
-        assert_eq!(s.kill_limit, Some(15), "ffa default limit");
+        assert_eq!(s.kill_limit, Some(ffa_kill_limit()), "ffa default limit");
     }
 
     #[test]

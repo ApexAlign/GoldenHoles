@@ -10,12 +10,17 @@ pub fn window_title(locked: bool) -> &'static str {
     if locked { "Golden Shinobi" } else { "Golden Shinobi - click the window to play" }
 }
 
-const CONTROLS: [(&str, &str); 8] = [
+const CONTROLS: [(&str, &str); 13] = [
     ("W A S D", "MOVE"),
     ("MOUSE", "AIM"),
     ("SPACE", "JUMP / DOUBLE JUMP"),
     ("HOLD W AT WALL", "WALL RUN"),
     ("SHIFT", "DASH"),
+    ("C", "SLIDE"),
+    ("E", "GRAPPLE"),
+    ("N / M", "BUILD FLOOR OR RAMP / WALL"),
+    ("TAB", "SCOREBOARD"),
+    ("BACKQUOTE", "CONSOLE"),
     ("LEFT CLICK", "KATANA SLICE"),
     ("RIGHT CLICK", "THROW SHURIKEN"),
     ("ESC", "RELEASE MOUSE"),
@@ -24,17 +29,17 @@ const CONTROLS: [(&str, &str); 8] = [
 pub fn click_to_play(p: &Palette, time: f32) -> Vec<Prim> {
     let mut out = Vec::new();
     out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: p.bg.a(0.55), glow: 0.0 });
-    let r = Rect::new(0.26, 0.18, 0.48, 0.64);
+    let r = Rect::new(0.26, 0.08, 0.48, 0.84);
     out.push(Prim::Rect { r, color: p.bg.a(0.85), glow: 0.0 });
     let (x1, y1) = (r.x + r.w, r.y + r.h);
     for (a, b) in [((r.x, r.y), (x1, r.y)), ((x1, r.y), (x1, y1)), ((x1, y1), (r.x, y1)), ((r.x, y1), (r.x, r.y))] {
         out.push(Prim::Line { a, b, color: p.cyan.a(0.85), glow: 0.008 });
     }
-    out.push(Prim::Text { pos: (0.5, 0.30), text: TITLE.into(), size: 0.06, color: p.cyan, align: Align::Center });
+    out.push(Prim::Text { pos: (0.5, 0.18), text: TITLE.into(), size: 0.06, color: p.cyan, align: Align::Center });
     let pulse = 0.65 + 0.35 * (time * 3.0).sin().abs();
-    out.push(Prim::Text { pos: (0.5, 0.40), text: "CLICK TO PLAY".into(), size: 0.05, color: p.orange.a(pulse), align: Align::Center });
+    out.push(Prim::Text { pos: (0.5, 0.27), text: "CLICK TO PLAY".into(), size: 0.05, color: p.orange.a(pulse), align: Align::Center });
     for (i, (key, what)) in CONTROLS.iter().enumerate() {
-        let y = 0.50 + i as f32 * 0.04;
+        let y = 0.36 + i as f32 * 0.04;
         out.push(Prim::Text { pos: (0.30, y), text: (*key).into(), size: 0.026, color: p.cyan, align: Align::Left });
         out.push(Prim::Text { pos: (0.70, y), text: (*what).into(), size: 0.026, color: p.text, align: Align::Right });
     }
