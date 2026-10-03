@@ -332,3 +332,38 @@ mod kill_tag_tests {
         assert!(!killed && tags.is_empty(), "control: without the wall the disc never reaches B");
     }
 }
+
+#[cfg(test)]
+mod lunge_probe {
+    use std::time::Duration;
+
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, PITCH_LEVEL};
+
+    fn lunge(b_hp: f32, b_z: f32) -> (f32, f32) {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 0.5]);
+        s.add_player(2, [0.5, 0.81, b_z]);
+        s.players[1].vitals.hp = b_hp;
+        for _ in 0..30 {
+            s.frame(Duration::from_nanos(16_666_667));
+        }
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, buttons: Buttons(Buttons::SLICE), aim_pitch: PITCH_LEVEL, ..Default::default() };
+        let pkt = ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() };
+        s.ingest(1, &pkt.encode().unwrap());
+        for _ in 0..40 {
+            s.frame(Duration::from_nanos(16_666_667));
+        }
+        (s.players[0].pos(&s.world)[2], s.players[1].pos(&s.world)[2])
+    }
+
+    #[test]
+    fn probe() {
+        println!("no one ahead:       A ends z = {:?}", lunge(100.0, 50.0));
+        println!("B alive (hp 1000):  A, B end z = {:?}", lunge(1000.0, -3.5));
+        println!("B dies to the cut:  A, B end z = {:?}", lunge(30.0, -3.5));
+    }
+}

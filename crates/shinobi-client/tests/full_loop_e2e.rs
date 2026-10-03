@@ -39,7 +39,8 @@ fn entity(srv: &Server, i: usize) -> (u16, EntityState) {
         MoveState::Airborne => MoveKind::Airborne,
         MoveState::WallRun { .. } => MoveKind::WallRun,
     };
-    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags: 0 })
+    let flags = if p.vitals.alive() { 0 } else { shinobi_proto::snapshot::FLAG_DEAD };
+    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags })
 }
 
 struct Rig {
@@ -220,10 +221,23 @@ fn the_whole_loop_stays_in_sync() {
     );
 
     assert!(r.phase("lock + throw") < 0.05, "lock-on throw prediction is exact");
-    // ---- 2. katana kill: bring player 2 close, wounded, and cut
-    r.srv.players.iter_mut().find(|p| p.id == 2).unwrap().vitals.hp = 30.0;
+    // ---- 2. katana lunges into a player: first a tanky one (the server stops us at the body), then a kill
+    r.phase("lock + throw (judged above)");
+    let corrections_before = r.game.corrections;
+    r.srv.players.iter_mut().find(|p| p.id == 2).unwrap().vitals.hp = 1000.0;
+    r.srv.players.iter_mut().find(|p| p.id == 2).unwrap().vitals.max_hp = 1000.0;
     r.teleport(2, [0.5, 0.81, -3.5]);
-    r.idle(30);
+    r.idle(40);
+    r.press(Action::Slice);
+    r.idle(60);
+    let body_lunge = r.phase("katana lunge into a standing player");
+    assert!(body_lunge < 0.15, "a lunge into a body stops where the server stops it ({body_lunge:.2} m)");
+    assert_eq!(r.game.corrections, corrections_before, "and needs no reconcile correction");
+    // set him 3.5 m ahead of wherever we stand now, wounded, and cut him down
+    let me = r.me().pos(&r.srv.world);
+    r.teleport(2, [me[0], 0.81, me[2] - 3.5]);
+    r.srv.players.iter_mut().find(|p| p.id == 2).unwrap().vitals.hp = 30.0;
+    r.idle(40);
     r.press(Action::Slice);
     r.idle(60);
     assert!(
@@ -231,14 +245,15 @@ fn the_whole_loop_stays_in_sync() {
         "the katana killed player 2: {:?}",
         r.pvp
     );
+    let kill_lunge = r.phase("katana kill lunge");
+    assert!(kill_lunge < 0.15, "the lunge that kills runs through the corpse like the server's ({kill_lunge:.2} m)");
+    // the 1/100 m position quantisation of the snapshot can move the stop point by ~3 cm, which may trip the
+    // reconciler's 2 cm deadband once; anything more would mean a real divergence
+    assert!(r.game.corrections <= corrections_before + 1, "and needs at most one tiny reconcile correction ({} -> {})", corrections_before, r.game.corrections);
+    // the corpse respawns elsewhere after 3 s (a hull teleport the client sees a few ticks late): let that pass
+    r.idle(240);
+    assert!(r.phase("settle (corpse respawn)") < 0.05, "the grapple that follows starts from an exact state");
 
-    // A lunge INTO a body is the one known client/server divergence (the server stops at the target, the predictor
-    // cannot know a teammate-sized obstacle): bounded and short-lived, reconciled away within a second. Everything
-    // else must be exact, so give it time to settle before judging the rest.
-    let katana = r.phase("katana");
-    assert!(katana < 1.2, "a lunge into a body corrects within about a metre ({katana:.2} m)");
-    r.idle(400);
-    r.phase("settling after the katana (not judged)");
     // ---- 3. grapple: aim up at the anchor slab, hook, reel for a second, release
     r.game.aim.pitch = 0.38;
     r.idle(10);

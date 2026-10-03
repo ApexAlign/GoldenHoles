@@ -146,7 +146,9 @@ struct Predicted {
     block_pending: Vec<([i32; 3], u32)>,
     /// Sensor hitboxes standing in for the other players (placed at where our screen shows them), so the
     /// predicted combat finds the same lock-on target the server will.
-    proxies: HashMap<EntityId, ColliderHandle>,
+    /// `(sensor hitbox, solid movement hull)` per remote: the hull is what a lunge or a run bumps into on the
+    /// server (other players' capsules are solid to the character controller, corpses included).
+    proxies: HashMap<EntityId, (ColliderHandle, ColliderHandle)>,
 }
 
 /// Unconfirmed predicted blocks older than this many ticks are dropped (the server refused them).
@@ -183,26 +185,42 @@ impl Predicted {
     }
 
     /// Move/create/remove the remote players' proxy hitboxes. Returns the proxies of teammates (never targeted).
-    fn sync_proxies(&mut self, cfg: &Cfg, remotes: &[(EntityId, [f32; 3], bool)]) -> Vec<ColliderHandle> {
+    fn sync_proxies(&mut self, cfg: &Cfg, remotes: &[(EntityId, [f32; 3], bool, bool)]) -> Vec<ColliderHandle> {
         let gone: Vec<EntityId> = self.proxies.keys().copied().filter(|id| !remotes.iter().any(|r| r.0 == *id)).collect();
         for id in gone {
-            if let Some(h) = self.proxies.remove(&id) {
-                self.world.colliders.remove(h, &mut self.world.islands, &mut self.world.bodies, false);
+            if let Some((hit, hull)) = self.proxies.remove(&id) {
+                for h in [hit, hull] {
+                    self.world.colliders.remove(h, &mut self.world.islands, &mut self.world.bodies, false);
+                }
             }
         }
         let mut allies = Vec::new();
-        for (id, pos, ally) in remotes {
-            let h = *self.proxies.entry(*id).or_insert_with(|| {
-                self.world.colliders.insert(
+        for (id, pos, ally, dead) in remotes {
+            let (h, hull) = *self.proxies.entry(*id).or_insert_with(|| {
+                let hit = self.world.colliders.insert(
                     ColliderBuilder::capsule_y(cfg.half_height, cfg.radius)
                         .sensor(true)
                         .collision_groups(InteractionGroups::new(GROUP_HITBOX, GROUP_PROJECTILE | GROUP_MELEE))
                         .user_data(*id as u128)
                         .build(),
-                )
+                );
+                // the server's player capsule: solid, in GROUP_PLAYER (shots and slashes ignore it, movement does not)
+                let hull = self.world.colliders.insert(
+                    ColliderBuilder::capsule_y(cfg.half_height, cfg.radius).collision_groups(InteractionGroups::new(GROUP_PLAYER, Group::ALL)).build(),
+                );
+                (hit, hull)
             });
+            let pose = Isometry::translation(pos[0], pos[1], pos[2]);
             if let Some(col) = self.world.colliders.get_mut(h) {
-                col.set_position(Isometry::translation(pos[0], pos[1], pos[2]));
+                col.set_position(pose);
+                // the dead cannot be targeted (the server hides their hitbox from every attacker)
+                col.set_collision_groups(if *dead { InteractionGroups::none() } else { InteractionGroups::new(GROUP_HITBOX, GROUP_PROJECTILE | GROUP_MELEE) });
+            }
+            if let Some(col) = self.world.colliders.get_mut(hull) {
+                col.set_position(pose);
+                // the server keeps a dead player's hull solid until they respawn (the capsule never leaves the world),
+                // so the proxy stays solid too: flipping it on the death flag would reach us a round trip late, in the
+                // middle of exactly the lunge that killed them
             }
             if *ally {
                 allies.push(h);
@@ -757,14 +775,15 @@ impl ClientGame {
                 // predictor finds the same target as the server's rewound hitboxes
                 let own_id = self.net.player_id();
                 let my_team = self.net.my_team();
-                let remotes: Vec<(EntityId, [f32; 3], bool)> = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
+                let remotes: Vec<(EntityId, [f32; 3], bool, bool)> = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
                     (Some(rt), Some(newest)) => newest
                         .entities
                         .iter()
                         .filter(|(id, _)| Some(*id) != own_id && *id < PROJECTILE_ID_BASE)
-                        .filter_map(|(id, _)| {
+                        .filter_map(|(id, st)| {
                             let ally = my_team.is_some() && self.net.team_of(*id) == my_team;
-                            self.net.interp.sample(*id, rt).map(|s| (*id, s.pos, ally))
+                            let dead = st.flags & shinobi_proto::snapshot::FLAG_DEAD != 0;
+                            self.net.interp.sample(*id, rt).map(|s| (*id, s.pos, ally, dead))
                         })
                         .collect(),
                     _ => Vec::new(),
