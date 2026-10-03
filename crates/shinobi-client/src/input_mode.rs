@@ -70,6 +70,37 @@ impl ModeCfg {
     }
 }
 
+/// Continuous hold time of each build key. The mode machine opens the radial on the longest hold, but whether a RELEASE
+/// is a tap must use that key's own hold: holding N for the radial and tapping M is an M tap, not part of N's hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BuildHolds {
+    held: [f32; 2],
+    prev: [f32; 2],
+}
+
+/// Which build key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildKey {
+    N,
+    M,
+}
+
+impl BuildHolds {
+    /// Once per frame with the keys' current state; returns the longest current hold (the machine's `build_held_secs`).
+    pub fn update(&mut self, dt: f32, n_down: bool, m_down: bool) -> f32 {
+        self.prev = self.held;
+        for (h, down) in self.held.iter_mut().zip([n_down, m_down]) {
+            *h = if down { *h + dt } else { 0.0 };
+        }
+        self.held[0].max(self.held[1])
+    }
+
+    /// The key's hold as of the previous frame: on its release frame, how long it had been held.
+    pub fn prev(&self, k: BuildKey) -> f32 {
+        self.prev[k as usize]
+    }
+}
+
 /// One frame of raw key state, already filtered to "the window has focus".
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ModeInput {
@@ -232,5 +263,28 @@ mod tests {
         assert!(!on.build_release_prints(0.35), "a radial hold prints only through the menu");
         let off = ModeCfg::default();
         assert!(off.build_release_prints(5.0), "radial disabled: every release prints, however long");
+    }
+
+    #[test]
+    fn build_holds_are_tracked_per_key() {
+        let mut h = BuildHolds::default();
+        let cfg = ModeCfg { radial_enabled: true, ..Default::default() };
+        // hold N for 0.4 s (radial territory)
+        let mut longest = 0.0;
+        for _ in 0..24 {
+            longest = h.update(1.0 / 60.0, true, false);
+        }
+        assert!(longest >= cfg.radial_hold_secs);
+        // tap M for 3 frames while N stays down
+        for _ in 0..3 {
+            longest = h.update(1.0 / 60.0, true, true);
+        }
+        assert!(longest > 0.4, "the machine still sees the long N hold");
+        // M released: its own hold is short -> a tap that prints, even though N is deep in a hold
+        h.update(1.0 / 60.0, true, false);
+        assert!(h.prev(BuildKey::M) < 0.1 && cfg.build_release_prints(h.prev(BuildKey::M)));
+        // N released: long hold -> no tap print (the radial owns it)
+        h.update(1.0 / 60.0, false, false);
+        assert!(h.prev(BuildKey::N) >= cfg.radial_hold_secs && !cfg.build_release_prints(h.prev(BuildKey::N)));
     }
 }
