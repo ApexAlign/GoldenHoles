@@ -1,0 +1,211 @@
+//! Predator-style lock-on: three glowing laser dots in a triangle on the target's chest (world space, additive HDR,
+//! in OUR neon colour). ACQUIRE: wide, slowly rotating dots converging as `progress` rises. LOCK: tight triangle that
+//! snaps and pulses. BREAK: dots scatter outward and shrink away. While locked, a small shoulder emitter fires three
+//! thin beams at the dots. Driven by `RenderView::lock` / `lock_edges`; cosmetic only.
+
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::prelude::*;
+
+use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
+
+use crate::net::ViewRes;
+use crate::team::LocalColour;
+
+const SNAP_S: f32 = 0.22;
+
+#[derive(Resource)]
+struct LockViz {
+    dots: [Entity; 3],
+    emitter: Entity,
+    beams: Entity,
+    beam_mesh: Handle<Mesh>,
+    mat: Handle<StandardMaterial>,
+    /// Seconds left of the lock "snap" flare.
+    snap: f32,
+}
+
+pub struct LockPlugin;
+
+impl Plugin for LockPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, setup).add_systems(Update, update);
+    }
+}
+
+fn degenerate() -> Mesh {
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; 3])
+        .with_inserted_indices(Indices::U32(vec![0, 1, 2]))
+}
+
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    let mat = mats.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Add, double_sided: true, cull_mode: None, ..default() });
+    let sphere = meshes.add(Sphere::new(0.5));
+    let spawn = |commands: &mut Commands| {
+        commands
+            .spawn((Mesh3d(sphere.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
+            .id()
+    };
+    let dots = [spawn(&mut commands), spawn(&mut commands), spawn(&mut commands)];
+    let emitter = spawn(&mut commands);
+    let beam_mesh = meshes.add(degenerate());
+    let beams = commands
+        .spawn((Mesh3d(beam_mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
+        .id();
+    commands.insert_resource(LockViz { dots, emitter, beams, beam_mesh, mat, snap: 0.0 });
+}
+
+/// Triangle layout for one frame: (radius in metres on the chest, rotation angle, size multiplier).
+/// `p` = lock progress 0..1, `t` = clock seconds, `snap` = seconds left of the lock-snap flare.
+pub fn layout(phase: LockPhase, p: f32, t: f32, snap: f32) -> (f32, f32, f32) {
+    let p = p.clamp(0.0, 1.0);
+    match phase {
+        LockPhase::Search => (0.0, 0.0, 0.0),
+        LockPhase::Acquire => {
+            let e = p * p * (3.0 - 2.0 * p); // smoothstep
+            (0.55 + (0.12 - 0.55) * e, t * 1.6 * (1.0 - p) + 0.4, 1.0)
+        }
+        LockPhase::Locked => {
+            let flare = (snap / SNAP_S).clamp(0.0, 1.0);
+            (0.10 + 0.012 * (t * 22.0).sin() - 0.03 * flare, t * 0.4, 1.0 + 1.6 * flare)
+        }
+        // progress decays 1 -> 0 while breaking: scatter outward and shrink away
+        LockPhase::Break => (0.12 + (1.0 - p) * 0.9, t * 6.0, p.max(0.0)),
+    }
+}
+
+/// The three dot offsets in the plane facing the viewer (`right`, `up` span that plane).
+pub fn triangle(r: f32, angle: f32, right: Vec3, up: Vec3) -> [Vec3; 3] {
+    std::array::from_fn(|i| {
+        let a = angle + i as f32 * std::f32::consts::TAU / 3.0;
+        (right * a.cos() + up * a.sin()) * r
+    })
+}
+
+fn update(
+    time: Res<Time>,
+    view: Res<ViewRes>,
+    colour: Res<LocalColour>,
+    mut viz: ResMut<LockViz>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut tf: Query<(&mut Transform, &mut Visibility)>,
+) {
+    let t = time.elapsed_secs();
+    viz.snap = (viz.snap - time.delta_secs()).max(0.0);
+    if view.0.lock_edges.iter().any(|e| matches!(e, LockEdge::Locked)) {
+        viz.snap = SNAP_S;
+    }
+    let hide = |viz: &LockViz, tf: &mut Query<(&mut Transform, &mut Visibility)>| {
+        for e in viz.dots.iter().chain([&viz.emitter, &viz.beams]) {
+            if let Ok((_, mut v)) = tf.get_mut(*e) {
+                *v = Visibility::Hidden;
+            }
+        }
+    };
+    let Some(lock) = view.0.lock.filter(|l| l.phase != LockPhase::Search) else {
+        hide(&viz, &mut tf);
+        return;
+    };
+
+    let eye = Vec3::from(view.0.eye);
+    let pos = Vec3::from(lock.pos);
+    let to_eye = (eye - pos).normalize_or(Vec3::Z);
+    let right = to_eye.cross(Vec3::Y).normalize_or(Vec3::X);
+    let up = right.cross(to_eye).normalize_or(Vec3::Y);
+    let dist = eye.distance(pos);
+    let (r, angle, mult) = layout(lock.phase, lock.progress, t, viz.snap);
+    // keep the dots readable at range: world size grows with distance, capped
+    let size = (0.035 + 0.004 * dist).min(0.14) * mult;
+    // HDR owner colour; brighter once locked
+    let g = if lock.phase == LockPhase::Locked { 9.0 } else { 5.0 };
+    let c = colour.0;
+    if let Some(mut m) = mats.get_mut(&viz.mat) {
+        m.base_color = Color::linear_rgb(c[0] * g, c[1] * g, c[2] * g);
+    }
+
+    let dots = triangle(r, angle, right, up);
+    for (e, d) in viz.dots.iter().zip(dots) {
+        if let Ok((mut t, mut v)) = tf.get_mut(*e) {
+            *t = Transform::from_translation(pos + d).with_scale(Vec3::splat(size.max(0.0005)));
+            *v = Visibility::Visible;
+        }
+    }
+
+    // shoulder emitter + beams only while fully locked
+    let beams_on = lock.phase == LockPhase::Locked;
+    let shoulder = {
+        let fwd = (pos - eye).normalize_or(Vec3::NEG_Z);
+        let side = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+        eye + side * 0.38 - Vec3::Y * 0.12 + fwd * 0.25
+    };
+    if let Ok((mut et, mut v)) = tf.get_mut(viz.emitter) {
+        *et = Transform::from_translation(shoulder).with_scale(Vec3::splat(0.035 * (1.0 + 0.25 * (t * 14.0).sin())));
+        *v = if beams_on { Visibility::Visible } else { Visibility::Hidden };
+    }
+    if beams_on {
+        let (mut pos_v, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
+        for d in dots {
+            let (a, b) = (shoulder, pos + d);
+            let dir = (b - a).normalize_or(Vec3::NEG_Z);
+            let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+            let w = 0.006;
+            let base = pos_v.len() as u32;
+            for (p, al) in [(a, 0.15), (b, 0.55)] {
+                pos_v.push((p + side * w).to_array());
+                pos_v.push((p - side * w).to_array());
+                let cc = [c[0] * 3.0, c[1] * 3.0, c[2] * 3.0, al];
+                col.extend([cc, cc]);
+            }
+            idx.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+        if let Some(mut m) = meshes.get_mut(&viz.beam_mesh) {
+            *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos_v)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
+                .with_inserted_indices(Indices::U32(idx));
+        }
+    }
+    if let Ok((_, mut v)) = tf.get_mut(viz.beams) {
+        *v = if beams_on { Visibility::Visible } else { Visibility::Hidden };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquire_converges_as_progress_rises() {
+        let r = |p| layout(LockPhase::Acquire, p, 0.0, 0.0).0;
+        assert!(r(0.0) > r(0.5) && r(0.5) > r(1.0));
+        assert!((r(1.0) - 0.12).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lock_is_tight_and_snap_flares() {
+        let (r, _, s) = layout(LockPhase::Locked, 1.0, 0.0, 0.0);
+        let (rs, _, ss) = layout(LockPhase::Locked, 1.0, 0.0, SNAP_S);
+        assert!(r < 0.15 && rs < r, "snap tightens further");
+        assert!(ss > s, "snap enlarges the dots");
+    }
+
+    #[test]
+    fn break_scatters_and_fades_as_progress_decays() {
+        let at = |p| layout(LockPhase::Break, p, 0.0, 0.0);
+        assert!(at(0.2).0 > at(0.9).0, "radius grows as progress falls");
+        assert!(at(0.2).2 < at(0.9).2, "dots shrink away");
+        assert_eq!(layout(LockPhase::Search, 0.0, 0.0, 0.0).2, 0.0);
+    }
+
+    #[test]
+    fn triangle_is_equilateral_in_the_view_plane() {
+        let d = triangle(1.0, 0.3, Vec3::X, Vec3::Y);
+        let (a, b, c) = ((d[0] - d[1]).length(), (d[1] - d[2]).length(), (d[2] - d[0]).length());
+        assert!((a - b).abs() < 1e-5 && (b - c).abs() < 1e-5);
+        assert!(d.iter().all(|p| p.z.abs() < 1e-6));
+    }
+}
