@@ -11,6 +11,7 @@
 
 mod crt;
 mod demo;
+mod blocks;
 mod discs;
 mod impacts;
 mod rope;
@@ -120,7 +121,7 @@ fn main() {
         .add_plugins(crt::CrtPlugin)
         .add_plugins(sky::SkyPlugin)
         .add_plugins(play::PlayPlugin)
-        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin))
+        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin))
         .add_plugins(hud_view::HudPlugin)
         .add_plugins(walls::WallsPlugin);
     if flag("--demo") {
