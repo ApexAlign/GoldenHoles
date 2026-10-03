@@ -70,7 +70,6 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
     .add_plugins(PlayPlugin)
     .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin))
     .add_plugins(hud_view::HudPlugin)
-    .add_plugins(walls::WallsPlugin)
     .insert_resource(ShotRequest { width: dims.0, height: dims.1 });
     app
 }

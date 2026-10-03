@@ -24,4 +24,3 @@ pub mod own_state;
 pub mod pickups;
 pub mod tick;
 pub mod walls;
-pub mod walls_world;

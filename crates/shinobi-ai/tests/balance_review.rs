@@ -28,12 +28,6 @@ fn arena() -> Server {
     f.level.apply_to_server(&mut s);
     s.set_spawns(f.level.spawns.clone());
     s.set_balance(Balance::demo()).unwrap();
-    // like `Replicator::configure_hazards`
-    let c = *s.cfg();
-    s.hazards.cfg.life_ticks = (c.trail_life * 60.0) as u32;
-    s.hazards.cfg.grace_ticks = shinobi_sim::walls_world::WALL_GRACE_TICKS;
-    s.hazards.cfg.wall_height = c.trail_height;
-    s.hazards.cfg.wall_thick = c.trail_thick;
     for (i, p) in f.pickups.iter().enumerate() {
         s.add_pickup(i as u32 + 1, p.pos, PowerupKind::GridBeam, p.respawn_secs);
     }
