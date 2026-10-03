@@ -110,7 +110,7 @@ pub fn setup(
 
     // ground: the level's own floor slab (top face at y = 0), so open void edges (FFA maps) really are void; 200 m
     // half-extent only when the level has no big floor box (the built-in arena)
-    let (floor_c, floor_h) = level
+    let big_floor = level
         .as_ref()
         .and_then(|l| {
             l.0.boxes
@@ -118,9 +118,11 @@ pub fn setup(
                 .filter(|b| (b.center[1] + b.half[1]).abs() < 0.05 && b.rot_z == 0.0 && b.half[0] > 20.0 && b.half[2] > 20.0)
                 .max_by(|a, b| (a.half[0] * a.half[2]).total_cmp(&(b.half[0] * b.half[2])))
                 .map(|b| ([b.center[0], b.center[2]], [b.half[0], b.half[2]]))
-        })
-        .unwrap_or(([0.0, 0.0], [200.0, 200.0]));
-    let grid_mat = grids.add(GridFloor::from_client(&GridData::tron(&pal), 300.0));
+        });
+    let fog = crate::grid::FogFar::for_floor(big_floor.map(|(_, h)| h));
+    commands.insert_resource(fog);
+    let (floor_c, floor_h) = big_floor.unwrap_or(([0.0, 0.0], [200.0, 200.0]));
+    let grid_mat = grids.add(GridFloor::from_client(&GridData::tron(&pal), fog.0));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(floor_h[0], floor_h[1])))),
         MeshMaterial3d(grid_mat.clone()),
@@ -147,7 +149,7 @@ pub fn setup(
             };
             commands.spawn((
                 Mesh3d(unit.clone()),
-                MeshMaterial3d(grids.add(GridFloor::for_box(&gd, b, tint, mode, 300.0))),
+                MeshMaterial3d(grids.add(GridFloor::for_box(&gd, b, tint, mode, fog.0))),
                 Transform::from_translation(Vec3::from(b.center))
                     .with_rotation(Quat::from_rotation_z(b.rot_z))
                     .with_scale(Vec3::from(b.half) * 2.0),

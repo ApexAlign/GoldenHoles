@@ -205,6 +205,7 @@ fn sync_blocks(
     mut viz: ResMut<BlockViz>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut grids: ResMut<Assets<GridFloor>>,
+    fog: Option<Res<crate::grid::FogFar>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut tf: Query<&mut Transform>,
 ) {
@@ -215,6 +216,7 @@ fn sync_blocks(
     let now: Vec<(u16, Cell)> = view.0.blocks.iter().map(|b| (b.owner, b.cell)).collect();
     let (added, removed) = diff(&prev, &now);
     let gd = GridData::tron(&Palette::TRON);
+    let fog_far = fog.as_ref().map_or(crate::grid::FogFar::DEFAULT, |f| f.0);
 
     for (owner, cell) in added {
         let Some(info) = view.0.blocks.iter().find(|b| b.cell == cell) else { continue };
@@ -226,7 +228,7 @@ fn sync_blocks(
         let entity = commands
             .spawn((
                 Mesh3d(cube.clone()),
-                MeshMaterial3d(grids.add(GridFloor::for_box(&gd, &b, tint, 1.0, 300.0))),
+                MeshMaterial3d(grids.add(GridFloor::for_box(&gd, &b, tint, 1.0, fog_far))),
                 // starts collapsed; the loop below grows it while printing
                 Transform::from_translation(c).with_rotation(rot).with_scale(Vec3::new(0.001, 0.001, 0.001)),
             ))

@@ -63,6 +63,37 @@ impl Material for GridFloor {
     }
 }
 
+/// Fog distance (m) for the grid shaders, scaled from the level's floor so the far side of a big map doesn't fade out:
+/// 1.5x the floor diagonal (HALF 112 m -> ~476 m, 168 m -> ~713 m). Levels without a big floor box (the built-in
+/// arena) keep the original 300 m.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct FogFar(pub f32);
+
+impl FogFar {
+    pub const DEFAULT: f32 = 300.0;
+
+    pub fn for_floor(half: Option<[f32; 2]>) -> Self {
+        match half {
+            Some(h) => Self((2.0 * (h[0] * h[0] + h[1] * h[1]).sqrt() * 1.5).max(Self::DEFAULT)),
+            None => Self(Self::DEFAULT),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fog_scales_with_the_floor_and_never_shrinks_below_default() {
+        assert_eq!(FogFar::for_floor(None).0, 300.0);
+        let f = FogFar::for_floor(Some([112.0, 112.0])).0;
+        assert!((f - 475.9).abs() < 1.0, "{f}");
+        assert!(FogFar::for_floor(Some([168.0, 168.0])).0 > 700.0);
+        assert_eq!(FogFar::for_floor(Some([20.0, 20.0])).0, 300.0);
+    }
+}
+
 pub struct GridPlugin;
 
 impl Plugin for GridPlugin {
