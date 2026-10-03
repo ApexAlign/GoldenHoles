@@ -42,7 +42,7 @@ use super::bits::{DecodeError, DecodeResult};
 
 pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 3: cookie handshake, snapshot datagram with own/board sections, gameplay events. See the module doc.
-pub const VERSION: u8 = 9;
+pub const VERSION: u8 = 10;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;

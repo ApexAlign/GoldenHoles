@@ -72,6 +72,8 @@ pub struct NetClient {
     teams: HashMap<u16, u8>,
     team_score: [u16; 2],
     team_result: u8,
+    /// Health of hurt pieces (1/255ths of their limit; absent = untouched), from `BlockDamaged`.
+    block_hp: HashMap<[i32; 3], u8>,
     /// Live player-built blocks: grid cell -> owner id (from `BlockPlaced` / `BlockRemoved`).
     blocks: HashMap<[i32; 3], (u16, Piece, u8)>,
     /// The server's build rules (`NetEvent::BlockRules`), once received.
@@ -123,6 +125,7 @@ impl Default for NetClient {
             team_score: [0; 2],
             team_result: 0,
             blocks: HashMap::new(),
+            block_hp: HashMap::new(),
             block_rules: None,
             anchor: None,
             kicked: None,
@@ -255,10 +258,17 @@ impl NetClient {
                 }
                 NetEvent::BlockPlaced { owner, cell, kind, axis, scale_q } => {
                     self.blocks.insert(cell, (owner, Piece { kind: PieceKind::from_id(kind), axis }, scale_q));
+                    self.block_hp.remove(&cell); // a fresh piece is untouched
+                }
+                NetEvent::BlockDamaged { cell, hp_q } => {
+                    if self.blocks.contains_key(&cell) {
+                        self.block_hp.insert(cell, hp_q);
+                    }
                 }
                 NetEvent::BlockRules(r) => self.block_rules = Some(r),
                 NetEvent::BlockRemoved { cell } | NetEvent::BlockDerez { cell } => {
                     self.blocks.remove(&cell);
+                    self.block_hp.remove(&cell);
                 }
                 NetEvent::TeamScore { score, result, .. } => {
                     self.team_score = score;
@@ -431,6 +441,11 @@ impl NetClient {
     /// Build rules from the server (None until the join catch-up arrives).
     pub fn block_rules(&self) -> Option<BlockRules> {
         self.block_rules
+    }
+
+    /// Remaining health of the piece in `cell` for cracking visuals: 255 = untouched (or no such piece), down to 1.
+    pub fn block_hp_q(&self, cell: [i32; 3]) -> u8 {
+        self.block_hp.get(&cell).copied().unwrap_or(255)
     }
 
     /// Live pieces with kind and scale, sorted by cell (what the shell draws and the predicted world collides with).
@@ -728,6 +743,26 @@ mod tests {
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn block_damage_is_tracked_per_piece_and_cleared_when_it_is_replaced_or_gone() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::BlockPlaced { owner: 2, cell: [1, 0, 0], kind: 0, axis: 0, scale_q: 16 });
+        ob.push(NetEvent::BlockDamaged { cell: [1, 0, 0], hp_q: 90 });
+        ob.push(NetEvent::BlockDamaged { cell: [9, 9, 9], hp_q: 10 }); // no such piece: ignored
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!((c.block_hp_q([1, 0, 0]), c.block_hp_q([9, 9, 9]), c.block_hp_q([5, 5, 5])), (90, 255, 255));
+        ob.push(NetEvent::BlockDerez { cell: [1, 0, 0] });
+        ob.push(NetEvent::BlockPlaced { owner: 3, cell: [1, 0, 0], kind: 0, axis: 0, scale_q: 16 });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
+        assert_eq!(c.block_hp_q([1, 0, 0]), 255, "a fresh piece in the same cell is untouched");
     }
 
     #[test]

@@ -463,6 +463,18 @@ impl Blocks {
         Ok(evicted)
     }
 
+    /// Remaining health of the piece in `cell` in 1/255ths of its limit (255 = untouched, 1 = nearly gone); 255 when
+    /// there is no piece. Same quantisation as `BlockEvent::Damaged`: for join catch-up of already-hurt pieces.
+    pub fn hp_q(&self, cell: Cell) -> u8 {
+        let Some(b) = self.cells.get(&cell) else { return 255 };
+        let limit = (self.cfg.hp * (b.scale_q as f32 / SCALE_ONE as f32)).max(1e-3);
+        if b.hurt <= 0.0 {
+            255
+        } else {
+            ((1.0 - b.hurt / limit) * 255.0).round().clamp(1.0, 255.0) as u8
+        }
+    }
+
     /// HOOK: `amount` damage to the piece in `cell` at `tick`. Older pieces take less (`age_bonus_per_sec`);
     /// past `hp` (times its scale) the piece de-rezzes: removed, and `DeRez` pushed. True if destroyed.
     /// Nothing calls this yet: weapons stay inert against pieces until balance decides the numbers.

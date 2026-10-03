@@ -49,6 +49,9 @@ pub enum NetEvent {
     BlockDerez { cell: [i32; 3] },
     /// Owner only: the build press was refused, `BLOCK_REFUSED_*`.
     BlockRefused { why: u8 },
+    /// The piece in `cell` is hurt but standing: `hp_q` = remaining health in 1/255ths (255 = untouched, 1 = nearly
+    /// gone), for cracking visuals. At most one per cell per server frame; hurt pieces are replayed to late joiners.
+    BlockDamaged { cell: [i32; 3], hp_q: u8 },
 }
 
 pub const BLOCK_REFUSED_OCCUPIED: u8 = 0;
@@ -214,6 +217,11 @@ impl NetEvent {
                 w.write_bits(17, 5);
                 write_v3(w, *cell, [0; 3]);
             }
+            Self::BlockDamaged { cell, hp_q } => {
+                w.write_bits(21, 5);
+                write_v3(w, *cell, [0; 3]);
+                w.write_bits(*hp_q as u32, 8);
+            }
             Self::BlockRefused { why } => {
                 w.write_bits(18, 5);
                 w.write_bits(*why as u32 & 3, 2);
@@ -308,6 +316,7 @@ impl NetEvent {
             }
             17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
             18 => Self::BlockRefused { why: r.read_bits(2)? as u8 },
+            21 => Self::BlockDamaged { cell: read_v3(r, [0; 3])?, hp_q: r.read_bits(8)? as u8 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -414,6 +423,7 @@ mod tests {
             NetEvent::BlockDerez { cell: [-12, 3, 40] },
             NetEvent::BlockRules(crate::blocks::BlockCfg::default().rules()),
             NetEvent::BlockRemoved { cell: [-12, 3, 40] },
+            NetEvent::BlockDamaged { cell: [-12, 3, 40], hp_q: 117 },
             NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN },
         ];
         let mut w = BitWriter::new();
@@ -421,7 +431,7 @@ mod tests {
             e.write(&mut w);
         }
         let bytes = w.finish();
-        assert!(bytes.len() <= 24, "{} B for place + derez + remove + refuse", bytes.len());
+        assert!(bytes.len() <= 32, "{} B for place + derez + rules + remove + damaged + refuse", bytes.len());
         let mut r = BitReader::new(&bytes);
         for e in &evs {
             assert_eq!(&NetEvent::read(&mut r).unwrap(), e);

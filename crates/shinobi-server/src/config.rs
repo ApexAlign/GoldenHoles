@@ -366,7 +366,7 @@ mod tests {
         let c = parse(&["--bots", "3", "--bot-skill", "easy"], &[]).unwrap();
         let b = c.banner("built-in arena", Some("192.168.1.20".parse().unwrap()));
         assert!(b.contains("127.0.0.1:7777") && b.contains("192.168.1.20:7777"), "{b}");
-        assert!(b.contains("bots: 3 (easy)") && b.contains("protocol v9"), "{b}");
+        assert!(b.contains("bots: 3 (easy)") && b.contains("protocol v10"), "{b}");
         assert!(b.contains("shinobi-game --server 192.168.1.20:7777"), "{b}");
         let local = parse(&["127.0.0.1:9999"], &[]).unwrap().banner("x", None);
         assert!(local.contains("connect : 127.0.0.1:9999") && local.contains("bots: none"), "{local}");

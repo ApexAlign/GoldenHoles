@@ -137,6 +137,10 @@ impl Replicator {
         // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
         for b in server.blocks.pieces() {
             st.outbox.push(NetEvent::BlockPlaced { owner: b.owner, cell: b.cell, kind: b.piece.kind.id(), axis: b.piece.axis, scale_q: b.scale_q });
+            let hp_q = server.blocks.hp_q(b.cell);
+            if hp_q < 255 {
+                st.outbox.push(NetEvent::BlockDamaged { cell: b.cell, hp_q }); // hurt before this peer joined
+            }
         }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
@@ -206,14 +210,26 @@ impl Replicator {
     fn sync_blocks(&mut self, server: &mut Server) {
         use shinobi_sim::blocks::{BlockEvent, PlaceError};
         use shinobi_sim::events::{BLOCK_REFUSED_BLOCKED, BLOCK_REFUSED_COOLDOWN, BLOCK_REFUSED_OCCUPIED};
+        // hits on one piece can come many times per frame (a volley of shurikens): only the latest health per cell is sent
+        let mut hurt: Vec<([i32; 3], u8)> = Vec::new();
         for ev in std::mem::take(&mut server.block_events) {
             match ev {
                 BlockEvent::Placed { owner, cell, piece, scale_q, .. } => {
+                    hurt.retain(|h| h.0 != cell);
                     self.broadcast(NetEvent::BlockPlaced { owner, cell, kind: piece.kind.id(), axis: piece.axis, scale_q })
                 }
-                BlockEvent::Removed { cell, .. } => self.broadcast(NetEvent::BlockRemoved { cell }),
-                BlockEvent::DeRez { cell, .. } => self.broadcast(NetEvent::BlockDerez { cell }),
-                BlockEvent::Damaged { .. } => {} // Network: replicate as a reliable BlockHit (cell, hp_q) for cracking visuals
+                BlockEvent::Removed { cell, .. } => {
+                    hurt.retain(|h| h.0 != cell);
+                    self.broadcast(NetEvent::BlockRemoved { cell })
+                }
+                BlockEvent::DeRez { cell, .. } => {
+                    hurt.retain(|h| h.0 != cell);
+                    self.broadcast(NetEvent::BlockDerez { cell })
+                }
+                BlockEvent::Damaged { cell, hp_q, .. } => match hurt.iter_mut().find(|h| h.0 == cell) {
+                    Some(h) => h.1 = h.1.min(hp_q),
+                    None => hurt.push((cell, hp_q)),
+                },
                 BlockEvent::Refused { owner, why, .. } => {
                     let why = match why {
                         PlaceError::Occupied => BLOCK_REFUSED_OCCUPIED,
@@ -225,6 +241,9 @@ impl Replicator {
                     }
                 }
             }
+        }
+        for (cell, hp_q) in hurt {
+            self.broadcast(NetEvent::BlockDamaged { cell, hp_q });
         }
     }
 
@@ -727,6 +746,42 @@ mod tests {
         );
         assert!(max_len <= 1200, "steady-state 8v8 datagram {max_len} B exceeds one MTU");
         assert!(ms < 16.0, "{ms:.2} ms per tick leaves no headroom at 60 Hz");
+    }
+
+    #[test]
+    fn piece_damage_is_coalesced_per_cell_dropped_on_derez_and_replayed_to_joiners() {
+        use shinobi_sim::blocks::Piece;
+        let (mut s, mut r) = two_peers();
+        let damaged_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter().filter(|e| matches!(e, NetEvent::BlockDamaged { .. } | NetEvent::BlockDerez { .. })).collect::<Vec<_>>()
+        };
+        let tick = s.tick;
+        for cell in [[3, 0, 0], [4, 0, 0]] {
+            s.blocks.place(&mut s.world, 1, cell, Piece::FLOOR, 16, tick, &[]).unwrap();
+        }
+        s.blocks.cfg.hp = 100.0;
+        // a volley of 4 hits on one piece in one frame -> one event with the lowest health
+        let mut ev = Vec::new();
+        for _ in 0..4 {
+            s.blocks.damage(&mut s.world, [3, 0, 0], 12.0, tick, &mut ev);
+        }
+        // a piece that is hit and then de-rezzed in the same frame only reports the de-rez
+        s.blocks.damage(&mut s.world, [4, 0, 0], 50.0, tick, &mut ev);
+        assert!(s.blocks.damage(&mut s.world, [4, 0, 0], 60.0, tick, &mut ev));
+        s.block_events.extend(ev);
+        r.post_frame(&mut s);
+        let got = damaged_for(&mut r, &s, 2);
+        let hp = s.blocks.hp_q([3, 0, 0]);
+        assert!(hp < 255 && hp > 100, "52 of 100 hp left -> {hp}");
+        assert_eq!(got, vec![NetEvent::BlockDerez { cell: [4, 0, 0] }, NetEvent::BlockDamaged { cell: [3, 0, 0], hp_q: hp }], "{got:?}");
+        // a joiner learns the piece was already hurt
+        s.add_player(3, [9.0, 0.81, 0.0]);
+        r.add_peer(&s, 3, s.tick);
+        assert!(damaged_for(&mut r, &s, 3).contains(&NetEvent::BlockDamaged { cell: [3, 0, 0], hp_q: hp }));
     }
 
     #[test]
