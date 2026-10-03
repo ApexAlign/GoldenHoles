@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::hud::{
     BuildHud, BuildSlot, GrappleHud,
-    bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
+    bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
 };
@@ -121,7 +121,7 @@ impl HudBridge {
 
         let local_id = net.player_id().unwrap_or(0);
         // reliable events: match banners, pickup toast, kill feed
-        let name = |id: u16| format!("PLAYER {id}");
+        let name = |id: u16| callsign(id);
         for e in &view.events {
             self.fx.on_net_event(e, local_id, name);
             if let Some(mut k) = KillEntry::from_net(e, local_id, name) {
@@ -152,7 +152,7 @@ impl HudBridge {
                     .iter()
                     .map(|r| ScoreEntry { id: r.id as u16, kills: r.kills, deaths: r.deaths, alive: r.alive })
                     .collect();
-                score_rows_from_entries(&entries, local_id, |id| format!("PLAYER {id}"), |_| 0)
+                score_rows_from_entries(&entries, local_id, callsign, |_| 0)
             })
             .unwrap_or_default();
         let mut scoreboard = scoreboard;
@@ -181,7 +181,7 @@ impl HudBridge {
                 if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
                     // keep tags in the central band (the side columns stay empty); an off-screen ally pins to the edge
                     let (cx, cy) = (x.clamp(SIDE_CLEAR + 0.04, 1.0 - SIDE_CLEAR - 0.04), y.clamp(BROW_H + 0.12, CHIN_TOP - 0.05));
-                    ally_tags.push(AllyTag { pos: (cx, cy), name: format!("PLAYER {id}"), dist, clamped: (cx, cy) != (x, y) });
+                    ally_tags.push(AllyTag { pos: (cx, cy), name: callsign(*id), dist, clamped: (cx, cy) != (x, y) });
                 }
             }
         }
@@ -245,6 +245,8 @@ impl HudBridge {
         if let Some(l) = lock {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
+            // target health from the replicated snapshot flags (31 steps), when the target is in the newest snapshot
+            let target_hp = net.interp.newest_tick().and_then(|t| net.interp.get(t)).and_then(|s| s.get(l.target)).map(|e| shinobi_proto::snapshot::hp_frac(e.flags));
             if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, l.pos) {
                 let colour = match &teams {
                     Some(t) => crate::hud::Palette::TRON.team(t.team_of.get(&l.target).copied().unwrap_or(1)),
@@ -252,7 +254,7 @@ impl HudBridge {
                 };
                 // keep the brackets in the central band, away from the side columns
                 let pos = (x.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), y.clamp(BROW_H + 0.15, CHIN_TOP - 0.1));
-                hs.target = Some(TargetHud { pos, name: format!("PLAYER {}", l.target), colour, hp: None, dist, progress: l.progress, locked: l.locked });
+                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp,  dist, progress: l.progress, locked: l.locked });
             }
         }
         // boot-up plays on first link and on every respawn
@@ -377,7 +379,7 @@ mod tests {
         v.events.push(NetEvent::Kill { tick: 5, killer: 2, victim: 3, kind: KIND_SLASH });
         let s = b.update(0.016, &v, &net(), false);
         assert_eq!(s.killfeed.len(), 1);
-        assert_eq!((s.killfeed[0].killer.as_str(), s.killfeed[0].victim.as_str()), ("PLAYER 2", "PLAYER 3"));
+        assert_eq!((s.killfeed[0].killer.as_str(), s.killfeed[0].victim.as_str()), (callsign(2).as_str(), callsign(3).as_str()));
         v.events.clear();
         let s = b.update(crate::hud::KILLFEED_TIME + 0.1, &v, &net(), false);
         assert!(s.killfeed.is_empty(), "entries expire");
@@ -468,7 +470,7 @@ mod tests {
         assert_eq!(s.scoreboard.iter().map(|r| r.team).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
         // ally 2 ahead: tagged; enemy 3 ahead: never; ally 4 behind: not projected
         assert_eq!(s.ally_tags.len(), 1);
-        assert_eq!(s.ally_tags[0].name, "PLAYER 2");
+        assert_eq!(s.ally_tags[0].name, callsign(2));
         assert!(!s.ally_tags[0].clamped);
         // no team info -> free-for-all: nothing team-shaped
         b.teams = None;
@@ -595,7 +597,7 @@ mod tests {
         assert!(b.update(0.016, &v, &net(), false).target.is_none());
         v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked });
         let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
-        assert!(t.locked && t.name == "PLAYER 5" && (t.dist - 20.0).abs() < 0.1);
+        assert!(t.locked && t.name == callsign(5) && (t.dist - 20.0).abs() < 0.1);
         assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");
     }
 }

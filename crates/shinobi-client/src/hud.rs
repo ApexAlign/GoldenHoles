@@ -244,6 +244,15 @@ pub struct TargetHud {
     pub locked: bool,
 }
 
+/// Stable two-word callsign for a player id ("NEON FOX"): 144 distinct names, so the HUD has something readable
+/// until real names travel on the wire.
+pub fn callsign(id: u16) -> String {
+    const ADJ: [&str; 12] = ["NEON", "CYBER", "RAZOR", "GHOST", "STATIC", "VOID", "PIXEL", "ARC", "CHROME", "DELTA", "ECHO", "ONYX"];
+    const NOUN: [&str; 12] = ["FOX", "WOLF", "HAWK", "VIPER", "COBRA", "ORCA", "LYNX", "MANTA", "RAVEN", "DRAKE", "TIGER", "MOTH"];
+    let id = id as usize;
+    format!("{} {}", ADJ[id % 12], NOUN[(id / 12 + id * 5) % 12])
+}
+
 /// Unique neon colour for a free-for-all player (golden-angle hues). Stand-in for the network layer's
 /// `player_colour(id)`: the bridge's `colour_of` points at this until that lands.
 pub fn ffa_colour(id: u16) -> Rgba {
@@ -923,6 +932,7 @@ impl Hud {
             boot_sequence(&mut out, t, p);
         }
         glitch(&mut out, s.time, p);
+        glyph_rain(&mut out, s.time, chrome, s.dead);
         killfeed(&mut out, s, p);
         if s.show_scoreboard {
             scoreboard(&mut out, s, p);
@@ -1156,6 +1166,29 @@ fn boot_sequence(out: &mut Vec<Prim>, t: f32, p: &Palette) {
             text.push('_'); // cursor while typing
         }
         out.push(Prim::Text { pos: (SIDE_CLEAR + 0.015, 0.3 + i as f32 * 0.03), text: format!("> {text}"), size: 0.022, color: if i == 3 { p.gold } else { p.cyan }.a(0.9 * fade), align: Align::Left });
+    }
+}
+
+/// Faint falling data glyphs in the dead space of the lower right margin (clear of every panel and the centre):
+/// six columns, each a short trail whose head falls at its own speed and wraps. Deterministic in `time`.
+fn glyph_rain(out: &mut Vec<Prim>, time: f32, c: Rgba, dead: bool) {
+    const GLYPHS: &[u8] = b"01<>/\\|=+*#%$&";
+    let (x0, x1, y0, y1) = (0.81f32, 0.975f32, 0.58f32, 0.93f32);
+    let cols = 6;
+    for k in 0..cols {
+        let x = x0 + (x1 - x0) * (k as f32 + 0.5) / cols as f32;
+        let speed = 0.05 + 0.03 * ((k * 7 + 3) % 5) as f32;
+        let phase = ((k * 37 + 11) % 100) as f32 / 100.0;
+        let head = ((time * speed + phase).fract()) * (y1 - y0 + 0.12) + y0 - 0.02;
+        for t in 0..4 {
+            let y = head - t as f32 * 0.03;
+            if y < y0 || y > y1 {
+                continue;
+            }
+            let g = GLYPHS[((time * 3.0) as usize + k * 5 + t * 3) % GLYPHS.len()] as char;
+            let a = (0.22 - t as f32 * 0.05).max(0.04) * if dead { 0.5 } else { 1.0 };
+            out.push(Prim::Text { pos: (x, y), text: g.to_string(), size: 0.016, color: c.a(a), align: Align::Center });
+        }
     }
 }
 
@@ -2044,7 +2077,7 @@ mod tests {
         };
         let hit = HudState { hp: 1.0, since_hit: Some(0.05), hit_kind: Some(DamageKind::Slash), hit_amount: 42, ..Default::default() };
         assert!(texts(&hit).contains(&"42".to_string()));
-        assert!(!texts(&HudState { hit_amount: 0, ..hit.clone() }).contains(&"0".to_string()), "unknown amount hides the number");
+        assert_eq!(texts(&HudState { hit_amount: 0, ..hit.clone() }), texts(&HudState { since_hit: None, ..hit.clone() }), "unknown amount draws no number");
 
         let wedge = |frac: f32| {
             let s = HudState { hp: 1.0, since_damage: Some((0.1, 0.0)), damage_frac: frac, ..Default::default() };
@@ -2234,5 +2267,23 @@ mod tests {
         assert!((hub.0 - 0.2).abs() < 1e-6 && (hub.2 - 1.0).abs() < 1e-6, "district tint");
         let edge = zone("VOID EDGE").expect("void edge drawn");
         assert!(edge.0 > 0.9 && edge.1 < 0.2, "void edge is a magenta warning: {edge:?}");
+    }
+
+    #[test]
+    fn callsigns_are_stable_and_distinct_and_the_rain_stays_in_its_corner() {
+        let names: std::collections::HashSet<String> = (0..144u16).map(callsign).collect();
+        assert_eq!(names.len(), 144, "144 ids, 144 distinct callsigns");
+        assert_eq!(callsign(7), callsign(7));
+        assert!(names.iter().all(|n| n.len() <= 12), "short enough for the killfeed");
+        // rain glyphs live in the lower right margin only, at any time of the cycle
+        for t in [0.0f32, 1.3, 7.7, 19.1] {
+            let mut out = Vec::new();
+            glyph_rain(&mut out, t, Rgba::CYAN, false);
+            assert!(!out.is_empty());
+            for p in &out {
+                let b = bounds(p).unwrap();
+                assert!(b.x >= 0.795 && b.x + b.w <= 0.985 && b.y >= 0.55 && b.y + b.h <= 0.97, "rain strayed: {b:?}");
+            }
+        }
     }
 }
