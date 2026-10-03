@@ -862,3 +862,26 @@ mod ramp_tests {
         assert!(max_y > 1.2, "the capsule climbed the ramp (peak centre height {max_y})");
     }
 }
+
+#[cfg(test)]
+mod hp_q_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::tick::Server;
+
+    /// `hp_q` (join catch-up) and `Damaged.hp_q` (live) agree, with a scaled piece and an age discount.
+    #[test]
+    fn hp_q_matches_the_damaged_event_under_scale_and_age() {
+        let mut s = Server::new(Cfg::default());
+        let mut b = Blocks::new(BlockCfg { hp: 100.0, age_bonus_per_sec: 0.5, ..BlockCfg::default() });
+        let mut ev = Vec::new();
+        assert_eq!(b.hp_q([9, 9, 9]), 255, "no piece");
+        b.place(&mut s.world, 1, [0, 0, 0], Piece::FLOOR, 24, 0, &[]).unwrap(); // 1.5x: limit 150
+        assert_eq!(b.hp_q([0, 0, 0]), 255, "untouched");
+        // 60 damage at tick 240 (4 s old): 60 / (1 + 0.5 * 4) = 20 of 150 -> 87% left
+        assert!(!b.damage(&mut s.world, [0, 0, 0], 60.0, 240, &mut ev));
+        let BlockEvent::Damaged { hp_q, .. } = ev[0] else { panic!("{ev:?}") };
+        assert_eq!(hp_q, b.hp_q([0, 0, 0]));
+        assert_eq!(hp_q, ((1.0f32 - 20.0 / 150.0) * 255.0).round() as u8);
+    }
+}
