@@ -209,7 +209,8 @@ fn drive(
     mut strategy: Option<ResMut<TimeUpdateStrategy>>,
 ) {
     let t = time.elapsed_secs();
-    if !cfg.slashed && t >= cfg.secs - 0.12 {
+    let lead: f32 = std::env::var("SHOT_SLASH_LEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.12);
+    if !cfg.slashed && t >= cfg.secs - lead {
         fx.slash_edge = true;
         cfg.slashed = true;
     }

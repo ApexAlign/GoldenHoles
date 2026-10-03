@@ -37,14 +37,23 @@ struct RemoteEnt {
     root: Entity,
     parts: [Entity; PARTS],
     colour: Option<u32>,
+    /// Distance beacon: a faint light column above the player so far-away players still read.
+    beacon: Entity,
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
 const VOID_Y: f32 = -20.0;
 
-/// Body materials per quantised player colour.
+/// Body materials per quantised player colour (and the additive beacon variant).
 #[derive(Resource, Default)]
-struct BodyMats(std::collections::HashMap<u32, Handle<StandardMaterial>>);
+struct BodyMats(std::collections::HashMap<u32, Handle<StandardMaterial>>, std::collections::HashMap<u32, Handle<StandardMaterial>>);
+
+/// Beacons appear beyond this distance (m); width grows with distance so the column stays about the same on screen.
+const BEACON_MIN_DIST: f32 = 18.0;
+
+pub fn beacon_width(dist: f32) -> f32 {
+    0.05 + 0.004 * dist
+}
 
 #[derive(Resource, Default)]
 struct Remotes(HashMap<u16, RemoteEnt>);
@@ -461,7 +470,10 @@ fn sync_remotes(
                     ))
                     .id()
             });
-            RemoteEnt { root, parts, colour: None }
+            let beacon = commands
+                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
+                .id();
+            RemoteEnt { root, parts, colour: None, beacon }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
@@ -478,7 +490,24 @@ fn sync_remotes(
             for e in &ent.parts {
                 commands.entity(*e).insert(MeshMaterial3d(m.clone()));
             }
+            let bm = body_mats.1.entry(k).or_insert_with(|| {
+                mats.add(StandardMaterial {
+                    base_color: Color::linear_rgb(hue[0] * 2.0, hue[1] * 2.0, hue[2] * 2.0),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Add,
+                    ..default()
+                })
+            });
+            commands.entity(ent.beacon).insert(MeshMaterial3d(bm.clone()));
         }
+        // distance beacon: a light column above the head once the player is far enough to be a few pixels
+        let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
+        if let Ok(mut bt) = tf.get_mut(ent.beacon) {
+            let w = beacon_width(dist);
+            bt.translation = Vec3::new(0.0, 4.2, 0.0);
+            bt.scale = Vec3::new(w, 6.5, w);
+        }
+        commands.entity(ent.beacon).insert(if dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
             r.translation = Vec3::from(d.pos);
@@ -600,5 +629,16 @@ mod district_tests {
         let t = district_tint([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         assert!(t[1] > t[0] * 2.5, "{t:?}");
         assert!(t.iter().all(|v| *v >= 0.0));
+    }
+}
+
+#[cfg(test)]
+mod beacon_tests {
+    use super::*;
+
+    #[test]
+    fn beacon_widens_with_distance() {
+        assert!(beacon_width(60.0) > beacon_width(20.0));
+        assert!(beacon_width(0.0) > 0.0);
     }
 }

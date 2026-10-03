@@ -10,3 +10,14 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan shinob
 (no glow, scanlines or bloom; geometry, colour and legibility only). Regenerate with
 `cargo run -p shinobi-client --example hud_dump -- OUT_DIR 960 540` (also writes bright-backdrop variants); the layouts are
 guarded by `crates/shinobi-client/tests/hud_golden.rs` (`UPDATE_GOLDEN=1` to re-record).
+
+## Graphics review frames (lavapipe)
+Extra env hooks for `--shot-offline` (offline only, ignored otherwise):
+- `SHOT_FX=pieces,discs,lock:0.6,locked,break:0.4` overlays synthetic pieces / discs / lock-on state on the view.
+- `SHOT_EYE=x,y,z` and `SHOT_LOOK=yaw,pitch` (radians) move the camera (edges, ceilings).
+- `SHOT_SLASH_LEAD=secs` how long before capture the scripted katana swing starts (default 0.12).
+- `--idle` skips the scripted swing and throw so you see the REST pose.
+The three huge diagonal lines in non-idle shots are the katana swing trail (3 ribbons: tip, mid, hilt; designed to
+clear the whole screen in 0.16 s, see `viewmodel.rs` test `arc_clears_the_whole_screen...`); the shot script starts a
+swing 0.12 s before capture. The big star in the centre of non-idle shots is the shuriken mid-throw; at rest (`--idle`)
+it sits bottom-left. Frames: `graphics_*.png`.
