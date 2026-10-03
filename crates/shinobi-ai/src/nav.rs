@@ -98,6 +98,214 @@ pub fn find_perches(server: &Server, min_top: f32, max_top: f32) -> Vec<Perch> {
     out
 }
 
+/// Walkable ground-layer grid for path planning on big maps. Built once per level from the static colliders:
+/// a cell is walkable when there is ground under it and a body-sized capsule fits there; neighbours connect when
+/// the ground height difference is small enough to walk (steps, ramps). Pieces printed later are not in it: the
+/// whiskers (`steer_static`) handle those locally. Deterministic (fixed scan order, ordered tie-breaks).
+pub struct NavGrid {
+    x0: f32,
+    z0: f32,
+    cell: f32,
+    nx: usize,
+    nz: usize,
+    /// Ground height per cell, `NaN` = not walkable.
+    y: Vec<f32>,
+}
+
+/// Largest ground-height difference between neighbouring cells a walking bot crosses (autostep + ramps).
+const NAV_STEP: f32 = 0.7;
+/// Highest ground a path may use: tiers a bot can walk onto, not roofs only reachable by hopping.
+const NAV_MAX_Y: f32 = 4.0;
+
+impl NavGrid {
+    /// Scan the level inside `[-half, half]` in x and z at `cell` metres.
+    pub fn build(server: &Server, half: f32, cell: f32) -> NavGrid {
+        let n = ((half * 2.0) / cell).ceil() as usize;
+        let (x0, z0) = (-half, -half);
+        let cfg = *server.cfg();
+        let world = &server.world;
+        // the server's own pipeline may not have seen the level yet (a host built before the first tick)
+        let mut queries = QueryPipeline::new();
+        queries.update(&world.colliders);
+        let solids = QueryFilter::default().exclude_sensors().groups(InteractionGroups::new(Group::ALL, GROUP_WORLD));
+        let body = Capsule::new_y(cfg.half_height, cfg.radius * 0.9);
+        let mut y = vec![f32::NAN; n * n];
+        for iz in 0..n {
+            for ix in 0..n {
+                let (cx, cz) = (x0 + (ix as f32 + 0.5) * cell, z0 + (iz as f32 + 0.5) * cell);
+                // ground: highest solid top below y = NAV_MAX_Y + 1 (so towers' undersides do not count as floor)
+                let ray = Ray::new(Point::new(cx, NAV_MAX_Y + 1.0, cz), vector![0.0, -1.0, 0.0]);
+                let Some((_, toi)) = queries.cast_ray(&world.bodies, &world.colliders, &ray, NAV_MAX_Y + 25.0, true, solids) else { continue };
+                let gy = NAV_MAX_Y + 1.0 - toi;
+                if gy > NAV_MAX_Y {
+                    continue;
+                }
+                // a capsule standing there must not overlap any solid
+                let centre = Isometry::translation(cx, gy + cfg.half_height + cfg.radius + 0.05, cz);
+                let mut blocked = false;
+                queries.intersections_with_shape(&world.bodies, &world.colliders, &centre, &body, solids, |_| {
+                    blocked = true;
+                    false
+                });
+                if !blocked {
+                    y[iz * n + ix] = gy;
+                }
+            }
+        }
+        NavGrid { x0, z0, cell, nx: n, nz: n, y }
+    }
+
+    pub fn walkable_count(&self) -> usize {
+        self.y.iter().filter(|v| !v.is_nan()).count()
+    }
+
+    fn idx(&self, ix: i32, iz: i32) -> Option<usize> {
+        (ix >= 0 && iz >= 0 && (ix as usize) < self.nx && (iz as usize) < self.nz).then(|| iz as usize * self.nx + ix as usize)
+    }
+
+    fn cell_of(&self, x: f32, z: f32) -> (i32, i32) {
+        (((x - self.x0) / self.cell).floor() as i32, ((z - self.z0) / self.cell).floor() as i32)
+    }
+
+    fn center(&self, ix: i32, iz: i32) -> (f32, f32) {
+        (self.x0 + (ix as f32 + 0.5) * self.cell, self.z0 + (iz as f32 + 0.5) * self.cell)
+    }
+
+    fn ground(&self, ix: i32, iz: i32) -> Option<f32> {
+        self.idx(ix, iz).map(|i| self.y[i]).filter(|v| !v.is_nan())
+    }
+
+    /// The nearest walkable cell to `(x, z)` within a few rings (a bot standing in a doorway can map to a
+    /// neighbour); `None` if the area is solid.
+    fn snap(&self, x: f32, z: f32) -> Option<(i32, i32)> {
+        let (cx, cz) = self.cell_of(x, z);
+        for r in 0..=4i32 {
+            let mut best: Option<(f32, (i32, i32))> = None;
+            for dz in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dz.abs()) != r || self.ground(cx + dx, cz + dz).is_none() {
+                        continue;
+                    }
+                    let (px, pz) = self.center(cx + dx, cz + dz);
+                    let d = (px - x).powi(2) + (pz - z).powi(2);
+                    if best.map_or(true, |(bd, _)| d < bd) {
+                        best = Some((d, (cx + dx, cz + dz)));
+                    }
+                }
+            }
+            if let Some((_, c)) = best {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn passable(&self, a: (i32, i32), b: (i32, i32)) -> bool {
+        match (self.ground(a.0, a.1), self.ground(b.0, b.1)) {
+            (Some(ya), Some(yb)) => {
+                if (ya - yb).abs() > NAV_STEP {
+                    return false;
+                }
+                // diagonals may not cut a blocked corner
+                (a.0 == b.0 || a.1 == b.1) || (self.ground(a.0, b.1).is_some() && self.ground(b.0, a.1).is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// Waypoints (world x, z) from `from` to `to`, string-pulled; `None` when either end is not on the grid or
+    /// no path exists. `max_nodes` bounds the search (a bot gives up for a moment rather than stalling a tick).
+    pub fn path(&self, from: [f32; 2], to: [f32; 2], max_nodes: usize) -> Option<Vec<[f32; 2]>> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let (s, g) = (self.snap(from[0], from[1])?, self.snap(to[0], to[1])?);
+        if s == g {
+            return Some(vec![to]);
+        }
+        let h = |c: (i32, i32)| (((c.0 - g.0).pow(2) + (c.1 - g.1).pow(2)) as f32).sqrt();
+        // f scaled to integers (millicells) so the heap order is total and deterministic
+        let key = |f: f32| (f * 1000.0) as u32;
+        let mut best = std::collections::HashMap::new();
+        let mut came: std::collections::HashMap<(i32, i32), (i32, i32)> = std::collections::HashMap::new();
+        let mut heap = BinaryHeap::new();
+        best.insert(s, 0.0f32);
+        heap.push(Reverse((key(h(s)), s.0, s.1)));
+        let mut expanded = 0usize;
+        while let Some(Reverse((_, cx, cz))) = heap.pop() {
+            let c = (cx, cz);
+            if c == g {
+                let mut cells = vec![c];
+                let mut cur = c;
+                while let Some(p) = came.get(&cur) {
+                    cells.push(*p);
+                    cur = *p;
+                }
+                cells.reverse();
+                return Some(self.pull(&cells, to));
+            }
+            expanded += 1;
+            if expanded > max_nodes {
+                return None;
+            }
+            let gc = best[&c];
+            for dz in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    if dx == 0 && dz == 0 {
+                        continue;
+                    }
+                    let n = (cx + dx, cz + dz);
+                    if !self.passable(c, n) {
+                        continue;
+                    }
+                    let ng = gc + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                    if best.get(&n).map_or(true, |&b| ng < b - 1e-4) {
+                        best.insert(n, ng);
+                        came.insert(n, c);
+                        heap.push(Reverse((key(ng + h(n)), n.0, n.1)));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Straight walkable run between two cells (supercover-ish: sample every half cell).
+    fn line_clear(&self, a: (i32, i32), b: (i32, i32)) -> bool {
+        let (ax, az) = self.center(a.0, a.1);
+        let (bx, bz) = self.center(b.0, b.1);
+        let len = ((bx - ax).powi(2) + (bz - az).powi(2)).sqrt();
+        let steps = (len / (self.cell * 0.5)).ceil().max(1.0) as i32;
+        let mut prev = a;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let c = self.cell_of(ax + (bx - ax) * t, az + (bz - az) * t);
+            if c != prev && !self.passable(prev, c) {
+                // a corner touch (diagonal hop between two cells) is allowed only if both sides are walkable
+                return false;
+            }
+            prev = c;
+        }
+        true
+    }
+
+    /// String pulling: keep only the cells where the straight line to the farther cell breaks.
+    fn pull(&self, cells: &[(i32, i32)], goal: [f32; 2]) -> Vec<[f32; 2]> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 1 < cells.len() {
+            let mut j = cells.len() - 1;
+            while j > i + 1 && !self.line_clear(cells[i], cells[j]) {
+                j -= 1;
+            }
+            let (px, pz) = self.center(cells[j].0, cells[j].1);
+            out.push([px, pz]);
+            i = j;
+        }
+        out.push(goal);
+        out
+    }
+}
+
 /// Whisker steering over static geometry: if the way ahead is blocked, bend toward the freer side.
 pub fn steer_static(world: &WorldView, me: &PlayerView, dir: V3) -> V3 {
     let d = unit_or_zero(flat(dir));

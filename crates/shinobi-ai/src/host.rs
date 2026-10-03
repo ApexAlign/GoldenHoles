@@ -51,6 +51,8 @@ pub struct BotHost {
     step_ix: u64,
     perches: Vec<Perch>,
     perches_built: bool,
+    /// Walkable-ground grid for path planning (built once per level, see `build_nav`).
+    nav: Option<crate::nav::NavGrid>,
     sticky: Vec<(u16, u16)>, // (bot, target)
 }
 
@@ -67,6 +69,7 @@ impl BotHost {
             step_ix: 0,
             perches: Vec::new(),
             perches_built: false,
+            nav: None,
             sticky: Vec::new(),
         }
     }
@@ -160,6 +163,7 @@ impl BotHost {
     pub fn rebuild_perches(&mut self, server: &Server) {
         self.perches = find_perches(server, 1.0, 2.5);
         self.perches_built = true;
+        self.nav = Some(build_nav(server));
     }
 
     pub fn perches(&self) -> &[Perch] {
@@ -244,6 +248,9 @@ impl BotHost {
 
     /// One decision per bot for `server.tick`. Pure with respect to the server (read-only).
     pub fn think_all(&mut self, server: &Server) -> Vec<(u16, PlayerIntent)> {
+        if self.nav.is_none() {
+            self.nav = Some(build_nav(server)); // first think on a level nobody called rebuild_perches for
+        }
         let ids: Vec<u16> = self.bots.iter().map(|b| b.id).collect();
         let world = WorldView::build(server, |id| ids.binary_search(&id).is_ok());
         let tick = world.tick;
@@ -298,7 +305,7 @@ impl BotHost {
                 percs.push(Perception::default());
                 continue;
             };
-            let ctx = ThinkCtx { world: &world, me, assign: assigns[i], has_ticket: false, perches: &self.perches, frustum };
+            let ctx = ThinkCtx { world: &world, me, assign: assigns[i], has_ticket: false, perches: &self.perches, frustum, nav: self.nav.as_ref() };
             let p = b.perceive(&ctx);
             if let Some(r) = b.strike_request(&ctx, &p) {
                 requests.push(r);
@@ -321,6 +328,7 @@ impl BotHost {
                 has_ticket: self.tickets.holds(b.id),
                 perches: &self.perches,
                 frustum,
+                nav: self.nav.as_ref(),
             };
             let o = b.think(&ctx, &percs[i]);
             if o.release_ticket {
@@ -333,4 +341,18 @@ impl BotHost {
         }
         out
     }
+}
+
+/// Path grid for the level: extent from the static colliders (clamped), 1 m cells.
+fn build_nav(server: &Server) -> crate::nav::NavGrid {
+    use shinobi_sim::combat::GROUP_WORLD;
+    let mut half = 20.0f32;
+    for (_, c) in server.world.colliders.iter() {
+        if c.is_sensor() || !c.collision_groups().memberships.intersects(GROUP_WORLD) {
+            continue;
+        }
+        let a = c.compute_aabb();
+        half = half.max(a.maxs.x.abs()).max(a.mins.x.abs()).max(a.maxs.z.abs()).max(a.mins.z.abs());
+    }
+    crate::nav::NavGrid::build(server, half.min(200.0), 1.0)
 }

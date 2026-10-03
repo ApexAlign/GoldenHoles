@@ -279,3 +279,34 @@ fn ffa_bots_have_no_allies_and_fight_each_other() {
     assert!(hits > 20 && kills >= 1, "bots fought: {hits} hits, {kills} kills");
     assert!(attackers.len() >= 4, "most bots took part, not one lone duellist: {attackers:?}");
 }
+
+#[test]
+fn bots_walk_out_of_enclosed_spawn_alcoves_on_the_big_ffa_map() {
+    // levels/ffa.lvl: 24 enclosed 6 x 6 alcoves with baffled doors on a 224 m map; without path planning bots
+    // pushed against the alcove wall forever (0 kills in 3 minutes)
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../levels/ffa.lvl");
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let f = shinobi_sim::level::parse_level_file(&text).expect("ffa.lvl parses");
+    let mut s = shinobi_sim::tick::Server::new(shinobi_sim::character::Cfg::default());
+    f.level.apply_to_server(&mut s);
+    s.set_spawns(f.level.spawns.clone());
+    let mut h = host(31);
+    h.rebuild_perches(&s); // builds the nav grid before the server ever ticked: must not depend on its query state
+    for i in 0..8u16 {
+        assert!(h.add_bot(&mut s, 201 + i, Archetype::Light, BotSkill::Normal));
+    }
+    let start: Vec<[f32; 3]> = s.players.iter().map(|p| p.pos(&s.world)).collect();
+    for _ in 0..1800 {
+        step(&mut h, &mut s);
+    }
+    let left = s
+        .players
+        .iter()
+        .zip(&start)
+        .filter(|(p, st)| {
+            let q = p.pos(&s.world);
+            ((q[0] - st[0]).powi(2) + (q[2] - st[2]).powi(2)).sqrt() > 12.0 || p.vitals.deaths > 0
+        })
+        .count();
+    assert!(left >= 7, "{left}/8 bots left their alcove within 30 s");
+}
