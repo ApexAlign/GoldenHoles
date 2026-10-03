@@ -127,7 +127,7 @@ impl Default for Cfg {
             grapple_accel: 80.0,
             grapple_cd: 0.5,
             grapple_arrive: 2.0,
-            grapple_max_time: 4.0,
+            grapple_max_time: 10.0,
             grapple_jump_boost: 5.0,
             grapple_lift: 3.0,
             grapple_steer: 0.35,
@@ -648,7 +648,7 @@ impl CharacterSystem {
 
         // ---- wrist grapple: reel + taut rope (slack during a dash/roll) ----
         if self.evasion.is_none() {
-            self.grapple_pull(dt, pos);
+            self.grapple_pull(dt, pos, input.slide);
         }
 
         // ---- KCC ----
@@ -831,7 +831,10 @@ impl CharacterSystem {
     }
 
     /// Reel toward the anchor (keeping any faster existing speed), then remove outward velocity on a taut rope.
-    fn grapple_pull(&mut self, dt: f32, pos: Vector<Real>) {
+    ///
+    /// `swing` (slide / crouch held): keep the rope length instead of reeling. No pull, no gravity cancel, no braking, just
+    /// the taut-rope constraint: a pendulum / orbit around the anchor under gravity, steered by the stick.
+    fn grapple_pull(&mut self, dt: f32, pos: Vector<Real>, swing: bool) {
         let cfg = self.cfg;
         let Some(mut g) = self.grapple else { return };
         let eye = pos + Vector::y() * cfg.eye_above_center;
@@ -848,7 +851,9 @@ impl CharacterSystem {
         // is not driven into the surface at full reel speed (momentum past a free-hanging anchor still carries)
         let near = (d - cfg.grapple_arrive).max(0.0);
         let cap_near = cfg.grapple_arrive_speed + near * (cfg.grapple_speed - cfg.grapple_arrive_speed) / cfg.grapple_soft_dist;
-        if along > cap_near {
+        if swing {
+            // hold the rope length (see above)
+        } else if along > cap_near {
             self.vel -= dir * (cfg.grapple_brake * dt).min(along - cap_near);
         } else if along < cfg.grapple_speed {
             self.vel += dir * (cfg.grapple_accel * ease * dt).min(cfg.grapple_speed - along);
@@ -856,11 +861,16 @@ impl CharacterSystem {
             self.vel.y += cfg.gravity * dt;
         }
         g.time += dt;
+        let stretch = d - g.len; // > 0: integration drift carried the player past the rope's length
         g.len = g.len.min(d);
         if d >= g.len - 1e-3 {
             let out = -self.vel.dot(&dir);
             if out > 0.0 {
                 self.vel += dir * out;
+            }
+            // position drift: a taut rope cannot stretch; pull the excess back over a few ticks (no snap, no jitter)
+            if stretch > 0.01 {
+                self.vel += dir * (stretch * 0.4 / dt).min(3.0);
             }
         }
         let speed = self.vel.norm();
@@ -1598,7 +1608,7 @@ mod tests {
         assert!(ch.grapple.is_some() && !ch.sliding(), "slide cancelled by the hook");
         let mut peak = 0.0f32;
         for _ in 0..30 {
-            tick(&mut ch, &mut w, &PlayerInput { slide: true, ..run }, &mut now);
+            tick(&mut ch, &mut w, &run, &mut now);
             peak = peak.max(w.bodies[ch.body].translation().y);
         }
         assert!(peak > 1.5, "left the floor even with slide held (peak y {peak})");
@@ -1675,5 +1685,107 @@ mod tests {
         ch.grapple = Some(GrappleState { anchor: vector![f32::INFINITY, 0.0, 0.0], len: 5.0, time: 0.0 });
         tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
         assert!(ch.grapple.is_none() && finite(&ch, &w));
+    }
+
+    // ---------- wrist grapple: swing / orbit ----------
+
+    /// Hang a player on an anchor `len` away from the eye without going through the hook ray (swing tests).
+    fn hang(w: &mut PhysicsWorld, eye: [f32; 3], anchor: [f32; 3], vel: [f32; 3]) -> CharacterSystem {
+        let mut ch = player(w, [eye[0], eye[1] - 0.6, eye[2]]);
+        let a = vector![anchor[0], anchor[1], anchor[2]];
+        ch.vel = vector![vel[0], vel[1], vel[2]];
+        ch.grapple = Some(GrappleState { anchor: a, len: (a - vector![eye[0], eye[1], eye[2]]).norm(), time: 0.0 });
+        ch.state = MoveState::Airborne;
+        ch
+    }
+
+    fn swing_scene() -> PhysicsWorld {
+        let mut w = world();
+        boxc(&mut w, [0.0, 41.0, 0.0], [60.0, 1.0, 60.0]); // ceiling whose underside (y = 40) holds the anchor
+        boxc(&mut w, [0.0, -80.0, 0.0], [200.0, 0.5, 200.0]); // far floor
+        w
+    }
+
+    #[test]
+    fn a_held_rope_swings_like_a_pendulum_without_gaining_energy_or_stretching() {
+        let mut w = swing_scene();
+        let mut ch = hang(&mut w, [10.0, 30.0, 0.0], [0.0, 41.0 - 1.0, 0.0], [0.0, 0.0, 0.0]);
+        let len = ch.grapple.unwrap().len;
+        let hold = PlayerInput { slide: true, ..Default::default() };
+        let mut now = 0.0;
+        let (mut worst_stretch, mut max_y, mut prev_v, mut worst_turn) = (0.0f32, 0.0f32, ch.vel, 0.0f32);
+        let a = ch.grapple.unwrap().anchor;
+        for i in 0..540 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+            let p = *w.bodies[ch.body].translation();
+            let eye = vector![p.x, p.y + 0.6, p.z];
+            worst_stretch = worst_stretch.max(((a - eye).norm() - len).abs());
+            max_y = max_y.max(eye.y);
+            assert!(finite(&ch, &w), "tick {i}");
+            assert!(ch.grapple.is_some(), "rope must stay on (tick {i})");
+            if ch.vel.norm() > 3.0 && prev_v.norm() > 3.0 {
+                worst_turn = worst_turn.max(ch.vel.normalize().dot(&prev_v.normalize()).clamp(-1.0, 1.0).acos());
+            }
+            prev_v = ch.vel;
+        }
+        assert!(worst_stretch < 0.35, "rope length drifted by {worst_stretch} m");
+        assert!(max_y < 30.0 + 0.4, "pendulum gained energy: rose to {max_y}");
+        assert!(worst_turn < 0.25, "velocity direction jitter: {worst_turn} rad in one tick");
+    }
+
+    #[test]
+    fn tangential_speed_on_a_held_rope_orbits_the_anchor() {
+        // conical pendulum: v^2 = g r^2 / h
+        let mut w = swing_scene();
+        let (r, h) = (8.0f32, 14.0f32);
+        let v = (Cfg::default().gravity * r * r / h).sqrt();
+        let mut ch = hang(&mut w, [r, 40.0 - h, 0.0], [0.0, 40.0, 0.0], [0.0, 0.0, v]);
+        let len = ch.grapple.unwrap().len;
+        let hold = PlayerInput { slide: true, ..Default::default() };
+        let mut now = 0.0;
+        let a = ch.grapple.unwrap().anchor;
+        let (mut rmin, mut rmax, mut ymin, mut ymax, mut smin, mut smax) = (f32::MAX, 0.0f32, f32::MAX, 0.0f32, f32::MAX, 0.0f32);
+        let mut angle = 0.0f32;
+        let mut last = (r, 0.0f32);
+        for i in 0..540 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+            let p = *w.bodies[ch.body].translation();
+            assert!(finite(&ch, &w), "tick {i}");
+            assert!(ch.grapple.is_some(), "rope must stay on (tick {i})");
+            let hr = (p.x * p.x + p.z * p.z).sqrt();
+            rmin = rmin.min(hr);
+            rmax = rmax.max(hr);
+            ymin = ymin.min(p.y + 0.6);
+            ymax = ymax.max(p.y + 0.6);
+            if i > 60 {
+                smin = smin.min(ch.vel.norm());
+                smax = smax.max(ch.vel.norm());
+            }
+            let cur = (p.x, p.z);
+            angle += (last.0 * cur.1 - last.1 * cur.0).atan2(last.0 * cur.0 + last.1 * cur.1).abs();
+            last = cur;
+        }
+        let _ = (a, len);
+        assert!(angle > 1.6 * std::f32::consts::TAU, "it must keep circling: swept {angle} rad in 9 s");
+        assert!(rmax - rmin < 3.0, "orbit radius wandered {rmin}..{rmax} (started at {r})");
+        assert!(ymax - ymin < 4.0, "orbit height wandered {ymin}..{ymax}");
+        assert!(smax - smin < 6.0, "orbit speed wandered {smin}..{smax} (started at {v})");
+    }
+
+    #[test]
+    fn no_fall_damage_from_any_height() {
+        // The movement core has no health at all and a landing only zeroes velocity: a long fall must end on the floor
+        // with the character intact (the only death from height is the kill plane, handled in pvp).
+        let mut w = world();
+        boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        let mut ch = player(&mut w, [0.0, 400.0, 0.0]);
+        let mut now = 0.0;
+        for _ in 0..1500 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert_eq!(ch.state, MoveState::Grounded, "landed");
+        let y = w.bodies[ch.body].translation().y;
+        assert!((y - 0.81).abs() < 0.05, "standing on the floor, y = {y}");
+        assert!(ch.vel.iter().all(|v| v.is_finite()));
     }
 }

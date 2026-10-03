@@ -65,3 +65,12 @@ Residual by design: frame drawn `alpha` into a tick shows the eye up to one tick
 `grapple_hookable` (client-side ray in the predicted world: tint the crosshair when true), edges since the last view:
 `grapple_attached: Option<[f32;3]>` (anchor), `grapple_released`, `grapple_missed`. `RenderView.rope` = (eye, anchor).
 Rules for "hookable" are `CharacterSystem::grapple_probe` (static geometry only, 2.5..40 m).
+
+## Swing / orbit (DESIGN.md: pull AND swing)
+Hold slide (C) while on the rope: the reel stops and the rope keeps its length (it can only shorten): a pendulum / orbit
+under gravity, steered by the stick (adds sideways speed, never brakes; capped at 28 m/s). The taut-rope constraint kills
+outward velocity and pulls integration drift back over a few ticks (rope never visibly stretches, no jitter). Tests: a
+pendulum from rest never gains energy (rises <= 0.4 m past its start), rope length drifts < 0.35 m, velocity direction
+changes < 0.25 rad per tick; a conical-pendulum start (v^2 = g r^2 / h) keeps circling for 9 s, radius within 3 m,
+speed within 6 m/s. Max rope time is 10 s. No fall damage: the movement core has no health, landing only zeroes
+velocity (test: a 400 m fall ends standing, finite); the only death from height is the kill plane (-20 m).
