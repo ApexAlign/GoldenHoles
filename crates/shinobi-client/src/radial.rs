@@ -5,7 +5,7 @@
 use crate::hud::{Align, BuildSlot, Palette, Prim};
 
 const C: (f32, f32) = (0.5, 0.5);
-const R_OUT: f32 = 0.17;
+const R_OUT: f32 = 0.2;
 const R_DEAD: f32 = 0.03;
 const ASPECT: f32 = 0.5625;
 
@@ -29,14 +29,14 @@ pub fn pick(cursor: (f32, f32)) -> Option<BuildSlot> {
 }
 
 /// Sector centre (screen position) and label for a slot.
-fn sector(slot: BuildSlot) -> ((f32, f32), &'static str) {
-    let (deg, label) = match slot {
-        BuildSlot::Ramp => (0.0f32, "N  RAMP"),
-        BuildSlot::Wall => (120.0, "M  WALL"),
-        BuildSlot::Floor => (240.0, "N  FLOOR"),
+fn sector(slot: BuildSlot) -> ((f32, f32), &'static str, &'static str) {
+    let (deg, label, key) = match slot {
+        BuildSlot::Ramp => (0.0f32, "RAMP", "N N"),
+        BuildSlot::Wall => (120.0, "WALL", "M"),
+        BuildSlot::Floor => (240.0, "FLOOR", "N"),
     };
     let (s, c) = deg.to_radians().sin_cos();
-    ((C.0 + s * R_OUT * 0.58 * ASPECT, C.1 - c * R_OUT * 0.58), label)
+    ((C.0 + s * R_OUT * 0.64 * ASPECT, C.1 - c * R_OUT * 0.64), label, key)
 }
 
 /// Draw the menu with `hover` highlighted and `current` (the selected piece) marked.
@@ -56,13 +56,14 @@ pub fn draw(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette) -> Vec<Pr
         });
     }
     for slot in [BuildSlot::Ramp, BuildSlot::Wall, BuildSlot::Floor] {
-        let ((cx, cy), label) = sector(slot);
+        let ((cx, cy), label, key) = sector(slot);
         let on = hover == Some(slot);
         let col = if on { p.gold } else if slot == current { p.cyan } else { p.text };
         if on {
-            out.push(Prim::Ring { c: (cx, cy), r: R_OUT * 0.36, color: p.gold.a(0.18), fill: true, glow: 0.01 });
+            out.push(Prim::Ring { c: (cx, cy), r: R_OUT * 0.3, color: p.gold.a(0.16), fill: true, glow: 0.01 });
         }
-        out.push(Prim::Text { pos: (cx, cy - 0.005), text: label.into(), size: 0.026, color: col.a(if on { 1.0 } else { 0.75 }), align: Align::Center });
+        out.push(Prim::Text { pos: (cx, cy - 0.012), text: label.into(), size: 0.028, color: col.a(if on { 1.0 } else { 0.8 }), align: Align::Center });
+        out.push(Prim::Text { pos: (cx, cy + 0.008), text: format!("({key})"), size: 0.017, color: p.text.a(0.6), align: Align::Center });
         // piece preview under the label: flat slab, tilted slab, upright slab
         let (w, h) = match slot {
             BuildSlot::Floor => (0.05, 0.012),
@@ -70,9 +71,9 @@ pub fn draw(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette) -> Vec<Pr
             BuildSlot::Ramp => (0.0, 0.0),
         };
         if slot == BuildSlot::Ramp {
-            out.push(Prim::Line { a: (cx - 0.025 * ASPECT * 1.5, cy + 0.045), b: (cx + 0.025 * ASPECT * 1.5, cy + 0.022), color: col.a(0.85), glow: 0.004 });
+            out.push(Prim::Line { a: (cx - 0.025 * ASPECT * 1.5, cy + 0.05), b: (cx + 0.025 * ASPECT * 1.5, cy + 0.027), color: col.a(0.85), glow: 0.004 });
         } else {
-            out.push(Prim::Rect { r: crate::hud::Rect::new(cx - w * 0.5, cy + 0.04 - h * 0.5, w, h), color: col.a(0.8), glow: 0.004 });
+            out.push(Prim::Rect { r: crate::hud::Rect::new(cx - w * 0.5, cy + 0.045 - h * 0.5, w, h), color: col.a(0.8), glow: 0.004 });
         }
     }
     out.push(Prim::Text { pos: (C.0, C.1 + R_OUT + 0.05), text: "RELEASE TO PRINT".into(), size: 0.02, color: p.text.a(0.6), align: Align::Center });
@@ -99,7 +100,7 @@ mod tests {
     fn draw_labels_all_three_pieces_and_highlights_the_hover() {
         let p = Palette::TRON;
         let labels = |h| draw(h, BuildSlot::Floor, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect::<Vec<_>>();
-        for want in ["N  FLOOR", "N  RAMP", "M  WALL"] {
+        for want in ["FLOOR", "RAMP", "WALL"] {
             assert!(labels(None).contains(&want.to_string()), "{want}");
         }
         let fills = |h| draw(h, BuildSlot::Floor, &p).iter().filter(|x| matches!(x, Prim::Ring { fill: true, .. })).count();

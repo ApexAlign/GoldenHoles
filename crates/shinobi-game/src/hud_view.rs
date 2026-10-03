@@ -396,6 +396,7 @@ fn update(
             _ => {}
         }
     }
+    let prims = shinobi_client::hud::with_text_shadows(prims, &pal);
     let g = tessellate(&prims, aspect);
 
     if let Some(mut m) = meshes.get_mut(&hud.0) {

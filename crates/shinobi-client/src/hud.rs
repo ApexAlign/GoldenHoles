@@ -747,7 +747,7 @@ impl Hud {
 
         // Chin: hp bar (left), ultimate bar (right), and between them three cooldown arcs with weapon glyphs:
         // shuriken, katana, dash. Cyan ring = ready, orange sweep = recharging.
-        segmented_bar(&mut out, Rect::new(0.24, 0.93, 0.17, 0.014), s.hp, 10, if low_hp { p.magenta } else { p.cyan }, pulse);
+        segmented_bar(&mut out, Rect::new(0.225, 0.93, 0.145, 0.014), s.hp, 10, if low_hp { p.magenta } else { p.cyan }, pulse);
         bar(&mut out, Rect::new(0.59, 0.93, 0.17, 0.014), s.ult, p.gold, 1.0);
         for (x, ready, glyph) in [(0.45, s.shuriken_ready, Glyph::Shuriken), (0.5, s.slice_ready, Glyph::Katana), (0.55, s.dash_ready, Glyph::Dash)] {
             cooldown_arc(&mut out, (x, 0.94), 0.026, ready, glyph, p);
@@ -768,7 +768,7 @@ impl Hud {
 
         // Brow: wall-run chevron only when relevant (keeps the top quiet).
         if s.wall_run {
-            out.push(Prim::Rect { r: Rect::new(0.47, 0.03, 0.06, 0.008), color: p.cyan.a(0.8), glow: 0.006 });
+            out.push(Prim::Rect { r: Rect::new(0.47, 0.078, 0.06, 0.006), color: p.cyan.a(0.8), glow: 0.006 });
         }
 
         // Center reticle: four short ticks with a large open gap so targets stay visible.
@@ -909,7 +909,7 @@ impl Hud {
                 } else {
                     Rgba(tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 0.9)
                 };
-                out.push(Prim::Text { pos: (0.03, 0.595), text: name.clone(), size: 0.018, color: col, align: Align::Left });
+                out.push(Prim::Text { pos: (0.03, 0.585), text: name.clone(), size: 0.018, color: col, align: Align::Left });
             }
             // below the floor plane: falling toward the void kill plane
             if t.altitude < 0.0 && !s.dead {
@@ -935,6 +935,21 @@ impl Hud {
         out.extend(crate::controls_card::prims(&s.controls, p));
         out
     }
+}
+
+/// A dark offset copy under every readable text so it holds up on a bright scene (the HUD sits over the world, not
+/// a panel). Applied by the shell to the final draw list (not inside `Hud::build`, whose output tests count). Very small or faint text (glyph rain) is left alone.
+pub fn with_text_shadows(prims: Vec<Prim>, p: &Palette) -> Vec<Prim> {
+    let mut out = Vec::with_capacity(prims.len() * 2);
+    for pr in prims {
+        if let Prim::Text { pos, text, size, color, align } = &pr {
+            if *size >= 0.0165 && color.3 > 0.15 {
+                out.push(Prim::Text { pos: (pos.0 + 0.0012, pos.1 + 0.0022), text: text.clone(), size: *size, color: p.bg.a(0.85 * color.3), align: *align });
+            }
+        }
+        out.push(pr);
+    }
+    out
 }
 
 /// Top-centre, newest first, max `KILLFEED_MAX` rows, fading over the last second. Sits below the brow and
@@ -1144,7 +1159,7 @@ fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
     }
 }
 
-/// Typed-out status lines at spawn, upper-left of the central band. Each line types in over ~0.5 s starting
+/// Typed-out status lines at spawn, in a block above the crosshair (left edge at x 0.42, clear of the controls card). Each line types in over ~0.5 s starting
 /// 0.35 s after the previous; everything fades over the last 0.5 s of `BOOT_TIME`.
 pub const BOOT_TIME: f32 = 2.6;
 const BOOT_LINES: [&str; 4] = ["LINK ESTABLISHED", "GRID SYNC OK", "WEAPONS ONLINE", "GOOD HUNTING"];
@@ -1160,15 +1175,15 @@ fn boot_sequence(out: &mut Vec<Prim>, t: f32, p: &Palette) {
         if n < line.len() && (t * 12.0) as i32 % 2 == 0 {
             text.push('_'); // cursor while typing
         }
-        out.push(Prim::Text { pos: (SIDE_CLEAR + 0.015, 0.3 + i as f32 * 0.03), text: format!("> {text}"), size: 0.022, color: if i == 3 { p.gold } else { p.cyan }.a(0.9 * fade), align: Align::Left });
+        out.push(Prim::Text { pos: (0.42, 0.24 + i as f32 * 0.03), text: format!("> {text}"), size: 0.022, color: if i == 3 { p.gold } else { p.cyan }.a(0.9 * fade), align: Align::Left });
     }
 }
 
 /// Faint falling data glyphs in the dead space of the lower right margin (clear of every panel and the centre):
 /// six columns, each a short trail whose head falls at its own speed and wraps. Deterministic in `time`.
 fn glyph_rain(out: &mut Vec<Prim>, time: f32, c: Rgba, dead: bool) {
-    const GLYPHS: &[u8] = b"01<>/\\|=+*#%$&";
-    let (x0, x1, y0, y1) = (0.81f32, 0.975f32, 0.58f32, 0.93f32);
+    const GLYPHS: &[u8] = b"01<>/|=+*#%$&";
+    let (x0, x1, y0, y1) = (0.81f32, 0.975f32, 0.76f32, 0.93f32);
     let cols = 6;
     for k in 0..cols {
         let x = x0 + (x1 - x0) * (k as f32 + 0.5) / cols as f32;
@@ -1229,13 +1244,13 @@ fn build_panel(out: &mut Vec<Prim>, b: &BuildHud, p: &Palette) {
 }
 
 /// Free-for-all leaderboard: top 5 plus you (when outside the top 5) in each player's neon colour, kills-to-win
-/// header, and a gold LEADING tag while you are first. Sits in the upper-right of the central band, clear of the
-/// killfeed column and the side columns.
+/// header, and a gold LEADING tag while you are first. Sits in the right slim panel (lower half of the margin).
 fn ffa_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     let mut rows: Vec<&ScoreRow> = s.scoreboard.iter().collect();
     rows.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
-    let (x0, x1) = (0.665, 1.0 - SIDE_CLEAR - 0.005);
-    let mut y = BROW_H + 0.03;
+    // right slim panel (lower half of the margin): wide enough for a callsign, rank and kills
+    let (x0, x1) = (1.0 - SIDE_CLEAR + 0.02, 0.98);
+    let mut y = 0.575;
     let head = match s.kill_limit {
         Some(n) => format!("FIRST TO {n}"),
         None => "LEADERBOARD".into(),

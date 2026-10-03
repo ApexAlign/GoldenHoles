@@ -5,6 +5,8 @@ pub mod camera;
 pub mod client_game;
 pub mod colour;
 pub mod console;
+pub mod hud_raster;
+pub mod hud_scenarios;
 pub mod radial;
 pub mod font;
 pub mod fx;
