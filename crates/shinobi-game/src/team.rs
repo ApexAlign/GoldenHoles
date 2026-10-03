@@ -18,25 +18,12 @@ pub enum Team {
 }
 
 impl Team {
-    pub fn other(self) -> Team {
-        match self {
-            Team::Cyan => Team::Orange,
-            Team::Orange => Team::Cyan,
-        }
-    }
-
     /// Base colour from the shared palette.
     pub fn color(self, p: &Palette) -> Rgba {
         match self {
             Team::Cyan => p.cyan,
             Team::Orange => p.orange,
         }
-    }
-
-    /// HDR rgb (for bloom): palette colour times `gain`.
-    pub fn hdr(self, p: &Palette, gain: f32) -> [f32; 3] {
-        let c = self.color(p);
-        [c.0 * gain, c.1 * gain, c.2 * gain]
     }
 }
 
@@ -49,18 +36,57 @@ pub fn from_wire(t: u8) -> Option<Team> {
     }
 }
 
-/// Our own team (Cyan until the server tells us / outside team modes). Kept fresh by `sync_local`.
-#[derive(Resource, Default, Clone, Copy)]
-pub struct LocalTeam(pub Team);
+/// Distinct neon colour per player id (free-for-all): golden-ratio hue walk, full saturation/value, so any two ids
+/// differ and no colour is dim. STUB for Network's `player_colour(id)`; swap the body when it lands.
+pub fn neon(id: u16) -> [f32; 3] {
+    let h = (id as f32 * 0.618_034 + 0.13).fract() * 6.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    match h as u32 {
+        0 => [1.0, x, 0.0],
+        1 => [x, 1.0, 0.0],
+        2 => [0.0, 1.0, x],
+        3 => [0.0, x, 1.0],
+        4 => [x, 0.0, 1.0],
+        _ => [1.0, 0.0, x],
+    }
+}
 
-/// Team of another player; `None` outside team modes (callers fall back to the neutral hostile colour).
+/// A player's colour (unit scale, multiply by a gain for HDR): the team colour in team modes, else their own neon.
+pub fn colour_of(net: &Net, id: u16) -> [f32; 3] {
+    match remote_team(net, id) {
+        Some(t) => {
+            let c = t.color(&Palette::TRON);
+            [c.0, c.1, c.2]
+        }
+        None => neon(id),
+    }
+}
+
+/// Our own colour (cyan until the server assigns an id).
+#[derive(Resource, Clone, Copy)]
+pub struct LocalColour(pub [f32; 3]);
+
+impl Default for LocalColour {
+    fn default() -> Self {
+        let c = Palette::TRON.cyan;
+        Self([c.0, c.1, c.2])
+    }
+}
+
+/// Quantised key so colours can index a material cache.
+pub fn key(c: [f32; 3]) -> u32 {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    q(c[0]) << 16 | q(c[1]) << 8 | q(c[2])
+}
+
+/// Team of another player; `None` outside team modes.
 pub fn remote_team(net: &Net, id: u16) -> Option<Team> {
     net.0.game.net.team_of(id).and_then(from_wire)
 }
 
-fn sync_local(net: Res<Net>, mut local: ResMut<LocalTeam>) {
-    if let Some(t) = net.0.game.net.my_team().and_then(from_wire) {
-        local.0 = t;
+fn sync_local(net: Res<Net>, mut local: ResMut<LocalColour>) {
+    if let Some(id) = net.0.own_id() {
+        local.0 = colour_of(&net, id);
     }
 }
 
@@ -68,7 +94,7 @@ pub struct TeamPlugin;
 
 impl Plugin for TeamPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LocalTeam>().add_systems(Update, sync_local);
+        app.init_resource::<LocalColour>().add_systems(Update, sync_local);
     }
 }
 
@@ -80,16 +106,19 @@ mod tests {
     fn teams_are_distinct_and_symmetric() {
         let p = Palette::TRON;
         assert_ne!(Team::Cyan.color(&p), Team::Orange.color(&p));
-        assert_eq!(Team::Cyan.other().other(), Team::Cyan);
         assert_eq!(from_wire(0), Some(Team::Cyan));
         assert_eq!(from_wire(1), Some(Team::Orange));
         assert_eq!(from_wire(9), None);
     }
 
     #[test]
-    fn hdr_scales_the_palette_colour() {
-        let p = Palette::TRON;
-        let c = Team::Orange.hdr(&p, 2.0);
-        assert!((c[0] - p.orange.0 * 2.0).abs() < 1e-6);
+    fn neon_colours_are_bright_and_distinct() {
+        for id in 0..32u16 {
+            let c = neon(id);
+            assert!(c.iter().cloned().fold(0.0, f32::max) > 0.99, "full value: {c:?}");
+        }
+        let keys: std::collections::HashSet<u32> = (0..16u16).map(|i| key(neon(i))).collect();
+        assert_eq!(keys.len(), 16, "16 players get 16 different colours");
     }
+
 }

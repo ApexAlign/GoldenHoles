@@ -8,11 +8,9 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use shinobi_client::hud::Palette;
-
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::{Net, ViewRes};
-use crate::team::{LocalTeam, Team};
+use crate::team::LocalColour;
 
 const SEGS: usize = 28;
 const HALF_W: f32 = 0.035;
@@ -112,30 +110,29 @@ fn update(
     time: Res<Time>,
     net: Res<Net>,
     view: Res<ViewRes>,
-    local: Res<LocalTeam>,
+    local: Res<LocalColour>,
     mut ropes: ResMut<Ropes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<&mut Visibility>,
     mut impacts: ResMut<ImpactQueue>,
 ) {
     let (t, dt) = (time.elapsed_secs(), time.delta_secs());
-    let pal = Palette::TRON;
     let Some(mat) = ropes.mat.clone() else { return };
 
     // current ropes: ours from the prediction, others from the wire (anchor) + their drawn position
-    let mut now: Vec<(Option<u16>, Option<(Vec3, Vec3)>, Team)> =
+    let mut now: Vec<(Option<u16>, Option<(Vec3, Vec3)>, [f32; 3])> =
         vec![(None, view.0.rope.map(|(e, a)| (Vec3::from(e), Vec3::from(a))), local.0)];
     for (id, smp) in &view.0.remotes {
         if let Some(a) = net.0.game.net.rope_anchor(*id) {
             let eye = Vec3::from(smp.pos) + Vec3::Y * 0.5;
-            let team = crate::team::remote_team(&net, *id).unwrap_or(Team::Orange);
+            let team = crate::team::colour_of(&net, *id);
             now.push((Some(*id), Some((eye, Vec3::from(a))), team));
         }
     }
     // slots that exist but have no live rope this frame must still run their release snap
     for id in ropes.slots.keys().copied().collect::<Vec<_>>() {
         if !now.iter().any(|(i, _, _)| *i == id) {
-            let team = id.and_then(|i| crate::team::remote_team(&net, i)).unwrap_or(Team::Orange);
+            let team = id.map_or(local.0, |i| crate::team::colour_of(&net, i));
             now.push((id, None, team));
         }
     }
@@ -153,7 +150,7 @@ fn update(
         });
         // edges: attach flash at the anchor (shooter's team colour), release snap
         match (slot.last, cur) {
-            (None, Some((_, a))) => impacts.0.push(Impact { pos: a, team, kind: ImpactKind::Gone }),
+            (None, Some((_, a))) => impacts.0.push(Impact { pos: a, color: team, kind: ImpactKind::Gone }),
             (Some((a, e)), None) => slot.snap = Some((0.0, a, e)),
             _ => {}
         }
@@ -177,7 +174,7 @@ fn update(
         let Ok(mut v) = vis.get_mut(slot.entity) else { continue };
         match draw {
             Some((pts, fade)) => {
-                let (pos, col, idx) = geometry(&pts, fade, team.hdr(&pal, 1.0));
+                let (pos, col, idx) = geometry(&pts, fade, team);
                 if let Some(mut m) = meshes.get_mut(&slot.mesh) {
                     *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
                         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)

@@ -35,8 +35,12 @@ pub struct PlayerCam;
 struct RemoteEnt {
     root: Entity,
     parts: [Entity; PARTS],
-    team: Option<crate::team::Team>,
+    colour: Option<u32>,
 }
+
+/// Body materials per quantised player colour.
+#[derive(Resource, Default)]
+struct BodyMats(std::collections::HashMap<u32, Handle<StandardMaterial>>);
 
 #[derive(Resource, Default)]
 struct Remotes(HashMap<u16, RemoteEnt>);
@@ -83,6 +87,7 @@ impl Plugin for PlayPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::linear_rgb(0.003, 0.004, 0.012)))
             .init_resource::<Remotes>()
+            .init_resource::<BodyMats>()
             .init_resource::<Lock>()
             .add_systems(Update, update_title)
             .insert_resource(FxRes { state: FxState::new(FxCfg::default()), out: Default::default(), dash_held: false, slash_edge: false, slash: None, fire_edge: false, dj_edge: false, flip: false })
@@ -325,6 +330,8 @@ fn sync_remotes(
     view: Res<ViewRes>,
     look: Res<Look>,
     mut remotes: ResMut<Remotes>,
+    mut body_mats: ResMut<BodyMats>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
     mut tf: Query<&mut Transform>,
 ) {
     let s = &net.0;
@@ -352,17 +359,20 @@ fn sync_remotes(
                     ))
                     .id()
             });
-            RemoteEnt { root, parts, team: None }
+            RemoteEnt { root, parts, colour: None }
         });
-        // team colour: re-skin the body parts only when the team changes (or first becomes known)
-        let team = crate::team::remote_team(&net, *id);
-        if ent.team != team {
-            ent.team = team;
-            let m = match team {
-                Some(crate::team::Team::Cyan) => look.cyan.clone(),
-                Some(crate::team::Team::Orange) => look.orange.clone(),
-                None => look.hostile.clone(),
-            };
+        // player colour (team colour in team modes): re-skin the body parts only when it changes
+        let hue = crate::team::colour_of(&net, *id);
+        let k = crate::team::key(hue);
+        if ent.colour != Some(k) {
+            ent.colour = Some(k);
+            let m = body_mats.0.entry(k).or_insert_with(|| {
+                mats.add(StandardMaterial {
+                    base_color: Color::linear_rgb(hue[0] * 2.2, hue[1] * 2.2, hue[2] * 2.2),
+                    unlit: true,
+                    ..default()
+                })
+            });
             for e in &ent.parts {
                 commands.entity(*e).insert(MeshMaterial3d(m.clone()));
             }

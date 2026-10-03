@@ -11,7 +11,6 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 
 use shinobi_client::fx::LightWallCfg;
-use shinobi_client::hud::Palette;
 use shinobi_client::trail::{ribbon_color, wall_strip, TrailPoint};
 
 use crate::net::{Net, ViewRes};
@@ -83,7 +82,6 @@ fn update_walls(
     let now = s.local_tick() as f32 / 60.0;
     let server_time = now as f64;
     let cfg = LightWallCfg { life_s: LIFE_S, fade_start: 0.15, max_alpha: 0.55, pulse_depth: 0.0, ..Default::default() };
-    let pal = Palette::TRON;
 
     // remote players only: the first-person view never trails itself
     let players: Vec<(u16, [f32; 3])> = v.remotes.iter().map(|(id, smp)| (*id, smp.pos)).collect();
@@ -117,7 +115,7 @@ fn update_walls(
             w.pts.pop_front();
         }
 
-        let team = crate::team::remote_team(&net, *id).unwrap_or(crate::team::Team::Orange);
+        let hue = crate::team::colour_of(&net, *id);
         let (a, b) = w.pts.as_slices();
         let strip = wall_strip((a, b), now, WALL_HEIGHT, &cfg, server_time);
         if strip.is_empty() {
@@ -131,7 +129,7 @@ fn update_walls(
             .iter()
             .map(|v| {
                 // cool tail -> hot head, hot rim on the top edge
-                let c = ribbon_color(team.hdr(&pal, 0.25), team.hdr(&pal, 1.0), v.heat, v.v > 0.5);
+                let c = ribbon_color(hue.map(|c| c * 0.25), hue, v.heat, v.v > 0.5);
                 [c[0], c[1], c[2], v.alpha]
             })
             .collect();
