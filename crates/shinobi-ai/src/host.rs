@@ -248,29 +248,24 @@ impl BotHost {
         let world = WorldView::build(server, |id| ids.binary_search(&id).is_ok());
         let tick = world.tick;
 
-        // ---- director: targets (nearest living human, sticky), then ranks per target and archetype
-        let humans: Vec<_> = world.players.iter().filter(|p| p.alive && !p.is_bot).collect();
+        // ---- director: targets (every bot is its own faction: nearest / weakest living enemy, sticky), then ranks
+        // per target and archetype. Teammates (team mode only) are never targets; FFA players have no team.
         let mut targets: Vec<Option<u16>> = Vec::with_capacity(self.bots.len());
         for b in &self.bots {
             let Some(me) = world.player(b.id).filter(|p| p.alive) else {
                 targets.push(None);
                 continue;
             };
-            // never an ally: humans on the other side first, else any living enemy (bot-vs-bot)
-            let foe = |p: &PlayerView| p.id != b.id && !allied(me.team, p.team);
-            let human_foes: Vec<&PlayerView> = humans.iter().copied().filter(|p| foe(p)).collect();
-            let pool: Vec<&PlayerView> = if human_foes.is_empty() {
-                world.players.iter().filter(|p| p.alive && foe(p)).collect()
-            } else {
-                human_foes
-            };
-            let dist = |id: u16| pool.iter().find(|p| p.id == id).map(|p| (p.pos - me.pos).norm());
+            let pool: Vec<&PlayerView> = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
+            // wounded targets look closer: cost = distance scaled from 0.6x (nearly dead) to 1.0x (full health)
+            let cost = |p: &PlayerView| (p.pos - me.pos).norm() * (0.6 + 0.4 * p.hp_frac);
             let best = pool
                 .iter()
-                .map(|p| ((p.pos - me.pos).norm(), p.id))
+                .map(|p| (cost(p), p.id))
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let prev = self.sticky.iter().find(|s| s.0 == b.id).map(|s| s.1);
-            let pick = match (prev.and_then(|id| dist(id).map(|d| (d, id))), best) {
+            let prev_cost = prev.and_then(|id| pool.iter().find(|p| p.id == id).map(|p| (cost(p), id)));
+            let pick = match (prev_cost, best) {
                 (Some((dp, ip)), Some((db, _))) if db >= dp * self.cfg.target_stickiness => Some(ip),
                 (_, Some((_, ib))) => Some(ib),
                 _ => None,
