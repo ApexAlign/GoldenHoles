@@ -9,7 +9,7 @@ use crate::client_game::RenderView;
 use std::collections::HashMap;
 
 use crate::hud::{
-    GrappleHud,
+    BuildHud, BuildSlot, GrappleHud,
     bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
@@ -60,8 +60,12 @@ pub struct LockInfo {
 }
 
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
-pub const RADAR_RANGE: f32 = 40.0;
-pub const RADAR_ENEMY_RANGE: f32 = 12.0;
+pub const RADAR_RANGE: f32 = 60.0;
+pub const RADAR_ENEMY_RANGE: f32 = 20.0;
+/// Free-for-all match ends at this many kills (docs/DEMO.md) unless `HudBridge::kill_limit` says otherwise.
+pub const FFA_KILL_LIMIT: u16 = 15;
+/// Structures a player may own at once (`BlockCfg::max_per_owner`).
+pub const BUILD_MAX: u8 = 64;
 pub const RADAR_FIRE_SECS: f32 = 2.0;
 
 #[derive(Default)]
@@ -261,8 +265,21 @@ impl HudBridge {
         }
         hs.boot = self.boot;
         hs.ffa = teams.is_none();
-        hs.kill_limit = if teams.is_none() { self.kill_limit } else { None };
-        hs.build = self.build;
+        hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(FFA_KILL_LIMIT)) } else { None };
+        // build readout from the predicted ghost (an explicit `build` overrides it)
+        hs.build = self.build.or_else(|| {
+            let g = view.build_ghost?;
+            Some(BuildHud {
+                selected: match g.piece.kind {
+                    shinobi_sim::blocks::PieceKind::Floor => BuildSlot::Floor,
+                    shinobi_sim::blocks::PieceKind::Wall => BuildSlot::Wall,
+                },
+                ready: if g.ready { 1.0 } else { 0.0 },
+                placed: view.blocks.iter().filter(|bl| bl.owner == local_id).count().min(BUILD_MAX as usize) as u8,
+                max: BUILD_MAX,
+                ghost: Some(g.valid),
+            })
+        });
         // grapple readout from the predicted movement state (an explicit `grapple` overrides it)
         let gf = &view.fx;
         if gf.grapple_missed {
@@ -459,6 +476,7 @@ mod tests {
     fn free_for_all_gets_unique_colours_a_leaderboard_flag_and_passes_build_and_grapple_through() {
         use crate::colour::player_rgba as ffa_colour;
         use crate::hud::{BuildHud, BuildSlot};
+        
         let mut b = HudBridge::default();
         b.kill_limit = Some(25);
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
@@ -536,5 +554,24 @@ mod tests {
             b.update(0.016, &v, &net(), false);
         }
         assert!(!b.update(0.016, &v, &net(), false).grapple.unwrap().missed);
+    }
+
+    #[test]
+    fn build_readout_comes_from_the_predicted_ghost_and_owned_block_count() {
+        use crate::client_game::BuildGhost;
+        use shinobi_sim::blocks::{BlockInfo, Piece};
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        assert!(b.update(0.016, &v, &net(), false).build.is_none(), "no ghost, no readout");
+        v.build_ghost = Some(BuildGhost { cell: [0, 0, 0], piece: Piece::WALL_X, center: [0.0; 3], half: [1.0; 3], valid: false, ready: true });
+        v.blocks = vec![
+            BlockInfo { owner: 0, cell: [0, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },
+            BlockInfo { owner: 9, cell: [1, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },
+        ];
+        let s = b.update(0.016, &v, &net(), false);
+        let bh = s.build.expect("build readout");
+        assert_eq!((bh.selected, bh.ghost, bh.max), (BuildSlot::Wall, Some(false), 64));
+        assert_eq!(bh.placed, 1, "only our own pieces count (local id 0 offline)");
+        assert_eq!(s.kill_limit, Some(15), "ffa default limit");
     }
 }
