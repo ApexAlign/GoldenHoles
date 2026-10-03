@@ -68,6 +68,9 @@ pub struct Cfg {
     pub grapple_steer: f32,
     /// Cooldown after a miss (keeps E-spam from firing a ray and an event every tick).
     pub grapple_miss_cd: f32,
+    /// Speed ceiling while on the rope (and so on release): below a dash (30 m/s), so the rope never outruns the
+    /// fastest legal mover the anti-cheat and the interpolation are sized for, and swings stay readable.
+    pub grapple_max_speed: f32,
 }
 
 impl Default for Cfg {
@@ -122,6 +125,7 @@ impl Default for Cfg {
             grapple_lift: 3.0,
             grapple_steer: 0.35,
             grapple_miss_cd: 0.15,
+            grapple_max_speed: 28.0,
         }
     }
 }
@@ -839,6 +843,10 @@ impl CharacterSystem {
             if out > 0.0 {
                 self.vel += dir * out;
             }
+        }
+        let speed = self.vel.norm();
+        if speed > cfg.grapple_max_speed {
+            self.vel *= cfg.grapple_max_speed / speed;
         }
         self.grapple = Some(g);
     }
