@@ -130,8 +130,8 @@ impl Replicator {
             self.broadcast(ev);
         }
         // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
-        for (owner, cell) in server.blocks.iter() {
-            st.outbox.push(NetEvent::BlockPlaced { owner, cell });
+        for b in server.blocks.pieces() {
+            st.outbox.push(NetEvent::BlockPlaced { owner: b.owner, cell: b.cell, kind: b.piece.kind.id(), axis: b.piece.axis, scale_q: b.scale_q });
         }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
@@ -197,8 +197,11 @@ impl Replicator {
         use shinobi_sim::events::{BLOCK_REFUSED_BLOCKED, BLOCK_REFUSED_COOLDOWN, BLOCK_REFUSED_OCCUPIED};
         for ev in std::mem::take(&mut server.block_events) {
             match ev {
-                BlockEvent::Placed { owner, cell, .. } => self.broadcast(NetEvent::BlockPlaced { owner, cell }),
+                BlockEvent::Placed { owner, cell, piece, scale_q, .. } => {
+                    self.broadcast(NetEvent::BlockPlaced { owner, cell, kind: piece.kind.id(), axis: piece.axis, scale_q })
+                }
                 BlockEvent::Removed { cell, .. } => self.broadcast(NetEvent::BlockRemoved { cell }),
+                BlockEvent::DeRez { cell, .. } => self.broadcast(NetEvent::BlockDerez { cell }),
                 BlockEvent::Refused { owner, why, .. } => {
                     let why = match why {
                         PlaceError::Occupied => BLOCK_REFUSED_OCCUPIED,
@@ -726,12 +729,12 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let tick = s.tick;
-        s.blocks.place(&mut s.world, 1, [2, 0, 0], &[]).unwrap();
-        s.block_events.push(BlockEvent::Placed { tick, owner: 1, cell: [2, 0, 0] });
+        s.blocks.place(&mut s.world, 1, [2, 0, 0], shinobi_sim::blocks::Piece::WALL_Z, 16, 0, &[]).unwrap();
+        s.block_events.push(BlockEvent::Placed { tick, owner: 1, cell: [2, 0, 0], piece: shinobi_sim::blocks::Piece { kind: shinobi_sim::blocks::PieceKind::Wall, axis: 1 }, scale_q: 16 });
         s.block_events.push(BlockEvent::Refused { tick, owner: 1, why: PlaceError::Cooldown });
         s.block_events.push(BlockEvent::Removed { tick, cell: [9, 9, 9] });
         r.post_frame(&mut s);
-        let placed = NetEvent::BlockPlaced { owner: 1, cell: [2, 0, 0] };
+        let placed = NetEvent::BlockPlaced { owner: 1, cell: [2, 0, 0], kind: 1, axis: 1, scale_q: 16 };
         let builder = blocks_for(&mut r, &s, 1);
         assert!(builder.contains(&placed) && builder.contains(&NetEvent::BlockRemoved { cell: [9, 9, 9] }), "{builder:?}");
         assert!(builder.contains(&NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN }), "{builder:?}");
@@ -774,7 +777,7 @@ mod tests {
         // 400 blocks laid out far from the spawn ring before anyone connects
         for k in 0..400i32 {
             let cell = [-40 + k % 20, 0, 30 + k / 20];
-            s.blocks.place(&mut s.world, 1 + (k % 16) as u16, cell, &[]).unwrap();
+            s.blocks.place(&mut s.world, 1 + (k % 16) as u16, cell, shinobi_sim::blocks::Piece::FLOOR, 16, 0, &[]).unwrap();
         }
         let mut r = Replicator::new(&cfg, 1);
         for id in 1..=16u16 {
@@ -795,9 +798,9 @@ mod tests {
             if t % 6 == 0 {
                 // the field keeps growing: place + announce (as `Server::frame` does for a build press)
                 let cell = [-60 + (t / 6 % 40) as i32, 1, 30 + (t / 240) as i32];
-                if s.blocks.place(&mut s.world, 2, cell, &[]).is_ok() {
+                if s.blocks.place(&mut s.world, 2, cell, shinobi_sim::blocks::Piece::FLOOR, 16, 0, &[]).is_ok() {
                     let tick = s.tick;
-                    s.block_events.push(BlockEvent::Placed { tick, owner: 2, cell });
+                    s.block_events.push(BlockEvent::Placed { tick, owner: 2, cell, piece: shinobi_sim::blocks::Piece::FLOOR, scale_q: 16 });
                 }
             }
             for id in 1..=n_players {

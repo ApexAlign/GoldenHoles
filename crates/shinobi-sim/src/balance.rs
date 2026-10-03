@@ -71,6 +71,55 @@ pub struct CombatBalance {
     pub pickup_charge_secs: f32,
 }
 
+/// Player-built pieces (`blocks.rs`). The hook values are inert until the owner decides them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockBalance {
+    pub thickness: f32,
+    pub max_per_owner: u32,
+    pub range: f32,
+    pub cooldown_ticks: u32,
+    /// Damage a piece absorbs before it de-rezzes.
+    pub hp: f32,
+    /// Older = more durable: damage / (1 + this * age seconds). 0 = off.
+    pub age_bonus_per_sec: f32,
+    /// Size growth per owner kill. 0 = off.
+    pub scale_per_kill: f32,
+    /// Largest scale factor; 0 = uncapped.
+    pub scale_cap: f32,
+}
+
+impl Default for BlockBalance {
+    fn default() -> Self {
+        let c = crate::blocks::BlockCfg::default();
+        Self {
+            thickness: c.thickness,
+            max_per_owner: c.max_per_owner as u32,
+            range: c.range,
+            cooldown_ticks: c.cooldown_ticks,
+            hp: c.hp,
+            age_bonus_per_sec: c.age_bonus_per_sec,
+            scale_per_kill: c.scale_per_kill,
+            scale_cap: c.scale_cap,
+        }
+    }
+}
+
+impl BlockBalance {
+    pub fn cfg(&self) -> crate::blocks::BlockCfg {
+        crate::blocks::BlockCfg {
+            size: crate::blocks::BlockCfg::default().size,
+            thickness: self.thickness,
+            max_per_owner: self.max_per_owner as usize,
+            range: self.range,
+            cooldown_ticks: self.cooldown_ticks,
+            hp: self.hp,
+            age_bonus_per_sec: self.age_bonus_per_sec,
+            scale_per_kill: self.scale_per_kill,
+            scale_cap: self.scale_cap,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HazardBalance {
     pub obstacle_damage: f32,
@@ -157,6 +206,7 @@ pub struct Balance {
     pub player: PlayerBalance,
     pub combat: CombatBalance,
     pub hazards: HazardBalance,
+    pub blocks: BlockBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -209,6 +259,7 @@ impl Default for Balance {
                 ultimate_damage: 9999.0,
                 pickup_charge_secs: 20.0,
             },
+            blocks: BlockBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -460,6 +511,15 @@ impl Balance {
         s!("combat.ultimate_max_radius", F, self.combat.ultimate_max_radius);
         s!("combat.ultimate_damage", F, self.combat.ultimate_damage);
         s!("combat.pickup_charge_secs", F, self.combat.pickup_charge_secs);
+
+        s!("blocks.thickness", F, self.blocks.thickness);
+        s!("blocks.max_per_owner", U, self.blocks.max_per_owner);
+        s!("blocks.range", F, self.blocks.range);
+        s!("blocks.cooldown_ticks", U, self.blocks.cooldown_ticks);
+        s!("blocks.hp", F, self.blocks.hp);
+        s!("blocks.age_bonus_per_sec", F, self.blocks.age_bonus_per_sec);
+        s!("blocks.scale_per_kill", F, self.blocks.scale_per_kill);
+        s!("blocks.scale_cap", F, self.blocks.scale_cap);
 
         s!("hazards.obstacle_damage", F, self.hazards.obstacle_damage);
         s!("hazards.wall_damage", F, self.hazards.wall_damage);

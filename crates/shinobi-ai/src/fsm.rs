@@ -354,7 +354,7 @@ impl BotMem {
             aim_yaw: q_yaw(yaw),
             aim_pitch: q_pitch(pitch),
             ultimate: false,
-            build: false,
+            build: false, build_wall: false,
             zip: false,
         };
         // leaving Strike hands the ticket back

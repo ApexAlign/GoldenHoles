@@ -302,7 +302,8 @@ pub fn input(
         (k(KeyCode::KeyQ), Action::Roll),
         (k(KeyCode::KeyC), Action::Slide),
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
-        (k(KeyCode::KeyF), Action::Build),   // place a block at the ghost preview
+        (k(KeyCode::KeyN), Action::BuildFloor), // print a floor at the ghost preview (DESIGN.md)
+        (k(KeyCode::KeyM), Action::BuildWall),  // print a wall at the ghost preview
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (m(MouseButton::Left), Action::Slice),
         (m(MouseButton::Right), Action::Fire),

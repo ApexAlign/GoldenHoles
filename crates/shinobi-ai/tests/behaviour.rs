@@ -230,7 +230,7 @@ fn bots_get_past_a_player_built_block_wall_and_still_kill() {
         let mut b = Blocks::default();
         for z in -6..6 {
             for y in 0..3 {
-                b.place(&mut s.world, 1, [0, y, z], &[]).unwrap();
+                b.place(&mut s.world, 1, [0, y, z], shinobi_sim::blocks::Piece::WALL_X, 16, 0, &[]).unwrap();
             }
         }
         s.blocks = b;

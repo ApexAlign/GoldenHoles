@@ -258,6 +258,7 @@ impl Server {
             p.vitals.hp = p.vitals.hp.min(b.player.max_hp);
             p.combat.apply_balance(&b, &self.cfg);
         }
+        self.blocks.cfg = b.blocks.cfg();
         self.hazards.cfg.obstacle_damage = b.hazards.obstacle_damage;
         self.hazards.cfg.wall_damage = b.hazards.wall_damage;
         self.hazards.cfg.rearm_ticks = b.hazards.rearm_ticks;
@@ -488,7 +489,9 @@ impl Server {
                 let bodies: Vec<[f32; 3]> = self.players.iter().filter(|q| q.vitals.alive()).map(|q| q.pos(&self.world)).collect();
                 let f = aim.forward();
                 let skip = self.players[i].ch.body;
-                self.blocks.try_build(&mut self.world, tick, id, [origin.x, origin.y, origin.z], [f.x, f.y, f.z], skip, &bodies, &mut self.block_events);
+                let kind = if it.build_wall { crate::blocks::PieceKind::Wall } else { crate::blocks::PieceKind::Floor };
+                let kills = self.players[i].vitals.kills as u32;
+                self.blocks.try_build(&mut self.world, tick, id, kind, kills, [origin.x, origin.y, origin.z], [f.x, f.y, f.z], skip, &bodies, &mut self.block_events);
                 self.world.queries.update(&self.world.colliders);
             }
 

@@ -71,6 +71,13 @@ pub struct Cfg {
     /// Speed ceiling while on the rope (and so on release): below a dash (30 m/s), so the rope never outruns the
     /// fastest legal mover the anti-cheat and the interpolation are sized for, and swings stay readable.
     pub grapple_max_speed: f32,
+    /// Reel pull ramps from 35 % to 100 % over this many seconds after hooking.
+    pub grapple_ease_in: f32,
+    /// Closing speed allowed right at the release radius; it widens linearly to `grapple_speed` over `grapple_soft_dist`.
+    pub grapple_arrive_speed: f32,
+    pub grapple_soft_dist: f32,
+    /// Braking (m/s^2) applied when closing faster than the soft-arrival cap.
+    pub grapple_brake: f32,
 }
 
 impl Default for Cfg {
@@ -126,6 +133,10 @@ impl Default for Cfg {
             grapple_steer: 0.35,
             grapple_miss_cd: 0.15,
             grapple_max_speed: 28.0,
+            grapple_ease_in: 0.25,
+            grapple_arrive_speed: 14.0,
+            grapple_soft_dist: 6.0,
+            grapple_brake: 70.0,
         }
     }
 }
@@ -831,8 +842,16 @@ impl CharacterSystem {
         }
         let dir = to / d;
         let along = self.vel.dot(&dir);
-        if along < cfg.grapple_speed {
-            self.vel += dir * (cfg.grapple_accel * dt).min(cfg.grapple_speed - along);
+        // ease-in: the first 0.25 s of the reel pulls at 35 % -> 100 %, so the hook yanks instead of slamming
+        let ease = (0.35 + 0.65 * g.time / cfg.grapple_ease_in).min(1.0);
+        // soft arrival: inside `grapple_soft_dist` of the release radius the closing speed is eased down so the player
+        // is not driven into the surface at full reel speed (momentum past a free-hanging anchor still carries)
+        let near = (d - cfg.grapple_arrive).max(0.0);
+        let cap_near = cfg.grapple_arrive_speed + near * (cfg.grapple_speed - cfg.grapple_arrive_speed) / cfg.grapple_soft_dist;
+        if along > cap_near {
+            self.vel -= dir * (cfg.grapple_brake * dt).min(along - cap_near);
+        } else if along < cfg.grapple_speed {
+            self.vel += dir * (cfg.grapple_accel * ease * dt).min(cfg.grapple_speed - along);
             // a reeling rope carries the weight: cancel this tick's gravity so shallow shots still lift the player
             self.vel.y += cfg.gravity * dt;
         }

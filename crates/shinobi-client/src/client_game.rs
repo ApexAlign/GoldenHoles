@@ -25,7 +25,7 @@ use shinobi_proto::quant::{dq_pitch, dq_yaw};
 use shinobi_proto::quant::dq_vel;
 use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
-use shinobi_sim::blocks::{BlockCfg, BlockEvent, Blocks};
+use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceKind, SCALE_ONE};
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
@@ -59,8 +59,10 @@ pub enum Action {
     Slide,
     /// Wrist grapple: fire at the crosshair, press again to release (one-tick edge on the `zip` wire bit).
     Grapple,
-    /// Place a block where the ghost preview points (one-tick edge on the `build` wire bit).
-    Build,
+    /// Print a floor where the ghost preview points (`N`; one-tick edge on the `build` wire bit).
+    BuildFloor,
+    /// Print a wall where the ghost preview points (`M`; `build` edge + `build_wall`).
+    BuildWall,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -142,20 +144,24 @@ const BLOCK_PENDING_TICKS: u32 = 45;
 impl Predicted {
     /// Make `blocks` (the server's live set) the colliders of the predicted world; our own recent unconfirmed
     /// placements stay until the server confirms them or `BLOCK_PENDING_TICKS` pass.
-    fn sync_blocks(&mut self, want: &[(u16, [i32; 3])], tick: u32) {
+    fn sync_blocks(&mut self, want: &[BlockInfo], tick: u32) {
         let mut changed = false;
-        for (owner, cell) in want {
-            if self.blocks.is_free(*cell) && self.blocks.place(&mut self.world, *owner, *cell, &[]).is_ok() {
-                changed = true;
+        for b in want {
+            let same = self.blocks.pieces().into_iter().any(|p| p.cell == b.cell && p.piece == b.piece && p.scale_q == b.scale_q);
+            if same {
+                continue;
             }
+            // a predicted piece that the server placed differently (kind / scale) is replaced by the server's
+            changed |= self.blocks.remove(&mut self.world, b.cell);
+            changed |= self.blocks.place(&mut self.world, b.owner, b.cell, b.piece, b.scale_q, tick, &[]).is_ok();
         }
-        self.block_pending.retain(|(cell, t)| tick.wrapping_sub(*t) < BLOCK_PENDING_TICKS && !want.iter().any(|(_, c)| c == cell));
+        self.block_pending.retain(|(cell, t)| tick.wrapping_sub(*t) < BLOCK_PENDING_TICKS && !want.iter().any(|b| b.cell == *cell));
         let stale: Vec<[i32; 3]> = self
             .blocks
             .iter()
             .into_iter()
             .map(|(_, c)| c)
-            .filter(|c| !want.iter().any(|(_, w)| w == c) && !self.block_pending.iter().any(|(p, _)| p == c))
+            .filter(|c| !want.iter().any(|b| b.cell == *c) && !self.block_pending.iter().any(|(p, _)| p == c))
             .collect();
         for cell in stale {
             changed |= self.blocks.remove(&mut self.world, cell);
@@ -166,12 +172,13 @@ impl Predicted {
     }
 
     /// The build press, run through the same `Blocks::try_build` the server uses.
-    fn predict_build(&mut self, owner: u16, tick: u32, aim: &CombatAim) {
+    fn predict_build(&mut self, owner: u16, tick: u32, kind: PieceKind, aim: &CombatAim) {
         self.world.queries.update(&self.world.colliders);
         let f = aim.forward();
         let mut ev = Vec::new();
         let body = self.ch.body;
-        self.blocks.try_build(&mut self.world, tick, owner, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], body, &[self.pos], &mut ev);
+        // kills only scale pieces (a hook, 0 by default); the server's value arrives with the confirming BlockPlaced
+        self.blocks.try_build(&mut self.world, tick, owner, kind, 0, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], body, &[self.pos], &mut ev);
         for e in ev {
             if let BlockEvent::Placed { cell, .. } = e {
                 self.block_pending.push((cell, tick));
@@ -181,12 +188,14 @@ impl Predicted {
     }
 
     /// Where a press would place a block right now, and whether it would be accepted.
-    fn build_ghost(&mut self, owner: u16, tick: u32, aim: &CombatAim) -> BuildGhost {
+    fn build_ghost(&mut self, owner: u16, tick: u32, kind: PieceKind, aim: &CombatAim) -> BuildGhost {
         self.world.queries.update(&self.world.colliders);
         let f = aim.forward();
         let cell = self.blocks.target_cell(&self.world, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], self.ch.body);
         let valid = self.blocks.is_free(cell) && !self.blocks.overlaps_player(cell, &[self.pos]);
-        BuildGhost { cell, center: self.blocks.center(cell), valid, ready: self.blocks.ready(owner, tick) }
+        let piece = Piece::for_press(kind, [f.x, f.y, f.z]);
+        let (center, half) = self.blocks.geometry(cell, piece, SCALE_ONE);
+        BuildGhost { cell, piece, center, half, valid, ready: self.blocks.ready(owner, tick) }
     }
 
     fn step(&mut self, input: &PlayerInput) -> [f32; 3] {
@@ -290,7 +299,10 @@ pub struct LocalFx {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildGhost {
     pub cell: [i32; 3],
+    pub piece: Piece,
+    /// Slab centre and half extents (draw a box of 2 * half at center).
     pub center: [f32; 3],
+    pub half: [f32; 3],
     pub valid: bool,
     pub ready: bool,
 }
@@ -332,9 +344,11 @@ pub struct RenderView {
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
     pub build_ghost: Option<BuildGhost>,
     /// Every live block as `(owner, cell)`; centre = `(cell + 0.5) * block_size`. Server-confirmed plus our own pending.
-    pub blocks: Vec<(u16, [i32; 3])>,
-    /// Edge length of a block, metres.
+    pub blocks: Vec<BlockInfo>,
+    /// Edge length of a block cell, metres. Slab geometry: `block_geometry`.
     pub block_size: f32,
+    /// Slab thickness, metres.
+    pub block_thickness: f32,
 }
 
 impl RenderView {
@@ -357,7 +371,10 @@ pub struct ClientGame {
     level: LevelDesc,
     latch: ButtonLatch,
     zip_edge: bool,
-    build_edge: bool,
+    /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
+    build_edge: Option<PieceKind>,
+    /// Piece the ghost previews: the one last printed (floor until the first press).
+    build_sel: PieceKind,
     /// Tick of the newest intent sent (cooldown readiness for the ghost).
     last_input_tick: u32,
     touch: TouchController,
@@ -387,7 +404,8 @@ impl ClientGame {
             level,
             latch: ButtonLatch::default(),
             zip_edge: false,
-            build_edge: false,
+            build_edge: None,
+            build_sel: PieceKind::Floor,
             last_input_tick: 0,
             touch: TouchController::new(1280.0, 90.0),
             pred: None,
@@ -412,7 +430,15 @@ impl ClientGame {
             Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
-            Action::Build => self.build_edge |= e.down,
+            Action::BuildFloor if e.down => {
+                self.build_edge = Some(PieceKind::Floor);
+                self.build_sel = PieceKind::Floor;
+            }
+            Action::BuildWall if e.down => {
+                self.build_edge = Some(PieceKind::Wall);
+                self.build_sel = PieceKind::Wall;
+            }
+            Action::BuildFloor | Action::BuildWall => {}
         }
     }
 
@@ -566,7 +592,9 @@ impl ClientGame {
         let tick = self.net.pace_tick(local_tick, self.cfg.lead_ticks)?;
         let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
         intent.zip = std::mem::take(&mut self.zip_edge);
-        intent.build = std::mem::take(&mut self.build_edge);
+        let press = self.build_edge.take();
+        intent.build = press.is_some();
+        intent.build_wall = press == Some(PieceKind::Wall);
         self.last_input_tick = tick;
         let own_id_for_blocks = self.net.player_id().unwrap_or(0);
 
@@ -574,10 +602,10 @@ impl ClientGame {
             Some(p) => {
                 // blocks before anything moves: the world this tick collides with = the server's blocks + our own unconfirmed ones
                 let my_id = own_id_for_blocks;
-                p.sync_blocks(&self.net.blocks(), tick);
-                if intent.build {
+                p.sync_blocks(&self.net.block_pieces(), tick);
+                if let Some(kind) = press {
                     let aim = CombatAim { origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]], yaw: dq_yaw(intent.aim_yaw), pitch: dq_pitch(intent.aim_pitch) };
-                    p.predict_build(my_id, tick, &aim);
+                    p.predict_build(my_id, tick, kind, &aim);
                 }
                 // combat first, like the server: cosmetics + cooldown mirror (lunge is not applied, see Predicted)
                 let mut ev = Vec::new();
@@ -730,9 +758,9 @@ impl ClientGame {
                     yaw: self.aim.yaw,
                     pitch: self.aim.pitch,
                 };
-                (Some(p.build_ghost(id, self.last_input_tick, &aim)), p.blocks.iter())
+                (Some(p.build_ghost(id, self.last_input_tick, self.build_sel, &aim)), p.blocks.pieces())
             }
-            _ => (None, self.net.blocks()),
+            _ => (None, self.net.block_pieces()),
         };
         let (camera, weapon) = self.pose;
         let eye = local_pos.map_or([0.0; 3], |p| [p[0], p[1] + self.cfg.sim.eye_above_center + camera.y_offset, p[2]]);
@@ -755,6 +783,7 @@ impl ClientGame {
             build_ghost,
             blocks,
             block_size: BlockCfg::default().size,
+            block_thickness: BlockCfg::default().thickness,
             aim: self.aim,
             discs,
             rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),

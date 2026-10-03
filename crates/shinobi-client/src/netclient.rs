@@ -17,6 +17,7 @@ use shinobi_proto::intent::{ClientPacket, PlayerIntent, MAX_REDUNDANCY};
 use shinobi_proto::quant::dq_pos3;
 use shinobi_proto::snapshot::decode_delta;
 use shinobi_proto::TICK_HZ;
+use shinobi_sim::blocks::{BlockInfo, Piece, PieceKind};
 use shinobi_sim::events::{EventInbox, NetEvent};
 use shinobi_sim::own_state::OwnState;
 
@@ -55,7 +56,7 @@ pub struct NetClient {
     team_score: [u16; 2],
     team_result: u8,
     /// Live player-built blocks: grid cell -> owner id (from `BlockPlaced` / `BlockRemoved`).
-    blocks: HashMap<[i32; 3], u16>,
+    blocks: HashMap<[i32; 3], (u16, Piece, u8)>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -214,10 +215,10 @@ impl NetClient {
                 NetEvent::TeamAssign { player, team } => {
                     self.teams.insert(player, team);
                 }
-                NetEvent::BlockPlaced { owner, cell } => {
-                    self.blocks.insert(cell, owner);
+                NetEvent::BlockPlaced { owner, cell, kind, axis, scale_q } => {
+                    self.blocks.insert(cell, (owner, Piece { kind: PieceKind::from_id(kind), axis }, scale_q));
                 }
-                NetEvent::BlockRemoved { cell } => {
+                NetEvent::BlockRemoved { cell } | NetEvent::BlockDerez { cell } => {
                     self.blocks.remove(&cell);
                 }
                 NetEvent::TeamScore { score, result, .. } => {
@@ -312,8 +313,15 @@ impl NetClient {
 
     /// Live blocks as `(owner, cell)`, sorted by cell. Centre = `(cell + 0.5) * block size` (size 1.0 by default).
     pub fn blocks(&self) -> Vec<(u16, [i32; 3])> {
-        let mut v: Vec<_> = self.blocks.iter().map(|(c, o)| (*o, *c)).collect();
+        let mut v: Vec<_> = self.blocks.iter().map(|(c, (o, _, _))| (*o, *c)).collect();
         v.sort_by_key(|&(_, c)| c);
+        v
+    }
+
+    /// Live pieces with kind and scale, sorted by cell (what the shell draws and the predicted world collides with).
+    pub fn block_pieces(&self) -> Vec<BlockInfo> {
+        let mut v: Vec<_> = self.blocks.iter().map(|(c, (o, p, s))| BlockInfo { owner: *o, cell: *c, piece: *p, scale_q: *s }).collect();
+        v.sort_by_key(|b| b.cell);
         v
     }
 
@@ -490,9 +498,9 @@ mod tests {
         let mut c = NetClient::default();
         welcome(&mut c, 1, 0);
         let mut ob = EventOutbox::default();
-        ob.push(NetEvent::BlockPlaced { owner: 2, cell: [1, 0, 0] });
-        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [0, 0, 5] });
-        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [1, 0, 0] }); // re-sent catch-up: same cell, idempotent
+        ob.push(NetEvent::BlockPlaced { owner: 2, cell: [1, 0, 0], kind: 0, axis: 0, scale_q: 16 });
+        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [0, 0, 5], kind: 1, axis: 1, scale_q: 16 });
+        ob.push(NetEvent::BlockPlaced { owner: 1, cell: [1, 0, 0], kind: 0, axis: 0, scale_q: 16 }); // re-sent catch-up: same cell, idempotent
         ob.push(NetEvent::BlockRemoved { cell: [0, 0, 5] });
         let mut w = BitWriter::new();
         ob.write_pending(&mut w, 480);

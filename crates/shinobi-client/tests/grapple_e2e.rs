@@ -259,7 +259,7 @@ fn report(name: &str, o: &Out) {
 fn clean_link_grapple_prediction_is_exact() {
     let o = run_ex(0.0, 0.0, 0.0, 1, 1500, true, ClientGameCfg::default().lead_ticks);
     report("clean", &o);
-    assert!(o.attaches >= 6 && o.releases >= 6, "the bot must actually grapple: {o:?}");
+    assert!(o.attaches >= 4 && o.releases >= 4, "the bot must actually grapple: {o:?}");
     assert!(o.server_grapple_ticks > 100, "server saw the rope");
     assert!(o.max() < 0.02, "max err {}", o.max());
     assert_eq!(o.corrections, 0, "no corrections on a clean link");

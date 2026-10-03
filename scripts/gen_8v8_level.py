@@ -82,13 +82,13 @@ section("central spine lane: 5.8 m between faces, 5 m tall", [
     box((-3.4, 2.5, 0), (0.5, 2.5, 12)),
 ], mirror_z=False)
 
-# --- contested centre: two towers (tiers 1.2 / 2.4 / 3.6, then a 7.2 m pillar only the grapple reaches) ---
+# --- contested centre: two towers (tiers 1.2 / 2.4 / 3.6, then a 6.6 m pillar only the grapple reaches) ---
 RAMP = 0.35
-section("centre towers at x=+-16: tier tops 1.2, 2.4, 3.6; pillar top 7.2 (grapple); 20 deg ramps on the spine side", [
+section("centre towers at x=+-16: tier tops 1.2, 2.4, 3.6; pillar top 6.6 (grapple); 20 deg ramps on the spine side", [
     box((16, 0.6, 0), (7, 0.6, 7)),
     box((16, 1.8, 0), (4.5, 0.6, 4.5)),
     box((16, 3.0, 0), (2.5, 0.6, 2.5)),
-    box((16, 5.4, 0), (1.2, 1.8, 1.2)),
+    box((16, 5.1, 0), (1.5, 1.5, 1.5)),
     box((16 - 7 - 1.7498 * math.cos(RAMP), 0.4591, 0), (1.7498, 0.15, 3), RAMP),
 ], mirror_z=False, mirror_x=True)
 
@@ -119,7 +119,7 @@ for sx in (-1, 1):
     for sz in (-1, 1):
         pickups.append((sx * 53.5, 4.6, sz * 14, 20))
     pickups.append((sx * 30.1, 1.0, 0, 20))
-    pickups.append((sx * 16, 8.2, 0, 30))
+    pickups.append((sx * 16, 7.6, 0, 30))
 
 def main():
     lines = [
