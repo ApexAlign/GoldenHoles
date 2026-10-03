@@ -137,6 +137,14 @@ fn update(
         }
     }
 
+    // own grapple that hit nothing: fizzle at the wrist, a little way along the aim
+    if view.0.fx.grapple_missed {
+        let (yaw, pitch) = view.0.look_angles();
+        let fwd = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0) * Vec3::NEG_Z;
+        let eye = Vec3::from(view.0.eye);
+        impacts.0.push(Impact { pos: hand_from(eye, eye + fwd * 10.0) + fwd * 0.3, color: local.0, kind: ImpactKind::Fizzle });
+    }
+
     for (id, cur, team) in now {
         if cur.is_none() && !ropes.slots.contains_key(&id) {
             continue;
@@ -150,7 +158,7 @@ fn update(
         });
         // edges: attach flash at the anchor (shooter's team colour), release snap
         match (slot.last, cur) {
-            (None, Some((_, a))) => impacts.0.push(Impact { pos: a, color: team, kind: ImpactKind::Gone }),
+            (None, Some((_, a))) => impacts.0.push(Impact { pos: a, color: team, kind: ImpactKind::Anchor }),
             (Some((a, e)), None) => slot.snap = Some((0.0, a, e)),
             _ => {}
         }
