@@ -73,7 +73,7 @@ very first Bevy game build compiles hundreds of crates and takes several minutes
 
 - Free-for-all: no teams, anyone can hurt anyone; your colour is derived from your player id. A match starts after a
   short warmup (one player is enough). Default rules (the demo preset): 100 hp,
-  respawn in 3 s with brief spawn protection, katana kills in 2 hits, first to 15 kills or 8 minutes wins,
+  respawn in 3 s with brief spawn protection, katana kills in 2 hits, first to 10 kills or 6 minutes wins,
   8 s intermission, then the next round.
 - Grid-beam cubes (glowing pickups) respawn after 20 s. Fall off the map and you die (kill plane).
 - The server console prints a kill feed (`KILL p3 sliced p7`), match flow and a stats line every 10 s.

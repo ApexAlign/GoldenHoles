@@ -37,7 +37,7 @@ KILLS=$(grep -c 'KILL ' "$TMP/server.log" || true)
 STARTED=$(grep -c 'MATCH   START' "$TMP/server.log" || true)
 RATE_BAD=$(grep '^stats:' "$TMP/server.log" | sed -n 's/.* hz=\([0-9.]*\) .*/\1/p' | awk '$1 < 59.4 || $1 > 60.6 { bad=1 } END { print bad+0 }')
 echo; echo "---- fight ----"
-echo "kills: $KILLS   matches started: $STARTED   (a free-for-all with bots must produce kills; a match ends at 15 kills or 8 minutes)"
+echo "kills: $KILLS   matches started: $STARTED   (a free-for-all with bots must produce kills; a match ends at 10 kills or 6 minutes)"
 if [ "$AI" -gt 0 ] && [ "${SECS}" -ge 30 ] && { [ "$KILLS" -eq 0 ] || [ "$STARTED" -eq 0 ]; }; then
   echo; echo "FAIL: no match started or nobody died in ${SECS}s with $AI bots"
   exit 1

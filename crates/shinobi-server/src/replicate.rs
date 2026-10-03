@@ -782,7 +782,12 @@ mod tests {
         use shinobi_sim::character::GrappleState;
         use shinobi_sim::events::EventInbox;
         let cfg = Cfg::default();
-        let mut s = crate::setup::Setup::standard().build(cfg); // free-for-all, the demo mode
+        // free-for-all, the demo mode; SOAK_LEVEL=levels/ffa.lvl measures a real map instead of the built-in arena
+        let setup = match std::env::var("SOAK_LEVEL") {
+            Ok(path) => crate::setup::Setup::load(std::path::Path::new(&path)).expect("SOAK_LEVEL loads"),
+            Err(_) => crate::setup::Setup::standard(),
+        };
+        let mut s = setup.build(cfg);
         for id in 1..=16u16 {
             let at = s.pick_spawn(None);
             s.add_player(id, at);
