@@ -232,6 +232,8 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
+            CombatEvent::SlashHit { .. } | CombatEvent::SlashMiss { .. } => {} // Graphics: hit flash / whiff arc hook
+            CombatEvent::PieceHit { .. } => {} // server-side damage to a piece; its de-rez arrives as NetEvent::BlockDerez
             CombatEvent::RicochetHit { .. } => {} // medal bookkeeping only; the Damage event right after drives the FX
             CombatEvent::ShurikenGone { pos } => {
                 let mut em = self.mk(EmitterKind::HitSpark, p.cyan, 2.0);

@@ -15,7 +15,7 @@
 //! character is restored to the server's state and the buffered intents are replayed. The drawn position is
 //! `simulated + visual_offset`, which decays to zero, so a correction never pops on screen.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use shinobi_proto::bits::DecodeResult;
 use shinobi_proto::datagram::KickReason;
@@ -25,11 +25,13 @@ use shinobi_proto::quant::{dq_pitch, dq_yaw};
 use shinobi_proto::quant::dq_vel;
 use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
+use shinobi_sim::balance::FeedbackBalance;
+use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
 use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceKind, SCALE_ONE};
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
-use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_PLAYER};
+use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_HITBOX, GROUP_MELEE, GROUP_PLAYER, GROUP_PROJECTILE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::level::LevelDesc;
 use shinobi_sim::movement::{refresh_solid, step_player_with};
@@ -101,6 +103,9 @@ pub struct ClientGameCfg {
     pub lead_ticks: u32,
     /// Look sensitivity, radians per device unit.
     pub rad_per_unit: f32,
+    /// Hit-stop after a katana hit / kill, seconds (Balance `feedback.hitstop_*`). Client-only: the sim never pauses.
+    pub hitstop_slash: f32,
+    pub hitstop_kill: f32,
 }
 
 impl Default for ClientGameCfg {
@@ -110,6 +115,8 @@ impl Default for ClientGameCfg {
             camera: FpsCameraCfg::default(),
             lead_ticks: 8,
             rad_per_unit: 0.0022,
+            hitstop_slash: FeedbackBalance::default().hitstop_slash_ms / 1000.0,
+            hitstop_kill: FeedbackBalance::default().hitstop_kill_ms / 1000.0,
         }
     }
 }
@@ -136,6 +143,9 @@ struct Predicted {
     blocks: Blocks,
     /// Blocks placed locally and not yet confirmed by the server: `(cell, local tick placed)`.
     block_pending: Vec<([i32; 3], u32)>,
+    /// Sensor hitboxes standing in for the other players (placed at where our screen shows them), so the
+    /// predicted combat finds the same lock-on target the server will.
+    proxies: HashMap<EntityId, ColliderHandle>,
 }
 
 /// Unconfirmed predicted blocks older than this many ticks are dropped (the server refused them).
@@ -169,6 +179,35 @@ impl Predicted {
         if changed {
             self.world.queries.update(&self.world.colliders);
         }
+    }
+
+    /// Move/create/remove the remote players' proxy hitboxes. Returns the proxies of teammates (never targeted).
+    fn sync_proxies(&mut self, cfg: &Cfg, remotes: &[(EntityId, [f32; 3], bool)]) -> Vec<ColliderHandle> {
+        let gone: Vec<EntityId> = self.proxies.keys().copied().filter(|id| !remotes.iter().any(|r| r.0 == *id)).collect();
+        for id in gone {
+            if let Some(h) = self.proxies.remove(&id) {
+                self.world.colliders.remove(h, &mut self.world.islands, &mut self.world.bodies, false);
+            }
+        }
+        let mut allies = Vec::new();
+        for (id, pos, ally) in remotes {
+            let h = *self.proxies.entry(*id).or_insert_with(|| {
+                self.world.colliders.insert(
+                    ColliderBuilder::capsule_y(cfg.half_height, cfg.radius)
+                        .sensor(true)
+                        .collision_groups(InteractionGroups::new(GROUP_HITBOX, GROUP_PROJECTILE | GROUP_MELEE))
+                        .user_data(*id as u128)
+                        .build(),
+                )
+            });
+            if let Some(col) = self.world.colliders.get_mut(h) {
+                col.set_position(Isometry::translation(pos[0], pos[1], pos[2]));
+            }
+            if *ally {
+                allies.push(h);
+            }
+        }
+        allies
     }
 
     /// The build press, run through the same `Blocks::try_build` the server uses.
@@ -247,6 +286,13 @@ pub struct PredictedSlash {
     pub flip: bool,
 }
 
+/// A predicted katana hit.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct PredictedSlashHit {
+    pub point: [f32; 3],
+    pub killed: bool,
+}
+
 /// Local-player effects state for the shell's particles, audio and viewmodel.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct LocalFx {
@@ -276,6 +322,14 @@ pub struct LocalFx {
     /// shell should cut, not slide, camera effects.
     pub teleported: bool,
     pub slash: Option<PredictedSlash>,
+    /// The predicted katana swing connected: where, and whether it killed (client-side prediction: the server's
+    /// kill arrives as a kill event; this is never `killed` on its own).
+    pub slash_hit: Option<PredictedSlashHit>,
+    /// The predicted swing found nothing: play the whiff.
+    pub slash_miss: bool,
+    /// Freeze the viewmodel / shake the camera this long (seconds) after a confirmed katana hit. Client-only: the
+    /// sim never pauses. Longest request in the interval.
+    pub hit_stop: f32,
     /// Shuriken thrown this interval: its direction.
     pub threw: Option<[f32; 3]>,
     // -- wrist grapple --
@@ -292,6 +346,21 @@ pub struct LocalFx {
     pub grapple_released: bool,
     /// Fired at nothing hookable this interval ('no target' fizzle).
     pub grapple_missed: bool,
+}
+
+/// The lock-on state for the shell: three dots on `pos` that converge as `progress` goes 0 -> 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LockOn {
+    /// Player id of the target (`RenderView.remotes` key).
+    pub target: EntityId,
+    /// Aim point (chest) in world space.
+    pub pos: [f32; 3],
+    /// 0..=1. Rises over `combat.lock_secs` while the target stays in the cone; fades to 0 during `Break`.
+    pub progress: f32,
+    /// Progress reached 1 and the target is still held.
+    pub locked: bool,
+    /// `Acquire` (dots converge), `Locked` (snap + pulse), `Break` (scatter / fade).
+    pub phase: LockPhase,
 }
 
 /// Block placement preview for the shell: draw a translucent cube at `center` (cyan when `valid`, red otherwise);
@@ -339,10 +408,16 @@ pub struct RenderView {
     pub aim: Aim,
     /// Shurikens in flight: world position, direction (own from prediction, others from the snapshot).
     pub discs: Vec<([f32; 3], [f32; 3])>,
+    /// Owner player id of each entry in `discs` (same index), for per-player colours. 0 = unknown.
+    pub disc_owners: Vec<u16>,
     /// Own wrist-grapple rope as (hand/eye, anchor) while attached, from the prediction.
     pub rope: Option<([f32; 3], [f32; 3])>,
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
     pub build_ghost: Option<BuildGhost>,
+    /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
+    pub lock: Option<LockOn>,
+    /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
+    pub lock_edges: Vec<LockEdge>,
     /// Every live block as `(owner, cell)`; centre = `(cell + 0.5) * block_size`. Server-confirmed plus our own pending.
     pub blocks: Vec<BlockInfo>,
     /// Edge length of a block cell, metres. Slab geometry: `block_geometry`.
@@ -377,6 +452,8 @@ pub struct ClientGame {
     build_sel: PieceKind,
     /// Tick of the newest intent sent (cooldown readiness for the ghost).
     last_input_tick: u32,
+    /// Lock-on edges (acquire / lock / break) since the previous `view()`.
+    lock_edges: Vec<LockEdge>,
     touch: TouchController,
     pred: Option<Predicted>,
     /// Intents sent before the predictor has an authoritative starting state; replayed once it has.
@@ -407,6 +484,7 @@ impl ClientGame {
             build_edge: None,
             build_sel: PieceKind::Floor,
             last_input_tick: 0,
+            lock_edges: Vec::new(),
             touch: TouchController::new(1280.0, 90.0),
             pred: None,
             pending: VecDeque::new(),
@@ -550,6 +628,7 @@ impl ClientGame {
             // the server evicts at its cap and says so (BlockRemoved): never evict locally on our own
             blocks: Blocks::new(BlockCfg { max_per_owner: usize::MAX, ..BlockCfg::default() }),
             block_pending: Vec::new(),
+            proxies: HashMap::new(),
         };
         // catch up: every intent already sent after the acked tick
         let replay: Vec<_> = self.pending.drain(..).filter(|i| i.tick > ack.tick).collect();
@@ -613,10 +692,24 @@ impl ClientGame {
                 // combat first, like the server: cosmetics + cooldown mirror (lunge is not applied, see Predicted)
                 let mut ev = Vec::new();
                 let mut sink = to_player_input(&intent);
-                let pressed = intent.buttons.has(Buttons::FIRE) || intent.buttons.has(Buttons::SLICE) || intent.ultimate;
-                if pressed || p.combat.busy() {
-                    p.world.queries.update(&p.world.colliders); // only combat reads it; idle ticks skip the rebuild
-                }
+                // the other players as our screen shows them: the lock-on (and the assisted throw) read these, so the
+                // predictor finds the same target as the server's rewound hitboxes
+                let own_id = self.net.player_id();
+                let my_team = self.net.my_team();
+                let remotes: Vec<(EntityId, [f32; 3], bool)> = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
+                    (Some(rt), Some(newest)) => newest
+                        .entities
+                        .iter()
+                        .filter(|(id, _)| Some(*id) != own_id && *id < PROJECTILE_ID_BASE)
+                        .filter_map(|(id, _)| {
+                            let ally = my_team.is_some() && self.net.team_of(*id) == my_team;
+                            self.net.interp.sample(*id, rt).map(|s| (*id, s.pos, ally))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                p.combat.allies = p.sync_proxies(&self.cfg.sim, &remotes);
+                p.world.queries.update(&p.world.colliders); // combat now runs every tick (lock-on tracks the cone continuously)
                 let aim = CombatAim {
                     origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
                     yaw: dq_yaw(intent.aim_yaw),
@@ -637,6 +730,9 @@ impl ClientGame {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
+                if let Some(edge) = p.combat.lock_edge {
+                    self.lock_edges.push(edge);
+                }
                 let vy_before = p.ch.vel.y; // fall speed for the landing dip (the controller zeroes it on landing)
                 let pos = p.step(&sink);
                 p.sim_local = local_tick;
@@ -660,6 +756,12 @@ impl ClientGame {
                             self.throw_cd_left = ShurikenCfg::default().cooldown;
                             self.fx_edges.threw = Some([dir.x, dir.y, dir.z]);
                         }
+                        CombatEvent::SlashHit { point, killed, .. } => {
+                            self.fx_edges.slash_hit = Some(PredictedSlashHit { point: [point.x, point.y, point.z], killed });
+                            let stop = if killed { self.cfg.hitstop_kill } else { self.cfg.hitstop_slash };
+                            self.fx_edges.hit_stop = self.fx_edges.hit_stop.max(stop);
+                        }
+                        CombatEvent::SlashMiss { .. } => self.fx_edges.slash_miss = true,
                         CombatEvent::Recoil { pitch_deg, .. } => self.camera.fire_kick(pitch_deg.to_radians(), 0.02),
                         _ => {}
                     }
@@ -716,11 +818,13 @@ impl ClientGame {
         };
         // other players' shurikens ride in the snapshot; our own are drawn from the prediction (no latency)
         let mut discs: Vec<([f32; 3], [f32; 3])> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles());
+        let mut disc_owners: Vec<u16> = vec![own_id.unwrap_or(0); discs.len()];
         if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
             for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && Some(st.yaw) != own_id) {
                 if let Some(s) = self.net.interp.sample(*id, rt) {
                     let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
                     discs.push((s.pos, v));
+                    disc_owners.push(st.yaw);
                 }
             }
         }
@@ -765,6 +869,16 @@ impl ClientGame {
             }
             _ => (None, self.net.block_pieces()),
         };
+        let lock = self.pred.as_ref().and_then(|p| {
+            let l = &p.combat.lock;
+            (l.phase != LockPhase::Search).then(|| LockOn {
+                target: l.target_id as EntityId,
+                pos: l.pos,
+                progress: l.progress,
+                locked: l.phase == LockPhase::Locked,
+                phase: l.phase,
+            })
+        });
         let (camera, weapon) = self.pose;
         let eye = local_pos.map_or([0.0; 3], |p| [p[0], p[1] + self.cfg.sim.eye_above_center + camera.y_offset, p[2]]);
         RenderView {
@@ -784,11 +898,14 @@ impl ClientGame {
             remotes,
             events: self.net.take_events(),
             build_ghost,
+            lock,
+            lock_edges: std::mem::take(&mut self.lock_edges),
             blocks,
             block_size: BlockCfg::default().size,
             block_thickness: BlockCfg::default().thickness,
             aim: self.aim,
             discs,
+            disc_owners,
             rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
         }
     }

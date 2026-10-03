@@ -9,6 +9,7 @@ use crate::client_game::RenderView;
 use std::collections::HashMap;
 
 use crate::hud::{
+    BuildHud, BuildSlot, GrappleHud,
     bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
@@ -59,15 +60,18 @@ pub struct LockInfo {
 }
 
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
-pub const RADAR_RANGE: f32 = 40.0;
-pub const RADAR_ENEMY_RANGE: f32 = 12.0;
+pub const RADAR_RANGE: f32 = 60.0;
+pub const RADAR_ENEMY_RANGE: f32 = 20.0;
+/// Free-for-all match ends at this many kills (docs/DEMO.md) unless `HudBridge::kill_limit` says otherwise.
+pub const FFA_KILL_LIMIT: u16 = 15;
+/// Structures a player may own at once (`BlockCfg::max_per_owner`).
+pub const BUILD_MAX: u8 = 64;
 pub const RADAR_FIRE_SECS: f32 = 2.0;
 
 #[derive(Default)]
 pub struct HudBridge {
     pub teams: Option<TeamInfo>,
-    /// Free-for-all colour per player id. Defaults to the HUD's stand-in until the network layer's
-    /// `player_colour(id)` lands, then point this at it.
+    /// Free-for-all colour per player id (defaults to `colour::player_rgba`).
     pub colour_of: Option<fn(u16) -> crate::hud::Rgba>,
     /// Kills that end a free-for-all match (server limit, if known).
     pub kill_limit: Option<u16>,
@@ -77,6 +81,7 @@ pub struct HudBridge {
     /// Lock-on target from combat (`RenderView.lock` once it exists): world position + progress. Stub input.
     pub lock: Option<LockInfo>,
     boot: Option<f32>,
+    grapple_flash: f32,
     was_dead: bool,
     booted: bool,
     /// Seconds of enemy-reveal left after our last throw.
@@ -93,7 +98,7 @@ impl HudBridge {
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
         self.fx.tick(dt);
-        let colour_of = self.colour_of.unwrap_or(crate::hud::ffa_colour);
+        let colour_of = self.colour_of.unwrap_or(crate::colour::player_rgba);
         let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
         let me = view.local_pos.unwrap_or([0.0; 3]);
@@ -230,7 +235,8 @@ impl HudBridge {
             };
             hs.radar.push(RadarPing { pos, colour, ally });
         }
-        if let Some(l) = self.lock {
+        let lock = self.lock.or_else(|| view.lock.map(|l| LockInfo { target: l.target as u16, pos: l.pos, progress: l.progress, locked: l.locked }));
+        if let Some(l) = lock {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, l.pos) {
@@ -260,9 +266,34 @@ impl HudBridge {
         }
         hs.boot = self.boot;
         hs.ffa = teams.is_none();
-        hs.kill_limit = if teams.is_none() { self.kill_limit } else { None };
-        hs.build = self.build;
-        hs.grapple = self.grapple;
+        hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(FFA_KILL_LIMIT)) } else { None };
+        // build readout from the predicted ghost (an explicit `build` overrides it)
+        hs.build = self.build.or_else(|| {
+            let g = view.build_ghost?;
+            Some(BuildHud {
+                selected: match g.piece.kind {
+                    shinobi_sim::blocks::PieceKind::Floor => BuildSlot::Floor,
+                    shinobi_sim::blocks::PieceKind::Wall => BuildSlot::Wall,
+                },
+                ready: if g.ready { 1.0 } else { 0.0 },
+                placed: view.blocks.iter().filter(|bl| bl.owner == local_id).count().min(BUILD_MAX as usize) as u8,
+                max: BUILD_MAX,
+                ghost: Some(g.valid),
+            })
+        });
+        // grapple readout from the predicted movement state (an explicit `grapple` overrides it)
+        let gf = &view.fx;
+        if gf.grapple_missed {
+            self.grapple_flash = 0.4;
+        } else {
+            self.grapple_flash = (self.grapple_flash - dt).max(0.0);
+        }
+        hs.grapple = self.grapple.or(Some(GrappleHud {
+            ready: if gf.grappling { 0.0 } else { 1.0 - gf.grapple_cooldown.clamp(0.0, 1.0) },
+            hookable: gf.grapple_hookable,
+            on_rope: gf.grappling,
+            missed: self.grapple_flash > 0.0,
+        }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
         hs
@@ -444,11 +475,13 @@ mod tests {
 
     #[test]
     fn free_for_all_gets_unique_colours_a_leaderboard_flag_and_passes_build_and_grapple_through() {
-        use crate::hud::{ffa_colour, BuildHud, BuildSlot, GrappleHud};
+        use crate::colour::player_rgba as ffa_colour;
+        use crate::hud::{BuildHud, BuildSlot};
+        
         let mut b = HudBridge::default();
         b.kill_limit = Some(25);
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
-        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true });
+        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false });
         let mut v = RenderView::default();
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
         let s = b.update(0.016, &v, &net(), false);
@@ -501,5 +534,60 @@ mod tests {
         let s = b.update(0.016, &v, &net(), false);
         let tg = s.target.expect("target brackets");
         assert!(tg.pos.0 >= SIDE_CLEAR && tg.pos.0 <= 1.0 - SIDE_CLEAR && (tg.dist - 10.1).abs() < 0.3 && !tg.locked);
+    }
+
+    #[test]
+    fn grapple_readout_follows_the_predicted_state_and_flashes_on_a_miss() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.fx.grapple_cooldown = 0.25;
+        v.fx.grapple_hookable = true;
+        let g = b.update(0.016, &v, &net(), false).grapple.unwrap();
+        assert!((g.ready - 0.75).abs() < 1e-6 && g.hookable && !g.on_rope && !g.missed);
+        v.fx.grappling = true;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().on_rope);
+        v.fx.grappling = false;
+        v.fx.grapple_missed = true;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().missed);
+        v.fx.grapple_missed = false;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().missed, "flash lingers briefly");
+        for _ in 0..40 {
+            b.update(0.016, &v, &net(), false);
+        }
+        assert!(!b.update(0.016, &v, &net(), false).grapple.unwrap().missed);
+    }
+
+    #[test]
+    fn build_readout_comes_from_the_predicted_ghost_and_owned_block_count() {
+        use crate::client_game::BuildGhost;
+        use shinobi_sim::blocks::{BlockInfo, Piece};
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        assert!(b.update(0.016, &v, &net(), false).build.is_none(), "no ghost, no readout");
+        v.build_ghost = Some(BuildGhost { cell: [0, 0, 0], piece: Piece::WALL_X, center: [0.0; 3], half: [1.0; 3], valid: false, ready: true });
+        v.blocks = vec![
+            BlockInfo { owner: 0, cell: [0, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },
+            BlockInfo { owner: 9, cell: [1, 0, 0].into(), piece: Piece::FLOOR, scale_q: 0 },
+        ];
+        let s = b.update(0.016, &v, &net(), false);
+        let bh = s.build.expect("build readout");
+        assert_eq!((bh.selected, bh.ghost, bh.max), (BuildSlot::Wall, Some(false), 64));
+        assert_eq!(bh.placed, 1, "only our own pieces count (local id 0 offline)");
+        assert_eq!(s.kill_limit, Some(15), "ffa default limit");
+    }
+
+    #[test]
+    fn lock_brackets_follow_the_published_lock_on() {
+        use crate::client_game::LockOn;
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        assert!(b.update(0.016, &v, &net(), false).target.is_none());
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked });
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(t.locked && t.name == "PLAYER 5" && (t.dist - 20.0).abs() < 0.1);
+        assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");
     }
 }

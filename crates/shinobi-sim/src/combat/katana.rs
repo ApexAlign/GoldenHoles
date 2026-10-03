@@ -20,6 +20,10 @@ pub struct KatanaCfg {
     pub cooldown: f32,
     /// Horizontal distance the character's dash covers; sizes the hit box.
     pub lunge_distance: f32,
+    /// Strength (0..1, times the lock pull) of the hit sweep's bend toward the lock-on target.
+    pub magnet: f32,
+    /// Damage to each player-built piece inside the blade box.
+    pub piece_damage: f32,
 }
 
 /// Distance `CharacterSystem`'s dash travels: speed = dash_speed * (0.4 + 0.6 f), f: 1 -> 0 over
@@ -38,6 +42,8 @@ impl KatanaCfg {
             // Matching the dash cooldown keeps every slice paired with a lunge.
             cooldown: ch.dash_cd,
             lunge_distance: dash_distance(ch),
+            magnet: 0.8,
+            piece_damage: 40.0,
         }
     }
 }
@@ -114,8 +120,10 @@ impl Weapon for Katana {
         let wall = ctx
             .world
             .queries
-            .cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, max_reach, true, solid)
-            .map(|(_, toi)| toi.max(0.3));
+            .cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, max_reach, true, solid);
+        // the solid that truncates the blade may itself be a printed piece: it is struck by the swing
+        let wall_piece = wall.and_then(|(h, _)| ctx.world.colliders.get(h)).and_then(|col| crate::blocks::piece_cell(col.user_data));
+        let wall = wall.map(|(_, toi)| toi.max(0.3));
         let full = wall.unwrap_or(max_reach).min(max_reach);
         let short = c.blade_len.min(full);
 
@@ -138,7 +146,19 @@ impl Weapon for Katana {
         };
         // Melee aim assist: a swing that misses dead-ahead re-sweeps a few degrees to either side and takes the
         // first sweep that connects. Hit boxes only: the lunge keeps the aimed direction (client prediction).
+        // magnetism: with a lock, sweep first along the aim bent toward the target (horizontally: the blade is flat)
+        let magnet_dir = ctx.lock.map(|h| {
+            let flat = vector![h.dir.x, 0.0, h.dir.z];
+            let n = flat.norm();
+            if n > 1e-4 { super::aim_assist::bend(dir, flat / n, c.magnet * h.pull) } else { dir }
+        });
         let boxhits = |reach: f32| -> Vec<ColliderHandle> {
+            if let Some(m) = magnet_dir {
+                let h = boxhits_at(m, reach);
+                if !h.is_empty() {
+                    return h;
+                }
+            }
             let straight = boxhits_at(dir, reach);
             if !straight.is_empty() {
                 return straight;
@@ -174,8 +194,31 @@ impl Weapon for Katana {
             ctx.input.move_dir = dir;
         }
 
+        // player-built pieces in the blade box take damage too (the server decides if they de-rez)
+        {
+            let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
+            let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), UnitQuaternion::face_towards(&dir, &Vector::y()));
+            let piece_filter = QueryFilter::default().groups(InteractionGroups::new(GROUP_MELEE, super::GROUP_WORLD));
+            let mut cells: Vec<[i32; 3]> = wall_piece.into_iter().collect();
+            ctx.world.queries.intersections_with_shape(&ctx.world.bodies, &ctx.world.colliders, &pos, &shape, piece_filter, |h| {
+                if let Some(cell) = ctx.world.colliders.get(h).and_then(|col| crate::blocks::piece_cell(col.user_data)) {
+                    cells.push(cell);
+                }
+                true
+            });
+            cells.sort();
+            cells.dedup();
+            for cell in cells {
+                ctx.events.push(CombatEvent::PieceHit { cell, amount: c.piece_damage, kind: DamageKind::Slash });
+            }
+        }
+
+        if hits.is_empty() {
+            ctx.events.push(CombatEvent::SlashMiss { origin: Point::from(origin), dir });
+        }
         for h in &hits {
             let Some(col) = ctx.world.colliders.get(*h) else { continue };
+            ctx.events.push(CombatEvent::SlashHit { target: col.user_data, point: Point::from(*col.translation()), killed: false });
             ctx.events.push(CombatEvent::Damage {
                 target: col.user_data,
                 collider: *h,

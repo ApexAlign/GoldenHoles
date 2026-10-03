@@ -205,6 +205,10 @@ pub struct GrappleHud {
     pub ready: f32,
     /// The crosshair is on something the hook can grab.
     pub hookable: bool,
+    /// Currently hanging on the rope.
+    pub on_rope: bool,
+    /// A fizzle ('no target') just happened: flash the arc.
+    pub missed: bool,
 }
 
 /// Live movement readouts for the left panel.
@@ -869,6 +873,12 @@ impl Hud {
         }
         if let Some(g) = s.grapple {
             cooldown_arc(&mut out, (0.40, 0.94), 0.026, g.ready, Glyph::Grapple, p);
+            if g.on_rope {
+                out.push(Prim::Ring { c: (0.40, 0.94), r: 0.034, color: p.gold.a(0.9), fill: false, glow: 0.006 });
+            }
+            if g.missed {
+                out.push(Prim::Ring { c: (0.40, 0.94), r: 0.034, color: p.magenta.a(0.9), fill: false, glow: 0.008 });
+            }
         }
         if let Some(b) = s.build {
             build_panel(&mut out, &b, p);
@@ -2105,7 +2115,7 @@ mod tests {
         // hookable crosshair tints gold; ghost ring is cyan when valid, magenta when blocked
         let ticks = |s: &HudState, c: Rgba| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (c.0, c.1, c.2))).count();
         let base = HudState { hp: 1.0, ..Default::default() };
-        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true }), ..base.clone() };
+        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false }), ..base.clone() };
         assert!(ticks(&hook, p.gold) > ticks(&base, p.gold));
         let ring = |valid| {
             let s = HudState { build: Some(BuildHud { selected: BuildSlot::Floor, ready: 1.0, placed: 0, max: 4, ghost: Some(valid) }), ..base.clone() };

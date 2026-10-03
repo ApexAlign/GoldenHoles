@@ -441,8 +441,9 @@ impl Server {
             let mut ev = Vec::new();
             {
                 let team = self.players[i].team;
+                // teammates AND the owner's own hitbox: never assisted toward, locked onto, hit or bounced off
                 let allies: Vec<ColliderHandle> =
-                    self.players.iter().enumerate().filter(|(j, q)| *j != i && allied(team, q.team)).map(|(_, q)| q.vitals.hitbox).collect();
+                    self.players.iter().enumerate().filter(|(j, q)| *j == i || allied(team, q.team)).map(|(_, q)| q.vitals.hitbox).collect();
                 let p = &mut self.players[i];
                 p.combat.allies = allies;
                 p.combat.update(
@@ -464,6 +465,16 @@ impl Server {
             let mut synthesized = Vec::new();
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg, head, &mut synthesized));
+            // weapons hurt player-built pieces too (anyone's, the owner's included); at zero hp a piece de-rezzes
+            let mut pieces_changed = false;
+            for e in &ev {
+                if let CombatEvent::PieceHit { cell, amount, .. } = *e {
+                    pieces_changed |= self.blocks.damage(&mut self.world, cell, amount, tick, &mut self.block_events);
+                }
+            }
+            if pieces_changed {
+                self.world.queries.update(&self.world.colliders);
+            }
             ev.extend(synthesized);
             let id = self.players[i].id;
             let mut ric = false;
@@ -541,6 +552,16 @@ impl Server {
         pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind } = *e {
+                if kind == crate::combat::DamageKind::Slash {
+                    // the katana's SlashHit was emitted before the damage resolved: tell it the target died
+                    for (id, ev) in self.events.iter_mut() {
+                        if let CombatEvent::SlashHit { target, killed, .. } = ev {
+                            if *id == killer && *target == victim as u128 {
+                                *killed = true;
+                            }
+                        }
+                    }
+                }
                 let ricochet = kind == crate::combat::DamageKind::Shuriken && ricochets.contains(&(killer, victim));
                 let wall_run = wall_runners.contains(&killer);
                 if ricochet || wall_run {

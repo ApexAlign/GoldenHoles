@@ -8,12 +8,11 @@ use bevy::prelude::*;
 use std::collections::VecDeque;
 
 use shinobi_client::fx::{lightwall_alpha_age, LightWallCfg};
-use shinobi_client::hud::Palette;
 use shinobi_sim::combat::shuriken::ShurikenCfg;
 
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
-use crate::net::ViewRes;
-use crate::team::LocalColour;
+use crate::net::{Net, ViewRes};
+use crate::team::{colour_of, key, LocalColour};
 
 const POOL: usize = 32;
 const SPIN: f32 = 28.0; // rad/s
@@ -27,6 +26,8 @@ const TRAIL_MAX: usize = 24;
 struct Trail {
     /// Last drawn disc position when the slot was live (to place the end-of-flight puff).
     last: Option<Vec3>,
+    /// Colour of the last live disc in this slot, so the fading tail keeps its owner's colour.
+    hue: [f32; 3],
     pts: VecDeque<(Vec3, f32)>,
     mesh: Handle<Mesh>,
     entity: Entity,
@@ -47,10 +48,11 @@ impl Plugin for DiscPlugin {
 }
 
 /// Flat disc in the XZ plane (normal +Y), unit outer radius, HDR vertex colours.
-fn disc_mesh(pal: &Palette) -> Mesh {
+fn disc_mesh() -> Mesh {
     let (n, ring_in) = (48usize, 0.72f32);
     let hdr = |c: shinobi_client::hud::Rgba, g: f32| [c.0 * g, c.1 * g, c.2 * g, 1.0];
-    let (ring, tip, hub) = (hdr(pal.cyan, 3.0), hdr(pal.orange, 5.0), hdr(pal.cyan, 6.0));
+    let w = shinobi_client::hud::Rgba(1.0, 1.0, 1.0, 1.0); // greyscale: the material tints it with the owner colour
+    let (ring, tip, hub) = (hdr(w, 3.0), hdr(w, 5.0), hdr(w, 6.0));
     let mut pos: Vec<[f32; 3]> = Vec::new();
     let mut col: Vec<[f32; 4]> = Vec::new();
     let mut idx: Vec<u32> = Vec::new();
@@ -92,7 +94,7 @@ fn disc_mesh(pal: &Palette) -> Mesh {
 }
 
 fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
-    let mesh = meshes.add(disc_mesh(&Palette::TRON));
+    let mesh = meshes.add(disc_mesh());
     let mat = mats.add(StandardMaterial { base_color: Color::WHITE, unlit: true, double_sided: true, cull_mode: None, ..default() });
     let pool = (0..POOL)
         .map(|_| commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling)).id())
@@ -114,7 +116,7 @@ fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
             let entity = commands
                 .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(tmat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
                 .id();
-            Trail { last: None, pts: VecDeque::new(), mesh, entity }
+            Trail { last: None, hue: crate::team::neon(0), pts: VecDeque::new(), mesh, entity }
         })
         .collect();
     commands.insert_resource(Trails(trails));
@@ -129,7 +131,7 @@ fn empty_trail() -> Mesh {
 
 /// Two crossed strips (one along `up`, one along `side`) per live point, so the path reads from any angle.
 /// Returns triangle-list data: positions, colours, indices.
-fn trail_geometry(pts: &VecDeque<(Vec3, f32)>, now: f32, pal: &Palette) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
+fn trail_geometry(pts: &VecDeque<(Vec3, f32)>, now: f32, hue: [f32; 3]) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
     let cfg = LightWallCfg { life_s: TRAIL_LIFE, fade_start: 0.0, max_alpha: 0.9, pulse_depth: 0.0, ..Default::default() };
     let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
     for k in 0..pts.len().saturating_sub(1) {
@@ -143,7 +145,7 @@ fn trail_geometry(pts: &VecDeque<(Vec3, f32)>, now: f32, pal: &Palette) -> (Vec<
                 let heat = (1.0 - (now - born) / TRAIL_LIFE).clamp(0.0, 1.0);
                 let w = TRAIL_HALF * (0.1 + 0.9 * heat); // taper to a point at the tail
                 let al = lightwall_alpha_age(&cfg, now - born, 0, 0.0);
-                let c = [pal.cyan.0 * 3.0 * heat + pal.orange.0 * 0.4, pal.cyan.1 * 3.0 * heat + pal.orange.1 * 0.4, pal.cyan.2 * 3.0 * heat, al];
+                let c = [hue[0] * 3.0 * heat + 0.15, hue[1] * 3.0 * heat + 0.15, hue[2] * 3.0 * heat + 0.15, al];
                 pos.push((p + axis * w).to_array());
                 pos.push((p - axis * w).to_array());
                 col.extend([c, c]);
@@ -155,6 +157,7 @@ fn trail_geometry(pts: &VecDeque<(Vec3, f32)>, now: f32, pal: &Palette) -> (Vec<
 }
 
 fn update_trails(
+    net: Res<Net>,
     time: Res<Time>,
     view: Res<ViewRes>,
     mut trails: ResMut<Trails>,
@@ -164,7 +167,6 @@ fn update_trails(
     local: Res<LocalColour>,
 ) {
     let now = time.elapsed_secs();
-    let pal = Palette::TRON;
     for (i, tr) in trails.0.iter_mut().enumerate() {
         match view.0.discs.get(i) {
             Some((p, _)) => {
@@ -199,7 +201,12 @@ fn update_trails(
         if let (true, Some((p, _))) = (live, view.0.discs.get(i)) {
             pts.push_back((Vec3::from(*p), now));
         }
-        let (pos, col, idx) = trail_geometry(&pts, now, &pal);
+        let hue = match view.0.disc_owners.get(i).copied().filter(|o| *o != 0) {
+            Some(o) => colour_of(&net, o),
+            None => tr.hue,
+        };
+        tr.hue = hue;
+        let (pos, col, idx) = trail_geometry(&pts, now, hue);
         let Ok(mut v) = vis.get_mut(tr.entity) else { continue };
         if idx.is_empty() {
             *v = Visibility::Hidden;
@@ -215,9 +222,20 @@ fn update_trails(
     }
 }
 
-fn update(time: Res<Time>, view: Res<ViewRes>, pool: Res<DiscPool>, mut q: Query<(&mut Transform, &mut Visibility)>) {
+fn update(
+    mut commands: Commands,
+    time: Res<Time>,
+    view: Res<ViewRes>,
+    net: Res<Net>,
+    pool: Res<DiscPool>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut by_colour: Local<std::collections::HashMap<u32, Handle<StandardMaterial>>>,
+    mut slot_colour: Local<Vec<u32>>,
+    mut q: Query<(&mut Transform, &mut Visibility)>,
+) {
     let r = ShurikenCfg::default().radius * 1.5; // drawn a little larger than the hitbox: it reads as the thing that hits
     let spin = time.elapsed_secs() * SPIN;
+    slot_colour.resize(pool.0.len(), u32::MAX);
     for (i, e) in pool.0.iter().enumerate() {
         let Ok((mut t, mut v)) = q.get_mut(*e) else { continue };
         match view.0.discs.get(i) {
@@ -228,8 +246,32 @@ fn update(time: Res<Time>, view: Res<ViewRes>, pool: Res<DiscPool>, mut q: Query
                 t.rotate_local_y(spin + i as f32);
                 t.scale = Vec3::splat(r);
                 *v = Visibility::Visible;
+                // owner colour: re-skin the slot only when the owner changes
+                let hue = disc_colour(&net, &view.0, i);
+                let k = key(hue);
+                if slot_colour[i] != k {
+                    slot_colour[i] = k;
+                    let m = by_colour.entry(k).or_insert_with(|| {
+                        mats.add(StandardMaterial {
+                            base_color: Color::linear_rgb(hue[0], hue[1], hue[2]),
+                            unlit: true,
+                            double_sided: true,
+                            cull_mode: None,
+                            ..default()
+                        })
+                    });
+                    commands.entity(*e).insert(MeshMaterial3d(m.clone()));
+                }
             }
             None => *v = Visibility::Hidden,
         }
+    }
+}
+
+/// Colour of disc `i`: its owner's player / team colour (cyan if the owner is unknown).
+fn disc_colour(net: &Net, view: &shinobi_client::client_game::RenderView, i: usize) -> [f32; 3] {
+    match view.disc_owners.get(i).copied().filter(|o| *o != 0) {
+        Some(o) => colour_of(net, o),
+        None => crate::team::neon(0),
     }
 }

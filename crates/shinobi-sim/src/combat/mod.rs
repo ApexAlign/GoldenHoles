@@ -20,6 +20,7 @@ use rapier3d::prelude::*;
 
 use crate::character::{CharacterSystem, PhysicsWorld, PlayerInput, GROUP_ENEMY, GROUP_TRAIL};
 
+pub mod aim_assist;
 pub mod katana;
 pub mod powerup;
 pub mod shuriken;
@@ -138,6 +139,14 @@ pub enum CombatEvent {
     GrappleMiss { origin: Point<Real>, dir: Vector<Real> },
     /// Rope released (zip again, jump, arrived, timeout, line of sight lost).
     GrappleRelease { pos: Point<Real> },
+    /// The katana connected with `target` (player id / NPC id) at `point`. `killed` is filled in by the server once
+    /// the damage has been applied (always false in predicted, client-side events).
+    SlashHit { target: u128, point: Point<Real>, killed: bool },
+    /// The katana swing found nothing: play the whiff (dim arc, small recover).
+    SlashMiss { origin: Point<Real>, dir: Vector<Real> },
+    /// A weapon struck the player-built piece in `cell` for `amount`. The server turns it into `Blocks::damage`
+    /// (which may de-rez the piece); the client predictor ignores it.
+    PieceHit { cell: [i32; 3], amount: f32, kind: DamageKind },
 }
 
 pub struct CombatSystem {
@@ -145,6 +154,14 @@ pub struct CombatSystem {
     /// Teammates' hitbox colliders, refreshed by the server every tick (empty = free-for-all).
     pub allies: Vec<ColliderHandle>,
     pub powerups: powerup::PowerupState,
+    /// Predator lock-on (docs/lock-on-and-hud.md): same state machine on server and client predictor.
+    pub lock: aim_assist::LockState,
+    pub lock_cfg: aim_assist::LockCfg,
+    /// Cone (degrees) and range a target must be inside to be acquired; from `combat.shuriken.assist_*`.
+    pub assist_cone_deg: f32,
+    pub assist_range: f32,
+    /// Edge of the lock state machine during the most recent `update` (cleared at the start of the next one).
+    pub lock_edge: Option<aim_assist::LockEdge>,
 }
 
 impl CombatSystem {
@@ -156,7 +173,17 @@ impl CombatSystem {
     }
 
     pub fn new(loadout: weapon::Loadout) -> Self {
-        Self { loadout, allies: Vec::new(), powerups: powerup::PowerupState::default() }
+        let s = shuriken::ShurikenCfg::default();
+        Self {
+            loadout,
+            allies: Vec::new(),
+            powerups: powerup::PowerupState::default(),
+            lock: aim_assist::LockState::default(),
+            lock_cfg: aim_assist::LockCfg::default(),
+            assist_cone_deg: s.assist_cone_deg,
+            assist_range: s.assist_range,
+            lock_edge: None,
+        }
     }
 
     /// LMB/fire = neon shurikens, slice = cyber-katana.
@@ -171,6 +198,9 @@ impl CombatSystem {
     /// Load tunables from a `Balance` (weapons + ultimate).
     pub fn apply_balance(&mut self, b: &crate::balance::Balance, ch: &crate::character::Cfg) {
         self.loadout.apply_balance(b, ch);
+        self.lock_cfg = aim_assist::LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs };
+        self.assist_cone_deg = b.combat.shuriken.assist_cone_deg;
+        self.assist_range = b.combat.shuriken.assist_range;
         self.powerups.ultimate = crate::combat::powerup::UltimateCfg {
             speed: b.combat.ultimate_speed,
             max_radius: b.combat.ultimate_max_radius,
@@ -211,7 +241,12 @@ impl CombatSystem {
         player_input: &mut PlayerInput,
         events: &mut Vec<CombatEvent>,
     ) {
-        self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies);
+        // lock first: one best_target per tick feeds the lock state and every weapon fired this tick
+        let (eye, fwd) = (aim.origin, aim.forward());
+        let found = aim_assist::best_target(world, eye, fwd, self.assist_cone_deg, self.assist_range, &self.allies, ch.body);
+        self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
+        let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider });
+        self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }
 }

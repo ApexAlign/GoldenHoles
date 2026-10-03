@@ -20,6 +20,19 @@ use crate::combat::GROUP_WORLD;
 
 pub type Cell = [i32; 3];
 
+/// Bit set in the `user_data` of every piece collider; the low 96 bits pack the cell. Weapons read it to know
+/// that what they struck is a destructible piece (player/NPC hitboxes carry small ids, never this bit).
+pub const PIECE_TAG: u128 = 1 << 127;
+
+pub fn piece_user_data(cell: Cell) -> u128 {
+    PIECE_TAG | (cell[0] as u32 as u128) | (cell[1] as u32 as u128) << 32 | (cell[2] as u32 as u128) << 64
+}
+
+/// The cell of a piece collider from its `user_data`, `None` for anything else.
+pub fn piece_cell(user_data: u128) -> Option<Cell> {
+    (user_data & PIECE_TAG != 0).then(|| [user_data as u32 as i32, (user_data >> 32) as u32 as i32, (user_data >> 64) as u32 as i32])
+}
+
 /// Ticks per second for age maths (`shinobi_proto::TICK_HZ`).
 const HZ: f32 = 60.0;
 
@@ -335,6 +348,7 @@ impl Blocks {
             ColliderBuilder::cuboid(h[0], h[1], h[2])
                 .translation(vector![c[0], c[1], c[2]])
                 .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL))
+                .user_data(piece_user_data(cell))
                 .build(),
         );
         self.cells.insert(cell, Block { owner, handle, piece, scale_q, placed_tick: tick, hurt: 0.0 });
@@ -600,5 +614,53 @@ mod e2e_tests {
         assert!(b.damage(&mut s.world, [5, 0, 0], 100.0, 600, &mut ev), "fresh piece dies to 100");
         assert!(matches!(ev[..], [BlockEvent::DeRez { cell: [5, 0, 0], owner: 1, .. }]), "{ev:?}");
         assert!(b.is_free([5, 0, 0]) && !b.is_free([0, 0, 0]));
+    }
+}
+
+#[cfg(test)]
+mod weapon_damage_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, PITCH_LEVEL};
+    use std::time::Duration;
+
+    #[test]
+    fn piece_user_data_round_trips_negative_cells_and_never_looks_like_a_player() {
+        for cell in [[0, 0, 0], [-1, 5, -300], [i32::MIN, i32::MAX, 7]] {
+            assert_eq!(piece_cell(piece_user_data(cell)), Some(cell));
+        }
+        assert_eq!(piece_cell(7), None, "a player id is not a piece");
+    }
+
+    /// Shurikens thrown at a printed wall wear it down; the owner's own pieces are not immune; at 0 hp it de-rezzes.
+    #[test]
+    fn discs_and_the_katana_damage_pieces_until_they_de_rez() {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 0.5]);
+        let mut b = s.balance.clone();
+        b.blocks.hp = 30.0;
+        b.combat.shuriken.piece_damage = 12.0;
+        s.set_balance(b).unwrap();
+        // wall straight ahead (owner is player 1 itself)
+        s.blocks.place(&mut s.world, 1, [0, 1, -4], Piece::WALL_Z, SCALE_ONE, 0, &[]).unwrap();
+        s.world.queries.update(&s.world.colliders);
+        let mut derezzed = false;
+        let mut throws = 0;
+        for t in 0..400 {
+            // keep throwing (cooldown permitting); every disc dies on the wall or ricochets back into it
+            let it = PlayerIntent { tick: s.tick, buttons: Buttons(if t % 14 == 0 { Buttons::FIRE } else { 0 }), aim_pitch: PITCH_LEVEL, ..Default::default() };
+            throws += (t % 14 == 0) as u32;
+            let pkt = ClientPacket { ack_snapshot_tick: s.tick, intents: vec![it], ..Default::default() };
+            s.ingest(1, &pkt.encode().unwrap());
+            s.frame(Duration::from_nanos(16_666_667));
+            derezzed |= s.block_events.iter().any(|e| matches!(e, BlockEvent::DeRez { cell: [0, 1, -4], owner: 1, .. }));
+            if derezzed {
+                break;
+            }
+        }
+        assert!(derezzed, "30 hp / 12 per bounce: three hits de-rez the wall ({throws} throws)");
+        assert!(s.blocks.is_free([0, 1, -4]), "the destroyed piece is gone from the world");
     }
 }
