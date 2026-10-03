@@ -25,7 +25,7 @@ use shinobi_client::touch_ui::TouchButton;
 use crate::net::{Net, NetPlugin, PendingInput};
 use crate::play::{FxRes, PlayPlugin, ShotImage, ShotRequest};
 use crate::mobile::{MobilePlugin, TouchRes};
-use crate::{crt, grid, hud_view, sky, vm, walls};
+use crate::{crt, grid, hud_view, sky, vm};
 
 const W: u32 = 960;
 const H: u32 = 540;
