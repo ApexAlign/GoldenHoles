@@ -59,7 +59,7 @@ fn level() -> LevelDesc {
     LevelDesc::from_text(&std::fs::read_to_string(path).expect("levels/8v8.lvl")).expect("8v8.lvl parses")
 }
 
-fn snapshot_datagram(srv: &Server) -> Vec<u8> {
+fn snapshot_datagram(srv: &Server, margin: i8) -> Vec<u8> {
     let p = &srv.players[0];
     let v = p.ch.vel;
     let st = EntityState {
@@ -77,7 +77,7 @@ fn snapshot_datagram(srv: &Server) -> Vec<u8> {
     let mut ev = BitWriter::new();
     EventOutbox::default().write_pending(&mut ev, 256);
     let mut own = BitWriter::new();
-    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0 };
+    let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0, intent_complete: srv.players[0].queue.complete_tick(), lead_margin: margin };
     extras.write(&mut own, |w| OwnState::from_snapshot(&p.ch.snapshot(&srv.world)).write(w));
     frame_snapshot_v3(&ev.finish(), &own.finish(), &[], &encode_delta(None, &snap))
 }
@@ -105,6 +105,9 @@ struct Out {
     releases: u32,
     misses: u32,
     ropes_seen: u32,
+    /// (tick, lead) every time the adaptive intent lead changed, and where it ended.
+    lead_log: Vec<(u32, u32)>,
+    final_lead: Option<u32>,
 }
 
 impl Out {
@@ -191,6 +194,11 @@ fn run_ex(one_way: f64, jitter: f64, loss: f64, seed: u64, ticks: u32, hook: boo
                 }
             }
         }
+        if let Some(l) = game.net.lead() {
+            if out.lead_log.last().map_or(true, |x| x.1 != l) {
+                out.lead_log.push((i, l));
+            }
+        }
         if let Some(pkt) = game.sim_tick(&f, now) {
             if !is_hello(&pkt) {
                 if let (Some(p), Ok(cp)) = (game.predicted_pos(), ClientPacket::decode(&pkt)) {
@@ -231,10 +239,13 @@ fn run_ex(one_way: f64, jitter: f64, loss: f64, seed: u64, ticks: u32, hook: boo
             let executed = srv.tick - 1;
             server_pos.insert(executed, srv.players[0].pos(&srv.world));
             out.server_grapple_ticks += srv.players[0].ch.grapple.is_some() as u32;
-            down.send(now, snapshot_datagram(&srv));
+            // what the real server reports in the owner block: headroom of the newest intent since the last report
+            let margin = srv.players[0].queue.take_margin().map_or(15, |m| m.clamp(-16, 14) as i8);
+            down.send(now, snapshot_datagram(&srv, margin));
         }
     }
     out.corrections = game.corrections;
+    out.final_lead = game.net.lead();
     let last = pred_pos.keys().copied().max().unwrap_or(0);
     for (tick, p) in &pred_pos {
         // skip the very first ticks (prediction warm-up) and the last window (acks still in flight)
@@ -268,12 +279,11 @@ fn clean_link_grapple_prediction_is_exact() {
 
 #[test]
 fn lossy_jittery_links_keep_grapple_prediction_tight_and_never_snap() {
-    // 50 ms one way, +-40 ms jitter (reordering), 0 / 5 / 20 % loss each way, three seeds each.
-    // 0-5 %: effectively exact (a startup correction of <= 5 cm at worst). 20 %: p99 stays tiny, but once in a while
-    // every redundant copy of a button EDGE (zip, dash, jump: the server never repeats an edge) is lost; the rope then
-    // exists on one side only for about one RTT. Measured worst 2.4 m / 1.75 m visual offset, the same class as a lost
-    // dash (no-hook baseline: 1.2 m). Fixing it needs edge redundancy on the wire (Network).
-    for (loss, p99_bound, max_bound, snap_bound) in [(0.0, 0.01, 0.06, 0.02), (0.05, 0.02, 0.10, 0.02), (0.20, 0.05, 3.0, 2.2)] {
+    // 50 ms one way, +-40 ms jitter (reordering), 0 / 5 / 20 % loss each way, three seeds each. One-shot actions
+    // (zip, dash, jump, build) are re-sent in every datagram until the server confirms them (`intent_complete`) and a
+    // late one is applied exactly once on the next tick, so even at 20 % loss the worst error stays at decimetres
+    // (it used to reach 2.4 m with the rope on one side for a whole RTT).
+    for (loss, p99_bound, max_bound, snap_bound) in [(0.0, 0.01, 0.06, 0.02), (0.05, 0.02, 0.10, 0.03), (0.20, 0.05, 0.35, 0.30)] {
         let (mut worst99, mut worst_max, mut worst_off, mut worst_step, mut corr, mut hooks) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0u32, 0u32);
         for seed in [11u64, 12, 13] {
             let o = run(3.0, 2.4, loss, seed + (loss * 1000.0) as u64, 2400);
@@ -302,4 +312,31 @@ fn baseline_without_grapple_same_script() {
         let o = run_ex(3.0, 2.4, loss, seed, 2400, false, LEAD);
         report(&format!("NO HOOK loss {:.0}%", loss * 100.0), &o);
     }
+}
+
+/// The intent lead adapts to the measured headroom instead of a hand-tuned constant: from any starting value on a
+/// 50 ms +-40 ms link it settles in a sane band within a couple of seconds, stops changing (no oscillation), and the
+/// prediction error stays small afterwards.
+#[test]
+fn adaptive_lead_converges_from_any_start_without_oscillating() {
+    for start in [4u32, 8, 16] {
+        for loss in [0.0, 0.20] {
+            let o = run_ex(3.0, 2.4, loss, 21 + start as u64, 2400, true, start);
+            report(&format!("lead from {start}, loss {:.0}%", loss * 100.0), &o);
+            let fin = o.final_lead.expect("lead known");
+            assert!((8..=15).contains(&fin), "start {start} loss {loss}: settled at {fin} (log {:?})", o.lead_log);
+            let late_changes = o.lead_log.iter().filter(|(t, _)| *t > 600).count();
+            assert!(late_changes <= 2, "start {start} loss {loss}: still changing after 10 s: {:?}", o.lead_log);
+            assert!(o.max() < 0.35, "start {start} loss {loss}: max err {} (log {:?})", o.max(), o.lead_log);
+        }
+    }
+}
+
+/// On a fast link the lead stays small (no wasted headroom) and prediction is exact.
+#[test]
+fn fast_link_keeps_the_lead_small() {
+    let o = run_ex(0.0, 0.0, 0.0, 5, 1500, true, 8);
+    let fin = o.final_lead.expect("lead known");
+    assert!(fin <= 8, "lead {fin} on a zero-latency link");
+    assert!(o.max() < 0.02 && o.corrections == 0, "{o:?}");
 }

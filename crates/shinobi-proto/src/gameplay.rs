@@ -31,7 +31,7 @@ pub struct HitMsg {
 
 /// The owner-only block. `OwnState` (sim crate) sits between `acked_tick` and the tail, so it is passed as a
 /// closure: server `|w| own_state.write(w)`, client `OwnState::read`.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OwnExtras {
     /// false for dead players (extras only): the client keeps predicting.
     pub has_state: bool,
@@ -44,7 +44,25 @@ pub struct OwnExtras {
     pub hits: Vec<HitMsg>,
     /// Only on the wire when `hits` is non-empty.
     pub hit_seq: u8,
+    /// Highest intent tick such that the server has the real intent of every tick up to it (`IntentQueue::
+    /// complete_tick`): the client re-sends button edges only until they are covered by this.
+    pub intent_complete: u32,
+    /// Smallest headroom (ticks) of the newest intent over the server clock since the previous block; negative =
+    /// the intent arrived after its tick. The client sizes its intent lead from it.
+    pub lead_margin: i8,
 }
+
+/// `lead_margin` defaults to `LEAD_MARGIN_MAX`, which means "no measurement" (real margins are clamped to at most
+/// `LEAD_MARGIN_MAX - 1`): a block built without margin data (tests, other tools) must not steer the client's lead.
+impl Default for OwnExtras {
+    fn default() -> Self {
+        Self { has_state: false, acked_tick: 0, hp_x10: 0, hits: Vec::new(), hit_seq: 0, intent_complete: 0, lead_margin: LEAD_MARGIN_MAX }
+    }
+}
+
+/// `lead_margin` is clamped to this range on the wire (5 bits).
+pub const LEAD_MARGIN_MIN: i8 = -16;
+pub const LEAD_MARGIN_MAX: i8 = 15;
 
 impl OwnExtras {
     pub fn write(&self, w: &mut BitWriter, write_state: impl FnOnce(&mut BitWriter)) {
@@ -54,6 +72,9 @@ impl OwnExtras {
             write_state(w);
         }
         w.write_varint(self.hp_x10 as u32);
+        // trails / leads `acked_tick` by a few ticks: a zigzag delta is ~1 byte instead of a 3-byte tick
+        w.write_zigzag(self.intent_complete.wrapping_sub(self.acked_tick) as i32);
+        w.write_bits((self.lead_margin.clamp(LEAD_MARGIN_MIN, LEAD_MARGIN_MAX) as i32 - LEAD_MARGIN_MIN as i32) as u32, 5);
         let n = self.hits.len().min(MAX_HITS);
         w.write_bits(n as u32, 4);
         if n > 0 {
@@ -81,6 +102,8 @@ impl OwnExtras {
             (0, None)
         };
         let hp_x10 = u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?;
+        let intent_complete = acked_tick.wrapping_add(r.read_zigzag()? as u32);
+        let lead_margin = (r.read_bits(5)? as i32 + LEAD_MARGIN_MIN as i32) as i8;
         let n = r.read_bits(4)? as usize;
         let hit_seq = if n > 0 { r.read_bits(8)? as u8 } else { 0 };
         let mut hits = Vec::with_capacity(n);
@@ -93,7 +116,7 @@ impl OwnExtras {
                 kill: r.read_bool()?,
             });
         }
-        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq }, state))
+        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin }, state))
     }
 }
 
@@ -174,7 +197,7 @@ mod tests {
     #[test]
     fn own_extras_roundtrip_with_and_without_state() {
         let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7 };
-        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9 };
+        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3 };
         let mut w = BitWriter::new();
         full.write(&mut w, |w| {
             w.write_bits(0b1011, 4); // stand-in for OwnState
@@ -187,19 +210,19 @@ mod tests {
         assert_eq!(st, Some((0b1011, 99)));
 
         // dead: extras only, state closure never runs
-        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255 };
+        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255, intent_complete: 0, lead_margin: 15 };
         let mut w = BitWriter::new();
         dead.write(&mut w, |_| panic!("no state when dead"));
         let bytes = w.finish();
         let (got, st): (_, Option<()>) = OwnExtras::read(&mut BitReader::new(&bytes), |_| panic!("no state")).unwrap();
         assert_eq!((got, st), (dead, None));
-        assert!(bytes.len() <= 6, "dead-player block is tiny: {}", bytes.len());
+        assert!(bytes.len() <= 7, "dead-player block is tiny: {}", bytes.len());
     }
 
     #[test]
     fn hit_list_keeps_newest_and_truncation_errors() {
         let hits: Vec<_> = (0..30u16).map(|i| HitMsg { other: i, amount: 1, kind: 0, taken: false, kill: false }).collect();
-        let e = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: 4 };
+        let e = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: 4, ..Default::default() };
         let mut w = BitWriter::new();
         e.write(&mut w, |_| {});
         let bytes = w.finish();

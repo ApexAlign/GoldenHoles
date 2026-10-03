@@ -236,7 +236,7 @@ pub fn run(cfg: &BotConfig, stop: &AtomicBool) -> BotReport {
                     next_sim = now; // we stalled (scheduler); do not burst-catch-up
                 }
                 let local = t0.elapsed().as_secs_f64() * TICK_HZ as f64;
-                if let Some(tick) = nc.pace_tick(local, cfg.lead_ticks) {
+                if let Some(tick) = nc.pace_tick(local, cfg.lead_ticks).filter(|_| !nc.stamp_held()) {
                     let (stick, buttons) = script(behaviour, cfg.index, n, &mut aim);
                     let mut intent = build_intent(tick, stick, &aim, buttons);
                     if behaviour == Behaviour::Hook {

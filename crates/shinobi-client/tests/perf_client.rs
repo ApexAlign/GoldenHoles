@@ -52,7 +52,7 @@ fn client_frame_cost_with_16_remotes_at_144hz() {
         let mut ev = BitWriter::new();
         EventOutbox::default().write_pending(&mut ev, 256);
         let mut ob = BitWriter::new();
-        let extras = OwnExtras { has_state: with_own, acked_tick: tick.saturating_sub(1), hp_x10: 1000, hits: vec![], hit_seq: 0 };
+        let extras = OwnExtras { has_state: with_own, acked_tick: tick.saturating_sub(1), hp_x10: 1000, hits: vec![], hit_seq: 0, ..Default::default() };
         extras.write(&mut ob, |w| own.write(w));
         frame_snapshot_v3(&ev.finish(), &ob.finish(), &[], &encode_delta(None, &snap)) // full snapshot: worst-case decode
     };

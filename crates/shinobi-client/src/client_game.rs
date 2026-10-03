@@ -590,6 +590,9 @@ impl ClientGame {
             return self.net.hello_due(local_tick).map(|h| h.to_vec());
         }
         let tick = self.net.pace_tick(local_tick, self.cfg.lead_ticks)?;
+        if self.net.stamp_held() {
+            return None; // the intent lead just shrank: this local tick maps onto the previous stamp, nothing to predict
+        }
         let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
         intent.zip = std::mem::take(&mut self.zip_edge);
         let press = self.build_edge.take();

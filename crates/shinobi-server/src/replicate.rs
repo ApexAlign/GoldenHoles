@@ -72,6 +72,9 @@ pub struct Replicator {
     last_team_score: Option<([u16; 2], u8)>,
     /// Shurikens replicated per snapshot right now (shrinks under load, see `build_round`).
     disc_cap: usize,
+    /// Smallest intent arrival margin per player since the last snapshot round (taken from the intent queues every
+    /// frame, reported in the owner block so clients can size their intent lead).
+    margins: HashMap<u16, i32>,
 }
 
 impl Replicator {
@@ -90,6 +93,7 @@ impl Replicator {
             teams: HashMap::new(),
             last_team_score: None,
             disc_cap: PROJECTILE_ID_MAX,
+            margins: HashMap::new(),
         }
     }
 
@@ -179,6 +183,12 @@ impl Replicator {
         self.sync_ropes(server, tick);
         self.sync_teams(server, tick);
         self.sync_blocks(server);
+        for p in &mut server.players {
+            if let Some(m) = p.queue.take_margin() {
+                let e = self.margins.entry(p.id).or_insert(m);
+                *e = (*e).min(m);
+            }
+        }
         if self.features.obstacles {
             for d in self.spawner.poll(tick) {
                 self.obstacles.apply_spawn(d);
@@ -448,7 +458,8 @@ impl Replicator {
                 h.2 -= 1;
             }
             peer.hits.retain(|h| h.2 > 0);
-            let own = own_block(server, *id, &send, hit_seq);
+            let margin = self.margins.remove(id).map_or(shinobi_proto::gameplay::LEAD_MARGIN_MAX as i32, |m| m);
+            let own = own_block(server, *id, &send, hit_seq, margin);
             out.push((*id, datagram::frame_snapshot_v3(&w.finish(), &own, &board, &snap_bytes)));
         }
         self.history.push_back(snap);
@@ -475,7 +486,7 @@ fn move_kind(p: &Player) -> (MoveKind, u8) {
 /// Owner-only block (`gameplay::OwnExtras`), built from the SAME post-step world as the snapshot:
 /// movement state for reconciliation when the player is alive and has executed an intent, exact health, and
 /// the hit markers accumulated since the last datagram.
-fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8) -> Vec<u8> {
+fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32) -> Vec<u8> {
     let Some(p) = server.players.iter().find(|p| p.id == id) else { return Vec::new() };
     let acked = p.queue.last_executed_tick().filter(|_| p.vitals.alive());
     let extras = OwnExtras {
@@ -484,6 +495,8 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8) -> Vec<u8> 
         hp_x10: if p.vitals.alive() { (p.vitals.hp * 10.0).round().clamp(1.0, u16::MAX as f32) as u16 } else { 0 },
         hits: hits.to_vec(),
         hit_seq,
+        intent_complete: p.queue.complete_tick(),
+        lead_margin: margin.clamp(shinobi_proto::gameplay::LEAD_MARGIN_MIN as i32, shinobi_proto::gameplay::LEAD_MARGIN_MAX as i32 - 1) as i8,
     };
     let mut w = BitWriter::new();
     extras.write(&mut w, |w| OwnState::from_snapshot(&p.ch.snapshot(&server.world)).write(w));

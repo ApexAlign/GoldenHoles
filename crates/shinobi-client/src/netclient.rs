@@ -13,7 +13,7 @@ use shinobi_proto::datagram::{
     HELLO_LEN, HELLO_RETRY_MS, TAG_CHALLENGE, TAG_KICK, TAG_SNAPSHOT, TAG_WELCOME,
 };
 use shinobi_proto::gameplay::{Board, HitMsg, OwnExtras};
-use shinobi_proto::intent::{ClientPacket, PlayerIntent, MAX_REDUNDANCY};
+use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, BASE_REDUNDANCY, MAX_REDUNDANCY};
 use shinobi_proto::quant::dq_pos3;
 use shinobi_proto::snapshot::decode_delta;
 use shinobi_proto::TICK_HZ;
@@ -32,6 +32,23 @@ pub struct OwnUpdate {
     /// Our entity position from the same snapshot, metres (None if the entity is missing from it).
     pub server_pos: Option<[f32; 3]>,
 }
+
+/// Intent-lead controller (see `NetClient::on_lead_margin`). Ticks unless noted. The server rejects an intent more
+/// than `MAX_FUTURE_TICKS` (12) ahead of its own clock, so the lead must never leave more headroom than that.
+const LEAD_MIN: u32 = 4;
+const LEAD_MAX: u32 = 16;
+/// Headroom the newest intent should have when it reaches the server: below LOW -> grow now.
+const MARGIN_LOW: i32 = 2;
+/// Headroom that is wasted: the minimum over `SHRINK_WINDOW` blocks at or above this -> shrink by one tick.
+const MARGIN_HIGH: i32 = 6;
+/// Headroom near the server's ceiling: the minimum over `CEILING_WINDOW` blocks at or above this -> shrink now.
+const MARGIN_NEAR_CEILING: i32 = 10;
+const MAX_GROW: u32 = 4;
+/// Owner blocks (about 30 per second) of evidence needed before shrinking / the ceiling check.
+const SHRINK_WINDOW: usize = 150;
+const CEILING_WINDOW: usize = 30;
+/// Blocks ignored after a change: samples already in flight still describe the old lead (about one RTT).
+const SETTLE_BLOCKS: u32 = 12;
 
 const MS_PER_TICK: f64 = 1000.0 / TICK_HZ as f64;
 
@@ -74,6 +91,18 @@ pub struct NetClient {
     board: Option<Board>,
     /// Last tick handed out by `pace_tick`.
     cursor: Option<u32>,
+    /// Server's `intent_complete`: every intent up to this tick has arrived; edges at or below it need no re-send.
+    intent_complete: u32,
+    /// Adaptive intent lead (ticks the stamp runs ahead of the server-clock estimate); `None` until `pace_tick`
+    /// sets it from its argument. See `on_lead_margin`.
+    lead: Option<u32>,
+    /// Recent margins (newest last) and the settle counter, see `on_lead_margin`.
+    lead_margins: VecDeque<i32>,
+    lead_settle: u32,
+    /// Stamp adjustment queued by a lead change: +n skips n tick numbers, -n repeats one stamp n times.
+    lead_slew: i32,
+    /// The last `pace_tick` repeated the previous stamp (the lead just shrank): the shell must not simulate it.
+    stamp_held: bool,
     /// Datagrams that failed to decode (for a debug overlay / disconnect heuristics).
     pub bad_datagrams: u32,
 }
@@ -104,6 +133,12 @@ impl Default for NetClient {
             hits: Vec::new(),
             board: None,
             cursor: None,
+            intent_complete: 0,
+            lead: None,
+            lead_margins: VecDeque::new(),
+            lead_settle: 0,
+            lead_slew: 0,
+            stamp_held: false,
             bad_datagrams: 0,
         }
     }
@@ -237,6 +272,8 @@ impl NetClient {
             if self.last_extras_tick.map_or(true, |t| snap.tick > t) {
                 self.last_extras_tick = Some(snap.tick);
                 self.hp_x10 = Some(x.hp_x10);
+                self.intent_complete = self.intent_complete.max(x.intent_complete);
+                self.on_lead_margin(x.lead_margin as i32);
                 let n = x.hits.len();
                 for (i, h) in x.hits.into_iter().enumerate() {
                     let seq = x.hit_seq.wrapping_sub((n - 1 - i) as u8);
@@ -295,15 +332,84 @@ impl NetClient {
     /// Call once per sim tick to get the tick for that tick's intent. Increments by 1 so redundancy stays
     /// contiguous, and re-anchors to `input_tick` only when it drifted by more than `MAX_DRIFT_TICKS`
     /// (hitch, clock correction), so jitter in the clock estimate never makes tick numbers skip or repeat.
+    ///
+    /// `lead_ticks` is only the STARTING lead: the server reports how much headroom each intent had
+    /// (`OwnExtras::lead_margin`) and `on_lead_margin` grows / shrinks the lead from that, so the intent stays ahead
+    /// of its tick on slow or jittery links without a hand-tuned constant.
     pub fn pace_tick(&mut self, local_tick: f64, lead_ticks: u32) -> Option<u32> {
         const MAX_DRIFT_TICKS: i64 = 8;
-        let want = self.input_tick(local_tick, lead_ticks)?;
+        let lead = *self.lead.get_or_insert(lead_ticks.clamp(LEAD_MIN, LEAD_MAX));
+        let want = self.input_tick(local_tick, lead)?;
+        self.stamp_held = false;
         let next = match self.cursor {
+            // a pending lead change moves the stamp now: skip ahead (grow) or hold one stamp (shrink)
+            Some(c) if self.lead_slew > 0 => {
+                let skip = self.lead_slew;
+                self.lead_slew = 0;
+                c.wrapping_add(1).wrapping_add(skip as u32)
+            }
+            Some(c) if self.lead_slew < 0 => {
+                self.lead_slew += 1;
+                self.stamp_held = true;
+                c // repeat the stamp: the lead shrinks by one tick; the shell skips this local tick (`stamp_held`)
+            }
             Some(c) if (c as i64 + 1 - want as i64).abs() <= MAX_DRIFT_TICKS => c + 1,
             _ => want,
         };
         self.cursor = Some(next);
         Some(next)
+    }
+
+    /// True when the stamp returned by the last `pace_tick` is a repeat (the lead shrank by one tick): the shell must
+    /// not produce an intent or simulate a predicted step for it, so prediction stays in step with the server.
+    pub fn stamp_held(&self) -> bool {
+        self.stamp_held
+    }
+
+    /// Current intent lead in ticks (`None` before the first `pace_tick`).
+    pub fn lead(&self) -> Option<u32> {
+        self.lead
+    }
+
+    /// Server feedback: `margin` = smallest headroom (ticks) the newest intent had over the server clock since the
+    /// last owner block (negative = it arrived after its tick and was executed late / as a repeat).
+    ///
+    /// The clock estimate and the link are noisy, so the controller is deliberately slow and one-sided:
+    /// * grow at once when a block shows less than `MARGIN_LOW` headroom (by the shortfall, at most `MAX_GROW`);
+    /// * shrink by one tick only when even the best of the last `SHRINK_WINDOW` blocks had `MARGIN_HIGH`+ spare,
+    ///   or, near the server's future-tick ceiling, when all of the last `CEILING_WINDOW` blocks did;
+    /// * after any change ignore the next `SETTLE_BLOCKS` blocks (they still describe the old lead) and start the
+    ///   evidence window afresh, so growth never compounds on stale samples and it cannot oscillate.
+    pub fn on_lead_margin(&mut self, margin: i32) {
+        let Some(lead) = self.lead else { return };
+        if margin >= shinobi_proto::gameplay::LEAD_MARGIN_MAX as i32 {
+            return; // "no measurement" (the server had no packet to measure since the last block)
+        }
+        if self.lead_settle > 0 {
+            self.lead_settle -= 1;
+            return;
+        }
+        self.lead_margins.push_back(margin);
+        while self.lead_margins.len() > SHRINK_WINDOW {
+            self.lead_margins.pop_front();
+        }
+        let min_of = |n: usize, m: &VecDeque<i32>| m.iter().rev().take(n).copied().min().unwrap_or(i32::MIN);
+        let change: i32 = if margin < MARGIN_LOW {
+            ((MARGIN_LOW - margin) as u32).min(MAX_GROW).min(LEAD_MAX - lead) as i32
+        } else if self.lead_margins.len() >= CEILING_WINDOW && min_of(CEILING_WINDOW, &self.lead_margins) >= MARGIN_NEAR_CEILING {
+            let excess = (min_of(CEILING_WINDOW, &self.lead_margins) - MARGIN_HIGH + 1).max(1) as u32;
+            -(excess.min(lead - LEAD_MIN.min(lead)) as i32)
+        } else if self.lead_margins.len() >= SHRINK_WINDOW && min_of(SHRINK_WINDOW, &self.lead_margins) >= MARGIN_HIGH {
+            -(1.min(lead - LEAD_MIN.min(lead)) as i32)
+        } else {
+            0
+        };
+        if change != 0 {
+            self.lead = Some((lead as i32 + change) as u32);
+            self.lead_slew += change;
+            self.lead_margins.clear();
+            self.lead_settle = SETTLE_BLOCKS;
+        }
     }
 
     /// Tick the interpolated world should be drawn at.
@@ -377,6 +483,16 @@ impl NetClient {
         }
         self.recent.push_front(intent);
         self.recent.truncate(MAX_REDUNDANCY);
+        // Redundancy: the newest BASE_REDUNDANCY intents always; further back (up to MAX_REDUNDANCY) only to cover a
+        // one-shot action (edge) the server has not confirmed yet (`intent_complete`), so a lost or late packet can
+        // never swallow a dash / jump / zip / build: it is re-sent in every datagram until acked.
+        let is_edge = |it: &PlayerIntent| it.buttons.has(Buttons::EDGES) || it.ultimate || it.build || it.zip;
+        let mut n = BASE_REDUNDANCY.min(self.recent.len());
+        for (i, it) in self.recent.iter().enumerate() {
+            if it.tick > self.intent_complete && is_edge(it) {
+                n = n.max(i + 1);
+            }
+        }
 
         let render = self.render_tick(local_tick).unwrap_or(0.0);
         let pkt = ClientPacket {
@@ -384,7 +500,7 @@ impl NetClient {
             ack_snapshot_tick: self.interp.newest_tick().unwrap_or(0),
             ack_event_seq: self.inbox.ack(),
             view: InterpBuffer::view_state(render),
-            intents: self.recent.iter().copied().collect(),
+            intents: self.recent.iter().take(n).copied().collect(),
         };
         self.seq = self.seq.wrapping_add(1);
         pkt.encode().ok()
@@ -467,11 +583,116 @@ mod tests {
             last = c.next_packet(intent(t), t as f64);
         }
         let pkt = ClientPacket::decode(&last.unwrap()).unwrap();
-        assert_eq!(pkt.intents.len(), MAX_REDUNDANCY);
+        assert_eq!(pkt.intents.len(), BASE_REDUNDANCY, "nothing pending: only the base window");
         assert_eq!(pkt.intents.iter().map(|i| i.tick).collect::<Vec<_>>(), vec![6, 5, 4, 3]);
         let pkt = ClientPacket::decode(&c.next_packet(intent(50), 50.0).unwrap()).unwrap();
         assert_eq!(pkt.intents.len(), 1, "tick gap restarts the window");
         assert_eq!(pkt.seq, 6);
+    }
+
+    /// A one-shot action (zip / dash / jump / build) keeps riding in every datagram until the server's
+    /// `intent_complete` covers it; then the window shrinks back to the base.
+    #[test]
+    fn unacked_edges_are_resent_until_the_server_confirms_them() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut packet = |c: &mut NetClient, t: u32, zip: bool| {
+            let it = PlayerIntent { zip, ..intent(t) };
+            ClientPacket::decode(&c.next_packet(it, t as f64).unwrap()).unwrap()
+        };
+        for t in 1..=9 {
+            packet(&mut c, t, t == 3); // zip pressed at tick 3
+        }
+        let p = packet(&mut c, 10, false);
+        assert!(p.intents.iter().any(|i| i.tick == 3 && i.zip), "tick 3's zip still rides at tick 10: {:?}", p.intents.iter().map(|i| i.tick).collect::<Vec<_>>());
+        assert_eq!(p.intents.len(), 8, "window stretched back to the edge (ticks 10..=3)");
+        // the server's owner block reports every intent up to tick 5 as received
+        let d = frame_snapshot_v3(&no_events(), &own_block_full(true, 4, 1000, vec![], 5, 6), &[], &encode_delta(None, &snap(20, 0)));
+        c.on_datagram(&d, 11.0).unwrap();
+        assert_eq!(packet(&mut c, 11, false).intents.len(), BASE_REDUNDANCY, "confirmed: back to the base window");
+        // a never-confirmed edge is capped at MAX_REDUNDANCY
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        packet(&mut c, 1, true);
+        let mut last = None;
+        for t in 2..=40 {
+            last = Some(packet(&mut c, t, false));
+        }
+        assert!(last.unwrap().intents.len() <= MAX_REDUNDANCY);
+    }
+
+    fn lead_client(start: u32) -> NetClient {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 100);
+        assert_eq!(c.pace_tick(0.0, start).map(|_| c.lead()), Some(Some(start)));
+        c
+    }
+
+    #[test]
+    fn lead_grows_at_once_on_a_late_block_then_ignores_stale_samples() {
+        let mut c = lead_client(8);
+        c.on_lead_margin(-3); // 5 ticks short of the target: grow by MAX_GROW (4)
+        assert_eq!(c.lead(), Some(12));
+        for _ in 0..SETTLE_BLOCKS {
+            c.on_lead_margin(-5); // still describe the old lead: must not compound
+        }
+        assert_eq!(c.lead(), Some(12), "samples in flight during the settle window are ignored");
+        c.on_lead_margin(0); // genuinely still short afterwards: grows again
+        assert_eq!(c.lead(), Some(14));
+        for _ in 0..100 {
+            c.on_lead_margin(-16);
+        }
+        assert!(c.lead().unwrap() <= 16, "never beyond LEAD_MAX: {:?}", c.lead());
+    }
+
+    #[test]
+    fn lead_shrinks_slowly_only_on_sustained_spare_headroom() {
+        let mut c = lead_client(14);
+        // a single dip below the shrink threshold within the window blocks the shrink
+        for i in 0..SHRINK_WINDOW + 5 {
+            c.on_lead_margin(if i == 100 { 4 } else { 8 });
+        }
+        assert_eq!(c.lead(), Some(14), "one low sample in the window keeps the lead");
+        // a clean window of spare headroom shrinks by exactly one tick, then waits for fresh evidence
+        let mut c = lead_client(14);
+        for _ in 0..SHRINK_WINDOW + SETTLE_BLOCKS as usize + 5 {
+            c.on_lead_margin(8);
+        }
+        assert_eq!(c.lead(), Some(13));
+        // inside the hysteresis band (between LOW and HIGH) nothing ever changes
+        let mut c = lead_client(10);
+        for _ in 0..1000 {
+            c.on_lead_margin(MARGIN_LOW + 1);
+        }
+        assert_eq!(c.lead(), Some(10));
+        // never below LEAD_MIN
+        let mut c = lead_client(LEAD_MIN);
+        for _ in 0..2000 {
+            c.on_lead_margin(15);
+        }
+        assert_eq!(c.lead(), Some(LEAD_MIN));
+    }
+
+    #[test]
+    fn lead_comes_down_fast_near_the_servers_future_tick_ceiling() {
+        // the server rejects intents more than 12 ticks ahead: sustained margins of 10+ must not wait 5 s
+        let mut c = lead_client(16);
+        for _ in 0..CEILING_WINDOW {
+            c.on_lead_margin(11);
+        }
+        assert!(c.lead().unwrap() < 16, "{:?}", c.lead());
+    }
+
+    #[test]
+    fn a_lead_change_moves_the_stamp_now() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 100);
+        let a = c.pace_tick(0.0, 8).unwrap();
+        let b = c.pace_tick(1.0, 8).unwrap();
+        assert_eq!(b, a + 1);
+        c.on_lead_margin(-2); // grow by 4: the next stamp skips ahead by 4
+        assert_eq!(c.pace_tick(2.0, 8), Some(b + 1 + 4));
+        assert_eq!(c.pace_tick(3.0, 8), Some(b + 6), "then it counts up normally again");
     }
 
     #[test]
@@ -486,8 +707,15 @@ mod tests {
         assert_eq!(c.interp.newest_tick(), None);
     }
 
+    fn own_block_full(has_state: bool, acked: u32, hp_x10: u16, hits: Vec<HitMsg>, intent_complete: u32, lead_margin: i8) -> Vec<u8> {
+        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1, intent_complete, lead_margin };
+        let mut w = BitWriter::new();
+        x.write(&mut w, |w| OwnState::default().write(w));
+        w.finish()
+    }
+
     fn own_block(has_state: bool, acked: u32, hp_x10: u16, hits: Vec<HitMsg>) -> Vec<u8> {
-        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1 };
+        let x = OwnExtras { has_state, acked_tick: acked, hp_x10, hits, hit_seq: 1, ..Default::default() };
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
@@ -559,7 +787,7 @@ mod tests {
     fn resent_hits_survive_loss_and_surface_once() {
         let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false };
         let blk = |hits: Vec<HitMsg>, seq: u8| {
-            let x = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: seq };
+            let x = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: seq, ..Default::default() };
             let mut w = BitWriter::new();
             x.write(&mut w, |w| OwnState::default().write(w));
             w.finish()

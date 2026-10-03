@@ -98,7 +98,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v8, for client authors)
+## Network events (protocol v9, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
@@ -112,7 +112,12 @@ flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`
 | `BlockRefused { why }` | your build press failed: 0 occupied, 1 body in the way, 2 cooldown (builder only) | via `take_events()` |
 
 Shurikens are snapshot entities with ids `PROJECTILE_ID_BASE` (0x4000) and up: `yaw` = owner id, `flags` = bounce
-count (at most 128 replicated). Hit markers (`OwnExtras.hits`) are resent in 3 consecutive datagrams with a sequence
+count (at most 128 replicated). Button edges (dash, jump, slice, zip, build, ultimate) are loss-proof: a client keeps sending the intents that carry
+an edge until the server's owner block says every intent up to that tick arrived (`intent_complete`), and the server
+applies an edge that arrives after its tick was simulated exactly once on the next tick. The owner block also reports
+how much headroom the newest intent had (`lead_margin`); `NetClient` grows / shrinks its intent lead from that, so a
+50 ms link with 80 ms of jitter needs no hand-tuned constant.
+Hit markers (`OwnExtras.hits`) are resent in 3 consecutive datagrams with a sequence
 number; `NetClient` de-duplicates them.
 
 ## Troubleshooting

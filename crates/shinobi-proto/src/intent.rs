@@ -1,14 +1,20 @@
 //! Client -> server input packets.
 //!
-//! Each datagram carries the newest intent plus up to `MAX_REDUNDANCY - 1` older ones (contiguous ticks),
-//! so a single lost cellular packet never drops an input or a button edge. The server de-duplicates by tick.
+//! Each datagram carries the newest intent plus older ones (contiguous ticks): `BASE_REDUNDANCY` normally, and back
+//! to the oldest button edge the server has not confirmed (`intent_complete` in the owner block) so a lost or late
+//! packet never drops an input or a button edge. The server de-duplicates by tick and applies an edge that arrives
+//! after its tick was already simulated exactly once, on the next tick (`IntentQueue`).
 
 use std::collections::VecDeque;
 
 use super::bits::{BitReader, BitWriter, DecodeError, DecodeResult};
 use super::quant::dq_axis;
 
-pub const MAX_REDUNDANCY: usize = 4;
+/// Most intents one datagram can carry (4-bit count). Normally the newest 4 go out; while a button edge is still
+/// unacknowledged the window stretches back to it (see `ClientPacket::needs_history`), up to this many.
+pub const MAX_REDUNDANCY: usize = 16;
+/// Intents every datagram carries even when nothing is pending.
+pub const BASE_REDUNDANCY: usize = 4;
 /// Wire width of `aim_pitch` (-90..90 deg over 4096 steps = 0.044 deg/step).
 pub const PITCH_BITS: u32 = 12;
 pub const PITCH_MAX: u16 = (1 << PITCH_BITS) - 1;
@@ -178,7 +184,7 @@ impl ClientPacket {
         // view tick trails the ack by a few ticks: zigzag delta is ~1 byte
         w.write_zigzag(self.view.from_tick.wrapping_sub(self.ack_snapshot_tick) as i32);
         w.write_bits(self.view.alpha as u32, 8);
-        w.write_bits((n - 1) as u32, 2);
+        w.write_bits((n - 1) as u32, 4);
         w.write_varint(newest);
         self.intents[0].write_body(&mut w);
         for i in 1..n {
@@ -198,7 +204,7 @@ impl ClientPacket {
         let ack_event_seq = r.read_varint()?;
         let view_delta = r.read_zigzag()?;
         let alpha = r.read_bits(8)? as u8;
-        let n = r.read_bits(2)? as usize + 1;
+        let n = r.read_bits(4)? as usize + 1;
         let newest = r.read_varint()?;
         if (n as u32) > newest.saturating_add(1) {
             return Err(DecodeError::Malformed);
@@ -235,10 +241,61 @@ pub struct IntentQueue {
     /// older redundant intents were made `i` ticks earlier, so their view is `i` ticks older. Using the packet
     /// view for all of them would rewind too little by about the client's input lead.
     pub latest_view: ViewState,
+    /// Ticks whose real intent has arrived: bit `i` = tick `got_top - i` (a 64-tick window). A tick the server had
+    /// to synthesise (repeat after loss) stays a gap until the real intent shows up, even late.
+    got: u64,
+    got_top: u32,
+    /// Edges of intents that arrived after their tick was simulated: merged, once, into the next simulated tick.
+    carry: Carry,
+    /// Smallest `newest intent tick - server tick` of the packets since `take_margin` (ticks of headroom; negative
+    /// = late). Reported to the client so it can size its intent lead.
+    margin_min: Option<i32>,
+}
+
+/// One-shot actions of a late intent, carried to the next tick (bitwise OR / last build wall wins).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct Carry {
+    buttons: u8,
+    ultimate: bool,
+    build: bool,
+    build_wall: bool,
+    zip: bool,
+}
+
+impl Carry {
+    fn is_empty(&self) -> bool {
+        *self == Carry::default()
+    }
+
+    fn of(it: &PlayerIntent) -> Carry {
+        Carry { buttons: it.buttons.0 & Buttons::EDGES, ultimate: it.ultimate, build: it.build, build_wall: it.build && it.build_wall, zip: it.zip }
+    }
+
+    fn merge(&mut self, o: Carry) {
+        self.buttons |= o.buttons;
+        self.ultimate |= o.ultimate;
+        if o.build {
+            self.build = true;
+            self.build_wall = o.build_wall;
+        }
+        self.zip |= o.zip;
+    }
+
+    fn apply(&self, it: &mut PlayerIntent) {
+        it.buttons.0 |= self.buttons;
+        it.ultimate |= self.ultimate;
+        if self.build {
+            it.build = true;
+            it.build_wall = self.build_wall;
+        }
+        it.zip |= self.zip;
+    }
 }
 
 impl IntentQueue {
     const MAX_QUEUED: usize = 16;
+    /// Gaps older than this many ticks behind the newest received tick are given up on (`complete_tick`).
+    const GAP_WINDOW: u32 = 32;
 
     /// `server_tick` = tick about to be simulated. Returns how many intents were rejected as too far in the
     /// future (flood / clock-skew cheat); caller feeds that into the anti-cheat strike counter.
@@ -247,6 +304,8 @@ impl IntentQueue {
         let mut rejected = 0;
         // oldest first so `pending` stays sorted
         let newest = pkt.intents.first().map_or(0, |i| i.tick);
+        let margin = (newest as i64 - server_tick as i64).clamp(-64, 64) as i32;
+        self.margin_min = Some(self.margin_min.map_or(margin, |m| m.min(margin)));
         for it in pkt.intents.iter().rev() {
             if it.tick > ceiling {
                 rejected += 1;
@@ -269,8 +328,39 @@ impl IntentQueue {
         rejected
     }
 
+    fn mark_got(&mut self, tick: u32) -> bool {
+        // returns true when this tick was not marked before
+        if self.got == 0 && self.got_top == 0 {
+            // first intent of the stream: nothing before it was ever expected, so no phantom gaps behind it
+            self.got_top = tick;
+            self.got = u64::MAX;
+            return true;
+        }
+        if tick > self.got_top {
+            let shift = tick - self.got_top;
+            self.got = if shift >= 64 { 0 } else { self.got << shift };
+            self.got_top = tick;
+            self.got |= 1;
+            return true;
+        }
+        let back = self.got_top - tick;
+        if back >= 64 {
+            return false; // too old to track: treat as already seen
+        }
+        let bit = 1u64 << back;
+        let fresh = self.got & bit == 0;
+        self.got |= bit;
+        fresh
+    }
+
     fn push(&mut self, it: PlayerIntent, view: ViewState) {
+        let fresh = self.mark_got(it.tick);
         if self.last_executed.map_or(false, |l| it.tick <= l.tick) {
+            // too late to execute on its own tick. If the server already simulated this tick with a real intent it
+            // is a duplicate; if the tick was synthesised (lost) its one-shot actions were never applied: carry them
+            if fresh {
+                self.carry.merge(Carry::of(&it));
+            }
             return;
         }
         match self.pending.binary_search_by_key(&it.tick, |p| p.0.tick) {
@@ -280,6 +370,28 @@ impl IntentQueue {
         while self.pending.len() > Self::MAX_QUEUED {
             self.pending.pop_front();
         }
+    }
+
+    /// Highest tick `c` such that the real intent of every tick up to `c` has arrived (within the last
+    /// `GAP_WINDOW` ticks; older gaps are abandoned). The client may stop re-sending intents <= `c`: all their
+    /// edges have been applied or carried. 0 = nothing received yet.
+    pub fn complete_tick(&self) -> u32 {
+        if self.got == 0 {
+            return 0;
+        }
+        let oldest = self.got_top.saturating_sub(Self::GAP_WINDOW.min(63));
+        // first missing tick above `oldest`
+        for t in oldest..=self.got_top {
+            if self.got & (1u64 << (self.got_top - t)) == 0 {
+                return t - 1;
+            }
+        }
+        self.got_top
+    }
+
+    /// Smallest arrival margin since the last call (ticks of headroom of the newest intent over the server clock).
+    pub fn take_margin(&mut self) -> Option<i32> {
+        self.margin_min.take()
     }
 
     /// Tick of the intent most recently simulated for this player (executed or repeated after a lost packet).
@@ -293,7 +405,7 @@ impl IntentQueue {
         while self.pending.front().map_or(false, |p| p.0.tick < tick) {
             self.pending.pop_front();
         }
-        let it = if self.pending.front().map_or(false, |p| p.0.tick == tick) {
+        let mut it = if self.pending.front().map_or(false, |p| p.0.tick == tick) {
             let (it, view) = self.pending.pop_front().unwrap();
             self.latest_view = view;
             Some(it)
@@ -311,8 +423,13 @@ impl IntentQueue {
                 ..l
             })
         };
-        if it.is_some() {
-            self.last_executed = it;
+        if let Some(i) = it.as_mut() {
+            // late edges ride on the next simulated tick, exactly once
+            if !self.carry.is_empty() {
+                self.carry.apply(i);
+                self.carry = Carry::default();
+            }
+            self.last_executed = Some(*i);
         }
         it
     }
@@ -343,6 +460,81 @@ mod tests {
         let bytes = pkt.encode().unwrap();
         assert!(bytes.len() <= 40, "packet too fat: {}", bytes.len());
         assert_eq!(ClientPacket::decode(&bytes).unwrap(), pkt);
+    }
+
+    fn pkt(intents: Vec<PlayerIntent>) -> ClientPacket {
+        ClientPacket { intents, ..Default::default() }
+    }
+
+    fn zipped(tick: u32) -> PlayerIntent {
+        PlayerIntent { zip: true, buttons: Buttons(Buttons::DASH), ..intent(tick, 0, 0) }
+    }
+
+    /// A button edge whose tick was already simulated as a repeat (its packets were late or lost) is applied once,
+    /// on the next simulated tick, and re-sent copies of it are ignored.
+    #[test]
+    fn late_edge_is_applied_exactly_once_on_the_next_tick() {
+        let mut q = IntentQueue::default();
+        q.push_packet(&pkt(vec![intent(4, 0, 0), intent(3, 0, 0)]), 3);
+        assert!(q.take_for_tick(3).is_some() && q.take_for_tick(4).is_some());
+        // tick 5 never arrives in time: the server repeats tick 4 with the edges cleared
+        let rep = q.take_for_tick(5).unwrap();
+        assert!(!rep.zip && !rep.buttons.has(Buttons::DASH));
+        // now the real tick 5 (with a zip + dash) shows up together with tick 6
+        q.push_packet(&pkt(vec![intent(6, 0, 0), zipped(5)]), 6);
+        let t6 = q.take_for_tick(6).unwrap();
+        assert!(t6.zip && t6.buttons.has(Buttons::DASH), "the late edge rides on tick 6");
+        // the same edge again in later packets (the client re-sends until acked) must not fire a second time
+        q.push_packet(&pkt(vec![intent(8, 0, 0), intent(7, 0, 0), intent(6, 0, 0), zipped(5)]), 7);
+        assert!(!q.take_for_tick(7).unwrap().zip);
+        assert!(!q.take_for_tick(8).unwrap().zip);
+    }
+
+    /// An edge in a tick that was executed for real is a duplicate when it arrives again.
+    #[test]
+    fn duplicate_of_an_executed_edge_never_refires() {
+        let mut q = IntentQueue::default();
+        q.push_packet(&pkt(vec![zipped(10)]), 10);
+        assert!(q.take_for_tick(10).unwrap().zip);
+        q.push_packet(&pkt(vec![intent(11, 0, 0), zipped(10)]), 11);
+        assert!(!q.take_for_tick(11).unwrap().zip);
+    }
+
+    /// `complete_tick` stops at the first tick whose real intent has not arrived and moves on when it does.
+    #[test]
+    fn complete_tick_tracks_the_first_gap() {
+        let mut q = IntentQueue::default();
+        assert_eq!(q.complete_tick(), 0);
+        q.push_packet(&pkt(vec![intent(102, 0, 0), intent(101, 0, 0), intent(100, 0, 0)]), 100);
+        assert_eq!(q.complete_tick(), 102);
+        q.push_packet(&pkt(vec![intent(105, 0, 0), intent(104, 0, 0)]), 100); // 103 lost
+        assert_eq!(q.complete_tick(), 102, "gap at 103");
+        q.push_packet(&pkt(vec![intent(106, 0, 0), intent(105, 0, 0), intent(104, 0, 0), intent(103, 0, 0)]), 100);
+        assert_eq!(q.complete_tick(), 106);
+        // an ancient gap is given up on (window), so a stuck client does not hold the ack back forever
+        q.push_packet(&pkt(vec![intent(200, 0, 0)]), 190);
+        assert_eq!(q.complete_tick(), 200 - 32 - 1, "ticks 107..=199 never came: the gap window starts at 168");
+    }
+
+    /// Arrival margin = newest intent tick minus the server tick about to be simulated, minimum since last taken.
+    #[test]
+    fn margin_is_the_minimum_headroom_since_last_taken() {
+        let mut q = IntentQueue::default();
+        assert_eq!(q.take_margin(), None);
+        q.push_packet(&pkt(vec![intent(110, 0, 0)]), 100); // 10 ticks ahead
+        q.push_packet(&pkt(vec![intent(111, 0, 0)]), 110); // 1 ahead
+        q.push_packet(&pkt(vec![intent(112, 0, 0)]), 116); // 4 late
+        assert_eq!(q.take_margin(), Some(-4));
+        assert_eq!(q.take_margin(), None);
+    }
+
+    #[test]
+    fn long_redundancy_windows_roundtrip() {
+        let intents: Vec<PlayerIntent> = (0..MAX_REDUNDANCY as u32).map(|i| intent(500 - i, if i % 5 == 0 { Buttons::DASH } else { 0 }, i as i8)).collect();
+        let p = ClientPacket { seq: 3, ack_snapshot_tick: 490, ack_event_seq: 1, view: ViewState { from_tick: 488, alpha: 9 }, intents };
+        let bytes = p.encode().unwrap();
+        assert_eq!(ClientPacket::decode(&bytes).unwrap(), p);
+        assert!(bytes.len() < 200, "16-intent window: {} B", bytes.len());
     }
 
     #[test]
