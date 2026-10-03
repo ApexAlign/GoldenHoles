@@ -82,7 +82,7 @@ impl Setup {
         self.level.apply_to_server(&mut server);
         server.set_team_spawns(self.level.spawns.clone(), self.spawn_teams.clone());
         if let Some(limit) = self.team_frag_limit {
-            server.match_state = std::mem::take(&mut server.match_state).with_teams(limit);
+            server.enable_teams(limit);
         }
         for p in &self.pickups {
             server.add_pickup(p.id, p.pos, PowerupKind::GridBeam, p.respawn_secs);

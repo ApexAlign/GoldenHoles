@@ -117,7 +117,7 @@ impl Replicator {
         }
         // everyone's team (this peer's own included), and tell the others about the newcomer
         let mut changed = Vec::new();
-        for p in &server.players {
+        for p in server.players.iter().filter(|p| p.team < shinobi_sim::team::TEAM_COUNT) {
             st.outbox.push(NetEvent::TeamAssign { player: p.id, team: p.team });
             if self.teams.insert(p.id, p.team) != Some(p.team) {
                 changed.push(NetEvent::TeamAssign { player: p.id, team: p.team });
@@ -215,12 +215,14 @@ impl Replicator {
 
     /// Team membership changes (join, auto-balance, `set_team`, leave) and team-score changes -> reliable events.
     fn sync_teams(&mut self, server: &Server, tick: u32) {
-        for p in &server.players {
+        // only real teams go on the wire (free-for-all players have none)
+        let on_team = |p: &&Player| p.team < shinobi_sim::team::TEAM_COUNT;
+        for p in server.players.iter().filter(on_team) {
             if self.teams.insert(p.id, p.team) != Some(p.team) {
                 self.broadcast(NetEvent::TeamAssign { player: p.id, team: p.team });
             }
         }
-        let gone: Vec<u16> = self.teams.keys().copied().filter(|id| server.players.iter().all(|p| p.id != *id)).collect();
+        let gone: Vec<u16> = self.teams.keys().copied().filter(|id| !server.players.iter().filter(on_team).any(|p| p.id == *id)).collect();
         for id in gone {
             self.teams.remove(&id);
             self.broadcast(NetEvent::TeamAssign { player: id, team: shinobi_sim::events::TEAM_NONE });
@@ -654,7 +656,7 @@ mod tests {
         use shinobi_sim::events::EventInbox;
         let cfg = Cfg::default();
         let mut s = Setup::standard().build(cfg);
-        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        s.enable_teams(50);
         let plan = BotPlan { count: 0, skill: BotSkill::Hard, seed: 11, team_size: 8 };
         let mut bots = make_bots(&plan, &mut s);
         assert_eq!(s.players.len(), 16);
@@ -764,7 +766,7 @@ mod tests {
         use shinobi_sim::events::EventInbox;
         let cfg = Cfg::default();
         let mut s = crate::setup::Setup::standard().build(cfg);
-        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        s.enable_teams(50);
         for id in 1..=16u16 {
             let at = s.pick_spawn(None);
             s.add_player(id, at);
@@ -890,7 +892,7 @@ mod tests {
     fn teams_reach_every_peer_joiners_get_everyone_and_scores_follow_changes() {
         use shinobi_sim::events::{TEAM_NONE, TEAM_RESULT_RUNNING};
         let (mut s, mut r) = two_peers();
-        s.match_state = shinobi_sim::match_state::MatchState::default().with_teams(50);
+        s.enable_teams(50);
         let teams_for = |r: &mut Replicator, s: &Server, id: u16| {
             let round = r.build_round(s);
             let mut inbox = shinobi_sim::events::EventInbox::default();
@@ -1051,8 +1053,8 @@ mod tests {
         r.add_peer(&s, 3, s.tick);
         assert_eq!(
             r.peers[&3].outbox.pending(),
-            r.obstacles.not_ended_at(s.tick).count() + s.players.len(),
-            "live obstacles + one TeamAssign per player"
+            r.obstacles.not_ended_at(s.tick).count(),
+            "live obstacles (free-for-all: no team events)"
         );
     }
 

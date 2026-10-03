@@ -52,6 +52,9 @@ impl BotPlan {
 /// balances by total players, which with bot fill puts every human on the same side (both teams are already full of
 /// bots and ties go to Cyan); `fill_team_bots` then trims a bot from the human's team.
 pub fn balance_human_team(server: &mut Server, id: u16) {
+    if !server.match_state.team_mode {
+        return; // free-for-all: no teams, nobody is an ally
+    }
     let humans = |team: u8| server.players.iter().filter(|p| p.id != id && p.id < BOT_ID_BASE && p.team == team).count();
     let team = (shinobi_sim::team::TEAM_CYAN..shinobi_sim::team::TEAM_COUNT)
         .min_by_key(|t| (humans(*t), server.team_kills(*t), *t))
@@ -188,10 +191,19 @@ mod tests {
     }
 
     #[test]
+    fn free_for_all_joiners_stay_teamless() {
+        let mut server = Setup::standard().build(Cfg::default());
+        server.add_player(1, [0.0, 0.81, 0.0]);
+        balance_human_team(&mut server, 1);
+        assert_eq!(server.players[0].team, shinobi_sim::tick::NO_TEAM);
+    }
+
+    #[test]
     fn humans_spread_over_both_teams_even_when_bots_fill_them() {
         let setup = Setup::standard();
         let mut server = setup.build(Cfg::default());
         let plan = BotPlan { count: 0, skill: BotSkill::Easy, seed: 7, team_size: 4 };
+        server.enable_teams(50);
         let mut bots = make_bots(&plan, &mut server);
         for id in 1..=4u16 {
             server.add_player(id, [id as f32, 0.81, 0.0]);
@@ -208,6 +220,7 @@ mod tests {
         let setup = Setup::standard();
         let mut server = setup.build(Cfg::default());
         let plan = BotPlan { count: 0, skill: BotSkill::Easy, seed: 7, team_size: 3 };
+        server.enable_teams(50);
         let mut bots = make_bots(&plan, &mut server);
         let sizes = |s: &Server| (s.team_size(0), s.team_size(1));
         assert_eq!(sizes(&server), (3, 3), "3v3 of bots from an empty server");

@@ -189,6 +189,7 @@ fn bots_never_target_or_hurt_teammates_and_fill_both_sides_to_the_team_size() {
     use shinobi_sim::team::{TEAM_CYAN, TEAM_ORANGE};
     let mut s = common::flat_server(vec![[-20.0, 0.81, 0.0], [20.0, 0.81, 0.0]]);
     let mut h = common::host(7);
+    s.enable_teams(50); // teams are opt-in; free-for-all players have no team
     s.add_player(1, [0.0, 0.81, 0.0]); // a human, balanced onto Cyan
     let human_team = s.players[0].team;
     let (added, removed) = h.fill_teams(&mut s, 4, 201, Archetype::Light, BotSkill::Normal);

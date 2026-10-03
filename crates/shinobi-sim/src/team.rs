@@ -45,6 +45,29 @@ impl Server {
         }
     }
 
+    /// Switch to team deathmatch (first to `frag_limit` team kills): joiners are auto-balanced from now on and the
+    /// players already here are dealt onto the two teams in order. Free-for-all (the default) has no teams at all
+    /// (`NO_TEAM`), so friendly-fire rules never apply.
+    pub fn enable_teams(&mut self, frag_limit: u16) {
+        self.match_state = std::mem::take(&mut self.match_state).with_teams(frag_limit);
+        for p in &mut self.players {
+            p.team = crate::tick::NO_TEAM;
+        }
+        let ids: Vec<u16> = self.players.iter().map(|p| p.id).collect();
+        for id in ids {
+            let t = self.balanced_team();
+            self.set_team(id, t);
+        }
+    }
+
+    /// Back to free-for-all: everyone is on their own.
+    pub fn disable_teams(&mut self) {
+        self.match_state.team_mode = false;
+        for p in &mut self.players {
+            p.team = crate::tick::NO_TEAM;
+        }
+    }
+
     /// `add_player` onto a chosen team (`add_player` itself auto-balances).
     pub fn add_player_on(&mut self, id: u16, spawn: [f32; 3], team: u8) {
         self.add_player(id, spawn);
@@ -60,6 +83,7 @@ mod tests {
     #[test]
     fn joiners_fill_the_smaller_team_then_the_one_behind() {
         let mut s = Server::new(Cfg::default());
+        s.enable_teams(50);
         for id in 1..=5u16 {
             s.add_player(id, [id as f32, 0.81, 0.0]);
         }
@@ -76,9 +100,25 @@ mod tests {
     }
 
     #[test]
+    fn free_for_all_has_no_teams_so_nobody_is_an_ally() {
+        let mut s = Server::new(Cfg::default());
+        for id in 1..=4u16 {
+            s.add_player(id, [id as f32, 0.81, 0.0]);
+        }
+        assert!(s.players.iter().all(|p| p.team == crate::tick::NO_TEAM));
+        assert!(!crate::tick::allied(s.players[0].team, s.players[1].team), "FFA: everyone can hurt everyone");
+        // switching on teams deals the present players onto both sides
+        s.enable_teams(50);
+        assert_eq!((s.team_size(TEAM_CYAN), s.team_size(TEAM_ORANGE)), (2, 2));
+        s.disable_teams();
+        assert!(s.players.iter().all(|p| p.team == crate::tick::NO_TEAM));
+    }
+
+    #[test]
     fn set_team_rejects_unknown_players_and_clamps_garbage() {
         let mut s = Server::new(Cfg::default());
         s.add_player(1, [0.0, 0.81, 0.0]);
+        s.enable_teams(50);
         assert!(!s.set_team(9, TEAM_ORANGE));
         assert!(s.set_team(1, 200));
         assert_eq!(s.players[0].team, TEAM_CYAN);

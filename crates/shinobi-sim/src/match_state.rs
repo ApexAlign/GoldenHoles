@@ -436,7 +436,8 @@ mod tests {
     #[test]
     fn team_match_is_a_team_race_and_leavers_keep_their_teams_score() {
         let mut s = server(4); // 1,3 Cyan; 2,4 Orange (auto-balance alternates)
-        s.match_state = MatchState::new(cfg()).with_teams(5);
+        s.match_state = MatchState::new(cfg());
+        s.enable_teams(5);
         assert_eq!(s.players.iter().map(|p| p.team).collect::<Vec<_>>(), vec![0, 1, 0, 1]);
         live(&mut s);
         // an individual with 3 kills (frag_limit) must NOT end a team match
@@ -462,7 +463,8 @@ mod tests {
         let tied = |ev: &[MatchEvent]| ev.iter().any(|e| matches!(e, MatchEvent::MatchEnd { .. }));
         // 1) time runs out 2-2 -> sudden death, then a kill by Orange ends it
         let mut s = server(4); // 1,3 Cyan; 2,4 Orange
-        s.match_state = MatchState::new(cfg()).with_teams(50);
+        s.match_state = MatchState::new(cfg());
+        s.enable_teams(50);
         s.match_state.sudden_death_ticks = 120;
         live(&mut s);
         player(&mut s, 1).vitals.kills = 2;
@@ -478,7 +480,8 @@ mod tests {
         assert!(!s.match_state.in_sudden_death());
         // 2) nobody scores: draw when sudden death runs out
         let mut s = server(4);
-        s.match_state = MatchState::new(cfg()).with_teams(50);
+        s.match_state = MatchState::new(cfg());
+        s.enable_teams(50);
         s.match_state.sudden_death_ticks = 60;
         live(&mut s);
         let mut ev = Vec::new();

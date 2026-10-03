@@ -226,7 +226,8 @@ impl Server {
             &mut self.world.bodies,
         );
         let vitals = pvp::new_vitals(&mut self.world, &cfg, id, spawn, self.balance.player.max_hp);
-        let team = self.balanced_team();
+        // free-for-all (the default): no teams, so nobody is an ally; team mode auto-balances joiners
+        let team = if self.match_state.team_mode { self.balanced_team() } else { NO_TEAM };
         self.players.push(Player {
             id,
             ch: CharacterSystem::new(body, cfg),
