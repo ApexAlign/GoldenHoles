@@ -12,6 +12,8 @@ cargo run --release --offline -p shinobi-server -- --bind 0.0.0.0 --bots 7
 
 # 2. game     (a window; on another machine use the LAN address the server banner prints)
 cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777
+# with sound (procedural synth, no asset files; needs alsa dev headers on Linux): add `--features audio`
+#   cd crates/shinobi-game && cargo run --offline --features audio -- --server 127.0.0.1:7777
 
 # 3. extra scripted players (optional load / company; no window)
 cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 --secs 120

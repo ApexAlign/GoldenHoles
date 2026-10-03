@@ -11,11 +11,13 @@
 
 mod crt;
 mod demo;
+mod audio;
 mod blocks;
 mod discs;
 mod impacts;
 mod lock;
 mod rope;
+mod synth;
 mod team;
 mod grid;
 mod hud_view;
@@ -121,7 +123,7 @@ fn main() {
         .add_plugins(crt::CrtPlugin)
         .add_plugins(sky::SkyPlugin)
         .add_plugins(play::PlayPlugin)
-        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin))
+        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::audio::AudioFxPlugin))
         .add_plugins(hud_view::HudPlugin);
     if flag("--demo") {
         app.add_plugins(demo::DemoPlugin);

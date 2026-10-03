@@ -12,11 +12,16 @@ publish = false
 shinobi-proto = { path = "../shinobi-proto" }
 shinobi-sim = { path = "../shinobi-sim" }
 shinobi-client = { path = "../shinobi-client" }
-# No audio/gamepad: alsa + libudev dev headers are not installed on this box.
+# Audio is opt-in (`--features audio`): alsa + libudev dev headers are not installed on this box.
 bevy = { version = "=0.19.1", default-features = false, features = [
     "bevy_winit", "x11", "bevy_window", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_log", "multi_threaded",
     "bevy_post_process", # bloom
 ] }
+
+[features]
+default = []
+# Procedural synth sound via bevy_audio (needs alsa headers on Linux). No asset files.
+audio = ["bevy/bevy_audio", "bevy/wav"]
 
 [profile.dev]
 opt-level = 1
