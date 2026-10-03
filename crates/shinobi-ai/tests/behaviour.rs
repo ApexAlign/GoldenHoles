@@ -248,3 +248,30 @@ fn bots_get_past_a_player_built_block_wall_and_still_kill() {
         assert!(dealt > 0.0, "{arch:?} bot never hurt the dummy behind the block wall (phase {})", phase_name(&h, 201));
     }
 }
+
+#[test]
+fn ffa_bots_have_no_allies_and_fight_each_other() {
+    let mut s = flat_server(vec![[-20.0, 0.81, 0.0], [20.0, 0.81, 0.0], [0.0, 0.81, 20.0], [0.0, 0.81, -20.0]]);
+    let mut h = host(21);
+    for i in 0..6u16 {
+        assert!(h.add_bot(&mut s, 201 + i, if i % 2 == 0 { Archetype::Light } else { Archetype::Heavy }, BotSkill::Normal));
+    }
+    assert!(s.players.iter().all(|p| p.team == shinobi_sim::tick::NO_TEAM), "FFA: nobody is on a team");
+    let (mut hits, mut kills) = (0u32, 0u32);
+    let mut attackers = std::collections::BTreeSet::new();
+    for _ in 0..3600 {
+        step(&mut h, &mut s);
+        for e in &s.pvp_events {
+            match *e {
+                PvpEvent::Hit { attacker, .. } => {
+                    hits += 1;
+                    attackers.insert(attacker);
+                }
+                PvpEvent::Kill { .. } => kills += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(hits > 20 && kills >= 1, "bots fought: {hits} hits, {kills} kills");
+    assert!(attackers.len() >= 4, "most bots took part, not one lone duellist: {attackers:?}");
+}
