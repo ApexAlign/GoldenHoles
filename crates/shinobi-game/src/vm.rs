@@ -22,6 +22,15 @@ use crate::play::{FxRes, ShotImage};
 const LAYER: usize = 1;
 const FLARE_S: f32 = 0.2;
 const WHIFF_S: f32 = 0.3;
+const RECOIL_S: f32 = 0.18;
+
+/// Shoulder recoil of the held weapons after a throw: (kick back in metres, kick up in radians), snapping in and
+/// easing out over `RECOIL_S`.
+pub fn recoil_kick(left: f32) -> (f32, f32) {
+    let k = (left / RECOIL_S).clamp(0.0, 1.0);
+    let e = k * k;
+    (0.05 * e, 0.06 * e)
+}
 
 /// Arc ribbon multipliers: (brightness, alpha). Flare after a connect, dimmed after a whiff, neutral otherwise.
 pub fn arc_gain(flare: f32, whiff: f32) -> (f32, f32) {
@@ -42,6 +51,8 @@ pub struct Vm {
     whiff: f32,
     /// Seconds left of the bright arc flare after a katana connect.
     flare: f32,
+    /// Seconds left of the shoulder recoil after a shuriken throw.
+    recoil: f32,
 }
 
 #[derive(Resource)]
@@ -58,7 +69,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0 })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup));
     }
 }
@@ -195,6 +206,7 @@ pub fn update(
         vm.katana.start_swing(flip, lunge);
     }
     if std::mem::take(&mut fx.fire_edge) {
+        vm.recoil = RECOIL_S;
         vm.shuriken.throw_now();
     }
     // a landed hit (own hit message from the server) jolts and flares both held weapons
@@ -217,6 +229,7 @@ pub fn update(
     vm.freeze = (vm.freeze - dt).max(0.0);
     vm.flare = (vm.flare - dt).max(0.0);
     vm.whiff = (vm.whiff - dt).max(0.0);
+    vm.recoil = (vm.recoil - dt).max(0.0);
     vm.katana.update(step);
     vm.shuriken.update(step);
     vm.pulse.update(dt);
@@ -239,8 +252,9 @@ pub fn update(
     if let Ok(mut b) = tf.get_mut(ents.blade) {
         // hit-stop: the frozen blade trembles (viewmodel only; the crosshair/aim is never moved)
         let shake = if vm.freeze > 0.0 { (time.elapsed_secs() * 140.0).sin() * 0.006 } else { 0.0 };
-        b.translation = Vec3::new(t.x + shake, t.y - w.y_dip + shake * 0.6, t.z + w.back - 0.06 * pulse);
-        b.rotation = Quat::from_rotation_x(w.pitch) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
+        let (rb, rp) = recoil_kick(vm.recoil);
+        b.translation = Vec3::new(t.x + shake, t.y - w.y_dip + shake * 0.6, t.z + w.back - 0.06 * pulse + rb);
+        b.rotation = Quat::from_rotation_x(w.pitch + rp) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
     }
 
     // arc ribbons -> quads
@@ -280,7 +294,7 @@ pub fn update(
     // shuriken
     let s = vm.shuriken.draw();
     if let Ok(mut st) = tf.get_mut(ents.shuriken) {
-        st.translation = Vec3::new(s.pos[0], s.pos[1] - w.y_dip, s.pos[2] + w.back - 0.05 * pulse);
+        st.translation = Vec3::new(s.pos[0], s.pos[1] - w.y_dip, s.pos[2] + w.back - 0.05 * pulse + recoil_kick(vm.recoil).0);
         st.rotation = Quat::from_rotation_x(w.pitch + s.tilt) * Quat::from_rotation_z(s.spin);
         st.scale = Vec3::splat((s.scale * (1.0 + 0.3 * pulse)).max(1e-4));
     }
@@ -292,6 +306,14 @@ pub fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recoil_snaps_then_settles() {
+        assert_eq!(recoil_kick(0.0), (0.0, 0.0));
+        let (b, p) = recoil_kick(RECOIL_S);
+        assert!(b > 0.04 && p > 0.05);
+        assert!(recoil_kick(RECOIL_S * 0.5).0 < b, "eases out");
+    }
 
     #[test]
     fn arc_flares_on_connect_dims_on_whiff() {

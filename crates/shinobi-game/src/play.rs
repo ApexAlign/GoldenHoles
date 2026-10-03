@@ -149,6 +149,11 @@ pub fn setup(
             } else {
                 ([pal.cyan.0 * 1.4, pal.cyan.1 * 1.4, pal.cyan.2 * 1.4], 1.0)
             };
+            // FFA maps: tint by district (boulevards cyan, canyons magenta, ...); other levels keep the height tint
+            let tint = match l.0.district_at(b.center[0], b.center[2]) {
+                d if d.id != shinobi_sim::level::DistrictId::Arena && mode == 1.0 => district_tint(tint, d.tint),
+                _ => tint,
+            };
             commands.spawn((
                 Mesh3d(unit.clone()),
                 MeshMaterial3d(grids.add(GridFloor::for_box(&gd, b, tint, mode, fog.0))),
@@ -387,6 +392,12 @@ fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>) {
     }
 }
 
+/// Box neon tint on a district map: mostly the district colour (HDR boosted), with a little of the height tint kept so
+/// tiers still read apart inside a district.
+pub fn district_tint(height: [f32; 3], district: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| height[i] * 0.25 + district[i] * 1.4 * 0.75)
+}
+
 fn sync_remotes(
     mut commands: Commands,
     net: Res<Net>,
@@ -550,4 +561,16 @@ fn update_crt(
     };
     let u = FxUniforms::new(0.0, 90.0, &fx.out, net.0.local_tick() / 60.0, native, 1.0);
     **crt = CrtEffect::new(&u, &CrtSettings::tron(&Palette::TRON));
+}
+
+#[cfg(test)]
+mod district_tests {
+    use super::*;
+
+    #[test]
+    fn district_tint_is_dominated_by_the_district_colour() {
+        let t = district_tint([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(t[1] > t[0] * 3.0, "{t:?}");
+        assert!(t.iter().all(|v| *v >= 0.0));
+    }
 }

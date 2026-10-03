@@ -27,3 +27,9 @@ shake (the 60 ms hit-stop; the viewmodel freeze is Graphics'), then an 0.18 s sp
 direction (3.5 cm / 2.5 deg roll / -2.5 deg FOV; kills 7 cm / 4 deg / -5 deg), all scaled by `feel.shake` (zero under reduced
 motion). It is a view-frame TRANSLATION (`CameraPose.offset`, applied in `follow_camera`), roll and FOV only: yaw / pitch
 are untouched, so the crosshair stays on the aim that goes out in intents (test: pose.yaw/pitch == aim through a hit).
+
+## First-30-seconds controls card
+`shinobi_client::controls_card` (pure, tested): `RenderView.controls` -> `HudState.controls` -> `controls_card::prims`
+(appended at the end of `Hud::build_with`, left edge x 0.045, y 0.30..0.54, clear of the centre). Rows: W A S D, SPACE, SHIFT, C (slide),
+E (C swings), N / M, LMB, RMB. Each row fades 0.6 s after its first use; the whole card fades after 30 s of play (counted
+from the first predicted tick); all keys used = gone early. HUD UI may restyle `prims`.

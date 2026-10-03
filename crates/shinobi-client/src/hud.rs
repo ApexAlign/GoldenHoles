@@ -295,6 +295,8 @@ pub struct HudState {
     pub ffa: bool,
     /// Free cursor in normalized screen space while an overlay mode is up (scoreboard hover).
     pub cursor: Option<(f32, f32)>,
+    /// Map zone under the player: name and linear-RGB tint (`RenderView.district`).
+    pub zone: Option<(String, [f32; 3])>,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
@@ -311,6 +313,8 @@ pub struct HudState {
     /// Hold-to-show (Tab / touch button).
     pub show_scoreboard: bool,
     pub scoreboard: Vec<ScoreRow>,
+    /// First-30-seconds controls card rows (see `controls_card`); empty once it has faded.
+    pub controls: Vec<crate::controls_card::ControlRow>,
     pub dead: bool,
     /// Match phase + whole seconds left (None = warmup waiting for players).
     pub match_clock: Option<(PhaseKind, Option<u32>)>,
@@ -894,6 +898,15 @@ impl Hud {
         }
         if let Some(t) = &s.telemetry {
             telemetry_panel(&mut out, t, s.wall_run, p);
+            if let Some((name, tint)) = &s.zone {
+                // the edge of the map is a warning, every other district shows its own tint
+                let col = if name == "VOID EDGE" {
+                    p.magenta.a(0.6 + 0.4 * (s.time * 6.0).sin().abs())
+                } else {
+                    Rgba(tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 0.9)
+                };
+                out.push(Prim::Text { pos: (0.03, 0.595), text: name.clone(), size: 0.018, color: col, align: Align::Left });
+            }
             // below the floor plane: falling toward the void kill plane
             if t.altitude < 0.0 && !s.dead {
                 let a = 0.55 + 0.45 * (s.time * 10.0).sin().abs();
@@ -914,6 +927,7 @@ impl Hud {
         if s.show_scoreboard {
             scoreboard(&mut out, s, p);
         }
+        out.extend(crate::controls_card::prims(&s.controls, p));
         out
     }
 }
@@ -1060,7 +1074,7 @@ fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
 
 /// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
 fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palette) {
-    let (x, y0, w) = (0.03, 0.56, 0.15);
+    let (x, y0, w) = (0.03, 0.60, 0.15);
     let rows: [(&str, String, Rgba); 4] = [
         ("SPD", format!("{:.1} M/S", t.speed), p.cyan),
         ("ALT", format!("{:.1} M", t.altitude), if t.altitude < 0.0 { p.magenta } else { p.cyan }),
@@ -1085,7 +1099,7 @@ fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palet
 /// Radar disc at the bottom-left: own marker in the middle pointing up (ahead), blips for what the caller allows
 /// (enemies only when close or just fired: no wallhack; allies always).
 fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
-    let (c, r) = ((0.085, 0.84), 0.075f32);
+    let (c, r) = ((0.085, 0.865), 0.07f32);
     out.push(Prim::Ring { c, r, color: p.cyan.a(0.55), fill: false, glow: 0.004 });
     out.push(Prim::Ring { c, r: r * 0.5, color: p.cyan.a(0.22), fill: false, glow: 0.0 });
     out.push(Prim::Line { a: (c.0, c.1 - r), b: (c.0, c.1 + r), color: p.cyan.a(0.15), glow: 0.0 });
@@ -2204,5 +2218,21 @@ mod tests {
         assert!(t.contains(&"K/D 3.00".to_string()) && t.contains(&"PING 42 MS".to_string()), "{t:?}");
         s.cursor = Some((0.05, 0.05));
         assert!(!texts(&s).iter().any(|t| t.starts_with("K/D")), "cursor off the panel");
+    }
+
+    #[test]
+    fn zone_label_shows_the_district_and_warns_at_the_void_edge() {
+        let p = Palette::TRON;
+        let tele = Some(Telemetry { speed: 1.0, altitude: 1.0, rope: None });
+        let zone = |name: &str| {
+            let s = HudState { hp: 1.0, telemetry: tele, zone: Some((name.into(), [0.2, 0.8, 1.0])), ..Default::default() };
+            Hud::build_with(&s, &p)
+                .into_iter()
+                .find_map(|x| match x { Prim::Text { text, color, .. } if text == name => Some(color), _ => None })
+        };
+        let hub = zone("HUB SPIRE").expect("district name drawn");
+        assert!((hub.0 - 0.2).abs() < 1e-6 && (hub.2 - 1.0).abs() < 1e-6, "district tint");
+        let edge = zone("VOID EDGE").expect("void edge drawn");
+        assert!(edge.0 > 0.9 && edge.1 < 0.2, "void edge is a magenta warning: {edge:?}");
     }
 }

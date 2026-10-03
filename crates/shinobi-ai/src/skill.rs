@@ -30,6 +30,7 @@ impl BotSkill {
                 strike_windup: 18,
                 fire_gap_ticks: 24,
                 use_walls: false,
+                move_scale: 1.0,
             },
             Self::Normal => SkillParams {
                 reaction_ticks: 12,
@@ -39,6 +40,7 @@ impl BotSkill {
                 strike_windup: 10,
                 fire_gap_ticks: 14,
                 use_walls: true,
+                move_scale: 1.0,
             },
             Self::Hard => SkillParams {
                 reaction_ticks: 5,
@@ -48,6 +50,7 @@ impl BotSkill {
                 strike_windup: 6,
                 fire_gap_ticks: 11,
                 use_walls: true,
+                move_scale: 1.0,
             },
         }
     }
@@ -69,6 +72,8 @@ pub struct SkillParams {
     pub fire_gap_ticks: u32,
     /// May wall-run / perch.
     pub use_walls: bool,
+    /// Fraction of full speed bots run at (host `aggression` below 1 slows them down: fewer chance meetings).
+    pub move_scale: f32,
 }
 
 /// Behaviour profile. Light = cyber-ninja (flank, wall, perch, shurikens from odd angles).

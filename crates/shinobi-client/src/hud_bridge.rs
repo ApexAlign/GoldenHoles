@@ -212,6 +212,7 @@ impl HudBridge {
         // --- cyber layer: telemetry, radar, compass, lock brackets, boot-up ---
         let (yaw, pitch) = view.look_angles();
         hs.heading = Some(yaw);
+        hs.zone = view.district.map(|d| (d.name.to_string(), d.tint));
         hs.telemetry = Some(Telemetry {
             speed: view.fx.speed,
             altitude: view.eye[1],
@@ -302,6 +303,7 @@ impl HudBridge {
         }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
+        hs.controls = view.controls.clone();
         hs
     }
 }

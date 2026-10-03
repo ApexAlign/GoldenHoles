@@ -181,6 +181,25 @@ impl LevelDesc {
         LevelFile { level: self.clone(), pickups: Vec::new() }.to_text()
     }
 
+    /// Half extent of the level's floor slab (largest box whose top face is y = 0), if it has one.
+    pub fn floor_half(&self) -> Option<f32> {
+        self.boxes
+            .iter()
+            .filter(|b| (b.center[1] + b.half[1]).abs() < 0.05 && b.rot_z == 0.0)
+            .map(|b| b.half[0].max(b.half[2]))
+            .fold(None, |m: Option<f32>, h| Some(m.map_or(h, |m| m.max(h))))
+    }
+
+    /// Named district at ground position (x, z), for the compass / radar label and the per-district grid tint. Derived
+    /// from `scripts/gen_ffa_level.py` (same constants; positions scale with the floor half-extent / 112) and only
+    /// meaningful on the FFA maps; any other level is one `ARENA` district.
+    pub fn district_at(&self, x: f32, z: f32) -> District {
+        match self.floor_half() {
+            Some(h) if h >= 100.0 => ffa_district_at(h, x, z),
+            _ => District::ARENA,
+        }
+    }
+
     /// What the server runs today: one big floor.
     pub fn standard() -> Self {
         Self {
@@ -297,4 +316,77 @@ mod tests {
         assert!(LevelDesc::from_text(&std::fs::read_to_string(root.join(DEFAULT_LEVEL)).unwrap()).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// A named area of the map with the colour its grid / edges should lean toward.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct District {
+    pub id: DistrictId,
+    pub name: &'static str,
+    /// Linear RGB tint (HDR-friendly, 0..1.2).
+    pub tint: [f32; 3],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DistrictId {
+    Arena,
+    Hub,
+    Boulevard,
+    Canyons,
+    Towers,
+    MonolithField,
+    VoidEdge,
+}
+
+impl District {
+    pub const ARENA: District = District { id: DistrictId::Arena, name: "ARENA", tint: [0.1, 0.9, 1.0] };
+}
+
+/// North is -z (yaw 0 faces -z), east is +x.
+fn compass(x: f32, z: f32) -> &'static str {
+    match (z < 0.0, x >= 0.0) {
+        (true, true) => "NORTH-EAST",
+        (true, false) => "NORTH-WEST",
+        (false, true) => "SOUTH-EAST",
+        (false, false) => "SOUTH-WEST",
+    }
+}
+
+fn ffa_district_at(half: f32, x: f32, z: f32) -> District {
+    let sc = half / 112.0;
+    let cheb = |cx: f32, cz: f32| (x - cx).abs().max((z - cz).abs());
+    // void edge: the outer 12 m (the lip and the gaps in it)
+    if x.abs() > half - 12.0 || z.abs() > half - 12.0 {
+        return District { id: DistrictId::VoidEdge, name: "VOID EDGE", tint: [1.0, 0.15, 0.3] };
+    }
+    // hub: spire plaza, cover and gate arches
+    if x.abs().max(z.abs()) < 40.0 * sc.max(1.0) {
+        return District { id: DistrictId::Hub, name: "HUB SPIRE", tint: [1.0, 0.85, 0.4] };
+    }
+    // boulevards: 8 m wide wall-run lanes along the axes from the hub gates to the void
+    let lane = 8.0;
+    if z.abs() < lane && x.abs() > 40.0 * sc.max(1.0) {
+        return District { id: DistrictId::Boulevard, name: if x >= 0.0 { "EAST BOULEVARD" } else { "WEST BOULEVARD" }, tint: [0.2, 0.9, 1.0] };
+    }
+    if x.abs() < lane && z.abs() > 40.0 * sc.max(1.0) {
+        return District { id: DistrictId::Boulevard, name: if z < 0.0 { "NORTH BOULEVARD" } else { "SOUTH BOULEVARD" }, tint: [0.2, 0.9, 1.0] };
+    }
+    // districts: A (canyons + ziggurat) at (+66, +66) and (-66, -66); B (tower clusters) at (+66, -66) and (-66, +66)
+    let c = 66.0 * sc;
+    for (cx, cz, towers) in [(c, c, false), (-c, -c, false), (c, -c, true), (-c, c, true)] {
+        if cheb(cx, cz) <= 40.0 {
+            let name = match (towers, compass(cx, cz)) {
+                (true, "NORTH-EAST") => "NORTH-EAST TOWERS",
+                (true, _) => "SOUTH-WEST TOWERS",
+                (false, "SOUTH-EAST") => "SOUTH-EAST CANYONS",
+                (false, _) => "NORTH-WEST CANYONS",
+            };
+            return if towers {
+                District { id: DistrictId::Towers, name, tint: [1.0, 0.5, 0.15] }
+            } else {
+                District { id: DistrictId::Canyons, name, tint: [1.0, 0.2, 0.8] }
+            };
+        }
+    }
+    District { id: DistrictId::MonolithField, name: "MONOLITH FIELD", tint: [0.15, 0.4, 1.0] }
 }

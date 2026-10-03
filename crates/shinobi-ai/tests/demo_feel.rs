@@ -1,0 +1,114 @@
+//! Demo feel: 1 human + 7 bots on `levels/ffa.lvl`. The human must always have action (bots rubber-band to a quiet
+//! human), and a 10-kill FFA match with a participating human should end in minutes, not never.
+//! The regression test runs in `cargo test`; the harness prints match length / participation:
+//!   cargo test --release -p shinobi-ai --test demo_feel -- --ignored --nocapture
+mod common;
+use common::*;
+use shinobi_ai::{Archetype, BotSkill};
+use shinobi_proto::intent::{Buttons, PlayerIntent};
+use shinobi_proto::quant::{q_pitch, q_yaw};
+use shinobi_sim::balance::Balance;
+use shinobi_sim::level::parse_level_file;
+use shinobi_sim::pvp::PvpEvent;
+use shinobi_sim::tick::Server;
+
+const HUMAN: u16 = 1;
+
+fn ffa() -> Option<(Server, Vec<[f32; 3]>)> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../levels/ffa.lvl");
+    let text = std::fs::read_to_string(path).ok()?;
+    let f = parse_level_file(&text).expect("ffa.lvl parses");
+    let mut s = Server::new(shinobi_sim::character::Cfg::default());
+    f.level.apply_to_server(&mut s);
+    s.set_spawns(f.level.spawns.clone());
+    s.set_balance(Balance::demo()).unwrap();
+    Some((s, f.level.spawns))
+}
+
+/// A stationary human who shoots anything it can see and otherwise stands still (the worst case for "gets action").
+fn human_intent(s: &Server, yaw_now: f32, noise: f32) -> PlayerIntent {
+    let me = s.players.iter().find(|p| p.id == HUMAN).unwrap();
+    let mp = me.pos(&s.world);
+    let eye = [mp[0], mp[1] + 0.6, mp[2]];
+    let mut best: Option<(f32, [f32; 3])> = None;
+    for p in s.players.iter().filter(|p| p.id != HUMAN && p.vitals.alive()) {
+        let q = p.pos(&s.world);
+        let d = ((q[0] - eye[0]).powi(2) + (q[1] - eye[1]).powi(2) + (q[2] - eye[2]).powi(2)).sqrt();
+        if d < 40.0 && !shinobi_sim::spawn::blocked(&s.world, eye, q) && best.map_or(true, |b| d < b.0) {
+            best = Some((d, q));
+        }
+    }
+    let Some((_, q)) = best else { return idle(yaw_now) };
+    let (dx, dz) = (q[0] - eye[0], q[2] - eye[2]);
+    let want = (-dx).atan2(-dz) + noise * 0.8;
+    let dyaw = (want - yaw_now + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let yaw = yaw_now + dyaw.clamp(-0.25, 0.25);
+    let on = dyaw.abs() < 0.12 + noise; // a real player fires roughly on target, not perfectly
+    PlayerIntent { aim_yaw: q_yaw(yaw), aim_pitch: q_pitch(((q[1] - eye[1]) / (dx * dx + dz * dz).sqrt().max(0.1)).atan()), buttons: Buttons(if on { Buttons::FIRE } else { 0 }), ..Default::default() }
+}
+
+fn run(secs: u32, bots: u16, seed: u64, frag_limit: u16) -> Option<(u32, u32, u32, u32, u32)> {
+    let (mut s, spawns) = ffa()?;
+    s.match_state.cfg.frag_limit = frag_limit;
+    s.match_state.cfg.time_limit_ticks = secs * 60 + 600;
+    let at = spawns[0];
+    s.add_player(HUMAN, at);
+    let aggression: f32 = std::env::var("DEMO_AGGRESSION").ok().and_then(|v| v.parse().ok()).unwrap_or(shinobi_ai::BotHostCfg::default().aggression);
+    let mut h = shinobi_ai::BotHost::new(shinobi_ai::BotHostCfg { seed, aggression, ..Default::default() });
+    h.rebuild_perches(&s);
+    for i in 0..bots {
+        assert!(h.add_bot(&mut s, 201 + i, if i % 3 == 0 { Archetype::Heavy } else { Archetype::Light }, BotSkill::Normal));
+    }
+    let (mut first_action, mut human_hits, mut human_dmg_taken, mut kills, mut end_tick) = (None::<u32>, 0u32, 0u32, 0u32, 0u32);
+    let (mut rng, mut noise) = (seed ^ 0x9E37_79B9, 0.0f32);
+    for t in 0..secs * 60 {
+        let yaw = s.players.iter().find(|p| p.id == HUMAN).map_or(0.0, |p| shinobi_proto::quant::dq_yaw(p.yaw));
+        // aim error re-drawn every 8 ticks (+-0.12 rad ~ 7 degrees: a casual player)
+        if t % 8 == 0 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            noise = ((rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 0.12;
+        }
+        let it = human_intent(&s, yaw, noise);
+        push_human(&mut s, HUMAN, it);
+        step(&mut h, &mut s);
+        for e in &s.pvp_events {
+            match *e {
+                PvpEvent::Hit { attacker, victim, .. } if attacker == HUMAN || victim == HUMAN => {
+                    first_action.get_or_insert(t);
+                    if attacker == HUMAN {
+                        human_hits += 1;
+                    } else {
+                        human_dmg_taken += 1;
+                    }
+                }
+                PvpEvent::Kill { .. } => kills += 1,
+                _ => {}
+            }
+        }
+        if s.match_state.kind() != shinobi_sim::match_state::PhaseKind::Live && t > 600 && end_tick == 0 {
+            end_tick = t;
+        }
+    }
+    Some((first_action.unwrap_or(u32::MAX), human_hits, human_dmg_taken, kills, end_tick))
+}
+
+#[test]
+fn a_quiet_human_gets_company_within_a_minute() {
+    // idle human in an alcove, 7 bots elsewhere, no fighting unless the bots come: action must start soon
+    let Some((first, hits, taken, _, _)) = run(75, 7, 5, 10) else { return };
+    assert!(first < 70 * 60, "no fight involving the human in 70 s (first at tick {first})");
+    assert!(hits + taken > 0);
+}
+
+#[test]
+#[ignore]
+fn match_length_and_participation() {
+    for seed in [5u64, 6, 7] {
+        let (first, hits, taken, kills, end) = run(480, 7, seed, 10).expect("levels/ffa.lvl");
+        println!(
+            "seed {seed}: first action at {:.0} s, human dealt {hits} hits / took {taken}, {kills} kills in 480 s, match ended at {:.0} s",
+            first as f32 / 60.0,
+            end as f32 / 60.0
+        );
+    }
+}

@@ -348,3 +348,52 @@ fn any_spawn_to_any_other_in_about_25_seconds_with_run_and_grapple() {
         assert!(t.worst <= bound, "{name}: worst spawn-to-spawn travel {:.1} s (bound {bound})", t.worst);
     }
 }
+
+// ---- districts (compass / radar label, per-district tint) ----
+use shinobi_sim::level::DistrictId;
+
+#[test]
+fn districts_name_every_area_and_match_the_geometry() {
+    for (name, half) in MAPS {
+        let l = load(name);
+        let sc = half / 112.0;
+        let d = |x: f32, z: f32| l.level.district_at(x, z);
+        assert_eq!(l.level.floor_half(), Some(half));
+        assert_eq!(d(0.0, 0.0).id, DistrictId::Hub);
+        assert_eq!(d(half - 4.0, 10.0).id, DistrictId::VoidEdge);
+        assert_eq!(d(-3.0, -half + 3.0).id, DistrictId::VoidEdge);
+        for (x, z, want) in [(80.0 * sc, 2.0, "EAST BOULEVARD"), (-80.0 * sc, -2.0, "WEST BOULEVARD"), (2.0, -80.0 * sc, "NORTH BOULEVARD"), (-2.0, 80.0 * sc, "SOUTH BOULEVARD")] {
+            assert_eq!(d(x, z).name, want, "{name} at ({x}, {z})");
+        }
+        // every district centre sits on what the generator built there
+        let tall = |cx: f32, cz: f32, r: f32, min_top: f32| {
+            l.level.boxes.iter().any(|b| b.center[1] + b.half[1] >= min_top && (b.center[0] - cx).abs() < r && (b.center[2] - cz).abs() < r)
+        };
+        let c = 66.0 * sc;
+        for (cx, cz, want, id) in [
+            (c, c, "SOUTH-EAST CANYONS", DistrictId::Canyons),
+            (-c, -c, "NORTH-WEST CANYONS", DistrictId::Canyons),
+            (c, -c, "NORTH-EAST TOWERS", DistrictId::Towers),
+            (-c, c, "SOUTH-WEST TOWERS", DistrictId::Towers),
+        ] {
+            let dd = d(cx, cz);
+            assert_eq!((dd.name, dd.id), (want, id), "{name}");
+            assert!(tall(cx, cz, 30.0, if id == DistrictId::Towers { 19.0 } else { 8.5 }), "{name}: nothing tall in {want}");
+        }
+        assert!(tall(0.0, 0.0, 6.0, 14.0), "{name}: the hub pylon");
+        // names and tints exist for a dense sample of the floor (never empty, tint finite)
+        let mut x = -half + 1.0;
+        while x < half {
+            let mut z = -half + 1.0;
+            while z < half {
+                let dd = d(x, z);
+                assert!(!dd.name.is_empty() && dd.tint.iter().all(|t| t.is_finite() && *t >= 0.0 && *t <= 1.2));
+                z += 7.0;
+            }
+            x += 7.0;
+        }
+    }
+    // a non-FFA level is one ARENA district
+    let arena = parse_level_file(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/arena.lvl")).unwrap()).unwrap();
+    assert_eq!(arena.level.district_at(5.0, 5.0).id, DistrictId::Arena);
+}

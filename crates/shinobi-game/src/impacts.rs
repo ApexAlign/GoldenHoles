@@ -12,6 +12,10 @@ use crate::team::{key, LocalColour};
 pub enum ImpactKind {
     /// Disc leaves the hand.
     Muzzle,
+    /// Grapple hooked: a thunk of sparks and a bright flash on the anchor.
+    Anchor,
+    /// Grapple fired at nothing: a tiny fizzle at the wrist.
+    Fizzle,
     /// Disc ended or bounced: small cyan puff.
     Gone,
     /// Damage dealt: big flash + sparks (`kill` makes it bigger).
@@ -119,6 +123,8 @@ fn spawn_impacts(
         };
         let (count, speed, life, size, flash, flife, m) = match im.kind {
             ImpactKind::Muzzle => (6, 4.0, 0.12, 0.05, 0.35, 0.08, team_mat(im.color, false)),
+            ImpactKind::Anchor => (16, 8.0, 0.28, 0.05, 1.2, 0.14, team_mat(im.color, true)),
+            ImpactKind::Fizzle => (5, 3.0, 0.16, 0.04, 0.18, 0.07, team_mat(im.color, false)),
             ImpactKind::Gone => (8, 5.0, 0.2, 0.05, 0.3, 0.1, team_mat(im.color, false)),
             ImpactKind::Hit { kill: false } => (18, 9.0, 0.3, 0.07, 1.0, 0.15, team_mat(im.color, true)),
             ImpactKind::Hit { kill: true } => (36, 12.0, 0.5, 0.09, 2.2, 0.25, team_mat(im.color, true)),
