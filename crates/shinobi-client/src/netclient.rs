@@ -322,6 +322,11 @@ impl NetClient {
         self.teams.get(&player).copied()
     }
 
+    /// How many players' teams we know (headless health checks).
+    pub fn teams_known(&self) -> usize {
+        self.teams.len()
+    }
+
     /// Our own team.
     pub fn my_team(&self) -> Option<u8> {
         self.player_id().and_then(|id| self.team_of(id))

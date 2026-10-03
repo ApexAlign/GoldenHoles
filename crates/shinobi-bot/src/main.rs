@@ -22,7 +22,7 @@ fn main() {
             "--secs" => secs = val("--secs").parse().unwrap_or_else(|_| usage("bad --secs")),
             "--behaviour" => {
                 behaviour = Behaviour::parse(&val("--behaviour"))
-                    .unwrap_or_else(|| usage("behaviour: circles | strafe | spam | mixed"))
+                    .unwrap_or_else(|| usage("behaviour: circles | strafe | spam | hook | mixed"))
             }
             "-h" | "--help" => usage(""),
             other => usage(&format!("unknown argument {other}")),
@@ -47,7 +47,8 @@ fn main() {
 
     let mut bad = 0;
     let mut failed = false;
-    println!("{:>3} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>8}  status", "bot", "id", "sent", "recv", "snaps", "walls", "obst", "srv_hz");
+    println!("{:>3} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>6} {:>5} {:>6} {:>8}  status", "bot", "id", "sent", "recv", "snaps", "ropes", "blocks", "obst", "team", "known", "srv_hz");
+    let (mut ropes, mut blocks, mut teams, mut known) = (0u64, 0u64, [0u32; 2], 0u32);
     for h in handles {
         let r = h.join().expect("bot thread panicked");
         bad += r.bad_datagrams;
@@ -58,19 +59,29 @@ fn main() {
             _ => "ok".to_string(),
         };
         failed |= status != "ok";
+        ropes += r.rope_attaches;
+        blocks += r.blocks_placed;
+        known = known.max(r.teams_known);
+        if let Some(t) = r.team.filter(|t| *t < 2) {
+            teams[t as usize] += 1;
+        }
         println!(
-            "{:>3} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>8}  {status}",
+            "{:>3} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>6} {:>5} {:>6} {:>8}  {status}",
             r.index,
             r.player_id.map_or("-".into(), |i| i.to_string()),
             r.packets_sent,
             r.datagrams_recv,
             r.snapshots,
-            r.wall_events,
+            r.rope_attaches,
+            r.blocks_placed,
             r.obstacle_events,
+            r.team.map_or("-".into(), |t| ["cyan", "orange"].get(t as usize).copied().unwrap_or("?").to_string()),
+            r.teams_known,
             r.server_hz().map_or("-".into(), |h| format!("{h:.2}")),
         );
     }
     println!("bad datagrams total: {bad}");
+    println!("totals: rope_attaches={ropes} blocks_placed={blocks} bots_cyan={} bots_orange={} players_with_known_team={known}", teams[0], teams[1]);
     if failed {
         std::process::exit(1);
     }
@@ -80,6 +91,6 @@ fn usage(msg: &str) -> ! {
     if !msg.is_empty() {
         eprintln!("error: {msg}");
     }
-    eprintln!("usage: shinobi-bot [--addr HOST:PORT] [--count N] [--behaviour circles|strafe|spam|mixed] [--secs S]");
+    eprintln!("usage: shinobi-bot [--addr HOST:PORT] [--count N] [--behaviour circles|strafe|spam|hook|mixed] [--secs S]");
     std::process::exit(if msg.is_empty() { 0 } else { 2 });
 }

@@ -48,6 +48,17 @@ impl BotPlan {
     }
 }
 
+/// Put a just-joined human on the team with fewer HUMANS (then fewer frags, then Cyan). `Server::add_player`
+/// balances by total players, which with bot fill puts every human on the same side (both teams are already full of
+/// bots and ties go to Cyan); `fill_team_bots` then trims a bot from the human's team.
+pub fn balance_human_team(server: &mut Server, id: u16) {
+    let humans = |team: u8| server.players.iter().filter(|p| p.id != id && p.id < BOT_ID_BASE && p.team == team).count();
+    let team = (shinobi_sim::team::TEAM_CYAN..shinobi_sim::team::TEAM_COUNT)
+        .min_by_key(|t| (humans(*t), server.team_kills(*t), *t))
+        .unwrap_or(shinobi_sim::team::TEAM_CYAN);
+    server.set_team(id, team);
+}
+
 /// Team-size fill: top every team up to `plan.team_size` with bots (at most one per team per call, so a
 /// 16-player match builds up over a few frames instead of one spike) and drop surplus bots when humans took
 /// their slots. Humans join the smaller team (`Server::balanced_team`), so a join normally frees one bot.
@@ -174,6 +185,22 @@ mod tests {
         }
         assert!(server.tick > tick);
         assert_eq!(server.pickups.active().count(), setup.pickups.len(), "pickups rebuilt from Setup");
+    }
+
+    #[test]
+    fn humans_spread_over_both_teams_even_when_bots_fill_them() {
+        let setup = Setup::standard();
+        let mut server = setup.build(Cfg::default());
+        let plan = BotPlan { count: 0, skill: BotSkill::Easy, seed: 7, team_size: 4 };
+        let mut bots = make_bots(&plan, &mut server);
+        for id in 1..=4u16 {
+            server.add_player(id, [id as f32, 0.81, 0.0]);
+            balance_human_team(&mut server, id);
+            fill_team_bots(&plan, &mut server, &mut bots);
+        }
+        let humans = |t: u8| server.players.iter().filter(|p| p.id < BOT_ID_BASE && p.team == t).count();
+        assert_eq!((humans(0), humans(1)), (2, 2), "2 humans per side, not 4 on Cyan");
+        assert_eq!((server.team_size(0), server.team_size(1)), (4, 4), "bots made room on both sides");
     }
 
     #[test]

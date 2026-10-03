@@ -12,8 +12,11 @@ PORT="${PORT:-7777}"
 BOTS="${BOTS:-0}"
 TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
-# server and client MUST load the same level or client prediction desyncs
-LEVEL="${LEVEL:-levels/arena.lvl}"
+# server and client MUST load the same level or client prediction desyncs.
+# TEAM_SIZE (8v8) defaults to the 8v8 map, otherwise the classic arena.
+if [ -z "${LEVEL:-}" ]; then
+  if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; else LEVEL=levels/arena.lvl; fi
+fi
 LEVEL_ARGS=()
 [ -f "$LEVEL" ] && LEVEL_ARGS=(--level "$LEVEL")
 
@@ -52,6 +55,11 @@ cat <<'EOF'
     mouse          aim             Shift   dash          Q   roll          C   slide
     W into a wall  wall-cling / wall-run (keep speed up, hold Space or W)
     Left click     katana dash-slice        Right click   throw shuriken
+    E              wrist grapple: hooks the crosshair (reels you in), press E again to release
+
+  TEAMS (TEAM_SIZE=8 ./demo.sh): Cyan vs Orange, 8 per side, bots fill the empty slots. You join the smaller team.
+    Shurikens and the katana pass through teammates. First team to 50 team kills wins (tie = 60 s sudden death).
+  BLOCKS: the server and the wire support player-built blocks, but the game window has no build key yet.
 
 EOF
 exec crates/shinobi-game/target/debug/shinobi-game --server "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}"

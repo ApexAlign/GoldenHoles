@@ -23,7 +23,10 @@ pub enum Behaviour {
     Strafe,
     /// Circles plus FIRE/SLICE every tick and frequent dash/roll: worst-case input rate.
     Spam,
-    /// Cycles the three above by bot index.
+    /// Looks up and out while running: hooks the wrist grapple (zip edge) every 2.5 s, releases it, and tries to
+    /// place a block now and then. Exercises the rope / block wire.
+    Hook,
+    /// Cycles the four above by bot index.
     Mixed,
 }
 
@@ -33,6 +36,7 @@ impl Behaviour {
             "circles" => Some(Self::Circles),
             "strafe" | "wall-run" => Some(Self::Strafe),
             "spam" => Some(Self::Spam),
+            "hook" | "grapple" => Some(Self::Hook),
             "mixed" => Some(Self::Mixed),
             _ => None,
         }
@@ -40,7 +44,7 @@ impl Behaviour {
 
     fn resolve(self, index: u32) -> Self {
         match self {
-            Self::Mixed => [Self::Circles, Self::Strafe, Self::Spam][index as usize % 3],
+            Self::Mixed => [Self::Circles, Self::Strafe, Self::Spam, Self::Hook][index as usize % 4],
             b => b,
         }
     }
@@ -81,6 +85,14 @@ pub struct BotReport {
     pub snapshots: u64,
     pub wall_events: u64,
     pub obstacle_events: u64,
+    /// `RopeAttach` events seen (any player's grapple hooking).
+    pub rope_attaches: u64,
+    /// `BlockPlaced` events seen.
+    pub blocks_placed: u64,
+    /// Team (`shinobi_sim::team::TEAM_*`) the server assigned this bot, if it told us.
+    pub team: Option<u8>,
+    /// Distinct players whose team we learned (TeamAssign), including ourselves.
+    pub teams_known: u32,
     pub tick_window: Option<TickWindow>,
 }
 
@@ -117,6 +129,12 @@ fn script(b: Behaviour, index: u32, n: u64, aim: &mut Aim) -> ((f32, f32), Butto
                 bits |= Buttons::DASH;
             }
             ((x, 0.8), Buttons(bits))
+        }
+        Behaviour::Hook => {
+            // run in a wide arc, look up-and-out so the grapple ray finds a wall or ceiling
+            aim.yaw = (secs * 0.7 + phase).rem_euclid(TAU);
+            aim.pitch = 0.45;
+            ((0.0, 1.0), Buttons(0))
         }
         Behaviour::Spam => {
             aim.yaw = (secs * 2.0 + phase).rem_euclid(TAU);
@@ -167,6 +185,8 @@ pub fn run(cfg: &BotConfig, stop: &AtomicBool) -> BotReport {
                         match e {
                             NetEvent::WallSpawn(_) => rep.wall_events += 1,
                             NetEvent::ObstacleSpawn(_) => rep.obstacle_events += 1,
+                            NetEvent::RopeAttach { .. } => rep.rope_attaches += 1,
+                            NetEvent::BlockPlaced { .. } => rep.blocks_placed += 1,
                             _ => {}
                         }
                     }
@@ -218,7 +238,11 @@ pub fn run(cfg: &BotConfig, stop: &AtomicBool) -> BotReport {
                 let local = t0.elapsed().as_secs_f64() * TICK_HZ as f64;
                 if let Some(tick) = nc.pace_tick(local, cfg.lead_ticks) {
                     let (stick, buttons) = script(behaviour, cfg.index, n, &mut aim);
-                    let intent = build_intent(tick, stick, &aim, buttons);
+                    let mut intent = build_intent(tick, stick, &aim, buttons);
+                    if behaviour == Behaviour::Hook {
+                        intent.zip = n % 150 == 30 || n % 150 == 120; // hook, then release (the bit is an edge)
+                        intent.build = n % 100 == 50;
+                    }
                     if let Some(pkt) = nc.next_packet(intent, local) {
                         if sock.send(&pkt).is_ok() {
                             rep.packets_sent += 1;
@@ -231,5 +255,7 @@ pub fn run(cfg: &BotConfig, stop: &AtomicBool) -> BotReport {
     }
 
     rep.bad_datagrams = nc.bad_datagrams;
+    rep.team = nc.my_team();
+    rep.teams_known = nc.teams_known() as u32;
     rep
 }

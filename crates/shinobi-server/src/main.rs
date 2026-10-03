@@ -279,6 +279,7 @@ fn main() -> std::io::Result<()> {
                         departed.remove(&addr);
                         let at = server.pick_spawn(None);
                         server.add_player(id, at);
+                        supervise::balance_human_team(&mut server, id);
                         rep.add_peer(&server, id, server.tick);
                         peers.insert(
                             addr,

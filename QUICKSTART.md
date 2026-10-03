@@ -18,6 +18,40 @@ cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 
 
 One-liner for a local match: `BOTS=3 ./demo.sh` (builds, starts the server, opens the window).
 No window available? `scripts/demo_headless.sh` runs server + AI + scripted clients for 60 s and prints a health report.
+Before pushing code: `scripts/check.sh` (workspace tests + `cargo check` of the Bevy game crate; `--fast` skips the game crate).
+
+## Demo the 8v8 + grapple
+
+Cyan vs Orange, 8 per side, bots fill the empty slots, you join the smaller team. Teams are opt-in (`--team-size 8`);
+the server and every game window MUST load the same level (`levels/8v8.lvl`) or client prediction desyncs.
+
+**One machine** (builds, starts the server on the 8v8 map, opens the window):
+
+```bash
+TEAM_SIZE=8 ./demo.sh
+```
+
+**Server on one machine, game on another:**
+
+```bash
+# server machine: reachable from the network, UDP port 7777 open (Linux: sudo ufw allow 7777/udp)
+cargo run --release -p shinobi-server -- --bind 0.0.0.0 --level levels/8v8.lvl --team-size 8
+
+# every player machine: use the LAN IP the server banner prints (not 127.0.0.1)
+cd crates/shinobi-game && cargo run --release -- --server 192.168.1.20:7777 --level levels/8v8.lvl
+```
+
+Press **E** to fire the wrist grapple at the crosshair (the rope reels you in; E again releases) and use it with
+dash, wall-run and slide. Shurikens and the katana pass through teammates; first team to 50 team kills wins.
+(Player-built blocks work on the server and the wire, but the game has no build key yet.)
+
+**No window?** `scripts/demo_8v8_headless.sh` runs a release server with `--team-size 8` plus 8 scripted clients that
+hook the grapple and try to place blocks for 60 s, then prints PASS/FAIL (connections, tick rate, teams on the wire,
+grapple attaches seen). `SECS=20 CLIENTS=4 scripts/demo_8v8_headless.sh` for a quick run.
+
+**First build:** the examples above drop `--offline`, so cargo may download crates. Add `--offline` only when the crate
+cache is already populated (the scripts use it by default; `OFFLINE=0 scripts/demo_8v8_headless.sh` turns it off). The
+very first Bevy game build compiles hundreds of crates and takes several minutes; later builds are incremental.
 
 ## Controls
 
@@ -30,6 +64,7 @@ No window available? `scripts/demo_headless.sh` runs server + AI + scripted clie
 | W into a wall (hold Space or W) | wall-cling / wall-run |
 | Left click | katana dash-slice |
 | Right click | throw shuriken |
+| E | wrist grapple: hook the crosshair and reel in, E again releases |
 
 ## What to expect
 
