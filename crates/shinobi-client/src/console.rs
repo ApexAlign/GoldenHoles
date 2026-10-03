@@ -11,11 +11,35 @@ pub const LOG_MAX: usize = 64;
 pub const LINE_MAX: usize = 96;
 const SHOWN: usize = 12;
 
-#[derive(Clone, Debug, Default)]
+/// Audio change requested from the console: the shell applies it to its audio settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AudioCmd {
+    /// Master volume 0..=1.
+    Volume(f32),
+    Mute(bool),
+}
+
+/// What a submitted line asks the shell to do.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConsoleOut {
+    /// `settings` were edited: apply and save them.
+    pub settings_changed: bool,
+    pub audio: Vec<AudioCmd>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Console {
     pub input: String,
+    /// Current master volume 0..=1 and mute, kept in sync by the shell so `/vol` can report it.
+    pub audio: (f32, bool),
     log: VecDeque<String>,
     history: Vec<String>,
+}
+
+impl Default for Console {
+    fn default() -> Self {
+        Self { input: String::new(), audio: (0.7, false), log: VecDeque::new(), history: Vec::new() }
+    }
 }
 
 impl Console {
@@ -44,14 +68,28 @@ impl Console {
 
     /// Run the typed line. `settings` is edited in place (the caller applies and saves it when the returned flag is
     /// true); `kills` is the recent kill log for `/log`; `me` is the local player id (for `/colour`).
-    pub fn submit(&mut self, settings: &mut Settings, kills: &[KillEntry], me: u16) -> bool {
+    pub fn submit(&mut self, settings: &mut Settings, kills: &[KillEntry], me: u16) -> ConsoleOut {
         let line = std::mem::take(&mut self.input);
         let line = line.trim();
         if line.is_empty() {
-            return false;
+            return ConsoleOut::default();
         }
         self.push(format!("> {line}"));
         self.history.push(line.to_string());
+        let mut res = ConsoleOut::default();
+        if let Some((cmds, out)) = audio_cmd(line, self.audio) {
+            for cmd in &cmds {
+                match *cmd {
+                    AudioCmd::Volume(v) => self.audio.0 = v,
+                    AudioCmd::Mute(m) => self.audio.1 = m,
+                }
+            }
+            res.audio = cmds;
+            for l in out {
+                self.push(l);
+            }
+            return res;
+        }
         let (changed, out) = exec(line, settings, kills, me);
         for l in out {
             self.push(l);
@@ -59,11 +97,31 @@ impl Console {
         if changed {
             *settings = settings.clamped();
         }
-        changed
+        res.settings_changed = changed;
+        res
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
+    }
+}
+
+/// `/vol 0..100`, `/mute`, `/unmute`: the audio commands, handled apart from `exec` because they change shell state,
+/// not `Settings`. `None` = not an audio command.
+fn audio_cmd(line: &str, (vol, muted): (f32, bool)) -> Option<(Vec<AudioCmd>, Vec<String>)> {
+    let mut it = line.trim_start_matches('/').split_whitespace();
+    let cmd = it.next()?.to_ascii_lowercase();
+    match cmd.as_str() {
+        "vol" | "volume" => Some(match it.next().and_then(|v| v.trim_end_matches('%').parse::<f32>().ok()).filter(|v| v.is_finite()) {
+            Some(v) => {
+                let v = (v / 100.0).clamp(0.0, 1.0);
+                (vec![AudioCmd::Volume(v)], vec![format!("volume = {:.0}", v * 100.0)])
+            }
+            None => (vec![], vec![format!("volume = {:.0}{} (use /vol 0-100)", vol * 100.0, if muted { ", muted" } else { "" })]),
+        }),
+        "mute" => Some((vec![AudioCmd::Mute(true)], vec!["audio muted".into()])),
+        "unmute" => Some((vec![AudioCmd::Mute(false)], vec!["audio on".into()])),
+        _ => None,
     }
 }
 
@@ -80,6 +138,8 @@ pub fn exec(line: &str, s: &mut Settings, kills: &[KillEntry], me: u16) -> (bool
                 "/sens <v>   mouse sensitivity".into(),
                 "/fov <deg>  field of view".into(),
                 "/colour     your neon colour".into(),
+                "/vol <0-100> volume".into(),
+                "/mute /unmute".into(),
                 "/log        recent kills".into(),
                 "/clear      clear this log".into(),
             ],
@@ -140,6 +200,10 @@ mod tests {
     use super::*;
 
     fn run(c: &mut Console, s: &mut Settings, line: &str) -> bool {
+        run_out(c, s, line).settings_changed
+    }
+
+    fn run_out(c: &mut Console, s: &mut Settings, line: &str) -> ConsoleOut {
         for ch in line.chars() {
             c.type_char(ch);
         }
@@ -203,5 +267,22 @@ mod tests {
                 assert!(b.y >= 0.5 || b.y + b.h <= 0.5 - 0.04 || b.x > 0.6 || b.x + b.w < 0.4, "console covers the crosshair: {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn vol_mute_unmute_emit_audio_commands_and_track_state() {
+        let (mut c, mut s) = (Console::default(), Settings::default());
+        assert_eq!(run_out(&mut c, &mut s, "/vol 40").audio, vec![AudioCmd::Volume(0.4)]);
+        assert_eq!(c.audio.0, 0.4);
+        assert_eq!(run_out(&mut c, &mut s, "/vol 250").audio, vec![AudioCmd::Volume(1.0)], "clamped");
+        assert_eq!(run_out(&mut c, &mut s, "/vol 0%").audio, vec![AudioCmd::Volume(0.0)]);
+        assert_eq!(run_out(&mut c, &mut s, "/mute").audio, vec![AudioCmd::Mute(true)]);
+        assert!(c.audio.1);
+        assert_eq!(run_out(&mut c, &mut s, "/unmute").audio, vec![AudioCmd::Mute(false)]);
+        // no argument / junk: report, change nothing
+        assert!(run_out(&mut c, &mut s, "/vol").audio.is_empty());
+        assert!(run_out(&mut c, &mut s, "/vol loud").audio.is_empty());
+        assert!(c.log().any(|l| l.starts_with("volume = ")));
+        assert!(!run_out(&mut c, &mut s, "/mute").settings_changed, "audio never touches Settings");
     }
 }

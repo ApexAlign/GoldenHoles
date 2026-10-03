@@ -60,6 +60,16 @@ impl Default for ModeCfg {
     }
 }
 
+impl ModeCfg {
+    /// A build key was just released after `held_secs` (its hold time as of the previous frame): does the release print
+    /// (a tap), or was it a radial hold whose release belongs to the menu? Build keys print on release so a hold can
+    /// replace the print; the delivered `down`+`up` pair is exactly what a press used to send, so Combat's
+    /// double-tap-to-cycle window (press to press, in ticks) is unchanged, only shifted by the tap length.
+    pub fn build_release_prints(&self, held_secs: f32) -> bool {
+        !(self.radial_enabled && held_secs >= self.radial_hold_secs)
+    }
+}
+
 /// One frame of raw key state, already filtered to "the window has focus".
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ModeInput {
@@ -212,5 +222,15 @@ mod tests {
         let paused = ModeInput { locked: false, ..held };
         assert_eq!(m.update(&paused).mode, Mode::Play);
         assert_eq!(m.update(&held).mode, Mode::BuildRadial, "the console did not survive the pause");
+    }
+
+    #[test]
+    fn build_release_prints_for_taps_not_for_radial_holds() {
+        let on = ModeCfg { radial_enabled: true, ..Default::default() };
+        assert!(on.build_release_prints(0.05), "a quick tap prints");
+        assert!(on.build_release_prints(0.34), "just under the hold threshold still prints");
+        assert!(!on.build_release_prints(0.35), "a radial hold prints only through the menu");
+        let off = ModeCfg::default();
+        assert!(off.build_release_prints(5.0), "radial disabled: every release prints, however long");
     }
 }

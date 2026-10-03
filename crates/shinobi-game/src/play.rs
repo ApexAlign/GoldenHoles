@@ -406,10 +406,9 @@ pub fn input(
     }
     // Build keys print on RELEASE so a long hold can open the radial menu instead (it replaces the print): a tap
     // (released before the radial threshold, or radial disabled) prints now; a hold prints only what the radial picks.
-    let hold = mode.machine.cfg.radial_enabled.then_some(mode.machine.cfg.radial_hold_secs);
-    let was_hold = hold.map_or(false, |t| mode.build_hold_prev >= t);
+    let prints = mode.machine.cfg.build_release_prints(mode.build_hold_prev);
     for (code, action) in [(KeyCode::KeyN, Action::BuildFloor), (KeyCode::KeyM, Action::BuildWall)] {
-        if keys.just_released(code) && !was_hold {
+        if keys.just_released(code) && prints {
             out.push(ButtonEvent { action, down: true });
             out.push(ButtonEvent { action, down: false });
         }

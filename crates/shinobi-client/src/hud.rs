@@ -272,6 +272,32 @@ pub fn ffa_colour(id: u16) -> Rgba {
     Rgba(lift(r), lift(g), lift(b), 1.0)
 }
 
+/// Who eliminated the local player (death overlay).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KilledBy {
+    /// Empty for an environmental death.
+    pub name: String,
+    pub colour: Option<Rgba>,
+    pub weapon: DamageKind,
+    pub void: bool,
+}
+
+/// Match result for the end-of-match screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Winner {
+    pub name: String,
+    pub colour: Option<Rgba>,
+    /// The local player won.
+    pub local: bool,
+    /// Nobody won (no id from the server).
+    pub draw: bool,
+}
+
+/// Respawn delay shown as the countdown bar's full length (docs/DEMO.md: 3 s).
+pub const RESPAWN_SECS: f32 = 3.0;
+/// Spawn protection length for the shield indicator (docs/DEMO.md: 1.5 s).
+pub const SPAWN_SHIELD_SECS: f32 = 1.5;
+
 /// Plain data the HUD draws from. Fill it once per frame from the latest snapshot / server events plus
 /// the local `HudFx`; `Hud` never reaches into sim or net state itself.
 #[derive(Clone, Debug, Default)]
@@ -304,6 +330,14 @@ pub struct HudState {
     pub cursor: Option<(f32, f32)>,
     /// Map zone under the player: name and linear-RGB tint (`RenderView.district`).
     pub zone: Option<(String, [f32; 3])>,
+    /// Death overlay: who got you (only while dead).
+    pub killed_by: Option<KilledBy>,
+    /// Spawn protection left as a fraction 0..=1 (`None` = not protected).
+    pub shield: Option<f32>,
+    /// End-of-match result (intermission screen).
+    pub winner: Option<Winner>,
+    /// Master volume 0..=1 and mute, for the telemetry speaker glyph.
+    pub audio: Option<(f32, bool)>,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
@@ -760,10 +794,14 @@ impl Hud {
             out.push(Prim::Text { pos: (1.0 - SIDE_CLEAR - 0.01, 0.045), text: format!("{ms} MS{warn}"), size: 0.022, color: c.a(0.85), align: Align::Right });
         }
         if s.dead {
-            out.push(Prim::Text { pos: (0.5, 0.05), text: "ELIMINATED".into(), size: 0.034, color: p.magenta.a(0.9), align: Align::Center });
-            if let Some(t) = s.respawn_in_s {
-                out.push(Prim::Text { pos: (0.5, 0.62), text: format!("RESPAWN {:.1}", t.max(0.0)), size: 0.04, color: p.orange.a(0.9), align: Align::Center });
-            }
+            death_overlay(&mut out, s, p);
+        }
+        if let Some(f) = s.shield.filter(|_| !s.dead) {
+            // spawn protection: a gold bar draining under the crosshair
+            let w = 0.12;
+            out.push(Prim::Text { pos: (0.5, 0.605), text: "SPAWN SHIELD".into(), size: 0.017, color: p.gold.a(0.9), align: Align::Center });
+            out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.615, w, 0.006), color: p.gold.a(0.16), glow: 0.0 });
+            out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.615, w * f.clamp(0.0, 1.0), 0.006), color: p.gold.a(0.95), glow: 0.005 });
         }
 
         // Brow: wall-run chevron only when relevant (keeps the top quiet).
@@ -893,7 +931,8 @@ impl Hud {
         if let Some(b) = s.build {
             build_panel(&mut out, &b, p);
         }
-        if s.ffa {
+        // the results screen replaces the live leaderboard at intermission
+        if s.ffa && !matches!(s.match_clock, Some((PhaseKind::Intermission, _))) {
             ffa_panel(&mut out, s, p);
         }
         corner_brackets(&mut out, chrome.a(0.7 * pulse));
@@ -901,7 +940,7 @@ impl Hud {
             compass(&mut out, yaw, p);
         }
         if let Some(t) = &s.telemetry {
-            telemetry_panel(&mut out, t, s.wall_run, p);
+            telemetry_panel(&mut out, t, s.wall_run, s.audio, p);
             if let Some((name, tint)) = &s.zone {
                 // the edge of the map is a warning, every other district shows its own tint
                 let col = if name == "VOID EDGE" {
@@ -930,7 +969,24 @@ impl Hud {
         glyph_rain(&mut out, s.time, chrome, s.dead);
         killfeed(&mut out, s, p);
         if s.show_scoreboard {
-            scoreboard(&mut out, s, p);
+            if matches!(s.match_clock, Some((PhaseKind::Intermission, _))) {
+                results_screen(&mut out, s, p);
+            } else {
+                scoreboard(&mut out, s, p);
+            }
+        }
+        // warmup: say what we are waiting for in the clear band above the crosshair (the 3-2-1 banner takes over)
+        if s.banner.is_none() {
+            match s.match_clock {
+                Some((PhaseKind::Warmup, None)) => {
+                    let a = 0.6 + 0.4 * (s.time * 3.0).sin().abs();
+                    out.push(Prim::Text { pos: (0.5, 0.24), text: "WAITING FOR PLAYERS".into(), size: 0.04, color: p.orange.a(a), align: Align::Center });
+                }
+                Some((PhaseKind::Warmup, Some(t))) => {
+                    out.push(Prim::Text { pos: (0.5, 0.24), text: format!("MATCH STARTS IN {t}"), size: 0.04, color: p.orange.a(0.95), align: Align::Center });
+                }
+                _ => {}
+            }
         }
         out.extend(crate::controls_card::prims(&s.controls, p));
         out
@@ -1093,7 +1149,7 @@ fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
 }
 
 /// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
-fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palette) {
+fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, audio: Option<(f32, bool)>, p: &Palette) {
     let (x, y0, w) = (0.03, 0.605, 0.15);
     let rows: [(&str, String, Rgba); 4] = [
         ("SPD", format!("{:.1} M/S", t.speed), p.cyan),
@@ -1105,6 +1161,9 @@ fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palet
     out.push(Prim::Rect { r: Rect::new(x, y0, w, h), color: p.bg.a(0.35), glow: 0.0 });
     out.push(Prim::Line { a: (x, y0), b: (x, y0 + h), color: p.cyan.a(0.7), glow: 0.004 });
     out.push(Prim::Text { pos: (x + 0.008, y0 + 0.02), text: "TELEMETRY".into(), size: 0.015, color: p.text.a(0.5), align: Align::Left });
+    if let Some((vol, muted)) = audio {
+        speaker(out, (x + w - 0.05, y0 + 0.014), vol, muted, p);
+    }
     for (i, (k, v, c)) in rows.iter().enumerate() {
         let y = y0 + 0.032 + (i + 1) as f32 * 0.032 - 0.01;
         out.push(Prim::Text { pos: (x + 0.008, y), text: (*k).into(), size: 0.017, color: p.text.a(0.6), align: Align::Left });
@@ -1135,6 +1194,92 @@ fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
     }
     // range label inside the ring, under the centre (keeps the left column clear below the disc)
     out.push(Prim::Text { pos: (c.0, c.1 + r * 0.62), text: format!("{:.0}M", crate::hud_bridge::RADAR_RANGE), size: 0.013, color: p.text.a(0.45), align: Align::Center });
+}
+
+/// Speaker glyph in the telemetry header: a cone with sound waves scaled by the volume, or a cross when muted.
+fn speaker(out: &mut Vec<Prim>, c: (f32, f32), vol: f32, muted: bool, p: &Palette) {
+    let col = if muted { p.magenta } else { p.cyan }.a(0.9);
+    let h = 0.011;
+    let pt = |x: f32, y: f32| (c.0 + x * h * ASPECT, c.1 + y * h);
+    for (a, b) in [((-1.0, -0.4), (-0.4, -0.4)), ((-0.4, -0.4), (0.3, -1.0)), ((0.3, -1.0), (0.3, 1.0)), ((0.3, 1.0), (-0.4, 0.4)), ((-0.4, 0.4), (-1.0, 0.4)), ((-1.0, 0.4), (-1.0, -0.4))] {
+        out.push(Prim::Line { a: pt(a.0, a.1), b: pt(b.0, b.1), color: col, glow: 0.0 });
+    }
+    if muted {
+        out.push(Prim::Line { a: pt(0.7, -0.6), b: pt(1.7, 0.6), color: col, glow: 0.003 });
+        out.push(Prim::Line { a: pt(0.7, 0.6), b: pt(1.7, -0.6), color: col, glow: 0.003 });
+    } else {
+        let waves = if vol <= 0.01 { 0 } else if vol < 0.34 { 1 } else if vol < 0.67 { 2 } else { 3 };
+        for k in 0..waves {
+            let x = 0.7 + k as f32 * 0.55;
+            let r = 0.45 + k as f32 * 0.3;
+            out.push(Prim::Line { a: pt(x, -r), b: pt(x + 0.25, 0.0), color: col, glow: 0.0 });
+            out.push(Prim::Line { a: pt(x + 0.25, 0.0), b: pt(x, r), color: col, glow: 0.0 });
+        }
+    }
+    out.push(Prim::Text { pos: (c.0 + 0.032, c.1 + 0.006), text: if muted { "MUTE".into() } else { format!("{:.0}", vol * 100.0) }, size: 0.014, color: col, align: Align::Left });
+}
+
+/// Death overlay: ELIMINATED, who did it (with their weapon icon), the respawn countdown and its bar. All in the
+/// band above / below the crosshair, which stays empty.
+fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
+    out.push(Prim::Vignette { start: 0.3, max_a: 0.4, tint: p.magenta.a(1.0) });
+    out.push(Prim::Text { pos: (0.5, 0.25), text: "ELIMINATED".into(), size: 0.06, color: p.magenta.a(0.95), align: Align::Center });
+    if let Some(k) = &s.killed_by {
+        let (label, col, glyph) = if k.void {
+            ("THE VOID CLAIMED YOU".to_string(), p.magenta, Glyph::Void)
+        } else {
+            (format!("BY {}", k.name), k.colour.unwrap_or(p.text), Glyph::of(k.weapon))
+        };
+        let est = label.chars().count() as f32 * 0.032 * 0.52; // rough drawn width of the label
+        out.push(Prim::Text { pos: (0.5 + 0.015, 0.31), text: label, size: 0.032, color: col.a(1.0), align: Align::Center });
+        weapon_icon(out, (0.5 + 0.015 - est * 0.5 - 0.022, 0.31 - 0.011), 0.013, glyph, p.for_damage(k.weapon).a(0.95));
+    }
+    if let Some(t) = s.respawn_in_s {
+        let t = t.max(0.0);
+        out.push(Prim::Text { pos: (0.5, 0.64), text: format!("RESPAWN IN {t:.1}"), size: 0.04, color: p.orange.a(0.95), align: Align::Center });
+        let (w, f) = (0.24, (1.0 - t / RESPAWN_SECS).clamp(0.0, 1.0));
+        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.655, w, 0.008), color: p.orange.a(0.16), glow: 0.0 });
+        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.655, w * f, 0.008), color: p.orange.a(0.95), glow: 0.006 });
+    }
+}
+
+/// End-of-match results: winner, top 5 (rank, callsign, kills, deaths) in player colours, NEXT MATCH countdown.
+fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
+    let r = Rect::new(0.3, 0.14, 0.4, 0.62);
+    out.push(Prim::Rect { r, color: p.bg.a(0.85), glow: 0.0 });
+    out.push(Prim::Grid { r, cell: 0.04, color: p.grid.a(0.3) });
+    let (x1, y1) = (r.x + r.w, r.y + r.h);
+    for (a, b) in [((r.x, r.y), (x1, r.y)), ((x1, r.y), (x1, y1)), ((x1, y1), (r.x, y1)), ((r.x, y1), (r.x, r.y))] {
+        out.push(Prim::Line { a, b, color: p.cyan.a(0.85), glow: 0.006 });
+    }
+    out.push(Prim::Text { pos: (0.5, r.y + 0.06), text: "MATCH OVER".into(), size: 0.05, color: p.cyan.a(0.95), align: Align::Center });
+    match &s.winner {
+        Some(w) if w.draw => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "DRAW".into(), size: 0.034, color: p.gold.a(0.95), align: Align::Center }),
+        Some(w) if w.local => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "YOU WIN".into(), size: 0.04, color: p.gold.a(1.0), align: Align::Center }),
+        Some(w) => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: format!("WINNER {}", w.name), size: 0.034, color: w.colour.unwrap_or(p.gold).a(1.0), align: Align::Center }),
+        None => {}
+    }
+    let mut rows: Vec<&ScoreRow> = s.scoreboard.iter().collect();
+    rows.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+    rows.truncate(5);
+    let cols = [(r.x + 0.04, Align::Left), (r.x + 0.075, Align::Left), (r.x + 0.3, Align::Right), (r.x + 0.36, Align::Right)];
+    let hy = r.y + 0.18;
+    for (&(x, al), t) in cols.iter().zip(["#", "PLAYER", "K", "D"]) {
+        out.push(Prim::Text { pos: (x, hy), text: t.into(), size: 0.02, color: p.orange.a(0.9), align: al });
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let y = hy + 0.05 * (i as f32 + 1.0);
+        let col = if row.local { p.gold } else { row.colour.unwrap_or(p.text) };
+        if row.local {
+            out.push(Prim::Rect { r: Rect::new(r.x + 0.01, y - 0.032, r.w - 0.02, 0.04), color: p.gold.a(0.13), glow: 0.004 });
+        }
+        for (&(x, al), t) in cols.iter().zip([(i + 1).to_string(), row.name.clone(), row.kills.to_string(), row.deaths.to_string()]) {
+            out.push(Prim::Text { pos: (x, y), text: t, size: 0.028, color: col.a(1.0), align: al });
+        }
+    }
+    if let Some((_, Some(secs))) = s.match_clock {
+        out.push(Prim::Text { pos: (0.5, y1 - 0.045), text: format!("NEXT MATCH IN {secs}"), size: 0.034, color: p.orange.a(0.95), align: Align::Center });
+    }
 }
 
 /// Brackets around the lock target: they close in as lock progress rises, then snap tight and go solid.
@@ -1769,7 +1914,7 @@ mod tests {
         let mut s = HudState::from_frame(&net, &stats, &HudFx::default(), 0.0);
         s.dead = true;
         s.respawn_in_s = Some(2.5);
-        assert!(Hud::build(&s).iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "RESPAWN 2.5")));
+        assert!(Hud::build(&s).iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "RESPAWN IN 2.5")));
     }
 
     #[test]
@@ -1997,7 +2142,8 @@ mod tests {
         let mut s2 = s.clone();
         s2.match_clock = Some((PhaseKind::Intermission, Some(9)));
         s2.match_map = None;
-        assert!(t(&Hud::build(&s2), "MATCH OVER 0:09"));
+        let r2 = Hud::build(&s2);
+        assert!(t(&r2, "MATCH OVER") && t(&r2, "NEXT MATCH IN 9"), "intermission shows the results screen");
     }
 
     #[test]
@@ -2295,5 +2441,57 @@ mod tests {
                 assert!(b.x >= 0.795 && b.x + b.w <= 0.985 && b.y >= 0.55 && b.y + b.h <= 0.97, "rain strayed: {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn death_overlay_shield_results_warmup_and_speaker_states() {
+        let p = Palette::TRON;
+        let texts = |s: &HudState| -> Vec<String> {
+            Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        };
+        // death: eliminated by <callsign> + weapon icon, respawn countdown with its bar
+        let dead = HudState {
+            dead: true,
+            respawn_in_s: Some(1.5),
+            killed_by: Some(KilledBy { name: callsign(4), colour: Some(Rgba::CYAN), weapon: DamageKind::Shuriken, void: false }),
+            ..Default::default()
+        };
+        let t = texts(&dead);
+        assert!(t.contains(&"ELIMINATED".to_string()) && t.contains(&format!("BY {}", callsign(4))) && t.contains(&"RESPAWN IN 1.5".to_string()));
+        let void = HudState { killed_by: Some(KilledBy { name: String::new(), colour: None, weapon: DamageKind::Slash, void: true }), ..dead.clone() };
+        assert!(texts(&void).contains(&"THE VOID CLAIMED YOU".to_string()));
+        // the crosshair band stays clear even in the death overlay
+        for pr in Hud::build_with(&dead, &p) {
+            if let Some(b) = bounds(&pr) {
+                let near = b.x < 0.56 && b.x + b.w > 0.44 && b.y < 0.54 && b.y + b.h > 0.46;
+                assert!(!near || matches!(pr, Prim::Line { .. } | Prim::Ring { .. }), "death overlay over the cross: {b:?}");
+            }
+        }
+        // spawn shield shows while alive, never while dead
+        let shield = HudState { hp: 1.0, shield: Some(0.6), ..Default::default() };
+        assert!(texts(&shield).contains(&"SPAWN SHIELD".to_string()));
+        assert!(!texts(&HudState { dead: true, ..shield.clone() }).contains(&"SPAWN SHIELD".to_string()));
+        // results screen: winner, top 5, countdown
+        let row = |n: u16, k, d, local| ScoreRow { name: callsign(n), kills: k, deaths: d, ping_ms: 10, local, alive: true, team: None, colour: Some(crate::colour::player_rgba(n)) };
+        let res = HudState {
+            hp: 1.0,
+            show_scoreboard: true,
+            match_clock: Some((PhaseKind::Intermission, Some(8))),
+            winner: Some(Winner { name: callsign(1), colour: Some(Rgba::MAGENTA), local: false, draw: false }),
+            scoreboard: (1..=7u16).map(|i| row(i, 15 - i, i, i == 3)).collect(),
+            ..Default::default()
+        };
+        let t = texts(&res);
+        assert!(t.contains(&"MATCH OVER".to_string()) && t.contains(&format!("WINNER {}", callsign(1))) && t.contains(&"NEXT MATCH IN 8".to_string()));
+        assert!(t.contains(&callsign(5)) && !t.contains(&callsign(6)), "top five only");
+        assert!(texts(&HudState { winner: Some(Winner { name: "x".into(), colour: None, local: true, draw: false }), ..res.clone() }).contains(&"YOU WIN".to_string()));
+        assert!(texts(&HudState { winner: Some(Winner { name: String::new(), colour: None, local: false, draw: true }), ..res.clone() }).contains(&"DRAW".to_string()));
+        // warmup states
+        let warm = |secs| texts(&HudState { hp: 1.0, match_clock: Some((PhaseKind::Warmup, secs)), ..Default::default() });
+        assert!(warm(None).iter().filter(|x| *x == "WAITING FOR PLAYERS").count() >= 1);
+        assert!(warm(Some(7)).contains(&"MATCH STARTS IN 7".to_string()));
+        // speaker glyph in the telemetry header
+        let spk = |a| texts(&HudState { hp: 1.0, telemetry: Some(Telemetry { speed: 1.0, altitude: 1.0, rope: None }), audio: Some(a), ..Default::default() });
+        assert!(spk((0.7, false)).contains(&"70".to_string()) && spk((0.7, true)).contains(&"MUTE".to_string()));
     }
 }

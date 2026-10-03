@@ -282,14 +282,14 @@ line 0.760 0.840 0.240 0.840 0.000,0.940,1.000,0.800 g0.005
 line 0.240 0.840 0.240 0.520 0.000,0.940,1.000,0.800 g0.005
 text 0.251 0.548 0.020 "CONSOLE  /help" Left 0.020,0.030,0.080,0.765
 text 0.250 0.546 0.020 "CONSOLE  /help" Left 1.000,0.550,0.050,0.900
-text 0.253 0.582 0.017 "> /help" Left 0.020,0.030,0.080,0.765
-text 0.252 0.580 0.017 "> /help" Left 1.000,0.840,0.300,0.900
-text 0.253 0.602 0.017 "/sens <v>   mouse sensitivity" Left 0.020,0.030,0.080,0.765
-text 0.252 0.600 0.017 "/sens <v>   mouse sensitivity" Left 0.000,0.940,1.000,0.900
-text 0.253 0.622 0.017 "/fov <deg>  field of view" Left 0.020,0.030,0.080,0.765
-text 0.252 0.620 0.017 "/fov <deg>  field of view" Left 0.000,0.940,1.000,0.900
-text 0.253 0.642 0.017 "/colour     your neon colour" Left 0.020,0.030,0.080,0.765
-text 0.252 0.640 0.017 "/colour     your neon colour" Left 0.000,0.940,1.000,0.900
+text 0.253 0.582 0.017 "/fov <deg>  field of view" Left 0.020,0.030,0.080,0.765
+text 0.252 0.580 0.017 "/fov <deg>  field of view" Left 0.000,0.940,1.000,0.900
+text 0.253 0.602 0.017 "/colour     your neon colour" Left 0.020,0.030,0.080,0.765
+text 0.252 0.600 0.017 "/colour     your neon colour" Left 0.000,0.940,1.000,0.900
+text 0.253 0.622 0.017 "/vol <0-100> volume" Left 0.020,0.030,0.080,0.765
+text 0.252 0.620 0.017 "/vol <0-100> volume" Left 0.000,0.940,1.000,0.900
+text 0.253 0.642 0.017 "/mute /unmute" Left 0.020,0.030,0.080,0.765
+text 0.252 0.640 0.017 "/mute /unmute" Left 0.000,0.940,1.000,0.900
 text 0.253 0.662 0.017 "/log        recent kills" Left 0.020,0.030,0.080,0.765
 text 0.252 0.660 0.017 "/log        recent kills" Left 0.000,0.940,1.000,0.900
 text 0.253 0.682 0.017 "/clear      clear this log" Left 0.020,0.030,0.080,0.765

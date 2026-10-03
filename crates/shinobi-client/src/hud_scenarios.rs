@@ -3,8 +3,8 @@
 
 use crate::console::{self, Console};
 use crate::hud::{
-    callsign, AllyTag, BuildHud, BuildSlot, GrappleHud, Hud, HudState, KillEntry, Palette, Prim, RadarPing, ScoreRow, TargetHud,
-    Telemetry,
+    callsign, AllyTag, BuildHud, BuildSlot, GrappleHud, Hud, HudState, KillEntry, KilledBy, Palette, Prim, RadarPing, ScoreRow, TargetHud,
+    Telemetry, Winner,
 };
 use crate::radial;
 use shinobi_sim::combat::DamageKind;
@@ -72,6 +72,28 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         ..base()
     };
     out.push(("fight_lock", Hud::build_with(&fight, &p)));
+
+    let dead = HudState {
+        dead: true,
+        hp: 0.0,
+        respawn_in_s: Some(1.8),
+        killed_by: Some(KilledBy { name: callsign(1), colour: Some(player_rgba(1)), weapon: DamageKind::Shuriken, void: false }),
+        audio: Some((0.7, false)),
+        ..base()
+    };
+    out.push(("death", Hud::build_with(&dead, &p)));
+
+    let results = HudState {
+        show_scoreboard: true,
+        match_clock: Some((shinobi_sim::match_state::PhaseKind::Intermission, Some(6))),
+        winner: Some(Winner { name: callsign(1), colour: Some(player_rgba(1)), local: false, draw: false }),
+        audio: Some((0.7, true)),
+        ..base()
+    };
+    out.push(("results", Hud::build_with(&results, &p)));
+
+    let waiting = HudState { match_clock: Some((shinobi_sim::match_state::PhaseKind::Warmup, None)), shield: Some(0.7), scoreboard: vec![], ..base() };
+    out.push(("waiting", Hud::build_with(&waiting, &p)));
 
     let mut con = Console::default();
     let mut st = crate::settings::Settings::default();

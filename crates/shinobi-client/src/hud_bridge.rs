@@ -9,7 +9,7 @@ use crate::client_game::RenderView;
 use std::collections::HashMap;
 
 use crate::hud::{
-    BuildHud, BuildSlot, GrappleHud,
+    BuildHud, BuildSlot, GrappleHud, KilledBy, Winner, SPAWN_SHIELD_SECS,
     bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
@@ -82,6 +82,12 @@ pub struct HudBridge {
     pub lock: Option<LockInfo>,
     boot: Option<f32>,
     grapple_flash: f32,
+    /// The last kill that eliminated us (shown while dead).
+    last_death: Option<KilledBy>,
+    /// Seconds we have been invulnerable (spawn protection) since last becoming so.
+    invuln_t: f32,
+    /// Master volume and mute from the audio settings, for the speaker glyph (the shell sets it each frame).
+    pub audio: Option<(f32, bool)>,
     was_dead: bool,
     booted: bool,
     /// Seconds of enemy-reveal left after our last throw.
@@ -132,6 +138,12 @@ impl HudBridge {
                     if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
                         k.killer_colour = (!k.void).then(|| colour_of(*killer));
                         k.victim_colour = Some(colour_of(*victim));
+                    }
+                }
+                if let shinobi_sim::events::NetEvent::Kill { victim, .. } = e {
+                    if *victim == local_id {
+                        let tint = k.killer_team.map(|t| crate::hud::Palette::TRON.team(t)).or(k.killer_colour);
+                        self.last_death = Some(KilledBy { name: k.killer.clone(), colour: tint, weapon: k.weapon, void: k.void });
                     }
                 }
                 self.killfeed.push(k);
@@ -273,6 +285,27 @@ impl HudBridge {
             }
         }
         hs.boot = self.boot;
+        // death overlay, spawn shield, match result, audio glyph
+        hs.killed_by = if hs.dead { self.last_death.clone() } else { None };
+        if hs.invulnerable && !hs.dead {
+            self.invuln_t += dt;
+            hs.shield = Some((1.0 - self.invuln_t / SPAWN_SHIELD_SECS).clamp(0.0, 1.0));
+        } else {
+            self.invuln_t = 0.0;
+        }
+        if let Some(bd) = view.board.as_ref().filter(|bd| bd.phase == PHASE_INTERMISSION) {
+            let id = bd.winner;
+            hs.winner = Some(Winner {
+                name: if id == 0 { String::new() } else { callsign(id) },
+                colour: (id != 0).then(|| match &teams {
+                    Some(t) => crate::hud::Palette::TRON.team(t.team_of.get(&id).copied().unwrap_or(0)),
+                    None => colour_of(id),
+                }),
+                local: id != 0 && id == local_id,
+                draw: id == 0,
+            });
+        }
+        hs.audio = self.audio;
         hs.ffa = teams.is_none();
         hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(FFA_KILL_LIMIT)) } else { None };
         // build readout from the predicted ghost (an explicit `build` overrides it)
@@ -599,5 +632,31 @@ mod tests {
         let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
         assert!(t.locked && t.name == callsign(5) && (t.dist - 20.0).abs() < 0.1);
         assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");
+    }
+
+    #[test]
+    fn death_shield_winner_and_audio_reach_the_hud_state() {
+        use shinobi_sim::events::NetEvent;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.connected = true;
+        // we (id 0 offline) are killed by player 7 with a slash
+        v.events = vec![NetEvent::Kill { killer: 7, victim: 0, kind: shinobi_proto::gameplay::KIND_SLASH, tick: 1 }];
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.killed_by.is_none(), "not dead yet (no snapshot flag), so no overlay");
+        b.last_death.as_ref().map(|k| assert_eq!(k.name, callsign(7))).expect("death recorded");
+        // intermission: the winner comes from the board; the local player won when ids match
+        v.events.clear();
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] });
+        let s = b.update(0.016, &v, &net(), false);
+        let w = s.winner.expect("winner");
+        assert_eq!((w.name.as_str(), w.local, w.draw), (callsign(7).as_str(), false, false));
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 0, rows: vec![] });
+        assert!(b.update(0.016, &v, &net(), false).winner.unwrap().draw);
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] });
+        assert!(b.update(0.016, &v, &net(), false).winner.is_none(), "no result outside intermission");
+        // audio passes through
+        b.audio = Some((0.5, true));
+        assert_eq!(b.update(0.016, &v, &net(), false).audio, Some((0.5, true)));
     }
 }

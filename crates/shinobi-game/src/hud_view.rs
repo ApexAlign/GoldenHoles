@@ -44,7 +44,7 @@ impl Plugin for HudPlugin {
             .init_resource::<ConsoleRes>()
             .add_systems(Startup, enable_radial)
             .add_systems(Startup, spawn.after(crate::play::setup))
-            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, update).chain());
+            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, sync_audio, update).chain());
     }
 }
 
@@ -265,6 +265,11 @@ fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
     mode.machine.cfg.radial_enabled = true;
 }
 
+/// Master volume / mute -> the telemetry speaker glyph (absent when the game runs without the audio plugin).
+fn sync_audio(audio: Option<Res<crate::audio::AudioSettings>>, mut ctl: ResMut<HudCtl>) {
+    ctl.bridge.audio = audio.map(|a| (a.volume, a.muted));
+}
+
 /// Interactive overlay modes: radial commit (print the highlighted piece) and console typing.
 fn mode_ui(
     mode: Res<crate::play::ModeRes>,
@@ -274,6 +279,7 @@ fn mode_ui(
     mut settings: ResMut<SettingsRes>,
     ctl: Res<HudCtl>,
     mut net: ResMut<Net>,
+    mut audio: Option<ResMut<crate::audio::AudioSettings>>,
 ) {
     let Some(out) = mode.out else {
         typed.clear();
@@ -305,8 +311,20 @@ fn mode_ui(
             Key::Enter => {
                 let me = net.0.game.net.player_id().unwrap_or(0);
                 let kills = ctl.bridge.killfeed();
-                if console.0.submit(&mut settings.0, kills, me) {
+                if let Some(a) = audio.as_deref() {
+                    console.0.audio = (a.volume, a.muted);
+                }
+                let res = console.0.submit(&mut settings.0, kills, me);
+                if res.settings_changed {
                     save(&settings.0);
+                }
+                if let Some(a) = audio.as_deref_mut() {
+                    for cmd in res.audio {
+                        match cmd {
+                            console::AudioCmd::Volume(vol) => a.volume = vol,
+                            console::AudioCmd::Mute(m) => a.muted = m,
+                        }
+                    }
                 }
             }
             _ => {}

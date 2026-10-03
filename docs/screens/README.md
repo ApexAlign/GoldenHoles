@@ -6,7 +6,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan shinob
 
 ## HUD frames (HUD UI)
 `ffa_hud_frame_<sha>.png`: GPU (software Vulkan) offline shot after the HUD polish: spawn 3 on levels/ffa.lvl, 960x540.
-`hud_cpu_<state>.png` (spawn, fight_lock, console, scoreboard, radial): CPU-rendered HUD draw lists on a dark backdrop
+`hud_cpu_<state>.png` (spawn, fight_lock, console, scoreboard, radial, death, results, waiting): CPU-rendered HUD draw lists on a dark backdrop
 (no glow, scanlines or bloom; geometry, colour and legibility only). Regenerate with
 `cargo run -p shinobi-client --example hud_dump -- OUT_DIR 960 540` (also writes bright-backdrop variants); the layouts are
 guarded by `crates/shinobi-client/tests/hud_golden.rs` (`UPDATE_GOLDEN=1` to re-record).
