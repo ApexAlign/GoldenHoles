@@ -312,6 +312,8 @@ pub fn input(
     mut menu: ResMut<crate::hud_view::MenuRes>,
     mut mode: ResMut<ModeRes>,
     time: Res<Time>,
+    mut net: ResMut<Net>,
+    mut view: ResMut<ViewRes>,
 ) {
     let Some(mut cursor) = cursor else { return };
     let lock = &mut *lock;
@@ -368,8 +370,13 @@ pub fn input(
         return;
     }
     if mode_out.flags.allow_look {
-        f.look.0 += motion.delta.x;
-        f.look.1 += motion.delta.y;
+        // Mouse look turns the aim on every rendered frame, not only on the 60 Hz sim tick: the camera used to step at
+        // 60 Hz (judder on faster displays or uneven frames). The next intent still carries the current aim.
+        if motion.delta != Vec2::ZERO {
+            let g = &mut net.0.game;
+            g.settings.look(&mut g.aim, motion.delta.x, motion.delta.y, false);
+            view.0.aim = g.aim;
+        }
     }
     if mode_out.flags.allow_move {
         f.stick = keys_to_stick(
@@ -418,11 +425,19 @@ pub fn input(
 }
 
 /// OS window title follows the lock state ("click the window to play" until the mouse is grabbed).
-fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>) {
+fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<Time<Real>>, mut fps: Local<(f32, u32, u32)>) {
     let Some(mut w) = window else { return };
-    let t = overlay::window_title(lock.p.locked());
+    // smoothed frame rate in the title (refreshed twice a second) so a slow machine is visible at a glance
+    fps.0 += time.delta_secs();
+    fps.1 += 1;
+    if fps.0 >= 0.5 {
+        fps.2 = (fps.1 as f32 / fps.0).round() as u32;
+        fps.0 = 0.0;
+        fps.1 = 0;
+    }
+    let t = format!("{}  |  {} fps", overlay::window_title(lock.p.locked()), fps.2);
     if w.title != t {
-        w.title = t.into();
+        w.title = t;
     }
 }
 
