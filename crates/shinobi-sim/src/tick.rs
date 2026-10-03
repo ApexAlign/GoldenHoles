@@ -501,6 +501,9 @@ impl Server {
                     let c = p.pos(&self.world);
                     self.events.push((id, CombatEvent::GrappleRelease { pos: Point::new(c[0], c[1], c[2]) }));
                 }
+                crate::character::GrappleEvent::Miss { origin, dir } => {
+                    self.events.push((id, CombatEvent::GrappleMiss { origin: Point::from(origin), dir }));
+                }
                 crate::character::GrappleEvent::None => {}
             }
 
@@ -513,6 +516,7 @@ impl Server {
                     self.world.bodies[p.ch.body].set_position(Isometry::translation(to.x, to.y, to.z), true);
                     crate::character::sync_body_colliders(&mut self.world, p.ch.body);
                     p.ch.vel = Vector::zeros();
+                    p.ch.clear_grapple();
                 }
                 Verdict::Kick => kicked.push(p.id),
             }
