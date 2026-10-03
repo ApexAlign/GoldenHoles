@@ -134,6 +134,8 @@ pub enum CombatEvent {
     UltimateStart { origin: Point<Real> },
     /// Wrist grapple hooked: rope runs from the eye `origin` to the static `anchor` (docs/grapple.md).
     GrappleAttach { origin: Point<Real>, anchor: Point<Real> },
+    /// Grapple fired at nothing hookable (sky, out of range, a player): play the 'fizzle' feedback.
+    GrappleMiss { origin: Point<Real>, dir: Vector<Real> },
     /// Rope released (zip again, jump, arrived, timeout, line of sight lost).
     GrappleRelease { pos: Point<Real> },
 }

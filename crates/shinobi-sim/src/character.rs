@@ -66,6 +66,8 @@ pub struct Cfg {
     pub grapple_lift: f32,
     /// Fraction of `air_accel` the stick gets while on the rope (adds speed along the stick, never brakes).
     pub grapple_steer: f32,
+    /// Cooldown after a miss (keeps E-spam from firing a ray and an event every tick).
+    pub grapple_miss_cd: f32,
 }
 
 impl Default for Cfg {
@@ -119,6 +121,7 @@ impl Default for Cfg {
             grapple_jump_boost: 5.0,
             grapple_lift: 3.0,
             grapple_steer: 0.35,
+            grapple_miss_cd: 0.15,
         }
     }
 }
@@ -179,6 +182,8 @@ pub enum GrappleEvent {
     None,
     Attached { origin: Vector<Real>, anchor: Vector<Real> },
     Released,
+    /// Fired but nothing hookable in range (sky, too far, too close, a player / moving block): 'no target' feedback.
+    Miss { origin: Vector<Real>, dir: Vector<Real> },
 }
 
 /// Everything `update` reads besides the world and the input. Exact (f32) copy: restoring one and replaying the
@@ -541,8 +546,15 @@ impl CharacterSystem {
                 let delta = target - h;
                 let max = if grounded_state { f32::INFINITY } else { cfg.air_accel * dt };
                 let step = if self.grapple.is_some() {
-                    // on the rope the stick only nudges sideways; it never brakes the swing or the reel
-                    dir_in * (cfg.air_accel * dt * cfg.grapple_steer)
+                    // on the rope the stick only nudges; it never brakes the swing or the reel, and once the player is
+                    // faster than a run it can only steer (sideways), never add speed (no runaway on the rope)
+                    let mut st = dir_in * (cfg.air_accel * dt * cfg.grapple_steer);
+                    let speed = h.norm();
+                    if speed > cfg.run_speed {
+                        let hd = h / speed;
+                        st -= hd * st.dot(&hd);
+                    }
+                    st
                 } else if delta.norm() <= max {
                     delta
                 } else {
@@ -697,17 +709,48 @@ impl CharacterSystem {
         w.queries.cast_ray(&w.bodies, &w.colliders, &ray, max, true, filter).map(|(_, t)| t)
     }
 
+    /// First hookable point along `dir` from `eye`: (distance, point). Same rule `grapple_fire` uses, shared with the
+    /// client's crosshair "hookable" probe. `None` = sky, out of range, closer than `grapple_min_len`, or only players /
+    /// moving geometry in the way. Callers must have refreshed `w.queries` (the solid pipeline).
+    pub fn grapple_probe(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>) -> Option<(f32, Vector<Real>)> {
+        if dir.norm_squared() < 1e-6 {
+            return None;
+        }
+        let dir = dir.normalize();
+        let toi = self.grapple_cast(w, eye, dir, self.cfg.grapple_range)?;
+        (toi >= self.cfg.grapple_min_len && toi.is_finite()).then(|| (toi, eye + dir * toi))
+    }
+
+    /// Seconds until the wrist grapple can fire again (0 = ready).
+    pub fn grapple_cooldown(&self) -> f32 {
+        self.grapple_cd
+    }
+
+    /// Drop the rope without an event or cooldown (death, respawn, teleport back).
+    pub fn clear_grapple(&mut self) {
+        self.grapple = None;
+        self.grapple_cd = 0.0;
+    }
+
     fn grapple_fire(&mut self, w: &PhysicsWorld, pos: Vector<Real>, aim: Vector<Real>, jumped: &mut bool) {
         let cfg = self.cfg;
-        if self.grapple_cd > 0.0 || aim.norm_squared() < 1e-6 {
+        if self.grapple_cd > 0.0 || aim.norm_squared() < 1e-6 || !aim.iter().all(|v| v.is_finite()) {
             return;
         }
         let dir = aim.normalize();
         let eye = pos + Vector::y() * self.eye_above();
-        if let Some(toi) = self.grapple_cast(w, eye, dir, cfg.grapple_range) {
-            if toi >= cfg.grapple_min_len {
-                let anchor = eye + dir * toi;
+        match self.grapple_probe(w, eye, dir) {
+            Some((toi, anchor)) => {
                 self.grapple = Some(GrappleState { anchor, len: toi, time: 0.0 });
+                // the rope takes over from wall-run and slide (both overwrite velocity every tick); a dash / roll in
+                // progress keeps going and the rope is slack until it ends
+                if matches!(self.state, MoveState::WallRun { .. }) {
+                    self.state = MoveState::Airborne;
+                    self.wall_cd = 0.15;
+                }
+                if self.slide.take().is_some() {
+                    self.slide_cd = cfg.slide_cd;
+                }
                 if self.state == MoveState::Grounded {
                     self.vel.y = self.vel.y.max(0.0) + cfg.grapple_lift;
                     self.coyote = 0.0;
@@ -715,7 +758,24 @@ impl CharacterSystem {
                 }
                 self.grapple_event = GrappleEvent::Attached { origin: eye, anchor };
             }
+            None => {
+                self.grapple_cd = cfg.grapple_miss_cd;
+                self.grapple_event = GrappleEvent::Miss { origin: eye, dir };
+            }
         }
+    }
+
+    /// Is hookable geometry still within a hair of `anchor`?
+    fn grapple_anchor_present(&self, w: &PhysicsWorld, anchor: Vector<Real>) -> bool {
+        if !anchor.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let pred = |_h: ColliderHandle, c: &Collider| c.parent().map_or(true, |b| w.bodies.get(b).map_or(true, |rb| rb.is_fixed()));
+        let filter = QueryFilter::default().exclude_rigid_body(self.body).exclude_sensors().predicate(&pred);
+        let ball = Ball::new(0.08);
+        w.queries
+            .intersection_with_shape(&w.bodies, &w.colliders, &Isometry::translation(anchor.x, anchor.y, anchor.z), &ball, filter)
+            .is_some()
     }
 
     fn grapple_release(&mut self) {
@@ -745,6 +805,10 @@ impl CharacterSystem {
             if self.grapple_cast(w, eye, to / d, d - 0.3).is_some() {
                 release = true;
             }
+        }
+        // the surface must still be there (a block can be evicted or removed mid-swing)
+        if !release && !self.grapple_anchor_present(w, g.anchor) {
+            release = true;
         }
         if release {
             self.grapple_release();
@@ -1386,5 +1450,203 @@ mod tests {
         }
         let p = *w.bodies[ch.body].translation();
         assert!(p.z < -15.0 && p.y > 2.0, "lifted off and pulled: {p:?}");
+    }
+
+    // ---------- wrist grapple: edge cases ----------
+
+    fn finite(ch: &CharacterSystem, w: &PhysicsWorld) -> bool {
+        w.bodies[ch.body].translation().iter().all(|v| v.is_finite()) && ch.vel.iter().all(|v| v.is_finite())
+    }
+
+    #[test]
+    fn firing_at_the_sky_or_a_player_reports_a_miss_and_throttles() {
+        let mut w = world();
+        boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let _other = player(&mut w, [0.0, 0.81, -8.0]);
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 1.0, 0.1]), &mut now); // straight up: sky
+        assert!(ch.grapple.is_none());
+        assert!(matches!(ch.grapple_event, GrappleEvent::Miss { .. }), "{:?}", ch.grapple_event);
+        tick(&mut ch, &mut w, &fire([0.0, 1.0, 0.1]), &mut now); // spam: on the miss cooldown, no new event
+        assert_eq!(ch.grapple_event, GrappleEvent::None);
+        for _ in 0..12 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        tick(&mut ch, &mut w, &fire([0.0, 0.0, -1.0]), &mut now); // only a player in the way: not hookable
+        assert!(ch.grapple.is_none() && matches!(ch.grapple_event, GrappleEvent::Miss { .. }));
+    }
+
+    #[test]
+    fn moving_geometry_is_not_hookable() {
+        let mut w = world();
+        boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        let body = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().translation(vector![0.0, 3.0, -15.0]).build());
+        w.colliders.insert_with_parent(ColliderBuilder::cuboid(3.0, 3.0, 0.5).build(), body, &mut w.bodies);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.15, -1.0]), &mut now);
+        assert!(ch.grapple.is_none(), "a kinematic obstacle must not take the hook");
+    }
+
+    #[test]
+    fn rope_releases_cleanly_when_its_block_is_removed_mid_swing() {
+        let mut w = world();
+        let block = w.colliders.insert(ColliderBuilder::cuboid(1.0, 1.0, 1.0).translation(vector![0.0, 9.0, -20.0]).build());
+        boxc(&mut w, [0.0, -50.0, 0.0], [100.0, 0.5, 100.0]);
+        let mut ch = player(&mut w, [0.0, 5.0, 0.0]);
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+        assert!(ch.grapple.is_some(), "hooked the block");
+        for _ in 0..10 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(ch.grapple.is_some());
+        w.colliders.remove(block, &mut w.islands, &mut w.bodies, false); // evicted / removed
+        tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        assert!(ch.grapple.is_none(), "anchor gone: rope must release");
+        assert_eq!(ch.grapple_event, GrappleEvent::Released);
+        for _ in 0..60 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(finite(&ch, &w));
+    }
+
+    #[test]
+    fn hooking_at_a_box_corner_and_edge_is_stable() {
+        for aim_at in [[2.0, 8.0, -20.0], [2.0, 6.0, -20.0], [1.99, 8.01, -19.99], [2.0, 7.0, -20.0]] {
+            let mut w = world();
+            boxc(&mut w, [0.0, 7.0, -21.0], [2.0, 1.0, 1.0]); // top face y = 8, front face z = -20, side x = 2
+            boxc(&mut w, [0.0, -50.0, 0.0], [100.0, 0.5, 100.0]);
+            let mut ch = player(&mut w, [0.0, 3.0, 0.0]);
+            let mut now = 0.0;
+            tick(&mut ch, &mut w, &fire([aim_at[0], aim_at[1] - 3.6, aim_at[2]]), &mut now);
+            for i in 0..400 {
+                tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+                assert!(finite(&ch, &w), "NaN at tick {i} for {aim_at:?}");
+            }
+            assert!(ch.grapple.is_none(), "rope must end (arrive / timeout) for {aim_at:?}");
+        }
+    }
+
+    #[test]
+    fn hooking_while_wall_running_leaves_the_wall_and_reels() {
+        let (mut w, mut ch) = wall_scene();
+        boxc(&mut w, [-20.0, 8.0, -30.0], [3.0, 8.0, 1.0]); // an anchor ahead and to the side
+        let input = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], wall_cling: true, ..Default::default() };
+        let mut now = 0.0;
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &input, &mut now);
+        }
+        assert!(matches!(ch.state, MoveState::WallRun { .. }));
+        let mut f = fire([-20.0, 3.0, -24.0]);
+        f.move_dir = input.move_dir;
+        f.wall_cling = true;
+        tick(&mut ch, &mut w, &f, &mut now);
+        assert!(ch.grapple.is_some(), "hook from a wall-run");
+        assert!(!matches!(ch.state, MoveState::WallRun { .. }), "the rope takes over from the wall-run");
+        for i in 0..120 {
+            tick(&mut ch, &mut w, &input, &mut now);
+            assert!(finite(&ch, &w), "tick {i}");
+        }
+    }
+
+    #[test]
+    fn hooking_while_sliding_cancels_the_slide_and_lifts_off() {
+        let mut w = world();
+        boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
+        boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        tick(&mut ch, &mut w, &PlayerInput { slide: true, ..run }, &mut now);
+        assert!(ch.sliding(), "sliding");
+        let mut f = fire([0.0, 0.3, -1.0]);
+        f.slide = true;
+        f.move_dir = run.move_dir;
+        tick(&mut ch, &mut w, &f, &mut now);
+        assert!(ch.grapple.is_some() && !ch.sliding(), "slide cancelled by the hook");
+        let mut peak = 0.0f32;
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &PlayerInput { slide: true, ..run }, &mut now);
+            peak = peak.max(w.bodies[ch.body].translation().y);
+        }
+        assert!(peak > 1.5, "left the floor even with slide held (peak y {peak})");
+    }
+
+    #[test]
+    fn hooking_during_a_roll_or_dash_keeps_the_evasion_and_stays_finite() {
+        for roll in [false, true] {
+            let mut w = world();
+            boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
+            boxc(&mut w, [0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+            let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+            let mut now = 0.0;
+            for _ in 0..5 {
+                tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+            }
+            let mut start = PlayerInput { move_dir: vector![1.0, 0.0, 0.0], dash_pressed: !roll, roll_pressed: roll, ..Default::default() };
+            tick(&mut ch, &mut w, &start, &mut now);
+            assert_eq!(ch.evading(), Some(roll));
+            start = fire([0.0, 0.3, -1.0]);
+            start.move_dir = vector![1.0, 0.0, 0.0];
+            tick(&mut ch, &mut w, &start, &mut now);
+            assert!(ch.grapple.is_some(), "hook during evasion (roll {roll})");
+            assert!(ch.evading().is_some(), "evasion keeps going");
+            for i in 0..200 {
+                tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+                assert!(finite(&ch, &w), "tick {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn zip_spam_every_tick_never_panics_or_sticks() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        let mut attaches = 0;
+        let mut ev = 0;
+        for i in 0..900 {
+            let dir = [((i % 7) as f32 - 3.0) * 0.1, 0.2 + (i % 5) as f32 * 0.05, -1.0];
+            tick(&mut ch, &mut w, &fire(dir), &mut now);
+            attaches += matches!(ch.grapple_event, GrappleEvent::Attached { .. }) as u32;
+            ev += (ch.grapple_event != GrappleEvent::None) as u32;
+            assert!(finite(&ch, &w), "tick {i}");
+        }
+        // cooldown 0.5 s after a release, 0.15 s after a miss: spam is rate-limited, not an event per tick
+        assert!(attaches <= 15 * 4, "attach spam: {attaches}");
+        assert!(ev < 600, "events per tick: {ev}");
+    }
+
+    #[test]
+    fn clearing_the_rope_on_death_or_respawn_leaves_no_ghost_rope() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+        assert!(ch.grapple.is_some());
+        ch.clear_grapple();
+        assert!(ch.grapple.is_none() && ch.grapple_cooldown() == 0.0);
+        for _ in 0..5 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(ch.grapple.is_none(), "must not reattach by itself");
+        tick(&mut ch, &mut w, &fire([0.0, 0.2, -1.0]), &mut now);
+        assert!(ch.grapple.is_some(), "no cooldown after a respawn");
+    }
+
+    #[test]
+    fn corrupt_state_cannot_poison_the_character() {
+        // anchor NaN / inf (hostile or corrupt restore) is released, never propagated
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        ch.grapple = Some(GrappleState { anchor: vector![f32::NAN, 0.0, 0.0], len: 5.0, time: 0.0 });
+        tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        assert!(ch.grapple.is_none() && finite(&ch, &w));
+        ch.grapple = Some(GrappleState { anchor: vector![f32::INFINITY, 0.0, 0.0], len: 5.0, time: 0.0 });
+        tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        assert!(ch.grapple.is_none() && finite(&ch, &w));
     }
 }

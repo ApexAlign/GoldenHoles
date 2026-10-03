@@ -321,6 +321,7 @@ pub fn apply_hits(
         p.vitals.deaths = p.vitals.deaths.saturating_add(1);
         p.vitals.dead_until_tick = Some(tick + respawn_ticks);
         p.ch.vel = Vector::zeros();
+        p.ch.clear_grapple();
         p.combat.reset_projectiles();
         if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
             col.set_collision_groups(InteractionGroups::none());
@@ -381,6 +382,7 @@ pub fn revive(p: &mut Player, world: &mut PhysicsWorld, s: [f32; 3], tick: u32, 
     world.bodies[p.ch.body].set_position(Isometry::translation(s[0], s[1], s[2]), true);
     crate::character::sync_body_colliders(world, p.ch.body);
     p.ch.vel = Vector::zeros();
+    p.ch.clear_grapple();
     p.vitals.hp = p.vitals.max_hp;
     p.vitals.dead_until_tick = None;
     p.vitals.invuln_until_tick = tick + invuln_ticks;

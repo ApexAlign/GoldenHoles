@@ -25,7 +25,7 @@ use shinobi_proto::quant::{dq_pitch, dq_yaw};
 use shinobi_proto::quant::dq_vel;
 use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
-use shinobi_sim::character::{Cfg, CharacterSystem, MoveState, PhysicsWorld, PlayerInput};
+use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
 use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_PLAYER};
@@ -34,7 +34,7 @@ use shinobi_sim::level::LevelDesc;
 use shinobi_sim::movement::{refresh_solid, step_player_with};
 use shinobi_sim::own_state::OwnState;
 use shinobi_sim::rapier3d::prelude::*;
-use shinobi_sim::tick::to_player_input;
+use shinobi_sim::tick::{to_player_input, view_dir};
 
 use crate::camera::{CameraFeel, CameraInput, CameraPose, FpsCamera, FpsCameraCfg, WeaponPose};
 use crate::settings::Settings;
@@ -123,6 +123,8 @@ struct Predicted {
     now: f32,
     pos: [f32; 3],
     prev_pos: [f32; 3],
+    /// Crosshair is on a hookable surface (probed every tick against the predicted world).
+    hookable: bool,
     /// Client clock (ticks) at the most recent `sim_tick`; interpolation alpha is measured from here.
     sim_local: f64,
 }
@@ -136,6 +138,15 @@ impl Predicted {
         self.prev_pos = self.pos;
         self.pos = [t.x, t.y, t.z];
         self.pos
+    }
+
+    /// Can the grapple grab something along this view direction from here? (Crosshair tint.)
+    fn probe_hook(&mut self, aim_yaw: u16, aim_pitch: u16) {
+        refresh_solid(&mut self.solid, &self.world.colliders);
+        std::mem::swap(&mut self.world.queries, &mut self.solid);
+        let eye = vector![self.pos[0], self.pos[1] + self.ch.eye_above(), self.pos[2]];
+        self.hookable = self.ch.grapple_probe(&self.world, eye, view_dir(aim_yaw, aim_pitch)).is_some();
+        std::mem::swap(&mut self.world.queries, &mut self.solid);
     }
 }
 
@@ -199,6 +210,20 @@ pub struct LocalFx {
     pub slash: Option<PredictedSlash>,
     /// Shuriken thrown this interval: its direction.
     pub threw: Option<[f32; 3]>,
+    // -- wrist grapple --
+    /// Rope attached as of the newest predicted tick.
+    pub grappling: bool,
+    /// Ready to fire (off cooldown and not already on the rope).
+    pub grapple_ready: bool,
+    /// 1.0 = just released / missed, 0.0 = ready (same convention as the other cooldowns).
+    pub grapple_cooldown: f32,
+    /// The crosshair is on something the hook can grab right now (client-side ray in the predicted world).
+    pub grapple_hookable: bool,
+    /// Hooked this interval: the anchor point.
+    pub grapple_attached: Option<[f32; 3]>,
+    pub grapple_released: bool,
+    /// Fired at nothing hookable this interval ('no target' fizzle).
+    pub grapple_missed: bool,
 }
 
 /// What the shell draws. `Default` so shells and tests can use `..Default::default()` and new fields never break them.
@@ -413,6 +438,7 @@ impl ClientGame {
             now: (ack.tick + 1) as f32 * TICK_DT,
             pos: ack.own.pos,
             prev_pos: ack.own.pos,
+            hookable: false,
             sim_local: 0.0,
         };
         // catch up: every intent already sent after the acked tick
@@ -490,6 +516,13 @@ impl ClientGame {
                 let pos = p.step(&sink);
                 p.sim_local = local_tick;
                 self.reconciler.record(intent, pos);
+                p.probe_hook(intent.aim_yaw, intent.aim_pitch);
+                match p.ch.grapple_event {
+                    GrappleEvent::Attached { anchor, .. } => self.fx_edges.grapple_attached = Some([anchor.x, anchor.y, anchor.z]),
+                    GrappleEvent::Released => self.fx_edges.grapple_released = true,
+                    GrappleEvent::Miss { .. } => self.fx_edges.grapple_missed = true,
+                    GrappleEvent::None => {}
+                }
 
                 // cooldown mirror + cosmetic edges
                 self.throw_cd_left = (self.throw_cd_left - TICK_DT).max(0.0);
@@ -587,6 +620,10 @@ impl ClientGame {
             fx.sliding = p.ch.sliding();
             fx.speed = (p.ch.vel.x * p.ch.vel.x + p.ch.vel.z * p.ch.vel.z).sqrt();
             fx.dash_ready = p.ch.dash_ready();
+            fx.grappling = p.ch.grapple.is_some();
+            fx.grapple_ready = !fx.grappling && p.ch.grapple_cooldown() <= 0.0;
+            fx.grapple_cooldown = (p.ch.grapple_cooldown() / self.cfg.sim.grapple_cd.max(1e-3)).clamp(0.0, 1.0);
+            fx.grapple_hookable = p.hookable;
         }
         if let Some(p) = &self.pred {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);

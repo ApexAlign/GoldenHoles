@@ -260,6 +260,16 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
+            // fizzle: a short dim puff a few metres out along the aim
+            CombatEvent::GrappleMiss { origin, dir } => {
+                let mut em = self.mk(EmitterKind::HitSpark, p.orange, 1.5);
+                em.origin = [origin.x + dir.x * 3.0, origin.y + dir.y * 3.0, origin.z + dir.z * 3.0];
+                em.count = 4;
+                em.spread = std::f32::consts::PI * 0.5;
+                em.life = 0.2;
+                em.seed = tick;
+                self.out.push(em);
+            }
             CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } => {}
         }
     }
