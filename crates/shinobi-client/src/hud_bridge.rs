@@ -9,6 +9,7 @@ use crate::client_game::RenderView;
 use std::collections::HashMap;
 
 use crate::hud::{
+    GrappleHud,
     bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
@@ -66,8 +67,7 @@ pub const RADAR_FIRE_SECS: f32 = 2.0;
 #[derive(Default)]
 pub struct HudBridge {
     pub teams: Option<TeamInfo>,
-    /// Free-for-all colour per player id. Defaults to the HUD's stand-in until the network layer's
-    /// `player_colour(id)` lands, then point this at it.
+    /// Free-for-all colour per player id (defaults to `colour::player_rgba`).
     pub colour_of: Option<fn(u16) -> crate::hud::Rgba>,
     /// Kills that end a free-for-all match (server limit, if known).
     pub kill_limit: Option<u16>,
@@ -77,6 +77,7 @@ pub struct HudBridge {
     /// Lock-on target from combat (`RenderView.lock` once it exists): world position + progress. Stub input.
     pub lock: Option<LockInfo>,
     boot: Option<f32>,
+    grapple_flash: f32,
     was_dead: bool,
     booted: bool,
     /// Seconds of enemy-reveal left after our last throw.
@@ -93,7 +94,7 @@ impl HudBridge {
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
         self.fx.tick(dt);
-        let colour_of = self.colour_of.unwrap_or(crate::hud::ffa_colour);
+        let colour_of = self.colour_of.unwrap_or(crate::colour::player_rgba);
         let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
         let me = view.local_pos.unwrap_or([0.0; 3]);
@@ -262,7 +263,19 @@ impl HudBridge {
         hs.ffa = teams.is_none();
         hs.kill_limit = if teams.is_none() { self.kill_limit } else { None };
         hs.build = self.build;
-        hs.grapple = self.grapple;
+        // grapple readout from the predicted movement state (an explicit `grapple` overrides it)
+        let gf = &view.fx;
+        if gf.grapple_missed {
+            self.grapple_flash = 0.4;
+        } else {
+            self.grapple_flash = (self.grapple_flash - dt).max(0.0);
+        }
+        hs.grapple = self.grapple.or(Some(GrappleHud {
+            ready: if gf.grappling { 0.0 } else { 1.0 - gf.grapple_cooldown.clamp(0.0, 1.0) },
+            hookable: gf.grapple_hookable,
+            on_rope: gf.grappling,
+            missed: self.grapple_flash > 0.0,
+        }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
         hs
@@ -444,11 +457,12 @@ mod tests {
 
     #[test]
     fn free_for_all_gets_unique_colours_a_leaderboard_flag_and_passes_build_and_grapple_through() {
-        use crate::hud::{ffa_colour, BuildHud, BuildSlot, GrappleHud};
+        use crate::colour::player_rgba as ffa_colour;
+        use crate::hud::{BuildHud, BuildSlot};
         let mut b = HudBridge::default();
         b.kill_limit = Some(25);
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
-        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true });
+        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false });
         let mut v = RenderView::default();
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
         let s = b.update(0.016, &v, &net(), false);
@@ -501,5 +515,26 @@ mod tests {
         let s = b.update(0.016, &v, &net(), false);
         let tg = s.target.expect("target brackets");
         assert!(tg.pos.0 >= SIDE_CLEAR && tg.pos.0 <= 1.0 - SIDE_CLEAR && (tg.dist - 10.1).abs() < 0.3 && !tg.locked);
+    }
+
+    #[test]
+    fn grapple_readout_follows_the_predicted_state_and_flashes_on_a_miss() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.fx.grapple_cooldown = 0.25;
+        v.fx.grapple_hookable = true;
+        let g = b.update(0.016, &v, &net(), false).grapple.unwrap();
+        assert!((g.ready - 0.75).abs() < 1e-6 && g.hookable && !g.on_rope && !g.missed);
+        v.fx.grappling = true;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().on_rope);
+        v.fx.grappling = false;
+        v.fx.grapple_missed = true;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().missed);
+        v.fx.grapple_missed = false;
+        assert!(b.update(0.016, &v, &net(), false).grapple.unwrap().missed, "flash lingers briefly");
+        for _ in 0..40 {
+            b.update(0.016, &v, &net(), false);
+        }
+        assert!(!b.update(0.016, &v, &net(), false).grapple.unwrap().missed);
     }
 }
