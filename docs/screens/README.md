@@ -21,3 +21,5 @@ The three huge diagonal lines in non-idle shots are the katana swing trail (3 ri
 clear the whole screen in 0.16 s, see `viewmodel.rs` test `arc_clears_the_whole_screen...`); the shot script starts a
 swing 0.12 s before capture. The big star in the centre of non-idle shots is the shuriken mid-throw; at rest (`--idle`)
 it sits bottom-left. Frames: `graphics_*.png`.
+
+UPDATE: plain `--shot-offline` is now IDLE (rest pose, no scripted swing/throw). Pass `--action` for the old scripted swing + throw (golden_check.sh does). Frame: `graphics_default_offline_spawn3.png`.

@@ -70,7 +70,8 @@ fn main() {
     let flag = |k: &str| args.iter().any(|a| a == k);
     let tier = arg_value(&args, "--tier").map(|t| Tier::parse(&t).expect("--tier high|medium|low")).unwrap_or_default();
     let opts = shot::ShotOpts {
-        idle: flag("--idle"),
+        // offline review shots are idle (rest pose) unless `--action` asks for the scripted swing + throw (goldens use it)
+        idle: flag("--idle") || (flag("--shot-offline") && !flag("--action")),
         touch: flag("--touch"),
         quality: Quality::from_tier(tier),
         scale: arg_value(&args, "--scale").and_then(|s| s.parse().ok()),

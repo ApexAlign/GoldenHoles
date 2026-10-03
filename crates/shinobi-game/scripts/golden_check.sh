@@ -25,7 +25,7 @@ rc=0
 for name in offline mobile_touch arena; do
   echo "== $name"
   scenario_args "$name"
-  timeout 180 target/debug/shinobi-game --shot-offline "$TMP/$name.ppm" --secs 2.0 "${ARGV[@]}" 2>&1 \
+  timeout 180 target/debug/shinobi-game --shot-offline "$TMP/$name.ppm" --secs 2.0 --action "${ARGV[@]}" 2>&1 \
     | sed 's/\x1b\[[0-9;]*m//g' | grep -E "ERROR|panicked|shot:|level:" || true
   [ -s "$TMP/$name.ppm" ] || { echo "no frame rendered for $name"; exit 2; }
   python3 -c "from PIL import Image; Image.open('$TMP/$name.ppm').save('$TMP/$name.png')"
