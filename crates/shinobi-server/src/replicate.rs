@@ -129,6 +129,7 @@ impl Replicator {
         for ev in changed {
             self.broadcast(ev);
         }
+        st.outbox.push(NetEvent::BlockRules(server.blocks.cfg.rules()));
         // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
         for b in server.blocks.pieces() {
             st.outbox.push(NetEvent::BlockPlaced { owner: b.owner, cell: b.cell, kind: b.piece.kind.id(), axis: b.piece.axis, scale_q: b.scale_q });
@@ -1141,8 +1142,8 @@ mod tests {
         r.add_peer(&s, 3, s.tick);
         assert_eq!(
             r.peers[&3].outbox.pending(),
-            r.obstacles.not_ended_at(s.tick).count(),
-            "live obstacles (free-for-all: no team events)"
+            r.obstacles.not_ended_at(s.tick).count() + 1,
+            "live obstacles + the BlockRules event (free-for-all: no team events)"
         );
     }
 

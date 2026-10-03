@@ -41,6 +41,8 @@ pub enum NetEvent {
     /// A player-built piece appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). `kind`: 0 floor,
     /// 1 wall; `axis`: a wall's normal (0 = X, 1 = Z); `scale_q`: size in 1/16ths (16 = 1.0). Replayed to late joiners.
     BlockPlaced { owner: u16, cell: [i32; 3], kind: u8, axis: u8, scale_q: u8 },
+    /// The server's build rules (sent to every joiner): clients predict placement with exactly these.
+    BlockRules(crate::blocks::BlockRules),
     /// The block in `cell` is gone (evicted by its owner's cap, or its owner left).
     BlockRemoved { cell: [i32; 3] },
     /// The piece in `cell` was destroyed: it de-rezzes (dissolves into pixels) instead of just vanishing.
@@ -198,6 +200,12 @@ impl NetEvent {
                 w.write_bits(*axis as u32 & 1, 1);
                 w.write_bits(*scale_q as u32, 8);
             }
+            Self::BlockRules(r) => {
+                w.write_bits(20, 5);
+                for v in [r.thickness_mm, r.range_dm, r.cooldown_ticks, r.scale_per_kill_milli, r.scale_cap_centi, r.max_per_owner] {
+                    w.write_varint(v as u32);
+                }
+            }
             Self::BlockDerez { cell } => {
                 w.write_bits(19, 5);
                 write_v3(w, *cell, [0; 3]);
@@ -284,6 +292,20 @@ impl NetEvent {
                 scale_q: r.read_bits(8)? as u8,
             },
             19 => Self::BlockDerez { cell: read_v3(r, [0; 3])? },
+            20 => {
+                let mut v = [0u16; 6];
+                for x in &mut v {
+                    *x = u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?;
+                }
+                Self::BlockRules(crate::blocks::BlockRules {
+                    thickness_mm: v[0],
+                    range_dm: v[1],
+                    cooldown_ticks: v[2],
+                    scale_per_kill_milli: v[3],
+                    scale_cap_centi: v[4],
+                    max_per_owner: v[5],
+                })
+            }
             17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
             18 => Self::BlockRefused { why: r.read_bits(2)? as u8 },
             _ => return Err(DecodeError::Malformed),
@@ -390,6 +412,7 @@ mod tests {
         let evs = [
             NetEvent::BlockPlaced { owner: 7, cell: [-12, 3, 40], kind: 1, axis: 1, scale_q: 24 },
             NetEvent::BlockDerez { cell: [-12, 3, 40] },
+            NetEvent::BlockRules(crate::blocks::BlockCfg::default().rules()),
             NetEvent::BlockRemoved { cell: [-12, 3, 40] },
             NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN },
         ];
@@ -398,7 +421,7 @@ mod tests {
             e.write(&mut w);
         }
         let bytes = w.finish();
-        assert!(bytes.len() <= 16, "{} B for place + derez + remove + refuse", bytes.len());
+        assert!(bytes.len() <= 24, "{} B for place + derez + remove + refuse", bytes.len());
         let mut r = BitReader::new(&bytes);
         for e in &evs {
             assert_eq!(&NetEvent::read(&mut r).unwrap(), e);
