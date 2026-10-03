@@ -39,6 +39,9 @@ struct RemoteEnt {
     colour: Option<u32>,
 }
 
+/// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
+const VOID_Y: f32 = -20.0;
+
 /// Body materials per quantised player colour.
 #[derive(Resource, Default)]
 struct BodyMats(std::collections::HashMap<u32, Handle<StandardMaterial>>);
@@ -130,6 +133,20 @@ pub fn setup(
         MeshMaterial3d(grid_mat.clone()),
         Transform::from_xyz(floor_c[0], 0.0, floor_c[1]),
     ));
+    // open-void maps: the kill plane drawn as a faint red grid far below the edges, so the world visibly ENDS
+    // (players can see how far the drop is) instead of the floor seeming to run on into the sky
+    if big_floor.is_some() {
+        let mut vd = GridData::tron(&pal);
+        vd.base = [0.012, 0.0, 0.02, 1.0];
+        vd.glow = [pal.magenta.0 * 0.9, pal.magenta.1 * 0.12, pal.magenta.2 * 0.3, 1.0];
+        vd.cell = 8.0;
+        vd.major_every = 4.0;
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(fog.0 * 1.5)))),
+            MeshMaterial3d(grids.add(GridFloor::from_client(&vd, fog.0 * 0.8))),
+            Transform::from_xyz(floor_c[0], VOID_Y, floor_c[1]),
+        ));
+    }
     // every non-floor level box (walls, tiers, ramps, ledges, pillars): the geometry the server and our predictor
     // collide with. Each gets its own material so the shader knows the box frame for neon edges; the tint encodes
     // height (tier 1 cyan, tier 2 magenta, tier 3+ orange, tall walls cool blue).
@@ -406,7 +423,7 @@ fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>) {
 /// Box neon tint on a district map: mostly the district colour (HDR boosted), with a little of the height tint kept so
 /// tiers still read apart inside a district.
 pub fn district_tint(height: [f32; 3], district: [f32; 3]) -> [f32; 3] {
-    std::array::from_fn(|i| height[i] * 0.25 + district[i] * 1.4 * 0.75)
+    std::array::from_fn(|i| height[i] * 0.25 + district[i] * 1.0 * 0.75)
 }
 
 fn sync_remotes(
@@ -453,7 +470,7 @@ fn sync_remotes(
             ent.colour = Some(k);
             let m = body_mats.0.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
-                    base_color: Color::linear_rgb(hue[0] * 2.2, hue[1] * 2.2, hue[2] * 2.2),
+                    base_color: Color::linear_rgb(hue[0] * 1.3, hue[1] * 1.3, hue[2] * 1.3),
                     unlit: true,
                     ..default()
                 })

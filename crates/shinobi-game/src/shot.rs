@@ -93,6 +93,7 @@ pub fn run_offline(secs: f32, out: String, o: ShotOpts) {
         .insert_resource(ShotCfg { out, secs, done: false, slashed: idle, fired: idle, offline: true })
         .insert_resource(OfflineSpawn(o.level.spawn(o.spawn)))
         .add_systems(Startup, connect_offline)
+        .add_systems(PreUpdate, inject_fx)
         .add_systems(FixedUpdate, (offline_world, offline_touch))
         .add_systems(Update, drive);
     app.run();
@@ -100,6 +101,68 @@ pub fn run_offline(secs: f32, out: String, o: ShotOpts) {
 
 #[derive(Resource)]
 struct OfflineSpawn([f32; 3]);
+
+/// Visual-review aid: `SHOT_FX=lock:0.5,locked,break:0.4,pieces,discs` (comma list) overlays synthetic lock-on state,
+/// pieces and discs on the published view so the offline shot shows them. Unset = untouched (goldens stay exact).
+fn inject_fx(mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>) {
+    use shinobi_client::client_game::LockOn;
+    use shinobi_sim::blocks::{BlockInfo, Piece, SCALE_ONE};
+    use shinobi_sim::combat::aim_assist::LockPhase;
+    let [bx, by, bz] = base.0;
+    let v = &mut view.0;
+    // SHOT_EYE=x,y,z and SHOT_LOOK=yaw,pitch (radians) move the camera for review shots of edges, ceilings, etc.
+    let nums = |k: &str| std::env::var(k).ok().map(|s| s.split(',').filter_map(|n| n.parse::<f32>().ok()).collect::<Vec<_>>());
+    if let Some(e) = nums("SHOT_EYE").filter(|e| e.len() == 3) {
+        v.eye = [e[0], e[1], e[2]];
+    }
+    if let Some(l) = nums("SHOT_LOOK").filter(|l| l.len() == 2) {
+        v.aim.yaw = l[0];
+        v.aim.pitch = l[1];
+    }
+    let Ok(spec) = std::env::var("SHOT_FX") else { return };
+    for item in spec.split(',') {
+        let (name, arg) = item.split_once(':').unwrap_or((item, ""));
+        let p: f32 = arg.parse().unwrap_or(0.5);
+        match name {
+            "lock" | "locked" | "break" => {
+                // remote 4 hovers at (+8, ~1.6, -14) of our spawn: aim the triangle at its chest
+                let pos = v.remotes.iter().find(|(id, _)| *id == 4).map_or([bx + 8.0, by + 1.4, bz - 14.0], |(_, s)| [s.pos[0], s.pos[1] + 0.2, s.pos[2]]);
+                v.lock = Some(LockOn {
+                    target: 4,
+                    pos,
+                    progress: if name == "locked" { 1.0 } else { p },
+                    locked: name == "locked",
+                    phase: match name {
+                        "locked" => LockPhase::Locked,
+                        "break" => LockPhase::Break,
+                        _ => LockPhase::Acquire,
+                    },
+                });
+            }
+            "pieces" => {
+                let sz = v.block_size.max(0.5);
+                let c = |x: i32, y: i32, z: i32| [(bx / sz).floor() as i32 + x * 2, (by / sz).floor() as i32 + y, (bz / sz).floor() as i32 + z * 2];
+                let pieces = [
+                    (2, c(-2, 0, -2), Piece::FLOOR),
+                    (3, c(-1, 0, -3), Piece::WALL_X),
+                    (5, c(1, 0, -3), Piece::WALL_Z),
+                    (7, c(0, 0, -4), Piece { kind: shinobi_sim::blocks::PieceKind::Ramp, axis: 0 }),
+                    (9, c(2, 0, -2), Piece { kind: shinobi_sim::blocks::PieceKind::Ramp, axis: 1 }),
+                ];
+                for (owner, cell, piece) in pieces {
+                    v.blocks.push(BlockInfo { owner, cell, piece, scale_q: SCALE_ONE });
+                }
+            }
+            "discs" => {
+                v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.disc_owners.push(2);
+                v.discs.push(([bx + 2.0, by + 1.2, bz - 8.0], [0.0, 0.0, -1.0]));
+                v.disc_owners.push(5);
+            }
+            _ => {}
+        }
+    }
+}
 
 fn connect_offline(mut net: ResMut<Net>) {
     let _ = net.0.game.on_datagram(&Welcome { player_id: 1, server_tick: 0 }.encode(), 0.0);

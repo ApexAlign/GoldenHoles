@@ -118,8 +118,11 @@ fn update(
     let up = right.cross(to_eye).normalize_or(Vec3::Y);
     let dist = eye.distance(pos);
     let (r, angle, mult) = layout(lock.phase, lock.progress, t, viz.snap);
-    // keep the dots readable at range: world size grows with distance, capped
-    let size = (0.035 + 0.004 * dist).min(0.14) * mult;
+    // keep the triangle readable at range: its world size grows with distance (roughly constant on screen), but never
+    // below its close-up size
+    let k = (dist / 6.0).clamp(1.0, 5.0);
+    let size = 0.07 * k * mult;
+    let r = r * k;
     // HDR owner colour; brighter once locked
     let g = if lock.phase == LockPhase::Locked { 9.0 } else { 5.0 };
     let c = colour.0;

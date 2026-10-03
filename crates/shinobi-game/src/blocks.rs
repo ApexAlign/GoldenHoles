@@ -224,7 +224,7 @@ fn sync_blocks(
         let (c, full, rot) = slab(info, size, thick);
         // the grid shader can express a roll about Z (ramps rising along X); other tilts keep an axis-aligned frame
         let b = LevelBox::new(c.to_array(), (full * 0.5).to_array()).rolled(info.piece.rotation()[2]);
-        let tint = hue.map(|v| v * 1.4);
+        let tint = hue.map(|v| v * 0.8);
         let entity = commands
             .spawn((
                 Mesh3d(cube.clone()),
