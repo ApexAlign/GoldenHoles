@@ -153,6 +153,11 @@ fn inject_fx(mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>) {
                     v.blocks.push(BlockInfo { owner, cell, piece, scale_q: SCALE_ONE });
                 }
             }
+            "rope" => {
+                let e = v.eye;
+                v.rope = Some((e, [e[0] + 4.0, e[1] + 7.0, e[2] - 18.0]));
+                v.fx.grappling = true;
+            }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);

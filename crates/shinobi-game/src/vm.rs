@@ -83,7 +83,7 @@ fn degenerate() -> Mesh {
 
 /// Four-point throwing star in the XY plane (fan around the centre).
 fn star_mesh() -> Mesh {
-    let (outer, inner, n) = (0.14f32, 0.05f32, 8usize);
+    let (outer, inner, n) = (0.08f32, 0.03f32, 8usize);
     let mut pos = vec![[0.0f32, 0.0, 0.0]];
     for i in 0..n {
         let a = i as f32 / n as f32 * std::f32::consts::TAU;

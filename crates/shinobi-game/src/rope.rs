@@ -13,7 +13,6 @@ use crate::net::{Net, ViewRes};
 use crate::team::LocalColour;
 
 const SEGS: usize = 28;
-const HALF_W: f32 = 0.035;
 
 /// One rope: the entity/mesh it draws into plus its attach/release edge state.
 struct Slot {
@@ -83,7 +82,7 @@ pub fn cable(hand: Vec3, anchor: Vec3, tension: f32, t: f32) -> Vec<(Vec3, f32)>
         .collect()
 }
 
-fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3]) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
+fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3], eye: Vec3) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
     let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
     for k in 0..pts.len() - 1 {
         let fwd = (pts[k + 1].0 - pts[k].0).normalize_or(Vec3::NEG_Z);
@@ -92,8 +91,9 @@ fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3]) -> (Vec<[f32; 3]>, Vec
         for axis in [up, side] {
             let base = pos.len() as u32;
             for (p, pulse) in [pts[k], pts[k + 1]] {
-                let w = HALF_W * (1.0 + 1.5 * pulse);
-                let g = (1.5 + 5.0 * pulse) * fade;
+                // width follows distance from the eye (about constant on screen); a fixed world width balloons near the hand
+                let w = (0.006 + 0.0022 * p.distance(eye)).min(0.12) * (1.0 + 0.8 * pulse);
+                let g = (1.4 + 2.2 * pulse) * fade;
                 let c = [tc[0] * g + 0.4 * pulse, tc[1] * g + 0.4 * pulse, tc[2] * g + 0.4 * pulse, fade];
                 pos.push((p + axis * w).to_array());
                 pos.push((p - axis * w).to_array());
@@ -165,7 +165,7 @@ fn update(
         slot.last = cur.map(|(e, a)| (a, e));
 
         let draw = if let Some((eye, anchor)) = cur {
-            Some((cable(hand_from(eye, anchor), anchor, 1.0, t), 1.0))
+            Some((cable(hand_from(eye, anchor), anchor, 1.0, t), 1.0, eye))
         } else if let Some((age, a, e)) = slot.snap.as_mut() {
             *age += dt;
             if *age >= SNAP_S {
@@ -173,7 +173,7 @@ fn update(
                 None
             } else {
                 let (k, a, e) = (1.0 - *age / SNAP_S, *a, *e);
-                Some((cable(hand_from(e, a), a, 0.0, t), k))
+                Some((cable(hand_from(e, a), a, 0.0, t), k, e))
             }
         } else {
             None
@@ -181,8 +181,8 @@ fn update(
 
         let Ok(mut v) = vis.get_mut(slot.entity) else { continue };
         match draw {
-            Some((pts, fade)) => {
-                let (pos, col, idx) = geometry(&pts, fade, team);
+            Some((pts, fade, eye)) => {
+                let (pos, col, idx) = geometry(&pts, fade, team, eye);
                 if let Some(mut m) = meshes.get_mut(&slot.mesh) {
                     *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
                         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
