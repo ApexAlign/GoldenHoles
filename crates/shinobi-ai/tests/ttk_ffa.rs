@@ -53,6 +53,7 @@ fn ffa_bots_on_a_level() {
     let mut life_ticks: Vec<u32> = Vec::new();
     let mut nearest: Vec<f32> = Vec::new();
     let (mut still, mut samples) = (0u64, 0u64);
+    let mut by_phase: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new(); // phase -> (still, samples)
     let mut last: BTreeMap<u16, [f32; 3]> = BTreeMap::new();
     let t0 = std::time::Instant::now();
     for t in 0..secs * 60 {
@@ -79,7 +80,11 @@ fn ffa_bots_on_a_level() {
                 }
                 if let Some(prev) = last.get(id) {
                     samples += 1;
-                    still += (((pos[0] - prev[0]).powi(2) + (pos[2] - prev[2]).powi(2)).sqrt() < 1.5) as u64;
+                    let is_still = ((pos[0] - prev[0]).powi(2) + (pos[2] - prev[2]).powi(2)).sqrt() < 1.5;
+                    still += is_still as u64;
+                    let e = by_phase.entry(h.bot(*id).map_or("?", |b| b.phase.name())).or_default();
+                    e.0 += is_still as u64;
+                    e.1 += 1;
                 }
                 last.insert(*id, *pos);
             }
@@ -94,4 +99,7 @@ fn ffa_bots_on_a_level() {
     println!("kills/min {:.1} ({kills} kills, {hits} hits), avg life {avg_life:.1} s", kills as f32 / mins);
     println!("nearest-enemy distance: mean {mean:.1} m, median {:.1} m, p90 {:.1} m", nearest[nearest.len() / 2], nearest[nearest.len() * 9 / 10]);
     println!("standing still (<1.5 m per sample): {:.0}%", 100.0 * still as f32 / samples.max(1) as f32);
+    for (ph, (st, n)) in &by_phase {
+        println!("  phase {ph:>8}: {:>5} samples ({:.0}% of all), {:.0}% of them still", n, 100.0 * *n as f32 / samples.max(1) as f32, 100.0 * *st as f32 / (*n).max(1) as f32);
+    }
 }

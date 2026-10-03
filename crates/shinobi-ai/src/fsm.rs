@@ -720,17 +720,26 @@ impl BotMem {
         if mag < 0.05 {
             return (dir, mag);
         }
-        // approaching a target that is not in sight: follow a planned path instead of walking into the first wall
+        // approaching a target that is out of sight, or in sight but not walkable to in a straight line (ledges, low
+        // walls, void gaps): follow a planned path instead of walking into the first wall
         // (alcoves with baffled doors, big maps). Retreat / evade / strike keep their own direction.
-        let dir = match (ctx.nav, p.target) {
-            (Some(nav), Some(t)) if !t.los && t.dist > 5.0 && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone) => {
-                self.path_dir(nav, me.pos, t.view.pos, tick).unwrap_or(dir)
+        let planned = match (ctx.nav, p.target) {
+            (Some(nav), Some(t))
+                if t.dist > 5.0
+                    && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
+                    && (!t.los || !nav.straight_walkable([me.pos.x, me.pos.z], [t.view.pos.x, t.view.pos.z])) =>
+            {
+                self.path_dir(nav, me.pos, t.view.pos, tick)
             }
             _ => {
                 self.path.clear();
-                dir
+                None
             }
         };
+        if let Some(d) = planned {
+            // the plan already goes around static geometry (whiskers would shy away from the walls of a narrow door)
+            return (d, mag);
+        }
         (steer_static(world, me, dir), mag)
     }
 
@@ -738,7 +747,7 @@ impl BotMem {
     /// strayed from it. Waypoints are consumed as the bot reaches them.
     fn path_dir(&mut self, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32) -> Option<V3> {
         const REPLAN_TICKS: u32 = 45;
-        const REACH: f32 = 1.6;
+        const REACH: f32 = 0.8; // a baffled door is ~1 m wide: pass through the corner waypoint, do not cut it
         let goal2 = [goal.x, goal.z];
         let moved = (self.path_goal[0] - goal2[0]).hypot(self.path_goal[1] - goal2[1]) > 4.0;
         if self.path.is_empty() || moved || tick.wrapping_sub(self.path_at) >= REPLAN_TICKS {

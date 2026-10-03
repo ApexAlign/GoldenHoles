@@ -200,6 +200,11 @@ impl NavGrid {
         None
     }
 
+    /// A walkable cell with a blocked cell on one of its four sides.
+    fn hugs_wall(&self, c: (i32, i32)) -> bool {
+        [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dz)| self.ground(c.0 + dx, c.1 + dz).is_none())
+    }
+
     fn passable(&self, a: (i32, i32), b: (i32, i32)) -> bool {
         match (self.ground(a.0, a.1), self.ground(b.0, b.1)) {
             (Some(ya), Some(yb)) => {
@@ -257,7 +262,9 @@ impl NavGrid {
                     if !self.passable(c, n) {
                         continue;
                     }
-                    let ng = gc + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                    // hugging a wall costs extra: routes keep a body width from corners where the map allows it
+                    let hug = if self.hugs_wall(n) { 0.8 } else { 0.0 };
+                    let ng = gc + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 } + hug;
                     if best.get(&n).map_or(true, |&b| ng < b - 1e-4) {
                         best.insert(n, ng);
                         came.insert(n, c);
@@ -285,6 +292,29 @@ impl NavGrid {
             }
             prev = c;
         }
+        true
+    }
+
+    /// True if a straight walk from `a` to `b` (world x, z) stays on walkable ground the whole way. Positions off the
+    /// grid count as not walkable.
+    pub fn straight_walkable(&self, a: [f32; 2], b: [f32; 2]) -> bool {
+        let (Some(ca), Some(cb)) = (self.snap(a[0], a[1]), self.snap(b[0], b[1])) else { return false };
+        // walk the real segment (not cell centre to cell centre), so a wall between two nearby bots counts
+        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        let steps = (len / (self.cell * 0.5)).ceil().max(1.0) as i32;
+        let mut prev = self.cell_of(a[0], a[1]);
+        if self.ground(prev.0, prev.1).is_none() {
+            prev = ca;
+        }
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let c = self.cell_of(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+            if c != prev && !self.passable(prev, c) {
+                return false;
+            }
+            prev = c;
+        }
+        let _ = cb;
         true
     }
 
