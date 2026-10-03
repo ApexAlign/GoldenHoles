@@ -14,7 +14,13 @@ use shinobi_client::hud::{Hud, HudState, Palette};
 use shinobi_client::hud_bridge::HudBridge;
 use shinobi_client::hud_geom::tessellate;
 use shinobi_client::screens::{self, MenuItem, Screen, SettingRow};
+use shinobi_client::client_game::{Action, ButtonEvent};
+use shinobi_client::console::{self, Console};
+use shinobi_client::hud::BuildSlot;
+use shinobi_client::input_mode::Mode;
+use shinobi_client::radial;
 use shinobi_client::settings::Settings;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use shinobi_client::overlay;
 
 use crate::net::Net;
@@ -36,8 +42,10 @@ impl Plugin for HudPlugin {
         app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default() })
             .insert_resource(SettingsRes(settings))
             .init_resource::<MenuRes>()
+            .init_resource::<ConsoleRes>()
+            .add_systems(Startup, enable_radial)
             .add_systems(Startup, spawn.after(crate::play::setup))
-            .add_systems(Update, (menu_input.before(crate::play::input), sync_settings, update).chain());
+            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, update).chain());
     }
 }
 
@@ -249,6 +257,62 @@ fn sync_settings(
     touch.s.apply_settings(&settings.0, &mut pending.0.buttons);
 }
 
+/// Console state (typed line + log), shown in `Mode::Console`.
+#[derive(Resource, Default)]
+pub struct ConsoleRes(pub Console);
+
+/// The radial build menu exists now: let Cam&Mov's mode machine open it on a build-key hold.
+fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
+    mode.machine.cfg.radial_enabled = true;
+}
+
+/// Interactive overlay modes: radial commit (print the highlighted piece) and console typing.
+fn mode_ui(
+    mode: Res<crate::play::ModeRes>,
+    window: Option<Single<&Window>>,
+    mut typed: MessageReader<KeyboardInput>,
+    mut console: ResMut<ConsoleRes>,
+    mut settings: ResMut<SettingsRes>,
+    mut pending: ResMut<crate::net::PendingInput>,
+    ctl: Res<HudCtl>,
+    net: Res<Net>,
+) {
+    let Some(out) = mode.out else {
+        typed.clear();
+        return;
+    };
+    if out.radial_commit {
+        if let Some(slot) = cursor_norm(&window).and_then(radial::pick) {
+            let action = if slot == BuildSlot::Wall { Action::BuildWall } else { Action::BuildFloor };
+            // a tap: the latch in ClientGame turns the pair into one print edge
+            pending.0.buttons.push(ButtonEvent { action, down: true });
+            pending.0.buttons.push(ButtonEvent { action, down: false });
+        }
+    }
+    if mode.mode() != Mode::Console {
+        typed.clear();
+        return;
+    }
+    for ev in typed.read() {
+        if !ev.state.is_pressed() {
+            continue;
+        }
+        match &ev.logical_key {
+            Key::Character(s) => s.chars().for_each(|c| console.0.type_char(c)),
+            Key::Space => console.0.type_char(' '),
+            Key::Backspace => console.0.backspace(),
+            Key::Enter => {
+                let me = net.0.game.net.player_id().unwrap_or(0);
+                let kills = ctl.bridge.killfeed();
+                if console.0.submit(&mut settings.0, kills, me) {
+                    save(&settings.0);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Controllers that live across frames: the HUD state bridge and the connection watcher.
 #[derive(Resource)]
 struct HudCtl {
@@ -271,6 +335,8 @@ fn update(
     lock: Res<crate::play::Lock>,
     menu: Res<MenuRes>,
     settings: Res<SettingsRes>,
+    mode: Res<crate::play::ModeRes>,
+    console: Res<ConsoleRes>,
     label: Option<Res<ServerLabel>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut ctl: ResMut<HudCtl>,
@@ -287,7 +353,14 @@ fn update(
     let ctl = &mut *ctl;
 
     ctl.bridge.aspect = aspect;
-    let state: HudState = ctl.bridge.update(dt, &view.0, &net.0.game.net, tab);
+    let mut state: HudState = ctl.bridge.update(dt, &view.0, &net.0.game.net, tab);
+    let cur = match (&window, mode.mode()) {
+        (Some(w), Mode::Scoreboard | Mode::BuildRadial) => w.cursor_position().map(|c| (c.x / w.width().max(1.0), c.y / w.height().max(1.0))),
+        _ => None,
+    };
+    if mode.mode() == Mode::Scoreboard {
+        state.cursor = cur;
+    }
     let screen = ctl.watch.update(
         dt,
         &net.0.game.net,
@@ -312,6 +385,15 @@ fn update(
         }
     } else if !lock.p.locked() && shot.is_none() && window.is_some() {
         prims.extend(overlay::click_to_play(&pal, t));
+    } else {
+        match mode.mode() {
+            Mode::BuildRadial => {
+                let cur_slot = state.build.map_or(BuildSlot::Floor, |b| b.selected);
+                prims.extend(radial::draw(cur.and_then(radial::pick), cur_slot, &pal));
+            }
+            Mode::Console => prims.extend(console::draw(&console.0, t, &pal)),
+            _ => {}
+        }
     }
     let g = tessellate(&prims, aspect);
 

@@ -293,6 +293,8 @@ pub struct HudState {
     pub grapple: Option<GrappleHud>,
     /// Free-for-all match: leaderboard + leading marker (teams off).
     pub ffa: bool,
+    /// Free cursor in normalized screen space while an overlay mode is up (scoreboard hover).
+    pub cursor: Option<(f32, f32)>,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
@@ -1286,6 +1288,7 @@ pub(crate) fn scoreboard(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         out.push(Prim::Text { pos: (x, hy), text: t.into(), size: 0.022, color: p.orange.a(0.9), align: al });
     }
     let mut y = hy;
+    let mut hovered: Option<&ScoreRow> = None;
     for (head, rows) in &blocks {
         if let Some((team, total)) = head {
             y += 0.05;
@@ -1299,6 +1302,12 @@ pub(crate) fn scoreboard(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         for row in rows {
             y += rh;
             let dim: f32 = if row.alive { 1.0 } else { 0.45 };
+            let rr = Rect::new(r.x + 0.006, y - 0.03, r.w - 0.012, rh - 0.002);
+            if s.cursor.map_or(false, |(cx, cy)| cx >= rr.x && cx <= rr.x + rr.w && cy >= rr.y && cy <= rr.y + rr.h) {
+                out.push(Prim::Rect { r: rr, color: p.cyan.a(0.14), glow: 0.004 });
+                out.push(Prim::Line { a: (rr.x, rr.y), b: (rr.x, rr.y + rr.h), color: p.orange.a(0.9), glow: 0.005 });
+                hovered = Some(row);
+            }
             if row.local {
                 out.push(Prim::Rect { r: Rect::new(r.x + 0.006, y - 0.03, r.w - 0.012, rh - 0.002), color: p.gold.a(0.14), glow: 0.004 });
             }
@@ -1316,6 +1325,20 @@ pub(crate) fn scoreboard(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             for (&(x, al), t) in cols.iter().zip(cells) {
                 out.push(Prim::Text { pos: (x, y), text: t, size: 0.024, color: c, align: al });
             }
+        }
+    }
+    // hover tooltip next to the cursor: name, K/D, ratio, ping
+    if let (Some(row), Some((cx, cy))) = (hovered, s.cursor) {
+        let ratio = if row.deaths == 0 { row.kills as f32 } else { row.kills as f32 / row.deaths as f32 };
+        let (w, hgt) = (0.17, 0.095);
+        let t = Rect::new((cx + 0.015).min(1.0 - SIDE_CLEAR - w), (cy + 0.02).min(0.97 - hgt), w, hgt);
+        out.push(Prim::Rect { r: t, color: p.bg.a(0.92), glow: 0.0 });
+        for (a, b) in [((t.x, t.y), (t.x + t.w, t.y)), ((t.x + t.w, t.y), (t.x + t.w, t.y + t.h)), ((t.x + t.w, t.y + t.h), (t.x, t.y + t.h)), ((t.x, t.y + t.h), (t.x, t.y))] {
+            out.push(Prim::Line { a, b, color: row.colour.unwrap_or(p.cyan).a(0.9), glow: 0.004 });
+        }
+        let lines = [row.name.clone(), format!("K {}  D {}", row.kills, row.deaths), format!("K/D {ratio:.2}"), format!("PING {} MS", row.ping_ms)];
+        for (i, l) in lines.iter().enumerate() {
+            out.push(Prim::Text { pos: (t.x + 0.01, t.y + 0.024 + i as f32 * 0.021), text: l.clone(), size: if i == 0 { 0.02 } else { 0.017 }, color: if i == 0 { row.colour.unwrap_or(p.gold) } else { p.text }.a(0.95), align: Align::Left });
         }
     }
 }
@@ -2163,5 +2186,23 @@ mod tests {
             Hud::build_with(&s, &p).iter().any(|x| matches!(x, Prim::Text { text, .. } if text == "VOID"))
         };
         assert!(has(-3.0, false) && !has(2.0, false) && !has(22.0, false) && !has(-3.0, true));
+    }
+
+    #[test]
+    fn scoreboard_hover_highlights_the_row_and_shows_its_stats() {
+        let p = Palette::TRON;
+        let row = |n: &str, k, d| ScoreRow { name: n.into(), kills: k, deaths: d, ping_ms: 42, local: false, alive: true, team: None, colour: None };
+        let mut s = HudState { hp: 1.0, show_scoreboard: true, scoreboard: vec![row("ALPHA", 6, 2), row("BRAVO", 3, 3)], ..Default::default() };
+        let texts = |s: &HudState| -> Vec<String> {
+            Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        };
+        assert!(!texts(&s).iter().any(|t| t.starts_with("K/D")), "no cursor, no tooltip");
+        // first sorted row's y: find the ALPHA text position and hover just above its baseline
+        let pos = Hud::build_with(&s, &p).iter().find_map(|x| match x { Prim::Text { pos, text, .. } if text == "ALPHA" => Some(*pos), _ => None }).unwrap();
+        s.cursor = Some((0.5, pos.1 - 0.01));
+        let t = texts(&s);
+        assert!(t.contains(&"K/D 3.00".to_string()) && t.contains(&"PING 42 MS".to_string()), "{t:?}");
+        s.cursor = Some((0.05, 0.05));
+        assert!(!texts(&s).iter().any(|t| t.starts_with("K/D")), "cursor off the panel");
     }
 }

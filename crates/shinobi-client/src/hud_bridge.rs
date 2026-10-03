@@ -94,6 +94,11 @@ pub struct HudBridge {
 }
 
 impl HudBridge {
+    /// The kill log as the HUD holds it (newest last): for the console's `/log`.
+    pub fn killfeed(&self) -> &[KillEntry] {
+        &self.killfeed
+    }
+
     /// Once per rendered frame. `tab_held` shows the scoreboard.
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
