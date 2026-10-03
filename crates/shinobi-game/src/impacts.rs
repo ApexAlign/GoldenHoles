@@ -5,10 +5,8 @@
 
 use bevy::prelude::*;
 
-use shinobi_client::hud::{Palette, Rgba};
-
 use crate::net::ViewRes;
-use crate::team::{LocalTeam, Team};
+use crate::team::{key, LocalColour};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImpactKind {
@@ -23,8 +21,8 @@ pub enum ImpactKind {
 #[derive(Clone, Copy, Debug)]
 pub struct Impact {
     pub pos: Vec3,
-    /// Team whose colour the effect wears (the shooter's).
-    pub team: Team,
+    /// Colour of the effect (the shooter's player / team colour, unit scale).
+    pub color: [f32; 3],
     pub kind: ImpactKind,
 }
 
@@ -50,11 +48,9 @@ struct Flash {
 struct Look {
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
-    cyan: Handle<StandardMaterial>,
-    orange: Handle<StandardMaterial>,
-    cyan_hit: Handle<StandardMaterial>,
-    orange_hit: Handle<StandardMaterial>,
     white: Handle<StandardMaterial>,
+    /// Spark materials per (quantised colour, gain class): a handful of colours, so this stays tiny.
+    sparks: std::collections::HashMap<(u32, bool), Handle<StandardMaterial>>,
 }
 
 pub struct ImpactPlugin;
@@ -65,9 +61,9 @@ impl Plugin for ImpactPlugin {
     }
 }
 
-fn mat(mats: &mut Assets<StandardMaterial>, c: Rgba, gain: f32) -> Handle<StandardMaterial> {
+fn mat(mats: &mut Assets<StandardMaterial>, c: [f32; 3], gain: f32) -> Handle<StandardMaterial> {
     mats.add(StandardMaterial {
-        base_color: Color::linear_rgb(c.0 * gain, c.1 * gain, c.2 * gain),
+        base_color: Color::linear_rgb(c[0] * gain, c[1] * gain, c[2] * gain),
         unlit: true,
         alpha_mode: AlphaMode::Add,
         ..default()
@@ -75,23 +71,19 @@ fn mat(mats: &mut Assets<StandardMaterial>, c: Rgba, gain: f32) -> Handle<Standa
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
-    let p = Palette::TRON;
     commands.insert_resource(Look {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         sphere: meshes.add(Sphere::new(0.5)),
-        cyan: mat(&mut mats, p.cyan, 6.0),
-        orange: mat(&mut mats, p.orange, 6.0),
-        cyan_hit: mat(&mut mats, p.cyan, 8.0),
-        orange_hit: mat(&mut mats, p.orange, 8.0),
-        white: mat(&mut mats, Rgba(1.0, 1.0, 1.0, 1.0), 10.0),
+        white: mat(&mut mats, [1.0; 3], 10.0),
+        sparks: Default::default(),
     });
 }
 
 /// Server-confirmed hits dealt by us: flash on the victim (hit marker in the world, not just on the HUD).
-fn queue_hits(view: Res<ViewRes>, local: Res<LocalTeam>, mut q: ResMut<ImpactQueue>) {
+fn queue_hits(view: Res<ViewRes>, local: Res<LocalColour>, mut q: ResMut<ImpactQueue>) {
     for h in view.0.hits.iter().filter(|h| !h.taken) {
         if let Some((_, s)) = view.0.remotes.iter().find(|(id, _)| *id == h.other) {
-            q.0.push(Impact { pos: Vec3::from(s.pos), team: local.0, kind: ImpactKind::Hit { kill: h.kill } });
+            q.0.push(Impact { pos: Vec3::from(s.pos), color: local.0, kind: ImpactKind::Hit { kill: h.kill } });
         }
     }
 }
@@ -109,22 +101,25 @@ fn dir_from(seed: u32) -> Vec3 {
     Vec3::new(r * a.cos(), b, r * a.sin())
 }
 
-fn spawn_impacts(mut commands: Commands, look: Res<Look>, mut q: ResMut<ImpactQueue>, time: Res<Time>) {
+fn spawn_impacts(
+    mut commands: Commands,
+    mut look: ResMut<Look>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut q: ResMut<ImpactQueue>,
+    time: Res<Time>,
+) {
     let base = (time.elapsed_secs() * 1000.0) as u32;
     for (n, im) in q.0.drain(..).enumerate() {
         let seed = base.wrapping_add(n as u32 * 977);
         // (spark count, speed, spark life, spark size, flash size, flash life, spark mat)
-        let team_mat = |t: Team, hit: bool| match (t, hit) {
-            (Team::Cyan, false) => look.cyan.clone(),
-            (Team::Orange, false) => look.orange.clone(),
-            (Team::Cyan, true) => look.cyan_hit.clone(),
-            (Team::Orange, true) => look.orange_hit.clone(),
+        let mut team_mat = |c: [f32; 3], hit: bool| {
+            look.sparks.entry((key(c), hit)).or_insert_with(|| mat(&mut mats, c, if hit { 8.0 } else { 6.0 })).clone()
         };
         let (count, speed, life, size, flash, flife, m) = match im.kind {
-            ImpactKind::Muzzle => (6, 4.0, 0.12, 0.05, 0.35, 0.08, team_mat(im.team, false)),
-            ImpactKind::Gone => (8, 5.0, 0.2, 0.05, 0.3, 0.1, team_mat(im.team, false)),
-            ImpactKind::Hit { kill: false } => (18, 9.0, 0.3, 0.07, 1.0, 0.15, team_mat(im.team, true)),
-            ImpactKind::Hit { kill: true } => (36, 12.0, 0.5, 0.09, 2.2, 0.25, team_mat(im.team, true)),
+            ImpactKind::Muzzle => (6, 4.0, 0.12, 0.05, 0.35, 0.08, team_mat(im.color, false)),
+            ImpactKind::Gone => (8, 5.0, 0.2, 0.05, 0.3, 0.1, team_mat(im.color, false)),
+            ImpactKind::Hit { kill: false } => (18, 9.0, 0.3, 0.07, 1.0, 0.15, team_mat(im.color, true)),
+            ImpactKind::Hit { kill: true } => (36, 12.0, 0.5, 0.09, 2.2, 0.25, team_mat(im.color, true)),
         };
         for i in 0..count {
             let s = seed.wrapping_add(i * 31);

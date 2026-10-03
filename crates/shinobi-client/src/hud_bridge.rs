@@ -51,6 +51,14 @@ impl TeamInfo {
 #[derive(Default)]
 pub struct HudBridge {
     pub teams: Option<TeamInfo>,
+    /// Free-for-all colour per player id. Defaults to the HUD's stand-in until the network layer's
+    /// `player_colour(id)` lands, then point this at it.
+    pub colour_of: Option<fn(u16) -> crate::hud::Rgba>,
+    /// Kills that end a free-for-all match (server limit, if known).
+    pub kill_limit: Option<u16>,
+    /// Build / grapple readouts, filled by the shell from the combat and movement state once those expose it.
+    pub build: Option<crate::hud::BuildHud>,
+    pub grapple: Option<crate::hud::GrappleHud>,
     /// Viewport width / height for projecting ally tags (<= 0 means 16:9).
     pub aspect: f32,
     pub fx: HudFx,
@@ -63,6 +71,7 @@ impl HudBridge {
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
         self.fx.tick(dt);
+        let colour_of = self.colour_of.unwrap_or(crate::hud::ffa_colour);
         let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
         let me = view.local_pos.unwrap_or([0.0; 3]);
@@ -87,6 +96,11 @@ impl HudBridge {
                 if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&teams, e) {
                     k.killer_team = (!k.void).then(|| t.team_of.get(killer).copied()).flatten();
                     k.victim_team = t.team_of.get(victim).copied();
+                } else if teams.is_none() {
+                    if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
+                        k.killer_colour = (!k.void).then(|| colour_of(*killer));
+                        k.victim_colour = Some(colour_of(*victim));
+                    }
                 }
                 self.killfeed.push(k);
                 if self.killfeed.len() > KILLFEED_MAX {
@@ -115,6 +129,10 @@ impl HudBridge {
         if let (Some(t), Some(b)) = (&teams, view.board.as_ref()) {
             for (row, r) in scoreboard.iter_mut().zip(b.rows.iter()) {
                 row.team = t.team_of.get(&(r.id as u16)).copied();
+            }
+        } else if let Some(b) = view.board.as_ref() {
+            for (row, r) in scoreboard.iter_mut().zip(b.rows.iter()) {
+                row.colour = Some(colour_of(r.id as u16));
             }
         }
         if let Some(t) = &teams {
@@ -159,6 +177,10 @@ impl HudBridge {
             ..Default::default()
         };
         let mut hs = HudState::from_frame(net, &stats, &self.fx, self.time);
+        hs.ffa = teams.is_none();
+        hs.kill_limit = if teams.is_none() { self.kill_limit } else { None };
+        hs.build = self.build;
+        hs.grapple = self.grapple;
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
         hs
@@ -336,5 +358,26 @@ mod tests {
 
     fn shinobi_client_sample(pos: [f32; 3]) -> crate::interp::Sample {
         crate::interp::Sample { pos, yaw: 0.0, extrapolated: false }
+    }
+
+    #[test]
+    fn free_for_all_gets_unique_colours_a_leaderboard_flag_and_passes_build_and_grapple_through() {
+        use crate::hud::{ffa_colour, BuildHud, BuildSlot, GrappleHud};
+        let mut b = HudBridge::default();
+        b.kill_limit = Some(25);
+        b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
+        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true });
+        let mut v = RenderView::default();
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.ffa && s.kill_limit == Some(25) && s.team_scores.is_none());
+        assert_eq!(s.scoreboard[0].colour, Some(ffa_colour(2)));
+        assert_eq!(s.scoreboard[1].colour, Some(ffa_colour(5)));
+        assert_eq!(s.build, b.build);
+        assert_eq!(s.grapple, b.grapple);
+        // teams on: no FFA panel, no kill limit
+        b.teams = Some(TeamInfo { my_team: 0, scores: [0, 0], score_limit: 50, result: 0, team_of: Default::default() });
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(!s.ffa && s.kill_limit.is_none());
     }
 }
