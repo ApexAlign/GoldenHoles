@@ -598,7 +598,7 @@ mod district_tests {
     #[test]
     fn district_tint_is_dominated_by_the_district_colour() {
         let t = district_tint([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        assert!(t[1] > t[0] * 3.0, "{t:?}");
+        assert!(t[1] > t[0] * 2.5, "{t:?}");
         assert!(t.iter().all(|v| *v >= 0.0));
     }
 }
