@@ -42,6 +42,7 @@ impl Plugin for NetPlugin {
             .insert_resource(Net(net))
             .insert_resource(view)
             .init_resource::<PendingInput>()
+            .insert_resource(SubTick(!self.offline))
             .add_systems(First, publish_view);
         if !self.offline {
             app.add_systems(FixedUpdate, net_step);
@@ -60,6 +61,11 @@ fn net_step(mut net: ResMut<Net>, mut input: ResMut<PendingInput>) {
 }
 
 /// `ClientGame::view` takes the reliable events, so call it once per rendered frame.
-fn publish_view(mut net: ResMut<Net>, mut view: ResMut<ViewRes>) {
-    view.0 = net.0.view();
+fn publish_view(mut net: ResMut<Net>, mut view: ResMut<ViewRes>, fixed: Res<Time<Fixed>>, sub: Res<SubTick>) {
+    // draw between sim ticks (the fixed step is 60 Hz, the display is not); offline shots stay on exact ticks
+    view.0 = if sub.0 { net.0.view_frac(fixed.overstep_fraction() as f64) } else { net.0.view() };
 }
+
+/// Whether `publish_view` interpolates between fixed ticks.
+#[derive(Resource)]
+struct SubTick(bool);
