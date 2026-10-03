@@ -407,7 +407,7 @@ impl Balance {
     ///   your own trail never hurts you (it still blocks you);
     /// * hp 100, respawn 3 s, 1.5 s spawn protection;
     /// * the match starts 3 s after the first player (min_players 1, so one human plus bots works), first to
-    ///   10 frags or 5 minutes, 8 s intermission.
+    ///   15 frags or 8 minutes, 8 s intermission (docs/DEMO.md).
     pub fn demo() -> Self {
         let mut b = Balance::default();
         b.combat.katana.damage = 60.0;
@@ -424,7 +424,8 @@ impl Balance {
         b.hazards.owner_immune = true;
         b.matches.warmup_ticks = 3 * crate::match_state::TICK_HZ;
         b.matches.min_players = 1;
-        b.matches.frag_limit = 10;
+        b.matches.frag_limit = 15;
+        b.matches.time_limit_ticks = 8 * 60 * crate::match_state::TICK_HZ;
         b.matches.intermission_ticks = 8 * crate::match_state::TICK_HZ;
         b
     }
@@ -816,7 +817,8 @@ mod tests {
         assert!(!b0_owner_immune(), "default balance unchanged");
         // match flow for a lone human + bots
         let m = d.match_cfg();
-        assert_eq!((m.min_players, m.warmup_ticks, m.frag_limit), (1, 180, 10));
+        assert_eq!((m.min_players, m.warmup_ticks, m.frag_limit), (1, 180, 15));
+        assert_eq!(m.time_limit_ticks, 8 * 60 * 60, "8 minutes");
         assert!(d != b && b.matches.min_players == 2, "default preset untouched");
     }
 

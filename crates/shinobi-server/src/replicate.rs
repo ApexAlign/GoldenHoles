@@ -773,7 +773,7 @@ mod tests {
         max_all: usize,
     }
 
-    /// 16 players all throwing shurikens, 4 ropes up, a field of player blocks that keeps growing, every datagram
+    /// Free-for-all (the demo mode), 16 players all throwing shurikens, 4 ropes up, a field of player blocks that keeps growing, every datagram
     /// built and acked on a perfect link. `late_joiner`: a 17th peer joins at 1/3 of the run, mid-spam, and has the
     /// whole block field replayed to it.
     fn run_soak(ticks: u32, late_joiner: bool) -> SoakStats {
@@ -782,8 +782,7 @@ mod tests {
         use shinobi_sim::character::GrappleState;
         use shinobi_sim::events::EventInbox;
         let cfg = Cfg::default();
-        let mut s = crate::setup::Setup::standard().build(cfg);
-        s.enable_teams(50);
+        let mut s = crate::setup::Setup::standard().build(cfg); // free-for-all, the demo mode
         for id in 1..=16u16 {
             let at = s.pick_spawn(None);
             s.add_player(id, at);
@@ -985,7 +984,7 @@ mod tests {
             st.mean_ms, st.p50_ms, st.p99_ms, st.p999_ms, st.max_ms, st.max_discs, PROJECTILE_ID_MAX, st.max_steady, st.max_all
         );
         if !cfg!(debug_assertions) {
-            assert!(st.p99_ms < 16.6, "p99 tick {:.2} ms blows the 60 Hz budget", st.p99_ms);
+            assert!(st.p99_ms < 5.0, "p99 tick {:.2} ms: the demo budget is 5 ms at 16 players (docs/DEMO.md)", st.p99_ms);
         }
         assert!(st.max_all < 2048 && st.max_steady <= 1200);
     }
