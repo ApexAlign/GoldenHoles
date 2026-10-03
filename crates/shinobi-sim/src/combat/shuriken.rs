@@ -55,7 +55,7 @@ impl Default for ShurikenCfg {
             assist_cone_deg: 6.0,
             assist_strength: 0.75,
             assist_range: 60.0,
-            piece_damage: 10.0,
+            piece_damage: 12.0,
             targets: TARGETS,
             mask: projectile_groups(),
         }

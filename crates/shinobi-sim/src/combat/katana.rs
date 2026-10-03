@@ -43,7 +43,7 @@ impl KatanaCfg {
             cooldown: ch.dash_cd,
             lunge_distance: dash_distance(ch),
             magnet: 0.8,
-            piece_damage: 40.0,
+            piece_damage: 60.0,
         }
     }
 }

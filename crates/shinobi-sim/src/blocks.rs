@@ -187,9 +187,9 @@ impl Default for BlockCfg {
             range: 6.0,
             cooldown_ticks: 12,
             hp: 100.0,
-            age_bonus_per_sec: 0.0,
-            scale_per_kill: 0.0,
-            scale_cap: 0.0,
+            age_bonus_per_sec: 0.02,
+            scale_per_kill: 0.1,
+            scale_cap: 2.0,
         }
     }
 }
@@ -267,6 +267,8 @@ pub enum BlockEvent {
     Removed { tick: u32, cell: Cell },
     /// Destroyed by damage: dissolves into pixels (Graphics).
     DeRez { tick: u32, cell: Cell, owner: u16, piece: Piece },
+    /// Hurt but standing: `hp_q` = remaining health in 1/255ths of its limit (255 = untouched), for cracking visuals.
+    Damaged { tick: u32, cell: Cell, hp_q: u8 },
     Refused { tick: u32, owner: u16, why: PlaceError },
 }
 
@@ -470,6 +472,8 @@ impl Blocks {
         b.hurt += amount / (1.0 + self.cfg.age_bonus_per_sec * age);
         let limit = self.cfg.hp * (b.scale_q as f32 / SCALE_ONE as f32);
         if b.hurt < limit {
+            let hp_q = ((1.0 - b.hurt / limit.max(1e-3)) * 255.0).round().clamp(1.0, 255.0) as u8;
+            events.push(BlockEvent::Damaged { tick, cell, hp_q });
             return false;
         }
         let (owner, piece) = (b.owner, b.piece);
@@ -695,8 +699,10 @@ mod e2e_tests {
         let (c, h) = b.geometry([2, 3, 4], Piece::FLOOR, SCALE_ONE);
         assert_eq!(c, [2.5, 3.0 + 0.1, 4.5]);
         assert_eq!(h, [0.5, 0.1, 0.5]);
-        assert_eq!(b.cfg.scale_q(40), SCALE_ONE, "inert by default");
+        b.cfg.scale_per_kill = 0.0;
+        assert_eq!(b.cfg.scale_q(40), SCALE_ONE, "off when scale_per_kill is 0");
         b.cfg.scale_per_kill = 0.05;
+        b.cfg.scale_cap = 0.0;
         assert_eq!(b.cfg.scale_q(4), 19); // 1.2 * 16 = 19.2
         b.cfg.scale_cap = 1.5;
         assert_eq!(b.cfg.scale_q(1000), 24);
@@ -712,7 +718,10 @@ mod e2e_tests {
         // at tick 600 the first piece is 10 s old (x11 tougher); the second is brand new
         assert!(!b.damage(&mut s.world, [0, 0, 0], 100.0, 600, &mut ev), "old piece shrugs off 100");
         assert!(b.damage(&mut s.world, [5, 0, 0], 100.0, 600, &mut ev), "fresh piece dies to 100");
-        assert!(matches!(ev[..], [BlockEvent::DeRez { cell: [5, 0, 0], owner: 1, .. }]), "{ev:?}");
+        assert!(matches!(ev[..], [BlockEvent::Damaged { cell: [0, 0, 0], .. }, BlockEvent::DeRez { cell: [5, 0, 0], owner: 1, .. }]), "{ev:?}");
+        // the old piece reports how hurt it is: 100 dmg / (1 + 1.0 * 10 s) = 9.09 of 100 -> ~91% left
+        let BlockEvent::Damaged { hp_q, .. } = ev[0] else { unreachable!() };
+        assert!((hp_q as i32 - 232).abs() <= 1, "hp_q {hp_q}");
         assert!(b.is_free([5, 0, 0]) && !b.is_free([0, 0, 0]));
     }
 }
