@@ -157,6 +157,8 @@ pub struct BotStats {
     pub wall_runs: u32,
     pub ledge_hops: u32,
     pub ticketless_waits: u32,
+    /// Times the wedge detector backed the bot out of geometry.
+    pub unsticks: u32,
 }
 
 #[derive(Default)]
@@ -194,6 +196,14 @@ pub struct BotMem {
     path: Vec<[f32; 2]>,
     path_goal: [f32; 2],
     path_at: u32,
+    /// Targets no walkable path leads to (on a roof / tower top): `(target id, ignore until tick)`. The director
+    /// picks someone else while an entry is live, so the bot keeps moving instead of pushing at the foot of a wall.
+    pub unreachable: Vec<(u16, u32)>,
+    // wedge detector: position at the last check and the tick it was taken; while `unstick_until` is in the future the
+    // bot backs out along the freest direction instead of following its plan
+    stuck_check: ([f32; 2], u32),
+    unstick_until: u32,
+    unstick_dir: V3,
 }
 
 impl BotMem {
@@ -225,6 +235,10 @@ impl BotMem {
             path: Vec::new(),
             path_goal: [0.0; 2],
             path_at: 0,
+            unreachable: Vec::new(),
+            stuck_check: ([0.0; 2], 0),
+            unstick_until: 0,
+            unstick_dir: Vector::zeros(),
         }
     }
 
@@ -718,7 +732,34 @@ impl BotMem {
         }
 
         if mag < 0.05 {
+            self.stuck_check = ([me.pos.x, me.pos.z], tick);
             return (dir, mag);
+        }
+        // wedged on geometry the plan cannot see (a body pinned against a wall corner): same place for 1.5 s while
+        // trying to move -> back out along the freest direction for a moment, then plan again
+        if tick < self.unstick_until {
+            return (self.unstick_dir, 1.0);
+        }
+        if tick.wrapping_sub(self.stuck_check.1) >= 90 {
+            let moved = (me.pos.x - self.stuck_check.0[0]).hypot(me.pos.z - self.stuck_check.0[1]);
+            self.stuck_check = ([me.pos.x, me.pos.z], tick);
+            if moved < 0.4 && me.grounded() && !matches!(self.phase, Phase::Strike { .. }) {
+                let knee = vector![me.pos.x, me.pos.y - 0.3, me.pos.z];
+                let mut best = (-1.0f32, vector![1.0, 0.0, 0.0]);
+                for k in 0..8 {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_4 + (tick % 7) as f32 * 0.1;
+                    let d = vector![a.cos(), 0.0, a.sin()];
+                    let room = world.ray(knee, d, 4.0).unwrap_or(4.0);
+                    if room > best.0 {
+                        best = (room, d);
+                    }
+                }
+                self.unstick_dir = best.1;
+                self.unstick_until = tick + 40;
+                self.path.clear();
+                self.stats.unsticks += 1;
+                return (self.unstick_dir, 1.0);
+            }
         }
         // approaching a target that is out of sight, or in sight but not walkable to in a straight line (ledges, low
         // walls, void gaps): follow a planned path instead of walking into the first wall
@@ -729,7 +770,7 @@ impl BotMem {
                     && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
                     && (!t.los || !nav.straight_walkable([me.pos.x, me.pos.z], [t.view.pos.x, t.view.pos.z])) =>
             {
-                self.path_dir(nav, me.pos, t.view.pos, tick)
+                self.path_dir(world, nav, me.pos, t.view.pos, tick, t.view.id)
             }
             _ => {
                 self.path.clear();
@@ -745,7 +786,7 @@ impl BotMem {
 
     /// Direction along a path to `goal`, replanned when the goal moved to another cell, the plan is old, or the bot
     /// strayed from it. Waypoints are consumed as the bot reaches them.
-    fn path_dir(&mut self, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32) -> Option<V3> {
+    fn path_dir(&mut self, world: &WorldView, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32, target: u16) -> Option<V3> {
         const REPLAN_TICKS: u32 = 45;
         const REACH: f32 = 0.8; // a baffled door is ~1 m wide: pass through the corner waypoint, do not cut it
         let goal2 = [goal.x, goal.z];
@@ -753,11 +794,36 @@ impl BotMem {
         if self.path.is_empty() || moved || tick.wrapping_sub(self.path_at) >= REPLAN_TICKS {
             self.path_at = tick;
             self.path_goal = goal2;
-            self.path = nav.path([from.x, from.z], goal2, 40_000).unwrap_or_default();
+            self.path = match nav.path([from.x, from.z], goal2, 40_000) {
+                Some(p) => p,
+                None => {
+                    // no walkable way to them (or too far to search): let the director pick someone else for a while
+                    self.unreachable.retain(|(_, until)| *until > tick);
+                    self.unreachable.push((target, tick + 360));
+                    Vec::new()
+                }
+            };
             self.path.reverse(); // pop from the back
         }
-        while let Some(w) = self.path.last() {
-            if (w[0] - from.x).hypot(w[1] - from.z) < REACH && self.path.len() > 1 {
+        // a waypoint is passed when reached, or when close AND the way to the next one is open for a body (centre
+        // and both shoulders): popping a corner early is how bots cut it and pin themselves on the wall's end
+        let knee = vector![from.x, from.y - 0.3, from.z];
+        while self.path.len() > 1 {
+            let w = self.path[self.path.len() - 1];
+            let dist = (w[0] - from.x).hypot(w[1] - from.z);
+            let open = || {
+                let n = self.path[self.path.len() - 2];
+                let d = vector![n[0] - from.x, 0.0, n[1] - from.z];
+                let len = d.norm();
+                if len < 0.1 {
+                    return true;
+                }
+                let u = d / len;
+                let side = vector![-u.z, 0.0, u.x] * 0.4;
+                let reach = len.min(3.0);
+                [Vector::zeros(), side, -side].iter().all(|o| world.ray(knee + o, u, reach).is_none())
+            };
+            if dist < 0.35 || (dist < REACH && open()) {
                 self.path.pop();
             } else {
                 break;

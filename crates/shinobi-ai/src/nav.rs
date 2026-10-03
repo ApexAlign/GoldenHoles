@@ -110,10 +110,18 @@ pub struct NavGrid {
     nz: usize,
     /// Ground height per cell, `NaN` = not walkable.
     y: Vec<f32>,
+    /// Ground height at the midpoint of each cell's east / south edge (`NaN` = none): tells a smooth ramp from a
+    /// sheer step between two cells of different height.
+    ye: Vec<f32>,
+    ys: Vec<f32>,
 }
 
-/// Largest ground-height difference between neighbouring cells a walking bot crosses (autostep + ramps).
-const NAV_STEP: f32 = 0.7;
+/// Largest ground-height difference between neighbouring cells a walking bot crosses on a smooth ramp.
+const NAV_STEP: f32 = 0.9;
+/// A height difference the character steps over without a ramp (its autostep is 0.35 m).
+const NAV_AUTOSTEP: f32 = 0.3;
+/// How far the ground at the edge midpoint may sit from the average of the two cells and still count as a ramp.
+const NAV_RAMP_TOL: f32 = 0.12;
 /// Highest ground a path may use: tiers a bot can walk onto, not roofs only reachable by hopping.
 const NAV_MAX_Y: f32 = 4.0;
 
@@ -130,6 +138,14 @@ impl NavGrid {
         let solids = QueryFilter::default().exclude_sensors().groups(InteractionGroups::new(Group::ALL, GROUP_WORLD));
         let body = Capsule::new_y(cfg.half_height, cfg.radius * 0.9);
         let mut y = vec![f32::NAN; n * n];
+        let (mut ye, mut ys) = (vec![f32::NAN; n * n], vec![f32::NAN; n * n]);
+        let ground = |x: f32, z: f32| -> f32 {
+            let ray = Ray::new(Point::new(x, NAV_MAX_Y + 1.0, z), vector![0.0, -1.0, 0.0]);
+            match queries.cast_ray(&world.bodies, &world.colliders, &ray, NAV_MAX_Y + 25.0, true, solids) {
+                Some((_, toi)) if NAV_MAX_Y + 1.0 - toi <= NAV_MAX_Y => NAV_MAX_Y + 1.0 - toi,
+                _ => f32::NAN,
+            }
+        };
         for iz in 0..n {
             for ix in 0..n {
                 let (cx, cz) = (x0 + (ix as f32 + 0.5) * cell, z0 + (iz as f32 + 0.5) * cell);
@@ -149,10 +165,12 @@ impl NavGrid {
                 });
                 if !blocked {
                     y[iz * n + ix] = gy;
+                    ye[iz * n + ix] = ground(cx + cell * 0.5, cz);
+                    ys[iz * n + ix] = ground(cx, cz + cell * 0.5);
                 }
             }
         }
-        NavGrid { x0, z0, cell, nx: n, nz: n, y }
+        NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys }
     }
 
     pub fn walkable_count(&self) -> usize {
@@ -200,6 +218,23 @@ impl NavGrid {
         None
     }
 
+    /// Orthogonal neighbours `a` -> `b` (ground heights `ya`, `yb`): a small step the character climbs, or a smooth
+    /// slope (the ground at the shared edge's midpoint lies between the two, not at one cell's level).
+    fn edge_ok(&self, a: (i32, i32), b: (i32, i32), ya: f32, yb: f32) -> bool {
+        let d = (ya - yb).abs();
+        if d <= NAV_AUTOSTEP {
+            return true;
+        }
+        if d > NAV_STEP {
+            return false;
+        }
+        // the edge midpoint is stored on the west/north cell of the pair (east / south edge)
+        let (lo, along_x) = if a.1 == b.1 { (if a.0 < b.0 { a } else { b }, true) } else { (if a.1 < b.1 { a } else { b }, false) };
+        let Some(i) = self.idx(lo.0, lo.1) else { return false };
+        let em = if along_x { self.ye[i] } else { self.ys[i] };
+        !em.is_nan() && (em - (ya + yb) * 0.5).abs() <= NAV_RAMP_TOL
+    }
+
     /// A walkable cell with a blocked cell on one of its four sides.
     fn hugs_wall(&self, c: (i32, i32)) -> bool {
         [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dz)| self.ground(c.0 + dx, c.1 + dz).is_none())
@@ -208,11 +243,14 @@ impl NavGrid {
     fn passable(&self, a: (i32, i32), b: (i32, i32)) -> bool {
         match (self.ground(a.0, a.1), self.ground(b.0, b.1)) {
             (Some(ya), Some(yb)) => {
-                if (ya - yb).abs() > NAV_STEP {
-                    return false;
+                if a.0 == b.0 || a.1 == b.1 {
+                    return self.edge_ok(a, b, ya, yb);
                 }
-                // diagonals may not cut a blocked corner
-                (a.0 == b.0 || a.1 == b.1) || (self.ground(a.0, b.1).is_some() && self.ground(b.0, a.1).is_some())
+                // a diagonal is two L-shaped orthogonal routes: both must be walkable, leg by leg (a corner of a
+                // raised block would otherwise be cut diagonally from the ground onto its top)
+                let (c1, c2) = ((a.0, b.1), (b.0, a.1));
+                let (Some(y1), Some(y2)) = (self.ground(c1.0, c1.1), self.ground(c2.0, c2.1)) else { return false };
+                self.edge_ok(a, c1, ya, y1) && self.edge_ok(c1, b, y1, yb) && self.edge_ok(a, c2, ya, y2) && self.edge_ok(c2, b, y2, yb)
             }
             _ => false,
         }

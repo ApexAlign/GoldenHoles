@@ -373,7 +373,12 @@ impl BotHost {
                     continue;
                 }
             }
-            let pool: Vec<&PlayerView> = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
+            let skip = |id: u16| b.unreachable.iter().any(|(t, until)| *t == id && *until > tick);
+            let mut pool: Vec<&PlayerView> = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team) && !skip(p.id)).collect();
+            if pool.is_empty() {
+                // everybody is unreachable: fall back to the nearest anyway (the bot still faces and shoots them)
+                pool = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
+            }
             // wounded targets look closer: cost = distance scaled from 0.6x (nearly dead) to 1.0x (full health)
             let cost = |p: &PlayerView| (p.pos - me.pos).norm() * (0.6 + 0.4 * p.hp_frac);
             let best = pool

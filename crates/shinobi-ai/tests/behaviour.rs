@@ -310,3 +310,32 @@ fn bots_walk_out_of_enclosed_spawn_alcoves_on_the_big_ffa_map() {
         .count();
     assert!(left >= 7, "{left}/8 bots left their alcove within 30 s");
 }
+
+#[test]
+fn a_bot_boxed_in_by_printed_walls_backs_out_and_gets_to_its_target() {
+    use shinobi_sim::blocks::{Blocks, Piece};
+    // bot in a U-shaped pocket of walls whose opening faces AWAY from the target (+X); the dummy human stands at -X
+    let mut s = flat_server(vec![[0.5, 0.81, 0.5]]);
+    s.add_player(1, [-40.5, 0.81, 0.5]);
+    let mut b = Blocks::default();
+    for y in 0..3 {
+        for z in -2..=2 {
+            b.place(&mut s.world, 1, [-2, y, z], Piece::WALL_X, 16, 0, &[]).unwrap(); // west wall, facing the target
+        }
+        for x in -2..=2 {
+            b.place(&mut s.world, 1, [x, y, -3], Piece::WALL_Z, 16, 0, &[]).unwrap(); // north
+            b.place(&mut s.world, 1, [x, y, 3], Piece::WALL_Z, 16, 0, &[]).unwrap(); // south
+        }
+    }
+    s.blocks = b;
+    let mut h = host(9);
+    spawn_bot(&mut h, &mut s, 201, [0.5, 0.81, 0.5], Archetype::Light, BotSkill::Normal);
+    let mut best = f32::MAX;
+    for _ in 0..1800 {
+        step(&mut h, &mut s);
+        let p = pos(&s, 201);
+        best = best.min(((p[0] + 40.5).powi(2) + (p[2] - 0.5).powi(2)).sqrt());
+    }
+    // bots hold at their zone radius (~19 m) from a human; getting that close means it walked out and around
+    assert!(best < 24.0, "the walled-in bot never got near its target (closest {best:.1} m, it started 41 m away)");
+}
