@@ -232,6 +232,7 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
+            CombatEvent::SlashHit { .. } | CombatEvent::SlashMiss { .. } => {} // Graphics: hit flash / whiff arc hook
             CombatEvent::RicochetHit { .. } => {} // medal bookkeeping only; the Damage event right after drives the FX
             CombatEvent::ShurikenGone { pos } => {
                 let mut em = self.mk(EmitterKind::HitSpark, p.cyan, 2.0);

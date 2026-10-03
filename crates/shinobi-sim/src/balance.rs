@@ -51,6 +51,8 @@ pub struct KatanaBalance {
     pub blade_len: f32,
     pub half_width: f32,
     pub half_height: f32,
+    /// How strongly the hit sweep bends toward the lock-on target (0 = off, 1 = onto the target), times the lock pull.
+    pub magnet: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +71,12 @@ pub struct CombatBalance {
     pub ultimate_max_radius: f32,
     pub ultimate_damage: f32,
     pub pickup_charge_secs: f32,
+    /// Predator lock-on: seconds a target must stay in the cone to LOCK.
+    pub lock_secs: f32,
+    /// Fraction of the full assist pull while still acquiring (progress 0); 1.0 at LOCK.
+    pub lock_pull_min: f32,
+    /// Seconds the broken lock lingers (scatter / fade) before it returns to SEARCH.
+    pub lock_break_secs: f32,
 }
 
 /// Player-built pieces (`blocks.rs`). The hook values are inert until the owner decides them.
@@ -117,6 +125,22 @@ impl BlockBalance {
             scale_per_kill: self.scale_per_kill,
             scale_cap: self.scale_cap,
         }
+    }
+}
+
+/// Client-side feedback timings. The sim never pauses: these only tell the shell how long to freeze the
+/// viewmodel / shake the camera after a confirmed hit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedbackBalance {
+    /// Hit-stop after a katana hit, milliseconds.
+    pub hitstop_slash_ms: f32,
+    /// Hit-stop after a katana kill.
+    pub hitstop_kill_ms: f32,
+}
+
+impl Default for FeedbackBalance {
+    fn default() -> Self {
+        Self { hitstop_slash_ms: 60.0, hitstop_kill_ms: 80.0 }
     }
 }
 
@@ -207,6 +231,7 @@ pub struct Balance {
     pub combat: CombatBalance,
     pub hazards: HazardBalance,
     pub blocks: BlockBalance,
+    pub feedback: FeedbackBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -248,7 +273,7 @@ impl Default for Balance {
                     assist_strength: s.assist_strength,
                     assist_range: s.assist_range,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0, magnet: 0.8 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -258,8 +283,12 @@ impl Default for Balance {
                 ultimate_max_radius: 120.0,
                 ultimate_damage: 9999.0,
                 pickup_charge_secs: 20.0,
+                lock_secs: 0.35,
+                lock_pull_min: 0.25,
+                lock_break_secs: 0.25,
             },
             blocks: BlockBalance::default(),
+            feedback: FeedbackBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -425,6 +454,7 @@ impl Balance {
         k.blade_len = b.blade_len;
         k.half_width = b.half_width;
         k.half_height = b.half_height;
+        k.magnet = b.magnet;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -502,6 +532,12 @@ impl Balance {
         s!("combat.katana.blade_len", F, self.combat.katana.blade_len);
         s!("combat.katana.half_width", F, self.combat.katana.half_width);
         s!("combat.katana.half_height", F, self.combat.katana.half_height);
+        s!("combat.katana.magnet", F, self.combat.katana.magnet);
+        s!("combat.lock_secs", F, self.combat.lock_secs);
+        s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
+        s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
+        s!("feedback.hitstop_slash_ms", F, self.feedback.hitstop_slash_ms);
+        s!("feedback.hitstop_kill_ms", F, self.feedback.hitstop_kill_ms);
         s!("combat.knockback_slash", F, self.combat.knockback_slash);
         s!("combat.knockback_shuriken", F, self.combat.knockback_shuriken);
         s!("combat.knockback_ultimate", F, self.combat.knockback_ultimate);

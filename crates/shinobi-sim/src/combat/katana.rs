@@ -20,6 +20,8 @@ pub struct KatanaCfg {
     pub cooldown: f32,
     /// Horizontal distance the character's dash covers; sizes the hit box.
     pub lunge_distance: f32,
+    /// Strength (0..1, times the lock pull) of the hit sweep's bend toward the lock-on target.
+    pub magnet: f32,
 }
 
 /// Distance `CharacterSystem`'s dash travels: speed = dash_speed * (0.4 + 0.6 f), f: 1 -> 0 over
@@ -38,6 +40,7 @@ impl KatanaCfg {
             // Matching the dash cooldown keeps every slice paired with a lunge.
             cooldown: ch.dash_cd,
             lunge_distance: dash_distance(ch),
+            magnet: 0.8,
         }
     }
 }
@@ -138,7 +141,19 @@ impl Weapon for Katana {
         };
         // Melee aim assist: a swing that misses dead-ahead re-sweeps a few degrees to either side and takes the
         // first sweep that connects. Hit boxes only: the lunge keeps the aimed direction (client prediction).
+        // magnetism: with a lock, sweep first along the aim bent toward the target (horizontally: the blade is flat)
+        let magnet_dir = ctx.lock.map(|h| {
+            let flat = vector![h.dir.x, 0.0, h.dir.z];
+            let n = flat.norm();
+            if n > 1e-4 { super::aim_assist::bend(dir, flat / n, c.magnet * h.pull) } else { dir }
+        });
         let boxhits = |reach: f32| -> Vec<ColliderHandle> {
+            if let Some(m) = magnet_dir {
+                let h = boxhits_at(m, reach);
+                if !h.is_empty() {
+                    return h;
+                }
+            }
             let straight = boxhits_at(dir, reach);
             if !straight.is_empty() {
                 return straight;
@@ -174,8 +189,12 @@ impl Weapon for Katana {
             ctx.input.move_dir = dir;
         }
 
+        if hits.is_empty() {
+            ctx.events.push(CombatEvent::SlashMiss { origin: Point::from(origin), dir });
+        }
         for h in &hits {
             let Some(col) = ctx.world.colliders.get(*h) else { continue };
+            ctx.events.push(CombatEvent::SlashHit { target: col.user_data, point: Point::from(*col.translation()), killed: false });
             ctx.events.push(CombatEvent::Damage {
                 target: col.user_data,
                 collider: *h,

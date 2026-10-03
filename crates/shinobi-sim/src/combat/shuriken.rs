@@ -145,52 +145,23 @@ impl Weapon for ShurikenLauncher {
     }
 }
 
-/// The crosshair direction, bent toward the best target inside the assist cone (smallest angle off the
-/// crosshair, line of sight required). Never reaches past the cone, so it only forgives near-misses.
+/// The crosshair direction, bent toward the lock-on target by `assist_strength` scaled with the lock's pull (weak
+/// while acquiring, full at LOCK). Never reaches past the cone, so it only forgives near-misses.
 fn assisted_dir(cfg: &ShurikenCfg, ctx: &FireCtx) -> Vector<Real> {
     let fwd = ctx.aim.forward();
+    let Some(hint) = ctx.lock else { return fwd };
     if cfg.assist_cone_deg <= 0.0 || cfg.assist_strength <= 0.0 {
         return fwd;
     }
-    let eye = ctx.aim.origin;
     // already on target (or about to hit a wall first): leave the shot alone, so headshots stay headshots
     let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !ctx.allies.contains(&h);
     let filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask)).exclude_rigid_body(ctx.ch.body);
-    let ray = Ray::new(Point::from(eye), fwd);
+    let ray = Ray::new(Point::from(ctx.aim.origin), fwd);
     let first = ctx.world.queries.cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, cfg.assist_range, true, filter);
     if first.map_or(false, |(h, _)| ctx.world.colliders.get(h).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets))) {
         return fwd;
     }
-    let min_cos = cfg.assist_cone_deg.to_radians().cos();
-    let mut best: Option<(f32, Vector<Real>)> = None;
-    for (h, c) in ctx.world.colliders.iter() {
-        if !c.collision_groups().memberships.intersects(cfg.targets) || c.parent() == Some(ctx.ch.body) || ctx.allies.contains(&h) {
-            continue;
-        }
-        let centre = c.position().translation.vector;
-        let to = centre - eye;
-        let dist = to.norm();
-        if !(0.5..=cfg.assist_range).contains(&dist) {
-            continue;
-        }
-        let to = to / dist;
-        let cos = to.dot(&fwd);
-        if cos < min_cos || best.map_or(false, |(b, _)| cos <= b) {
-            continue;
-        }
-        if crate::spawn::blocked(ctx.world, [eye.x, eye.y, eye.z], [centre.x, centre.y, centre.z]) {
-            continue;
-        }
-        best = Some((cos, to));
-    }
-    match best {
-        Some((_, to)) => {
-            let v = fwd * (1.0 - cfg.assist_strength) + to * cfg.assist_strength;
-            let n = v.norm();
-            if n > 1e-4 { v / n } else { fwd }
-        }
-        None => fwd,
-    }
+    super::aim_assist::bend(fwd, hint.dir, cfg.assist_strength * hint.pull)
 }
 
 pub enum DiscStep {

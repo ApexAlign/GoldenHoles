@@ -21,6 +21,8 @@ pub struct FireCtx<'a> {
     pub events: &'a mut Vec<CombatEvent>,
     /// Hitboxes of the owner's teammates: neither blades nor discs touch them (friendly fire off).
     pub allies: &'a [ColliderHandle],
+    /// Current lock-on target and pull strength (None while searching / breaking).
+    pub lock: Option<super::aim_assist::LockHint>,
 }
 
 pub struct TickCtx<'a> {
@@ -126,6 +128,7 @@ impl Loadout {
         player_input: &mut PlayerInput,
         events: &mut Vec<CombatEvent>,
         allies: &[ColliderHandle],
+        lock: Option<super::aim_assist::LockHint>,
     ) {
         for s in &mut self.slots {
             s.cooldown_left = (s.cooldown_left - dt).max(0.0);
@@ -136,7 +139,7 @@ impl Loadout {
                 Trigger::Secondary => input.slice,
             };
             if pressed && s.cooldown_left <= 0.0 {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies };
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock };
                 if s.weapon.fire(&mut ctx) {
                     s.cooldown_left = s.weapon.cooldown();
                 }

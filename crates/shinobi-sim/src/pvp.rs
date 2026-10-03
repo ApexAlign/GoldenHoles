@@ -618,13 +618,17 @@ mod tests {
         assert_eq!(shot_damage(1.0, 1950), base);
     }
 
-    fn near_miss_hits(assist: bool) -> bool {
+    /// `settle`: ticks the crosshair rests near the target before the throw (the lock needs `lock_secs` to ramp up).
+    fn near_miss_hits(assist: bool, settle: u32) -> bool {
         // target 1.5 m off the crosshair at 20 m (~4.3 deg): a clean miss without assist
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [1.5, 0.81, -20.0])]);
         if !assist {
             let mut b = sim.s.balance.clone();
             b.combat.shuriken.assist_strength = 0.0;
             sim.s.set_balance(b).unwrap();
+        }
+        for _ in 0..settle {
+            sim.tick(&[(A, IDLE, 0), (B, IDLE, 0)]);
         }
         sim.tick(&[(A, press(Buttons::FIRE), 0), (B, IDLE, 0)]);
         for _ in 0..60 {
@@ -635,8 +639,11 @@ mod tests {
 
     #[test]
     fn aim_assist_forgives_a_near_miss_and_can_be_turned_off() {
-        assert!(near_miss_hits(true), "assist bends the throw onto the target");
-        assert!(!near_miss_hits(false), "without assist the same throw misses");
+        // 30 ticks = 0.5 s on target: the lock is complete and the pull is full
+        assert!(near_miss_hits(true, 30), "a locked assist bends the throw onto the target");
+        assert!(!near_miss_hits(false, 30), "without assist the same throw misses");
+        // the pull is weak while still acquiring: an instant throw at the same near-miss still misses
+        assert!(!near_miss_hits(true, 0), "weak while acquiring");
     }
 
     #[test]

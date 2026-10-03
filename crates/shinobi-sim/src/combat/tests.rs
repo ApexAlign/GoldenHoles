@@ -259,3 +259,20 @@ fn allies_are_ignored_by_the_blade_and_discs_fly_through_them() {
     assert_eq!(hit, Some(2));
     assert_eq!(d.bounces, 0);
 }
+
+#[test]
+fn a_slice_reports_slash_hit_with_the_target_and_slash_miss_when_it_finds_nothing() {
+    let mut w = world();
+    let origin = vector![0.0, 1.0, 0.0];
+    let (ch, cfg) = add_player(&mut w, origin);
+    w.queries.update(&w.colliders);
+    let (ev, _) = slice_once(&w, &ch, &cfg, origin);
+    assert!(ev.iter().any(|e| matches!(e, CombatEvent::SlashMiss { .. })), "a whiff is signalled");
+    assert!(!ev.iter().any(|e| matches!(e, CombatEvent::SlashHit { .. })));
+
+    add_enemy(&mut w, vector![0.0, 1.0, -3.0], 7);
+    w.queries.update(&w.colliders);
+    let (ev, _) = slice_once(&w, &ch, &cfg, origin);
+    assert!(ev.iter().any(|e| matches!(e, CombatEvent::SlashHit { target: 7, killed: false, .. })), "{ev:?}");
+    assert!(!ev.iter().any(|e| matches!(e, CombatEvent::SlashMiss { .. })), "a hit is never also a miss");
+}
