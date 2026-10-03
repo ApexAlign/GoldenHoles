@@ -1,13 +1,14 @@
 # Shinobi quickstart
 
-Neon cyber-ninja arena shooter: run, wall-run, dash-slice and throw shuriken in a Tron-styled arena.
-Server-authoritative, 60 Hz, UDP.
+Neon cyber-ninja arena shooter: run, wall-run, grapple, dash-slice and throw shuriken in a Tron-styled arena.
+The headline mode is **free-for-all**: everybody for themselves, each player has their own neon colour. Team
+deathmatch (Cyan vs Orange, 8v8) is optional (`--teams`). Server-authoritative, 60 Hz, UDP.
 
 ## Three commands
 
 ```bash
-# 1. server   (UDP port 7777; add AI opponents with --bots)
-cargo run --release --offline -p shinobi-server -- --bind 0.0.0.0 --bots 3
+# 1. server   (UDP port 7777; free-for-all with 7 AI opponents)
+cargo run --release --offline -p shinobi-server -- --bind 0.0.0.0 --bots 7
 
 # 2. game     (a window; on another machine use the LAN address the server banner prints)
 cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777
@@ -16,13 +17,15 @@ cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777
 cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 --secs 120
 ```
 
-One-liner for a local match: `BOTS=3 ./demo.sh` (builds, starts the server, opens the window).
+One-liner for a local free-for-all against 7 bots: `./demo.sh` (builds, starts the server, opens the window;
+`BOTS=3 ./demo.sh` for fewer opponents).
 No window available? `scripts/demo_headless.sh` runs server + AI + scripted clients for 60 s and prints a health report.
 Before pushing code: `scripts/check.sh` (workspace tests + `cargo check` of the Bevy game crate; `--fast` skips the game crate).
 
-## Demo the 8v8 + grapple
+## Optional: team mode (8v8) + grapple
 
-Cyan vs Orange, 8 per side, bots fill the empty slots, you join the smaller team. Teams are opt-in (`--team-size 8`);
+Free-for-all is the default. For Cyan vs Orange, 8 per side, with bots filling the empty slots (you join the smaller
+team) start the server with `--team-size 8` (or `--teams` for no bot fill). Teams are opt-in;
 the server and every game window MUST load the same level (`levels/8v8.lvl`) or client prediction desyncs.
 
 **One machine** (builds, starts the server on the 8v8 map, opens the window):
@@ -68,7 +71,8 @@ very first Bevy game build compiles hundreds of crates and takes several minutes
 
 ## What to expect
 
-- A match starts after a short warmup (one player is enough). Default rules (the demo preset): 100 hp,
+- Free-for-all: no teams, anyone can hurt anyone; your colour is derived from your player id. A match starts after a
+  short warmup (one player is enough). Default rules (the demo preset): 100 hp,
   respawn in 3 s with brief spawn protection, katana kills in 2 hits, first to 10 kills or 5 minutes wins,
   8 s intermission, then the next round.
 - Grid-beam cubes (glowing pickups) respawn after 20 s. Fall off the map and you die (kill plane).

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-command demo: local server + game window.
 #   ./demo.sh              build, start a local server, open the game window on this machine's display
-#   BOTS=3 ./demo.sh       also ask the server for 3 AI opponents (once the server supports --bots)
+#   ./demo.sh              free-for-all against 7 AI opponents (the default game)
+#   BOTS=3 ./demo.sh       fewer / more AI opponents (BOTS=0 for none)
 #   TEAM_SIZE=8 ./demo.sh  8v8 Cyan vs Orange team deathmatch, bots fill empty slots (opt-in; instead of BOTS)
 #   ./demo.sh --server-only   just run the server (connect the game yourself)
 # Quit: close the window; the server is stopped automatically.
@@ -9,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"
-BOTS="${BOTS:-0}"
+BOTS="${BOTS:-7}"   # free-for-all: you + 7 bots = 8 players
 TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs.
@@ -57,7 +58,9 @@ cat <<'EOF'
     Left click     katana dash-slice        Right click   throw shuriken
     E              wrist grapple: hooks the crosshair (reels you in), press E again to release
 
-  TEAMS (TEAM_SIZE=8 ./demo.sh): Cyan vs Orange, 8 per side, bots fill the empty slots. You join the smaller team.
+  FREE-FOR-ALL (default): everyone for themselves, every player has their own neon colour, first to the frag limit wins.
+
+  TEAMS (optional, TEAM_SIZE=8 ./demo.sh): Cyan vs Orange, 8 per side, bots fill the empty slots. You join the smaller team.
     Shurikens and the katana pass through teammates. First team to 50 team kills wins (tie = 60 s sudden death).
   BLOCKS: the server and the wire support player-built blocks, but the game window has no build key yet.
 

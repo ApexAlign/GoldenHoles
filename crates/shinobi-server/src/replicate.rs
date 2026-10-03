@@ -858,6 +858,91 @@ mod tests {
         }
     }
 
+    /// Free-for-all (the default mode) end to end with 16 mixed players: 8 scripted humans + 8 bots. The match
+    /// starts, somebody wins, the intermission freezes the world, the next map starts a fresh match with zeroed
+    /// scores; nobody is a teammate of anybody.
+    #[test]
+    fn ffa_match_flows_start_to_end_to_next_match_with_16_mixed_players() {
+        use crate::config::BotSkill;
+        use crate::supervise::{make_bots, BotPlan};
+        use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, ViewState, PITCH_LEVEL};
+        use shinobi_sim::match_state::{EndReason, MatchEvent, PhaseKind};
+        let cfg = Cfg::default();
+        let mut s = crate::setup::Setup::standard().build(cfg);
+        s.match_state.cfg.warmup_ticks = 60;
+        s.match_state.cfg.intermission_ticks = 90;
+        s.match_state.cfg.frag_limit = 4;
+        s.match_state.cfg.time_limit_ticks = 5400;
+        assert!(!s.match_state.team_mode, "FFA is the default");
+        for id in 1..=8u16 {
+            let at = s.pick_spawn(None);
+            s.add_player(id, at);
+        }
+        let plan = BotPlan { count: 8, skill: BotSkill::Hard, seed: 5, team_size: 0 };
+        let mut bots = make_bots(&plan, &mut s);
+        assert_eq!(s.players.len(), 16);
+        assert!(s.players.iter().all(|p| p.team == shinobi_sim::tick::NO_TEAM), "no teams in FFA: nobody is an ally");
+        let mut r = Replicator::new(&cfg, 1);
+        for id in s.players.iter().map(|p| p.id).collect::<Vec<_>>() {
+            r.add_peer(&s, id, s.tick);
+        }
+        let mut events: Vec<MatchEvent> = Vec::new();
+        let (mut frozen_ticks, mut kills_at_second_start) = (0u32, None);
+        for t in 0..9000u32 {
+            for id in 1..=8u16 {
+                let it = PlayerIntent {
+                    tick: s.tick,
+                    buttons: Buttons(Buttons::FIRE | if t % 40 == 0 { Buttons::SLICE } else { 0 }),
+                    move_z: 100,
+                    aim_yaw: ((t * 53 + id as u32 * 7919) % 65536) as u16,
+                    aim_pitch: PITCH_LEVEL,
+                    ..Default::default()
+                };
+                let pkt = ClientPacket {
+                    ack_snapshot_tick: s.tick.saturating_sub(2),
+                    view: ViewState { from_tick: s.tick.saturating_sub(2), alpha: 0 },
+                    intents: vec![it],
+                    ..Default::default()
+                };
+                s.ingest(id, &pkt.encode().unwrap());
+            }
+            bots.advance(&mut s, Duration::from_nanos(16_666_667));
+            let frame_events: Vec<MatchEvent> = s.match_events.to_vec(); // post_frame drains them
+            r.post_frame(&mut s);
+            if s.match_state.frozen() {
+                frozen_ticks += 1;
+            }
+            for e in frame_events {
+                if matches!(e, MatchEvent::MatchStart { .. }) && events.iter().any(|x| matches!(x, MatchEvent::MatchStart { .. })) {
+                    kills_at_second_start = Some(s.players.iter().map(|p| p.vitals.kills as u32).sum::<u32>());
+                }
+                events.push(e);
+            }
+            if kills_at_second_start.is_some() {
+                break;
+            }
+        }
+        let starts = events.iter().filter(|e| matches!(e, MatchEvent::MatchStart { .. })).count();
+        let end = events.iter().find_map(|e| match e {
+            MatchEvent::MatchEnd { winner, reason, .. } => Some((*winner, *reason)),
+            _ => None,
+        });
+        let next = events.iter().find_map(|e| match e {
+            MatchEvent::NextMap { map, .. } => Some(*map),
+            _ => None,
+        });
+        assert_eq!(starts, 2, "a match started, ended, and the next one started: {events:?}");
+        let (winner, reason) = end.expect("the match ended");
+        assert!(winner.is_some(), "a frag-limit / time-limit win in a 16-player brawl has a winner (got a draw)");
+        assert!(matches!(reason, EndReason::FragLimit | EndReason::TimeLimit));
+        assert_eq!(next, Some(1), "intermission moves to the next map");
+        assert!(frozen_ticks >= 80, "the intermission froze the world for its ~90 ticks ({frozen_ticks})");
+        assert_eq!(kills_at_second_start, Some(0), "scores are zeroed for the next match");
+        assert_eq!(s.match_state.kind(), PhaseKind::Live);
+        let log = r.take_log().join("\n");
+        assert!(log.contains("MATCH"), "the server console narrates match flow:\n{log}");
+    }
+
     /// The client reads datagrams into a 2048 B buffer (`udp_game::RX_BUF`): a bigger one is truncated and dropped.
     /// Worst case: 16 players spamming + ropes + a 400-block field + a mid-spam joiner getting the whole field.
     #[test]
