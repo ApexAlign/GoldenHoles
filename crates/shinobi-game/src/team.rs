@@ -36,19 +36,11 @@ pub fn from_wire(t: u8) -> Option<Team> {
     }
 }
 
-/// Distinct neon colour per player id (free-for-all): golden-ratio hue walk, full saturation/value, so any two ids
-/// differ and no colour is dim. STUB for Network's `player_colour(id)`; swap the body when it lands.
+/// Distinct neon colour per player id (free-for-all). Same function the HUD uses (`hud::ffa_colour`), so a player's
+/// body, trail, rope and leaderboard row always match; swap both when Network's `player_colour(id)` lands.
 pub fn neon(id: u16) -> [f32; 3] {
-    let h = (id as f32 * 0.618_034 + 0.13).fract() * 6.0;
-    let x = 1.0 - (h % 2.0 - 1.0).abs();
-    match h as u32 {
-        0 => [1.0, x, 0.0],
-        1 => [x, 1.0, 0.0],
-        2 => [0.0, 1.0, x],
-        3 => [0.0, x, 1.0],
-        4 => [x, 0.0, 1.0],
-        _ => [1.0, 0.0, x],
-    }
+    let c = shinobi_client::hud::ffa_colour(id);
+    [c.0, c.1, c.2]
 }
 
 /// A player's colour (unit scale, multiply by a gain for HDR): the team colour in team modes, else their own neon.
@@ -115,7 +107,7 @@ mod tests {
     fn neon_colours_are_bright_and_distinct() {
         for id in 0..32u16 {
             let c = neon(id);
-            assert!(c.iter().cloned().fold(0.0, f32::max) > 0.99, "full value: {c:?}");
+            assert!(c.iter().cloned().fold(0.0, f32::max) > 0.99, "bright: {c:?}");
         }
         let keys: std::collections::HashSet<u32> = (0..16u16).map(|i| key(neon(i))).collect();
         assert_eq!(keys.len(), 16, "16 players get 16 different colours");
