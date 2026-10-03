@@ -235,7 +235,8 @@ impl HudBridge {
             };
             hs.radar.push(RadarPing { pos, colour, ally });
         }
-        if let Some(l) = self.lock {
+        let lock = self.lock.or_else(|| view.lock.map(|l| LockInfo { target: l.target as u16, pos: l.pos, progress: l.progress, locked: l.locked }));
+        if let Some(l) = lock {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, l.pos) {
@@ -573,5 +574,20 @@ mod tests {
         assert_eq!((bh.selected, bh.ghost, bh.max), (BuildSlot::Wall, Some(false), 64));
         assert_eq!(bh.placed, 1, "only our own pieces count (local id 0 offline)");
         assert_eq!(s.kill_limit, Some(15), "ffa default limit");
+    }
+
+    #[test]
+    fn lock_brackets_follow_the_published_lock_on() {
+        use crate::client_game::LockOn;
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        assert!(b.update(0.016, &v, &net(), false).target.is_none());
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked });
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(t.locked && t.name == "PLAYER 5" && (t.dist - 20.0).abs() < 0.1);
+        assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");
     }
 }
