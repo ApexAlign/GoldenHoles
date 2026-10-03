@@ -25,6 +25,42 @@ No window available? `scripts/demo_headless.sh` runs server + AI + scripted clie
 Playtesting? `scripts/play.sh` (builds, starts a free-for-all with 7 bots, records telemetry) and `docs/PLAYTEST.md`.
 Before pushing code: `scripts/check.sh` (workspace tests + `cargo check` of the Bevy game crate; `--fast` skips the game crate).
 
+## Windows / macOS / Linux without bash (plain cargo, two terminals)
+
+The `.sh` scripts need bash; everything they do is plain cargo. Use the repo root as the working directory (the server and
+the game find `levels/ffa.lvl` themselves; both MUST load the same level, so do not pass `--level` to only one of them).
+
+**Once:** install Rust from https://rustup.rs. Windows: also the "Desktop development with C++" build tools (MSVC) and
+Git for Windows. macOS: `xcode-select --install`. Linux: a Vulkan driver (`mesa-vulkan-drivers`) and `libxkbcommon-x11-0`.
+The first game build compiles hundreds of crates (about 10 minutes); later builds are incremental.
+
+**Windows PowerShell** (two windows, both in the repo folder):
+
+```powershell
+# window 1: server (free-for-all, 7 bots). Allow it through the Windows firewall if asked (private networks).
+cargo run --release -p shinobi-server -- --bots 7
+
+# window 2: game
+cd crates\shinobi-game
+cargo run --release -- --server 127.0.0.1:7777
+```
+
+**macOS / Linux terminal** (two tabs, repo folder):
+
+```bash
+cargo run --release -p shinobi-server -- --bots 7
+cd crates/shinobi-game && cargo run --release -- --server 127.0.0.1:7777
+```
+
+Variants (same on every OS, flags instead of env vars): fewer bots `--bots 3`; bigger map `--level levels/ffa_xl.lvl` on BOTH
+server and game; 8v8 `--team-size 8 --level levels/8v8.lvl` on both; LAN: server `--bind 0.0.0.0`, game `--server <server LAN IP>:7777`
+(open UDP 7777 in the firewall). Sound: add `--features audio` to the game command (Linux needs alsa headers).
+
+**Mouse / pointer lock:** click the window to grab the mouse (that click only grabs, it does not slash). Esc releases it
+(and opens the pause screen); click again to resume. Losing focus (Alt-Tab, clicking another window) also releases it and
+you must click to grab again. Holding Tab frees the cursor for the scoreboard; backquote opens the console (Esc closes the
+console or radial menu first, a second Esc is the pause screen).
+
 ## Optional: team mode (8v8) + grapple
 
 Free-for-all is the default. For Cyan vs Orange, 8 per side, with bots filling the empty slots (you join the smaller

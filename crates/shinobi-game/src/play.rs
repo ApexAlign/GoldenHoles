@@ -283,9 +283,7 @@ pub struct ModeRes {
     pub machine: ModeMachine,
     pub out: Option<ModeOut>,
     /// Seconds a build key (N / M) has been held continuously.
-    build_hold: f32,
-    /// `build_hold` as of the previous frame: on the release frame it says whether the key was a tap or a hold.
-    build_hold_prev: f32,
+    build_holds: shinobi_client::input_mode::BuildHolds,
 }
 
 impl ModeRes {
@@ -319,10 +317,7 @@ pub fn input(
     let lock = &mut *lock;
 
     // input mode first: it may swallow this frame's Esc (closing the console / radial menu) before the pointer lock sees it
-    let build_down = keys.pressed(KeyCode::KeyN) || keys.pressed(KeyCode::KeyM);
-    mode.build_hold_prev = mode.build_hold;
-    mode.build_hold = if build_down { mode.build_hold + time.delta_secs() } else { 0.0 };
-    let build_held_secs = mode.build_hold;
+    let build_held_secs = mode.build_holds.update(time.delta_secs(), keys.pressed(KeyCode::KeyN), keys.pressed(KeyCode::KeyM));
     let mode_out = mode.machine.update(&ModeInput {
         locked: lock.p.locked(),
         tab_held: keys.pressed(KeyCode::Tab),
@@ -384,6 +379,18 @@ pub fn input(
             keys.pressed(KeyCode::KeyD),
         );
     }
+    // Build keys print on RELEASE so a long hold can open the radial menu instead (it replaces the print). Each key
+    // is judged by its OWN hold, and this runs before the action gate so tapping M while N holds the radial open still
+    // prints the wall. Not while the console owns the keyboard.
+    if mode_out.mode != shinobi_client::input_mode::Mode::Console {
+        use shinobi_client::input_mode::BuildKey;
+        for (code, key, action) in [(KeyCode::KeyN, BuildKey::N, Action::BuildFloor), (KeyCode::KeyM, BuildKey::M, Action::BuildWall)] {
+            if keys.just_released(code) && mode.machine.cfg.build_release_prints(mode.build_holds.prev(key)) {
+                f.buttons.push(ButtonEvent { action, down: true });
+                f.buttons.push(ButtonEvent { action, down: false });
+            }
+        }
+    }
     if !mode_out.flags.allow_actions {
         return; // scoreboard / console / radial menu: clicks and keys belong to the overlay
     }
@@ -403,15 +410,6 @@ pub fn input(
         (m(MouseButton::Right), Action::Fire),
     ] {
         key_events(&mut out, p, r, a);
-    }
-    // Build keys print on RELEASE so a long hold can open the radial menu instead (it replaces the print): a tap
-    // (released before the radial threshold, or radial disabled) prints now; a hold prints only what the radial picks.
-    let prints = mode.machine.cfg.build_release_prints(mode.build_hold_prev);
-    for (code, action) in [(KeyCode::KeyN, Action::BuildFloor), (KeyCode::KeyM, Action::BuildWall)] {
-        if keys.just_released(code) && prints {
-            out.push(ButtonEvent { action, down: true });
-            out.push(ButtonEvent { action, down: false });
-        }
     }
     for e in out {
         lock.tracker.apply(&e);

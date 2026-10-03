@@ -263,6 +263,8 @@ pub struct ConsoleRes(pub Console);
 /// The radial build menu exists now: let Cam&Mov's mode machine open it on a build-key hold.
 fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
     mode.machine.cfg.radial_enabled = true;
+    // shorter than Cam&Mov's 0.35 s default: build taps print on release, so the hold threshold is the added latency
+    mode.machine.cfg.radial_hold_secs = 0.25;
 }
 
 /// Master volume / mute -> the telemetry speaker glyph (absent when the game runs without the audio plugin).

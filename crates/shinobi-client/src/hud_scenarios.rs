@@ -95,6 +95,17 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let waiting = HudState { match_clock: Some((shinobi_sim::match_state::PhaseKind::Warmup, None)), shield: Some(0.7), scoreboard: vec![], ..base() };
     out.push(("waiting", Hud::build_with(&waiting, &p)));
 
+    // damage direction (bearing: 0 ahead, + clockwise) and hit markers, each on a quiet HUD
+    let quiet = || HudState { hp: 0.7, boot: None, scoreboard: vec![], killfeed: vec![], ..base() };
+    for (name, bearing, frac) in [("hit_taken_left", -1.5f32, 0.3f32), ("hit_taken_right", 1.5, 0.6), ("hit_taken_behind", 3.1, 0.2)] {
+        let s = HudState { since_damage: Some((0.15, bearing)), damage_frac: frac, ..quiet() };
+        out.push((name, Hud::build_with(&s, &p)));
+    }
+    for (name, kind, kill, amount) in [("hit_dealt_shuriken", DamageKind::Shuriken, false, 12u8), ("hit_dealt_slash", DamageKind::Slash, false, 60), ("hit_dealt_kill", DamageKind::Shuriken, true, 40)] {
+        let s = HudState { since_hit: Some(0.06), hit_kind: Some(kind), hit_kill: kill, hit_amount: amount, ..quiet() };
+        out.push((name, Hud::build_with(&s, &p)));
+    }
+
     let mut con = Console::default();
     let mut st = crate::settings::Settings::default();
     for line in ["/help", "/fov 100", "/colour", "/log"] {

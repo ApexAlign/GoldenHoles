@@ -830,7 +830,7 @@ impl Hud {
         if let Some(t) = s.since_hit.filter(|t| *t < HIT_MARK_TIME) {
             let f = 1.0 - t / HIT_MARK_TIME;
             let kind_col = s.hit_kind.map_or(p.gold, |k| p.for_damage(k));
-            let (arm, col) = if s.hit_kill { (0.035, p.gold) } else { (0.022, kind_col) };
+            let (arm, col) = if s.hit_kill { (0.04, p.gold) } else { (0.026, kind_col) };
             let d = 0.012 + 0.016 * (1.0 - f);
             let punch = f.sqrt();
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -873,12 +873,12 @@ impl Hud {
                 let w = 1.0 - u.abs() * 0.6;
                 // the centre tick reaches furthest: a clear arrowhead pointing at the attacker
                 let reach = r1 + 0.03 * (1.0 - u.abs());
-                out.push(Prim::Line {
-                    a: (cx + sn * r0 * 0.5625, cy - cs * r0),
-                    b: (cx + sn * reach * 0.5625, cy - cs * reach),
-                    color: p.magenta.a(f * w),
-                    glow: 0.012,
-                });
+                let (a, b) = ((cx + sn * r0 * 0.5625, cy - cs * r0), (cx + sn * reach * 0.5625, cy - cs * reach));
+                // perpendicular offset (screen space, aspect-corrected) for a 3-stroke thick tick over a dark underlay
+                let (px, py) = (cs * 0.0022 * 0.5625, sn * 0.0022);
+                for (d, col, glow) in [(0.0, p.bg.a(0.6 * f), 0.0), (-1.0, p.magenta.a(f * w), 0.012), (0.0, p.magenta.a(f * w), 0.012), (1.0, p.magenta.a(f * w), 0.012)] {
+                    out.push(Prim::Line { a: (a.0 + px * d, a.1 + py * d), b: (b.0 + px * d, b.1 + py * d), color: col, glow });
+                }
             }
         }
 
@@ -1386,7 +1386,7 @@ fn build_panel(out: &mut Vec<Prim>, b: &BuildHud, p: &Palette) {
     out.push(Prim::Rect { r: bar_r, color: p.cyan.a(0.14), glow: 0.0 });
     out.push(Prim::Rect { r: Rect::new(bar_r.x, bar_r.y, bar_r.w * ready, bar_r.h), color: if ready >= 1.0 { p.cyan } else { p.orange }.a(0.95), glow: 0.004 });
     let full = b.max > 0 && b.placed >= b.max;
-    out.push(Prim::Text { pos: (0.5, y + 0.004), text: format!("{}/{}", b.placed, b.max), size: 0.016, color: if full { p.magenta } else { p.text }.a(0.8), align: Align::Center });
+    out.push(Prim::Text { pos: (0.5, y + 0.014), text: format!("{}/{}", b.placed, b.max), size: 0.015, color: if full { p.magenta } else { p.text }.a(0.8), align: Align::Center });
 }
 
 /// Free-for-all leaderboard: top 5 plus you (when outside the top 5) in each player's neon colour, kills-to-win
