@@ -52,6 +52,9 @@ pub enum NetEvent {
     /// The piece in `cell` is hurt but standing: `hp_q` = remaining health in 1/255ths (255 = untouched, 1 = nearly
     /// gone), for cracking visuals. At most one per cell per server frame; hurt pieces are replayed to late joiners.
     BlockDamaged { cell: [i32; 3], hp_q: u8 },
+    /// The match rules (sent to every joiner): kills to win (free-for-all), team kills to win (team deathmatch) and
+    /// the time limit in seconds, so the HUD can show "FIRST TO n" without guessing the server's config.
+    MatchRules { frag_limit: u16, team_frag_limit: u16, time_limit_secs: u16 },
 }
 
 pub const BLOCK_REFUSED_OCCUPIED: u8 = 0;
@@ -203,6 +206,12 @@ impl NetEvent {
                 w.write_bits(*axis as u32 & 3, 2);
                 w.write_bits(*scale_q as u32, 8);
             }
+            Self::MatchRules { frag_limit, team_frag_limit, time_limit_secs } => {
+                w.write_bits(22, 5);
+                w.write_varint(*frag_limit as u32);
+                w.write_varint(*team_frag_limit as u32);
+                w.write_varint(*time_limit_secs as u32);
+            }
             Self::BlockRules(r) => {
                 w.write_bits(20, 5);
                 for v in [r.thickness_mm, r.range_dm, r.cooldown_ticks, r.scale_per_kill_milli, r.scale_cap_centi, r.max_per_owner] {
@@ -316,6 +325,13 @@ impl NetEvent {
             }
             17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
             18 => Self::BlockRefused { why: r.read_bits(2)? as u8 },
+            22 => {
+                let mut v = [0u16; 3];
+                for x in &mut v {
+                    *x = u16::try_from(r.read_varint()?).map_err(|_| DecodeError::Malformed)?;
+                }
+                Self::MatchRules { frag_limit: v[0], team_frag_limit: v[1], time_limit_secs: v[2] }
+            }
             21 => Self::BlockDamaged { cell: read_v3(r, [0; 3])?, hp_q: r.read_bits(8)? as u8 },
             _ => return Err(DecodeError::Malformed),
         })
@@ -444,6 +460,7 @@ mod tests {
             NetEvent::TeamAssign { player: 201, team: 1 },
             NetEvent::TeamAssign { player: 9, team: TEAM_NONE },
             NetEvent::TeamScore { tick: 99_999, score: [49, 50], result: TEAM_RESULT_ORANGE },
+            NetEvent::MatchRules { frag_limit: 10, team_frag_limit: 50, time_limit_secs: 360 },
             NetEvent::TeamScore { tick: 100_000, score: [50, 50], result: TEAM_RESULT_SUDDEN },
         ];
         let mut w = BitWriter::new();

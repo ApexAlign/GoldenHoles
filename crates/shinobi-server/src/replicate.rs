@@ -137,6 +137,12 @@ impl Replicator {
             self.broadcast(ev);
         }
         st.outbox.push(NetEvent::BlockRules(server.blocks.cfg.rules()));
+        let ms = &server.match_state;
+        st.outbox.push(NetEvent::MatchRules {
+            frag_limit: ms.cfg.frag_limit,
+            team_frag_limit: ms.team_frag_limit,
+            time_limit_secs: (ms.cfg.time_limit_ticks / shinobi_proto::TICK_HZ).min(u16::MAX as u32) as u16,
+        });
         // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
         for b in server.blocks.pieces() {
             st.outbox.push(NetEvent::BlockPlaced { owner: b.owner, cell: b.cell, kind: b.piece.kind.id(), axis: b.piece.axis, scale_q: b.scale_q });
@@ -1117,6 +1123,22 @@ mod tests {
     }
 
     #[test]
+    fn joiners_get_the_match_rules() {
+        let (s, mut r) = two_peers();
+        let round = r.build_round(&s);
+        let mut inbox = shinobi_sim::events::EventInbox::default();
+        let mut got = Vec::new();
+        read_events(datagram_for(&round, 2).0, &mut inbox, |e| got.push(e)).unwrap();
+        let cfg = &s.match_state.cfg;
+        let want = NetEvent::MatchRules {
+            frag_limit: cfg.frag_limit,
+            team_frag_limit: s.match_state.team_frag_limit,
+            time_limit_secs: (cfg.time_limit_ticks / shinobi_proto::TICK_HZ) as u16,
+        };
+        assert!(got.contains(&want), "{got:?}");
+    }
+
+    #[test]
     fn ropes_are_broadcast_on_edges_only_and_replayed_to_late_joiners() {
         use shinobi_sim::character::GrappleState;
         let (mut s, mut r) = two_peers();
@@ -1236,8 +1258,8 @@ mod tests {
         r.add_peer(&s, 3, s.tick);
         assert_eq!(
             r.peers[&3].outbox.pending(),
-            r.obstacles.not_ended_at(s.tick).count() + 1,
-            "live obstacles + the BlockRules event (free-for-all: no team events)"
+            r.obstacles.not_ended_at(s.tick).count() + 2,
+            "live obstacles + the BlockRules + MatchRules events (free-for-all: no team events)"
         );
     }
 
