@@ -95,3 +95,26 @@ starts). Definitions are at the top of `crates/shinobi-server/src/telemetry.rs` 
 ```
 
 Files to send: `playtest/telemetry-*.txt` and `playtest/server-*.log` (both are plain text, a few hundred KB at most).
+
+## Headless windowed check (any agent can rerun it)
+Runs the REAL game window under Xvfb with software Vulkan (lavapipe), a real server (FFA, bots) and xdotool driving real
+keys and mouse; takes screenshots at every step and scans the logs. No GPU or display needed.
+
+    apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools xvfb x11-utils xdotool imagemagick libxkbcommon-x11-0 libxcb-xkb1
+    scripts/windowed_smoke.sh                      # builds server (release) + game (dev; first Bevy build ~10 min), ~60 s run
+    SKIP_BUILD=1 SECS=45 BOTS=7 LEVEL=levels/ffa.lvl scripts/windowed_smoke.sh
+    # output: playtest/windowed-<time>/{00-connected..14-esc-pause}.png, game.log, server.log, problems.txt
+
+READ the PNGs (they are the actual frames, 1280x720). The sequence: connect, click (grab), W, double jump, dash, look + E
+grapple, C, N / M build, LMB, RMB, hold Tab (scoreboard), backquote (console), WASD, late frame, Esc (pause).
+
+Things learned the first time (so you do not rediscover them):
+- Missing `libxkbcommon-x11` makes winit panic at startup ("Library libxkbcommon-x11.so could not be loaded").
+- There is no window manager under Xvfb, so keyboard focus must be set: the script runs `xdotool windowfocus --sync $WID`.
+  Without it mouse buttons work (they go to the window under the pointer) but every key goes to the root window and the game
+  sees no keyboard at all (symptom: the controls card keeps all W/SPACE/SHIFT rows, SPD stays 0.0).
+- Pointer lock works under Xvfb (look and clicks arrive); the bots can kill you within seconds of spawning (ELIMINATED in
+  frame 01 is normal), so a screenshot may show the respawned player somewhere else.
+- The server logs a few "overrun" lines (up to ~35 ms) during the run: the software renderer and the server share the CPU.
+  Not a server regression; compare `step_avg_ms` (~0.5 ms) instead.
+- The harmless startup warnings: XSETTINGS, "driver that only supports software rendering", XRandR "0mm in size".

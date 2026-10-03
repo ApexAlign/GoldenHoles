@@ -22,10 +22,10 @@ pub enum Use {
 
 const ROWS: [(Use, &str, &str); 8] = [
     (Use::Move, "W A S D", "MOVE"),
-    (Use::Jump, "SPACE", "JUMP  (AGAIN IN AIR)"),
+    (Use::Jump, "SPACE", "JUMP  AGAIN IN AIR"),
     (Use::Dash, "SHIFT", "DASH"),
     (Use::Slide, "C", "SLIDE"),
-    (Use::Grapple, "E", "GRAPPLE  (HOLD C: SWING)"),
+    (Use::Grapple, "E", "GRAPPLE  HOLD C TO SWING"),
     (Use::Build, "N / M", "BUILD FLOOR / WALL"),
     (Use::Katana, "LMB", "KATANA"),
     (Use::Shuriken, "RMB", "SHURIKEN"),

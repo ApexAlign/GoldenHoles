@@ -8,7 +8,7 @@
 #   SKIP_BUILD=1 scripts/windowed_smoke.sh    reuse the binaries already built
 #
 # One-time setup (apt):
-#   apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools xvfb x11-utils xdotool imagemagick
+#   apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools xvfb x11-utils xdotool imagemagick libxkbcommon-x11-0 libxcb-xkb1
 # Read the PNGs it writes (they are the actual frames); docs/PLAYTEST.md has the notes on what to look for.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -40,7 +40,8 @@ xvfb-run -a -s "-screen 0 ${W}x${H}x24" bash -c '
   for i in $(seq 1 120); do WID=$(xdotool search --onlyvisible --pid $GP 2>/dev/null | head -1); [ -n "$WID" ] && break; sleep 1; done
   echo "window: ${WID:-none} after ${i}s" | tee -a "$OUT/driver.log"
   [ -z "${WID:-}" ] && { echo "no game window"; kill $GP; exit 3; }
-  sleep 8; shot 00-connected
+  xdotool windowfocus --sync $WID 2>>"$OUT/driver.log"   # no window manager under Xvfb: without this keys go to the root window
+  sleep 10; shot 00-connected
   xdotool mousemove $((W/2)) $((H/2)); xdotool click 1; sleep 1; shot 01-after-click-grab   # click grabs the pointer
   hold w 1.5; shot 02-forward
   key space; sleep 0.15; key space; sleep 0.4; shot 03-double-jump
