@@ -13,6 +13,9 @@ Positions scale with HALF/112; sizes do not (so the XL map is the same buildings
 """
 import math, os, sys
 
+# debugging aid: SKIP=boulevards,canyon,towers,sky,hub,cover,alcoves drops those sections (AI-friendliness bisecting)
+SKIP = set(filter(None, os.environ.get('SKIP', '').split(',')))
+
 R20 = 0.35
 RAMP_RUN = 1.7498 * math.cos(R20)   # horizontal half-length of a 1.2 m ramp
 GAP = 5.6
@@ -42,6 +45,8 @@ class Level:
     def section(self, title, boxes, mx=False, mz=False, rot180=False):
         """Boxes authored for one place. mx / mz mirror across x=0 / z=0 (rolled boxes flip sign for x); rot180 adds the
         180-degree-rotated copy (x -> -x, z -> -z)."""
+        if any(k in title for k in SKIP):
+            return
         out = []
 
         def add(b):
@@ -103,40 +108,103 @@ class Level:
 
     # ---- spawn alcove ----
     def alcove(self, px, pz, face):
-        """A 6 x 6 enclosure (5 m walls) around spawn (px, pz) with a 2.4 m door in the side `face` (0 +x, 1 +z, 2 -x, 3 -z)
-        and a baffle wall 2.5 m outside it, so there is no straight sight line out of any alcove."""
-        a, t, h = 3.2, 0.4, 5.0
+        """A U-shaped bay (5 m walls: back + two sides, 6 m deep, 7 m wide) around spawn (px, pz), open toward `face`
+        (0 +x, 1 +z, 2 -x, 3 -z). Open on purpose: the AI steers rather than path-finds and got stuck in baffled rooms."""
+        w, d, t, h = 3.6, 3.2, 0.4, 5.0
         bs = []
-        sides = {
-            0: lambda door: [self.wall_z(px + a, pz - a, pz + a, h, t)],
-            1: lambda door: [self.wall_x(px - a, px + a, pz + a, h, t)],
-            2: lambda door: [self.wall_z(px - a, pz - a, pz + a, h, t)],
-            3: lambda door: [self.wall_x(px - a, px + a, pz - a, h, t)],
-        }
-        d = 1.2  # half door
-        for side in range(4):
-            if side != face:
-                bs += sides[side](False)
-                continue
-            if side == 0:
-                bs += [self.wall_z(px + a, pz - a, pz - d, h, t), self.wall_z(px + a, pz + d, pz + a, h, t)]
-            elif side == 2:
-                bs += [self.wall_z(px - a, pz - a, pz - d, h, t), self.wall_z(px - a, pz + d, pz + a, h, t)]
-            elif side == 1:
-                bs += [self.wall_x(px - a, px - d, pz + a, h, t), self.wall_x(px + d, px + a, pz + a, h, t)]
-            else:
-                bs += [self.wall_x(px - a, px - d, pz - a, h, t), self.wall_x(px + d, px + a, pz - a, h, t)]
-        gap = 2.6
-        w = 3.4
-        if face == 0:
-            bs.append(self.wall_z(px + a + gap, pz - w, pz + w, h, t))
-        elif face == 2:
-            bs.append(self.wall_z(px - a - gap, pz - w, pz + w, h, t))
-        elif face == 1:
-            bs.append(self.wall_x(px - w, px + w, pz + a + gap, h, t))
+        if face in (0, 2):
+            sx = 1 if face == 0 else -1          # direction the bay opens
+            bs.append(self.wall_z(px - sx * d, pz - w, pz + w, h, t))                # back
+            bs.append(self.wall_x(min(px - sx * d, px + sx * 4.5), max(px - sx * d, px + sx * 4.5), pz - w, h, t))  # sides
+            bs.append(self.wall_x(min(px - sx * d, px + sx * 4.5), max(px - sx * d, px + sx * 4.5), pz + w, h, t))
         else:
-            bs.append(self.wall_x(px - w, px + w, pz - a - gap, h, t))
+            sz = 1 if face == 1 else -1
+            bs.append(self.wall_x(px - w, px + w, pz - sz * d, h, t))
+            bs.append(self.wall_z(px - w, min(pz - sz * d, pz + sz * 4.5), max(pz - sz * d, pz + sz * 4.5), h, t))
+            bs.append(self.wall_z(px + w, min(pz - sz * d, pz + sz * 4.5), max(pz - sz * d, pz + sz * 4.5), h, t))
         return bs
+
+
+def _seg_hits_box(p0, p1, box):
+    """Does the segment p0 -> p1 pass through the (possibly z-rolled) box? Slab test in the box frame."""
+    (cx, cy, cz), (hx, hy, hz), rot = box
+    c, sn = math.cos(rot), math.sin(rot)
+
+    def local(p):
+        dx, dy = p[0] - cx, p[1] - cy
+        return (dx * c + dy * sn, -dx * sn + dy * c, p[2] - cz)
+
+    a, b = local(p0), local(p1)
+    t0, t1 = 0.0, 1.0
+    for i, h in enumerate((hx, hy, hz)):
+        d = b[i] - a[i]
+        if abs(d) < 1e-9:
+            if abs(a[i]) > h:
+                return False
+            continue
+        ta, tb = (-h - a[i]) / d, (h - a[i]) / d
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return False
+    return True
+
+
+def _visible(boxes, a, b):
+    """Sight between two spawn pads (capsule centre y 0.81): eye of a to feet / hip / eye of b; any clear ray = visible."""
+    eye = (a[0], 0.81 + 0.6, a[2])
+    for ty in (0.1, 0.81, 0.81 + 0.6):
+        tgt = (b[0], ty, b[2])
+        if not any(_seg_hits_box(eye, tgt, bx) for bx in boxes):
+            return True
+    return False
+
+
+def find_spawns(boxes, half, n):
+    import random
+    rnd = random.Random(7)
+    solid = [b for b in boxes if b[0][1] + b[1][1] > 0.05]          # everything above the floor
+    cands = []
+    step = 5.0
+    x = -half + 14
+    while x <= half - 14:
+        z = -half + 14
+        while z <= half - 14:
+            p = (x + rnd.uniform(-2, 2), 0.81, z + rnd.uniform(-2, 2))
+            ok = True
+            for (cx, cy, cz), (hx, hy, hz), rot in solid:
+                m = 2.5 if rot == 0 else 6.0       # clear of walls (so the AI is not wedged), well clear of ramps
+                if abs(p[0] - cx) <= hx + m and abs(p[2] - cz) <= hz + m and cy - hy < 2.5:
+                    ok = False
+                    break
+            if ok:
+                cands.append(p)
+            z += step
+        x += step
+    rnd.shuffle(cands)
+    # bounding boxes in xz for a cheap reject before the slab test
+    bb = [(cx - (abs(hx * math.cos(r)) + abs(hy * math.sin(r))), cx + (abs(hx * math.cos(r)) + abs(hy * math.sin(r))), cz - hz, cz + hz, bx)
+          for bx in solid for ((cx, cy, cz), (hx, hy, hz), r) in [bx]]
+
+    def vis(a, b):
+        lo_x, hi_x, lo_z, hi_z = min(a[0], b[0]), max(a[0], b[0]), min(a[2], b[2]), max(a[2], b[2])
+        near = [e[4] for e in bb if e[1] >= lo_x and e[0] <= hi_x and e[3] >= lo_z and e[2] <= hi_z]
+        return _visible(near, a, b) or _visible(near, b, a)
+
+    chosen = []
+    pool = cands[:700]
+    while len(chosen) < n and pool:
+        best, best_score = None, -1.0
+        for c in pool:
+            dmin = min([math.hypot(c[0] - o[0], c[2] - o[2]) for o in chosen] or [1e9])
+            if dmin > best_score:
+                best, best_score = c, dmin
+        chosen.append(best)
+        pool = [c for c in pool if c is not best and math.hypot(c[0] - best[0], c[2] - best[2]) > 14.0 and not vis(c, best)]
+    if len(chosen) < n:
+        print("warning: only %d spawns found (wanted %d)" % (len(chosen), n))
+    return [(round(c[0], 1), 0.81, round(c[2], 1)) for c in chosen]
 
 
 def build(half):
@@ -242,23 +310,31 @@ def build(half):
             outer.append(L.pillar(P(100), P(30) * k, 6 + (k % 2) * 4, 1.0))
         L.section("outer ring (XL map): pillar rows with perches", outer, mx=True, mz=True)
 
-    # ---- spawn alcoves: 24 pads, 8 at r=38 (hub ring), 8 at r=P(78)+, 8 at r=P(100) ----
-    pads = []
-    def ring(r, angles):
-        for a in angles:
-            x, z = r * math.cos(math.radians(a)), r * math.sin(math.radians(a))
-            pads.append((round(x, 1), round(z, 1)))
-    ring(P(46), [22.5 + 45 * k for k in range(8)])
-    ring(P(78), [15, 75, 105, 165, 195, 255, 285, 345])
-    ring(P(100), [8, 82, 98, 172, 188, 262, 278, 352])
-    al = []
-    for (x, z) in pads:
-        # the door faces tangentially away from the origin axis so the baffle blocks the straight line out
-        face = 1 if abs(x) >= abs(z) else 0
-        face = (face + (2 if (x * z) < 0 else 0)) % 4
-        al += L.alcove(x, z, face)
-        L.spawns.append((x, 0.81, z))
-    L.section("spawn alcoves: enclosed 6 x 6 pads with a baffled door, 24 spread over the map", al)
+    # ---- monolith field: free-standing 8 m grid walls scattered on the open ground. They break the long sight lines
+    # (so pads can hide from each other without enclosures the AI cannot leave) and give shurikens corners to bounce off.
+    import random
+    rnd = random.Random(11)
+    placed = [b for _, bs in L.parts for b in bs if b[0][1] + b[1][1] > 0.05 and b[1][0] < 60 and b[1][2] < 60]
+    mono = []
+    tries = 0
+    target_n = int(70 * (half / 112.0) ** 2)
+    while len(mono) < target_n and tries < 20000:
+        tries += 1
+        x, z = rnd.uniform(-half + 16, half - 16), rnd.uniform(-half + 16, half - 16)
+        along_x = rnd.random() < 0.5
+        hx, hz = (7.0, 0.5) if along_x else (0.5, 7.0)
+        # keep clear of everything placed (lanes, towers, hub) and of the other monoliths
+        if any(abs(x - cx) <= hx + 5 + ahx and abs(z - cz) <= hz + 5 + ahz and cy - ahy < 12 for (cx, cy, cz), (ahx, ahy, ahz), r in placed + mono):
+            continue
+        if abs(x) < 20 and abs(z) < 20:
+            continue                                 # the hub plaza stays open
+        mono.append(((x, 4.0, z), (hx, 4.0, hz), 0.0))
+    L.section("monolith field: free-standing 8 m walls on the open ground", mono)
+
+    # ---- spawns: found, not placed. Open ground pads with no sight line to each other (checked against every box), far
+    # apart. (Enclosed alcoves made the AI stall: it steers, it does not path-find.) ----
+    all_boxes = [b for _, bs in L.parts for b in bs]
+    L.spawns = find_spawns(all_boxes, half, 28)
 
     # ---- pickups: contested spots ----
     pk = []

@@ -168,3 +168,183 @@ fn engine_numeric_limits_cover_the_map() {
         assert!((back[0] - 2.0 * half).abs() < 0.01 && (back[2] - 2.0 * half).abs() < 0.01, "{name}: q_pos3 loses precision at {half}");
     }
 }
+
+// ---- traversal budget ----
+//
+// Any pad to any other pad in about 25 s with run + grapple. A conservative graph model (no wall-run lane speed-up, no
+// swing momentum), solved with Dijkstra over: ground cells (walk 9 m/s, low obstacles hopped), anchor points (tops of
+// everything >= 6 m: hookable from the ground or from another anchor within 38 m with a clear first hit on that
+// box: 0.8 s + d / 20 m/s from the ground, 0.6 s + d / 22 from an anchor), and drops from an anchor back to the
+// ground below it (1.5 s).
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+fn ray_first_hit(w: &PhysicsWorld, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+    let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len < 1e-3 {
+        return None;
+    }
+    let ray = Ray::new(Point::new(from[0], from[1], from[2]), vector![d[0] / len, d[1] / len, d[2] / len]);
+    w.queries.cast_ray(&w.bodies, &w.colliders, &ray, len, true, QueryFilter::default()).map(|(_, t)| t)
+}
+
+fn near_box(b: &LevelBox, p: [f32; 3], pad: f32) -> bool {
+    inside(&LevelBox { half: [b.half[0] + pad, b.half[1] + pad, b.half[2] + pad], ..*b }, p)
+}
+
+/// Shortest times (s) from `src` over all nodes.
+fn dijkstra(adj: &[Vec<(usize, f32)>], src: usize) -> Vec<f32> {
+    let mut dist = vec![f32::MAX; adj.len()];
+    let mut h = BinaryHeap::new();
+    dist[src] = 0.0;
+    h.push(Reverse((0u32, src)));
+    while let Some(Reverse((c, u))) = h.pop() {
+        let cf = c as f32 / 1000.0;
+        if cf > dist[u] + 1e-3 {
+            continue;
+        }
+        for &(v, w) in &adj[u] {
+            let nd = cf + w;
+            if nd < dist[v] {
+                dist[v] = nd;
+                h.push(Reverse(((nd * 1000.0) as u32, v)));
+            }
+        }
+    }
+    dist
+}
+
+pub struct Traversal {
+    pub worst: f32,
+    pub median: f32,
+    pub unreachable: usize,
+}
+
+pub fn traversal(l: &LevelFile, half: f32) -> Traversal {
+    let w = world(l);
+    let cell = 6.0f32;
+    let n = (2.0 * half / cell) as usize;
+    let centre = |i: usize| -half + (i as f32 + 0.5) * cell;
+    // ground nodes: standable open cells
+    let mut gid = vec![usize::MAX; n * n];
+    let mut ground: Vec<[f32; 3]> = Vec::new();
+    for iz in 0..n {
+        for ix in 0..n {
+            let p = [centre(ix), 0.81, centre(iz)];
+            if l.level.boxes.iter().any(|b| b.center[1] + b.half[1] > 0.05 && near_box(b, [p[0], p[1], p[2]], 0.5)) {
+                continue;
+            }
+            gid[iz * n + ix] = ground.len();
+            ground.push(p);
+        }
+    }
+    // anchors: tops of everything >= 6 m
+    let mut anchors: Vec<(usize, [f32; 3])> = Vec::new();
+    for (i, b) in l.level.boxes.iter().enumerate() {
+        let top = b.center[1] + b.half[1];
+        if top >= 6.0 && b.half[0] < 60.0 && b.half[2] < 60.0 && b.rot_z == 0.0 {
+            anchors.push((i, [b.center[0], top - 0.3, b.center[2]]));
+        }
+    }
+    let ng = ground.len();
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); ng + anchors.len()];
+    // walking
+    for iz in 0..n {
+        for ix in 0..n {
+            let a = gid[iz * n + ix];
+            if a == usize::MAX {
+                continue;
+            }
+            for (dx, dz) in [(1i32, 0i32), (0, 1), (1, 1), (1, -1)] {
+                let (jx, jz) = (ix as i32 + dx, iz as i32 + dz);
+                if jx < 0 || jz < 0 || jx >= n as i32 || jz >= n as i32 {
+                    continue;
+                }
+                let b = gid[jz as usize * n + jx as usize];
+                if b == usize::MAX {
+                    continue;
+                }
+                let (pa, pb) = (ground[a], ground[b]);
+                if ray_first_hit(&w, [pa[0], 1.3, pa[2]], [pb[0], 1.3, pb[2]]).is_none() {
+                    let t = d2(pa, pb) / 9.0;
+                    adj[a].push((b, t));
+                    adj[b].push((a, t));
+                }
+            }
+        }
+    }
+    // grapple edges
+    let hook_ok = |from: [f32; 3], ai: usize| -> Option<f32> {
+        let (bi, ap) = anchors[ai];
+        let d = ((from[0] - ap[0]).powi(2) + (from[1] - ap[1]).powi(2) + (from[2] - ap[2]).powi(2)).sqrt();
+        if !(2.5..=38.0).contains(&d) {
+            return None;
+        }
+        let t = ray_first_hit(&w, from, ap)?;
+        let hit = [from[0] + (ap[0] - from[0]) * t / d, from[1] + (ap[1] - from[1]) * t / d, from[2] + (ap[2] - from[2]) * t / d];
+        near_box(&l.level.boxes[bi], hit, 0.4).then_some(d)
+    };
+    for g in 0..ng {
+        let eye = [ground[g][0], 1.4, ground[g][2]];
+        for ai in 0..anchors.len() {
+            if let Some(d) = hook_ok(eye, ai) {
+                adj[g].push((ng + ai, 0.8 + d / 20.0));
+            }
+        }
+    }
+    for ai in 0..anchors.len() {
+        let ap = anchors[ai].1;
+        for aj in 0..anchors.len() {
+            if ai != aj {
+                if let Some(d) = hook_ok([ap[0], ap[1] - 0.8, ap[2]], aj) {
+                    adj[ng + ai].push((ng + aj, 0.6 + d / 22.0));
+                }
+            }
+        }
+        // drop to the nearest ground cell below / beside
+        let (ix, iz) = ((((ap[0] + half) / cell) as usize).min(n - 1), (((ap[2] + half) / cell) as usize).min(n - 1));
+        for dz in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let (jx, jz) = (ix as i32 + dx, iz as i32 + dz);
+                if jx >= 0 && jz >= 0 && (jx as usize) < n && (jz as usize) < n {
+                    let g = gid[jz as usize * n + jx as usize];
+                    if g != usize::MAX {
+                        adj[ng + ai].push((g, 1.5));
+                    }
+                }
+            }
+        }
+    }
+    // spawn -> spawn
+    let nearest = |p: [f32; 3]| -> usize {
+        (0..ng).min_by(|a, b| d2(ground[*a], p).total_cmp(&d2(ground[*b], p))).unwrap()
+    };
+    let sp: Vec<usize> = l.level.spawns.iter().map(|s| nearest(*s)).collect();
+    let mut times = Vec::new();
+    let mut unreachable = 0;
+    for (i, &a) in sp.iter().enumerate() {
+        let dist = dijkstra(&adj, a);
+        for &b in sp.iter().skip(i + 1) {
+            if dist[b] == f32::MAX {
+                unreachable += 1;
+            } else {
+                times.push(dist[b]);
+            }
+        }
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Traversal { worst: *times.last().unwrap_or(&0.0), median: times[times.len() / 2], unreachable }
+}
+
+#[test]
+fn any_spawn_to_any_other_in_about_25_seconds_with_run_and_grapple() {
+    for (name, half) in MAPS {
+        let l = load(name);
+        let t = traversal(&l, half);
+        eprintln!("{name}: spawn-to-spawn travel model: median {:.1} s, worst {:.1} s, unreachable pairs {}", t.median, t.worst, t.unreachable);
+        assert_eq!(t.unreachable, 0, "{name}: spawns the model cannot connect");
+        let bound = if half > 150.0 { 45.0 } else { 30.0 };
+        assert!(t.worst <= bound, "{name}: worst spawn-to-spawn travel {:.1} s (bound {bound})", t.worst);
+    }
+}

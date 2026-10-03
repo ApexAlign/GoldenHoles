@@ -108,12 +108,23 @@ pub fn setup(
 ) {
     let pal = Palette::TRON;
 
-    // ground: matches the server's 200 m half-extent floor, top face at y = 0
+    // ground: the level's own floor slab (top face at y = 0), so open void edges (FFA maps) really are void; 200 m
+    // half-extent only when the level has no big floor box (the built-in arena)
+    let (floor_c, floor_h) = level
+        .as_ref()
+        .and_then(|l| {
+            l.0.boxes
+                .iter()
+                .filter(|b| (b.center[1] + b.half[1]).abs() < 0.05 && b.rot_z == 0.0 && b.half[0] > 20.0 && b.half[2] > 20.0)
+                .max_by(|a, b| (a.half[0] * a.half[2]).total_cmp(&(b.half[0] * b.half[2])))
+                .map(|b| ([b.center[0], b.center[2]], [b.half[0], b.half[2]]))
+        })
+        .unwrap_or(([0.0, 0.0], [200.0, 200.0]));
     let grid_mat = grids.add(GridFloor::from_client(&GridData::tron(&pal), 300.0));
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(200.0)))),
+        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(floor_h[0], floor_h[1])))),
         MeshMaterial3d(grid_mat.clone()),
-        Transform::default(),
+        Transform::from_xyz(floor_c[0], 0.0, floor_c[1]),
     ));
     // every non-floor level box (walls, tiers, ramps, ledges, pillars): the geometry the server and our predictor
     // collide with. Each gets its own material so the shader knows the box frame for neon edges; the tint encodes
