@@ -136,6 +136,9 @@ pub struct KillEntry {
     /// Team ids (0 cyan, 1 orange) when the match is team-based: colours the names.
     pub killer_team: Option<u8>,
     pub victim_team: Option<u8>,
+    /// Free-for-all: each player's own neon colour (wins over nothing, loses to team colour).
+    pub killer_colour: Option<Rgba>,
+    pub victim_colour: Option<Rgba>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,6 +151,8 @@ pub struct ScoreRow {
     pub alive: bool,
     /// 0 cyan, 1 orange; `None` = free-for-all (flat list).
     pub team: Option<u8>,
+    /// Free-for-all: the player's unique neon colour.
+    pub colour: Option<Rgba>,
 }
 
 /// Team match score for the top bar.
@@ -170,6 +175,55 @@ pub struct AllyTag {
     pub name: String,
     pub dist: f32,
     pub clamped: bool,
+}
+
+/// Placeable piece slots: `N` prints floors / ramps, `M` prints walls (DESIGN.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildSlot {
+    Floor,
+    Ramp,
+    Wall,
+}
+
+/// Block-building readout. Stub shape until Combat supplies the real data.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuildHud {
+    pub selected: BuildSlot,
+    /// Print cooldown, 0..=1 (1 = ready).
+    pub ready: f32,
+    /// Structures currently standing / allowed.
+    pub placed: u8,
+    pub max: u8,
+    /// Placement ghost: `Some(true)` can print here, `Some(false)` blocked, `None` no ghost.
+    pub ghost: Option<bool>,
+}
+
+/// Grappling hook readout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrappleHud {
+    /// Cooldown, 0..=1 (1 = ready).
+    pub ready: f32,
+    /// The crosshair is on something the hook can grab.
+    pub hookable: bool,
+}
+
+/// Unique neon colour for a free-for-all player (golden-angle hues). Stand-in for the network layer's
+/// `player_colour(id)`: the bridge's `colour_of` points at this until that lands.
+pub fn ffa_colour(id: u16) -> Rgba {
+    let hue = (id as f32 * 0.618_034).fract() * 6.0;
+    let (i, f) = (hue.floor() as i32, hue.fract());
+    let (q, t) = (1.0 - f, f);
+    let (r, g, b) = match i {
+        0 => (1.0, t, 0.0),
+        1 => (q, 1.0, 0.0),
+        2 => (0.0, 1.0, t),
+        3 => (0.0, q, 1.0),
+        4 => (t, 0.0, 1.0),
+        _ => (1.0, 0.0, q),
+    };
+    // lift the floor so no hue goes muddy against the dark grid
+    let lift = |v: f32| 0.15 + 0.85 * v;
+    Rgba(lift(r), lift(g), lift(b), 1.0)
 }
 
 /// Plain data the HUD draws from. Fill it once per frame from the latest snapshot / server events plus
@@ -198,8 +252,12 @@ pub struct HudState {
     pub damage_frac: f32,
     /// Shuriken ammo `(loaded, max)` once the weapon has a magazine; `None` hides the readout.
     pub shuriken_ammo: Option<(u8, u8)>,
-    /// Block-building slot: `(blocks left, cooldown ready 0..=1)`; `None` until building exists.
-    pub block_slot: Option<(u8, f32)>,
+    pub build: Option<BuildHud>,
+    pub grapple: Option<GrappleHud>,
+    /// Free-for-all match: leaderboard + leading marker (teams off).
+    pub ffa: bool,
+    /// Kills that end a free-for-all match, when the server has a limit.
+    pub kill_limit: Option<u16>,
     pub team_scores: Option<TeamScores>,
     pub ally_tags: Vec<AllyTag>,
     pub ping_ms: Option<u16>,
@@ -462,7 +520,7 @@ pub fn score_rows_from_entries(
 ) -> Vec<ScoreRow> {
     entries
         .iter()
-        .map(|e| ScoreRow { name: name(e.id), kills: e.kills, deaths: e.deaths, ping_ms: ping_ms(e.id), local: e.id == local_id, alive: e.alive, team: None })
+        .map(|e| ScoreRow { name: name(e.id), kills: e.kills, deaths: e.deaths, ping_ms: ping_ms(e.id), local: e.id == local_id, alive: e.alive, team: None, colour: None })
         .collect()
 }
 
@@ -475,7 +533,7 @@ pub fn score_rows<'a>(
 ) -> Vec<ScoreRow> {
     players
         .into_iter()
-        .map(|(id, v)| ScoreRow { name: name(id), kills: v.kills, deaths: v.deaths, ping_ms: ping_ms(id), local: id == local_id, alive: v.alive(), team: None })
+        .map(|(id, v)| ScoreRow { name: name(id), kills: v.kills, deaths: v.deaths, ping_ms: ping_ms(id), local: id == local_id, alive: v.alive(), team: None, colour: None })
         .collect()
 }
 
@@ -509,6 +567,8 @@ impl KillEntry {
             void,
             killer_team: None,
             victim_team: None,
+            killer_colour: None,
+            victim_colour: None,
         })
     }
 
@@ -524,6 +584,8 @@ impl KillEntry {
                 void: false,
                 killer_team: None,
                 victim_team: None,
+                killer_colour: None,
+                victim_colour: None,
             }),
             // Hazards are environmental: void glyph, no killer, even if an old sim names a wall owner.
             PvpEvent::HazardKill { victim, .. } => Some(Self {
@@ -535,6 +597,8 @@ impl KillEntry {
                 void: true,
                 killer_team: None,
                 victim_team: None,
+                killer_colour: None,
+                victim_colour: None,
             }),
             _ => None,
         }
@@ -653,10 +717,17 @@ impl Hud {
         // Center reticle: four short ticks with a large open gap so targets stay visible.
         let spread = s.spread.clamp(0.0, 1.0);
         let (cx, cy, gap, len) = (0.5, 0.5, 0.012 + 0.03 * spread, 0.014);
-        let ret = p.cyan.a(0.85);
+        let hookable = s.grapple.map_or(false, |g| g.hookable);
+        let ret = if hookable { p.gold.a(0.95) } else { p.cyan.a(0.85) };
         out.push(Prim::Line { a: (cx - gap - len, cy), b: (cx - gap, cy), color: ret, glow: 0.003 });
         out.push(Prim::Line { a: (cx + gap, cy), b: (cx + gap + len, cy), color: ret, glow: 0.003 });
         out.push(Prim::Line { a: (cx, cy + gap), b: (cx, cy + gap + len), color: ret, glow: 0.003 });
+
+        // Placement ghost validity: a thin ring outside the reticle ticks (cyan = can print, magenta = blocked).
+        if let Some(valid) = s.build.and_then(|b| b.ghost) {
+            let c = if valid { p.cyan } else { p.magenta };
+            out.push(Prim::Ring { c: (cx, cy), r: 0.065, color: c.a(0.55), fill: false, glow: 0.004 });
+        }
 
         // Hit marker: X at the centre. A dark under-stroke keeps it readable over bright scenery; colour says
         // what hit (cyan shuriken / orange slash / magenta beam), a kill is a long gold X with a ring, and a
@@ -756,9 +827,14 @@ impl Hud {
             let c = if have == 0 { p.magenta } else { p.cyan };
             out.push(Prim::Text { pos: (0.45, 0.985), text: format!("{have}/{max}"), size: 0.02, color: c.a(0.9), align: Align::Center });
         }
-        if let Some((blocks, ready)) = s.block_slot {
-            cooldown_arc(&mut out, (0.6, 0.94), 0.026, ready, Glyph::Void, p);
-            out.push(Prim::Text { pos: (0.6, 0.985), text: format!("x{blocks}"), size: 0.02, color: p.text.a(0.9), align: Align::Center });
+        if let Some(g) = s.grapple {
+            cooldown_arc(&mut out, (0.40, 0.94), 0.026, g.ready, Glyph::Grapple, p);
+        }
+        if let Some(b) = s.build {
+            build_panel(&mut out, &b, p);
+        }
+        if s.ffa {
+            ffa_panel(&mut out, s, p);
         }
         killfeed(&mut out, s, p);
         if s.show_scoreboard {
@@ -778,8 +854,11 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         let base = if k.involves_local { p.gold } else { p.text };
         let tag = p.for_damage(k.weapon);
         // team match: names take their team colour; a gold underline still marks rows that involve you
-        let (kc, vc) = (k.killer_team.map_or(base, |t| p.team(t)), k.victim_team.map_or(base, |t| p.team(t)));
-        if k.involves_local && (k.killer_team.is_some() || k.victim_team.is_some()) {
+        let (kc, vc) = (
+            k.killer_team.map(|t| p.team(t)).or(k.killer_colour).unwrap_or(base),
+            k.victim_team.map(|t| p.team(t)).or(k.victim_colour).unwrap_or(base),
+        );
+        if k.involves_local && (k.killer_team.is_some() || k.victim_team.is_some() || k.killer_colour.is_some() || k.victim_colour.is_some()) {
             out.push(Prim::Line { a: (0.40, y + 0.007), b: (0.60, y + 0.007), color: p.gold.a(0.7 * fade), glow: 0.003 });
         }
         if !k.void {
@@ -842,6 +921,68 @@ fn ally_tag(out: &mut Vec<Prim>, t: &AllyTag, my_team: u8, p: &Palette) {
     out.push(Prim::Text { pos: (x, y - r - 0.008), text: t.name.clone(), size: 0.02, color: col.a(a), align: Align::Center });
     if !t.clamped {
         out.push(Prim::Text { pos: (x, y + r + 0.022), text: format!("{:.0}M", t.dist), size: 0.016, color: p.text.a(0.6 * a), align: Align::Center });
+    }
+}
+
+/// `N` / `M` keycaps with the active one lit, print-cooldown bar and placed count, in the free band above the
+/// chin bars (inside the clear columns).
+fn build_panel(out: &mut Vec<Prim>, b: &BuildHud, p: &Palette) {
+    let y = 0.892;
+    let ready = b.ready.clamp(0.0, 1.0);
+    let n_label = if b.selected == BuildSlot::Ramp { "N RAMP" } else { "N FLOOR" };
+    for (x, label, on) in [(0.40, n_label, b.selected != BuildSlot::Wall), (0.60, "M WALL", b.selected == BuildSlot::Wall)] {
+        let r = Rect::new(x - 0.045, y - 0.02, 0.09, 0.026);
+        let col = if on { p.cyan } else { p.text };
+        if on {
+            out.push(Prim::Rect { r, color: p.cyan.a(0.16), glow: 0.005 });
+        }
+        for (a, bb) in [((r.x, r.y), (r.x + r.w, r.y)), ((r.x + r.w, r.y), (r.x + r.w, r.y + r.h)), ((r.x + r.w, r.y + r.h), (r.x, r.y + r.h)), ((r.x, r.y + r.h), (r.x, r.y))] {
+            out.push(Prim::Line { a, b: bb, color: col.a(if on { 0.9 } else { 0.35 }), glow: if on { 0.004 } else { 0.0 } });
+        }
+        out.push(Prim::Text { pos: (x, y), text: label.into(), size: 0.018, color: col.a(if on { 1.0 } else { 0.6 }), align: Align::Center });
+    }
+    // cooldown bar between the keycaps, count under it
+    let bar_r = Rect::new(0.455, y - 0.012, 0.09, 0.006);
+    out.push(Prim::Rect { r: bar_r, color: p.cyan.a(0.14), glow: 0.0 });
+    out.push(Prim::Rect { r: Rect::new(bar_r.x, bar_r.y, bar_r.w * ready, bar_r.h), color: if ready >= 1.0 { p.cyan } else { p.orange }.a(0.95), glow: 0.004 });
+    let full = b.max > 0 && b.placed >= b.max;
+    out.push(Prim::Text { pos: (0.5, y + 0.004), text: format!("{}/{}", b.placed, b.max), size: 0.016, color: if full { p.magenta } else { p.text }.a(0.8), align: Align::Center });
+}
+
+/// Free-for-all leaderboard: top 5 plus you (when outside the top 5) in each player's neon colour, kills-to-win
+/// header, and a gold LEADING tag while you are first. Sits in the upper-right of the central band, clear of the
+/// killfeed column and the side columns.
+fn ffa_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
+    let mut rows: Vec<&ScoreRow> = s.scoreboard.iter().collect();
+    rows.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+    let (x0, x1) = (0.665, 1.0 - SIDE_CLEAR - 0.005);
+    let mut y = BROW_H + 0.03;
+    let head = match s.kill_limit {
+        Some(n) => format!("FIRST TO {n}"),
+        None => "LEADERBOARD".into(),
+    };
+    out.push(Prim::Text { pos: (x1, y), text: head, size: 0.017, color: p.text.a(0.55), align: Align::Right });
+    let top = rows.iter().take(5).copied();
+    let me = rows.iter().position(|r| r.local);
+    let shown: Vec<(usize, &ScoreRow)> = top.enumerate().chain(me.filter(|i| *i >= 5).map(|i| (i, rows[i]))).collect();
+    for (rank, r) in shown {
+        y += 0.027;
+        if rank == 5 {
+            y += 0.006; // gap before the pinned local row
+        }
+        let col = r.colour.unwrap_or(p.text);
+        if r.local {
+            out.push(Prim::Rect { r: Rect::new(x0 - 0.006, y - 0.021, x1 - x0 + 0.012, 0.026), color: col.a(0.16), glow: 0.003 });
+        }
+        let a = if r.alive { 1.0 } else { 0.5 };
+        out.push(Prim::Text { pos: (x0, y), text: format!("{} {}", rank + 1, r.name), size: 0.02, color: col.a(a), align: Align::Left });
+        out.push(Prim::Text { pos: (x1, y), text: r.kills.to_string(), size: 0.02, color: col.a(a), align: Align::Right });
+    }
+    // leading: you are first with at least one kill (a tie for first counts)
+    let lead = rows.first().map_or(0, |r| r.kills);
+    if lead > 0 && rows.iter().any(|r| r.local && r.kills == lead) {
+        let pulse = 0.75 + 0.25 * (s.time * 5.0).sin();
+        out.push(Prim::Text { pos: (SIDE_CLEAR + 0.01, 0.075), text: "LEADING".into(), size: 0.02, color: p.gold.a(pulse), align: Align::Left });
     }
 }
 
@@ -930,7 +1071,10 @@ pub(crate) fn scoreboard(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             out.push(Prim::Ring { c: (r.x + 0.03, y - 0.011), r: 0.007, color: if row.alive { p.cyan } else { p.magenta }.a(dim.max(0.7)), fill: true, glow: 0.004 });
             let base = match row.team {
                 Some(t) if !row.local => p.team(t),
-                _ => if row.local { p.gold } else { p.text },
+                _ => match row.colour {
+                    Some(c) if !row.local => c,
+                    _ => if row.local { p.gold } else { p.text },
+                },
             };
             let c = base.a(dim);
             let cells = [row.name.clone(), row.kills.to_string(), row.deaths.to_string(), row.ping_ms.to_string()];
@@ -961,6 +1105,8 @@ pub enum Glyph {
     Dash,
     /// Environmental kill: ring with a cross.
     Void,
+    /// Grappling hook.
+    Grapple,
 }
 
 impl Glyph {
@@ -1005,6 +1151,13 @@ pub fn weapon_icon(out: &mut Vec<Prim>, c: (f32, f32), h: f32, g: Glyph, color: 
             line((-0.2, 0.0), (-0.9, 0.7));
             line((0.1, -0.7), (0.8, 0.0));
             line((0.8, 0.0), (0.1, 0.7));
+        }
+        Glyph::Grapple => {
+            // hook: shaft with a curled barb
+            line((-0.7, 0.9), (0.0, -0.1));
+            line((0.0, -0.1), (0.0, -0.8));
+            line((0.0, -0.8), (0.7, -0.4));
+            line((0.0, -0.8), (-0.7, -0.4));
         }
         Glyph::Void => {
             // diamond with a cross: reads as "the map killed you"
@@ -1086,8 +1239,8 @@ mod tests {
             since_damage: Some((0.1, 1.2)),
             ping_ms: Some(42),
             killfeed: vec![
-                KillEntry { killer: "Ronin".into(), victim: "Ghost".into(), weapon: DamageKind::Shuriken, age: 0.5, involves_local: true, void: false, killer_team: None, victim_team: None },
-                KillEntry { killer: "Ghost".into(), victim: "Kage".into(), weapon: DamageKind::Slash, age: 9.0, involves_local: false, void: false, killer_team: None, victim_team: None },
+                KillEntry { killer: "Ronin".into(), victim: "Ghost".into(), weapon: DamageKind::Shuriken, age: 0.5, involves_local: true, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None },
+                KillEntry { killer: "Ghost".into(), victim: "Kage".into(), weapon: DamageKind::Slash, age: 9.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None },
             ],
             time: 3.0,
             ..Default::default()
@@ -1152,7 +1305,7 @@ mod tests {
 
     #[test]
     fn killfeed_caps_expires_and_stays_off_the_sides() {
-        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None };
+        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
         let fresh: Vec<_> = (1..=KILLFEED_MAX + 1).map(|i| mk(i as f32 * 0.1)).collect();
         let s = HudState { killfeed: [fresh, vec![mk(KILLFEED_TIME + 1.0)]].concat(), ..Default::default() };
         let texts = Hud::build(&s).iter().filter(|p| matches!(p, Prim::Text { text, .. } if text == "A")).count();
@@ -1161,7 +1314,7 @@ mod tests {
 
     #[test]
     fn scoreboard_only_when_held_and_sorted_by_kills() {
-        let row = |n: &str, k| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 30, local: false, alive: true, team: None };
+        let row = |n: &str, k| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 30, local: false, alive: true, team: None, colour: None };
         let mut s = HudState { scoreboard: vec![row("low", 1), row("top", 9)], ..Default::default() };
         let names = |s: &HudState| -> Vec<String> {
             Hud::build(s).into_iter().filter_map(|p| match p { Prim::Text { text, .. } if text == "top" || text == "low" => Some(text), _ => None }).collect()
@@ -1315,7 +1468,7 @@ mod tests {
 
     #[test]
     fn killfeed_ages_and_expires_and_scoreboard_rows_come_from_vitals() {
-        let mut feed = vec![KillEntry { killer: "a".into(), victim: "b".into(), weapon: DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None }];
+        let mut feed = vec![KillEntry { killer: "a".into(), victim: "b".into(), weapon: DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None }];
         killfeed_tick(&mut feed, 2.0);
         assert_eq!(feed[0].age, 2.0);
         killfeed_tick(&mut feed, KILLFEED_TIME);
@@ -1491,7 +1644,7 @@ mod tests {
 
     #[test]
     fn scoreboard_has_title_timer_alive_dots_and_highlights_the_local_row() {
-        let row = |n: &str, k, alive, local| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local, alive, team: None };
+        let row = |n: &str, k, alive, local| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local, alive, team: None, colour: None };
         let s = HudState {
             show_scoreboard: true,
             match_clock: Some((PhaseKind::Live, Some(125))),
@@ -1518,7 +1671,7 @@ mod tests {
 
     #[test]
     fn killfeed_keeps_five_rows() {
-        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None };
+        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
         let s = HudState { killfeed: (0..8).map(|i| mk(i as f32 * 0.1)).collect(), ..Default::default() };
         assert_eq!(Hud::build(&s).iter().filter(|p| matches!(p, Prim::Text { text, .. } if text == "A")).count(), 5);
     }
@@ -1541,7 +1694,7 @@ mod tests {
     #[test]
     fn killfeed_draws_a_distinct_weapon_glyph_per_cause_and_no_killer_name_for_void() {
         let p = Palette::TRON;
-        let row = |weapon, void| KillEntry { killer: "KKK".into(), victim: "VVV".into(), weapon, age: 0.0, involves_local: false, void, killer_team: None, victim_team: None };
+        let row = |weapon, void| KillEntry { killer: "KKK".into(), victim: "VVV".into(), weapon, age: 0.0, involves_local: false, void, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
         let draw = |k: KillEntry| Hud::build(&HudState { killfeed: vec![k], ..Default::default() });
         let base = lines(&Hud::build(&HudState::default()));
         let counts: Vec<_> = [
@@ -1621,9 +1774,14 @@ mod tests {
             }
         }
 
-        let slots = HudState { hp: 1.0, shuriken_ammo: Some((3, 5)), block_slot: Some((7, 1.0)), ..Default::default() };
+        let slots = HudState {
+            hp: 1.0,
+            shuriken_ammo: Some((3, 5)),
+            build: Some(BuildHud { selected: BuildSlot::Ramp, ready: 1.0, placed: 7, max: 8, ghost: None }),
+            ..Default::default()
+        };
         let t = texts(&slots);
-        assert!(t.contains(&"3/5".to_string()) && t.contains(&"x7".to_string()));
+        assert!(t.contains(&"3/5".to_string()) && t.contains(&"7/8".to_string()) && t.contains(&"N RAMP".to_string()));
     }
 
     #[test]
@@ -1642,7 +1800,7 @@ mod tests {
     #[test]
     fn team_bar_scoreboard_groups_and_ally_tags_respect_the_clear_columns() {
         let p = Palette::TRON;
-        let row = |n: &str, k, team| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local: false, alive: true, team };
+        let row = |n: &str, k, team| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local: false, alive: true, team, colour: None };
         let s = HudState {
             hp: 1.0,
             team_scores: Some(TeamScores { mine: 1, scores: [12, 30], limit: 50, result: 0 }),
@@ -1682,5 +1840,42 @@ mod tests {
         for (r, t) in [(0, "FIRST TO 50"), (1, "CYAN WINS"), (2, "ORANGE WINS"), (3, "DRAW"), (4, "SUDDEN DEATH")] {
             assert!(label(r).contains(&t.to_string()), "{t}");
         }
+    }
+
+    #[test]
+    fn ffa_leaderboard_leading_marker_build_ghost_and_grapple() {
+        let p = Palette::TRON;
+        let row = |n: &str, k, local| ScoreRow { name: n.into(), kills: k, deaths: 0, ping_ms: 10, local, alive: true, team: None, colour: Some(ffa_colour(k as u16)) };
+        let mk = |me_kills: u16| HudState {
+            hp: 1.0,
+            ffa: true,
+            kill_limit: Some(25),
+            scoreboard: (0..7u16).map(|i| row(&format!("P{i}"), 10 - i, false)).chain([row("ME", me_kills, true)]).collect(),
+            ..Default::default()
+        };
+        let texts = |s: &HudState| -> Vec<String> {
+            Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        };
+        let t = texts(&mk(0));
+        assert!(t.contains(&"FIRST TO 25".to_string()));
+        assert!(t.iter().any(|x| x == "1 P0") && t.iter().any(|x| x == "5 P4") && !t.iter().any(|x| x == "6 P5"), "top 5 only");
+        assert!(t.iter().any(|x| x == "8 ME"), "you are pinned below the top 5");
+        assert!(!t.contains(&"LEADING".to_string()));
+        assert!(texts(&mk(11)).contains(&"LEADING".to_string()), "first place shows the marker");
+
+        // unique, bright, distinct colours
+        let (a, b) = (ffa_colour(1), ffa_colour(2));
+        assert!(a != b && [a.0, a.1, a.2].iter().cloned().fold(0.0, f32::max) > 0.9);
+
+        // hookable crosshair tints gold; ghost ring is cyan when valid, magenta when blocked
+        let ticks = |s: &HudState, c: Rgba| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (c.0, c.1, c.2))).count();
+        let base = HudState { hp: 1.0, ..Default::default() };
+        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true }), ..base.clone() };
+        assert!(ticks(&hook, p.gold) > ticks(&base, p.gold));
+        let ring = |valid| {
+            let s = HudState { build: Some(BuildHud { selected: BuildSlot::Floor, ready: 1.0, placed: 0, max: 4, ghost: Some(valid) }), ..base.clone() };
+            Hud::build_with(&s, &p).iter().filter(|x| matches!(x, Prim::Ring { r, color, .. } if (*r - 0.065).abs() < 1e-6 && (color.0, color.1, color.2) == if valid { (p.cyan.0, p.cyan.1, p.cyan.2) } else { (p.magenta.0, p.magenta.1, p.magenta.2) })).count()
+        };
+        assert_eq!((ring(true), ring(false)), (1, 1));
     }
 }

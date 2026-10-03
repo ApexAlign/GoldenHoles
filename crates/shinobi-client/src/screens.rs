@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn scoreboard_screen_lists_rows() {
-        let rows = vec![ScoreRow { name: "Ronin".into(), kills: 3, deaths: 1, ping_ms: 20, local: true, alive: true, team: None }];
+        let rows = vec![ScoreRow { name: "Ronin".into(), kills: 3, deaths: 1, ping_ms: 20, local: true, alive: true, team: None, colour: None }];
         let t = texts(&draw(&Screen::Scoreboard { rows }, &Palette::TRON, 0.0));
         assert!(t.contains(&"Ronin".to_string()) && t.contains(&"PLAYER".to_string()));
     }
