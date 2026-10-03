@@ -296,8 +296,6 @@ pub struct HudState {
     pub since_damage: Option<(f32, f32)>,
     /// Size of the last hit taken as a fraction of max HP (0 = unknown): widens the damage wedge.
     pub damage_frac: f32,
-    /// Shuriken ammo `(loaded, max)` once the weapon has a magazine; `None` hides the readout.
-    pub shuriken_ammo: Option<(u8, u8)>,
     pub build: Option<BuildHud>,
     pub grapple: Option<GrappleHud>,
     /// Free-for-all match: leaderboard + leading marker (teams off).
@@ -882,10 +880,7 @@ impl Hud {
             ally_tag(&mut out, t, s.team_scores.map_or(0, |x| x.mine), p);
         }
         // Weapon slots under the cooldown arcs (only when the game supplies them).
-        if let Some((have, max)) = s.shuriken_ammo {
-            let c = if have == 0 { p.magenta } else { p.cyan };
-            out.push(Prim::Text { pos: (0.45, 0.985), text: format!("{have}/{max}"), size: 0.02, color: c.a(0.9), align: Align::Center });
-        }
+        // Weapon slots under the cooldown arcs: the shuriken has a cooldown only (no ammo in the design).
         if let Some(g) = s.grapple {
             cooldown_arc(&mut out, (0.40, 0.94), 0.026, g.ready, Glyph::Grapple, p);
             if g.on_rope {
@@ -2096,12 +2091,11 @@ mod tests {
 
         let slots = HudState {
             hp: 1.0,
-            shuriken_ammo: Some((3, 5)),
             build: Some(BuildHud { selected: BuildSlot::Ramp, ready: 1.0, placed: 7, max: 8, ghost: None }),
             ..Default::default()
         };
         let t = texts(&slots);
-        assert!(t.contains(&"3/5".to_string()) && t.contains(&"7/8".to_string()) && t.contains(&"N RAMP".to_string()));
+        assert!(t.contains(&"7/8".to_string()) && t.contains(&"N RAMP".to_string()));
     }
 
     #[test]

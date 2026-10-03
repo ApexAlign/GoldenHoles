@@ -558,6 +558,18 @@ impl ClientGame {
         }
     }
 
+    /// Print a specific piece now (radial build menu): the same one-tick build edge a key press produces, with the
+    /// N variant (floor / ramp) set to the choice. Latched until the next sim tick like any press.
+    pub fn print_piece(&mut self, kind: PieceKind) {
+        self.controls.mark(Use::Build);
+        if kind != PieceKind::Wall {
+            self.n_variant = kind;
+            self.n_press_tick = Some(self.last_input_tick);
+        }
+        self.build_edge = Some(kind);
+        self.build_sel = kind;
+    }
+
     /// Mouse look in device units (Pointer Lock `movementX/Y`); sensitivity and invert-Y come from the settings.
     pub fn look(&mut self, dx: f32, dy: f32) {
         self.settings.look(&mut self.aim, dx, dy, false);

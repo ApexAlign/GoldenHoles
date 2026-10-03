@@ -258,6 +258,8 @@ pub struct ModeRes {
     pub out: Option<ModeOut>,
     /// Seconds a build key (N / M) has been held continuously.
     build_hold: f32,
+    /// `build_hold` as of the previous frame: on the release frame it says whether the key was a tap or a hold.
+    build_hold_prev: f32,
 }
 
 impl ModeRes {
@@ -292,6 +294,7 @@ pub fn input(
 
     // input mode first: it may swallow this frame's Esc (closing the console / radial menu) before the pointer lock sees it
     let build_down = keys.pressed(KeyCode::KeyN) || keys.pressed(KeyCode::KeyM);
+    mode.build_hold_prev = mode.build_hold;
     mode.build_hold = if build_down { mode.build_hold + time.delta_secs() } else { 0.0 };
     let build_held_secs = mode.build_hold;
     let mode_out = mode.machine.update(&ModeInput {
@@ -369,13 +372,21 @@ pub fn input(
         (k(KeyCode::KeyQ), Action::Roll),
         (k(KeyCode::KeyC), Action::Slide),
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
-        (k(KeyCode::KeyN), Action::BuildFloor), // print a floor at the ghost preview (DESIGN.md)
-        (k(KeyCode::KeyM), Action::BuildWall),  // print a wall at the ghost preview
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (m(MouseButton::Left), Action::Slice),
         (m(MouseButton::Right), Action::Fire),
     ] {
         key_events(&mut out, p, r, a);
+    }
+    // Build keys print on RELEASE so a long hold can open the radial menu instead (it replaces the print): a tap
+    // (released before the radial threshold, or radial disabled) prints now; a hold prints only what the radial picks.
+    let hold = mode.machine.cfg.radial_enabled.then_some(mode.machine.cfg.radial_hold_secs);
+    let was_hold = hold.map_or(false, |t| mode.build_hold_prev >= t);
+    for (code, action) in [(KeyCode::KeyN, Action::BuildFloor), (KeyCode::KeyM, Action::BuildWall)] {
+        if keys.just_released(code) && !was_hold {
+            out.push(ButtonEvent { action, down: true });
+            out.push(ButtonEvent { action, down: false });
+        }
     }
     for e in out {
         lock.tracker.apply(&e);

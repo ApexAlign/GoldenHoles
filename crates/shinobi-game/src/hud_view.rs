@@ -14,7 +14,6 @@ use shinobi_client::hud::{Hud, HudState, Palette};
 use shinobi_client::hud_bridge::HudBridge;
 use shinobi_client::hud_geom::tessellate;
 use shinobi_client::screens::{self, MenuItem, Screen, SettingRow};
-use shinobi_client::client_game::{Action, ButtonEvent};
 use shinobi_client::console::{self, Console};
 use shinobi_client::hud::BuildSlot;
 use shinobi_client::input_mode::Mode;
@@ -273,20 +272,22 @@ fn mode_ui(
     mut typed: MessageReader<KeyboardInput>,
     mut console: ResMut<ConsoleRes>,
     mut settings: ResMut<SettingsRes>,
-    mut pending: ResMut<crate::net::PendingInput>,
     ctl: Res<HudCtl>,
-    net: Res<Net>,
+    mut net: ResMut<Net>,
 ) {
     let Some(out) = mode.out else {
         typed.clear();
         return;
     };
     if out.radial_commit {
+        // the hold replaced the instant tap-print (see play.rs): only the chosen piece prints, none on a cancel
         if let Some(slot) = cursor_norm(&window).and_then(radial::pick) {
-            let action = if slot == BuildSlot::Wall { Action::BuildWall } else { Action::BuildFloor };
-            // a tap: the latch in ClientGame turns the pair into one print edge
-            pending.0.buttons.push(ButtonEvent { action, down: true });
-            pending.0.buttons.push(ButtonEvent { action, down: false });
+            let kind = match slot {
+                BuildSlot::Floor => shinobi_sim::blocks::PieceKind::Floor,
+                BuildSlot::Ramp => shinobi_sim::blocks::PieceKind::Ramp,
+                BuildSlot::Wall => shinobi_sim::blocks::PieceKind::Wall,
+            };
+            net.0.game.print_piece(kind);
         }
     }
     if mode.mode() != Mode::Console {
