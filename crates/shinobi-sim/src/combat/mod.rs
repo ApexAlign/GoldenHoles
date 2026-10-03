@@ -144,6 +144,9 @@ pub enum CombatEvent {
     SlashHit { target: u128, point: Point<Real>, killed: bool },
     /// The katana swing found nothing: play the whiff (dim arc, small recover).
     SlashMiss { origin: Point<Real>, dir: Vector<Real> },
+    /// A weapon struck the player-built piece in `cell` for `amount`. The server turns it into `Blocks::damage`
+    /// (which may de-rez the piece); the client predictor ignores it.
+    PieceHit { cell: [i32; 3], amount: f32, kind: DamageKind },
 }
 
 pub struct CombatSystem {

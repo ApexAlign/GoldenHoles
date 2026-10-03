@@ -465,6 +465,16 @@ impl Server {
             let mut synthesized = Vec::new();
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg, head, &mut synthesized));
+            // weapons hurt player-built pieces too (anyone's, the owner's included); at zero hp a piece de-rezzes
+            let mut pieces_changed = false;
+            for e in &ev {
+                if let CombatEvent::PieceHit { cell, amount, .. } = *e {
+                    pieces_changed |= self.blocks.damage(&mut self.world, cell, amount, tick, &mut self.block_events);
+                }
+            }
+            if pieces_changed {
+                self.world.queries.update(&self.world.colliders);
+            }
             ev.extend(synthesized);
             let id = self.players[i].id;
             let mut ric = false;

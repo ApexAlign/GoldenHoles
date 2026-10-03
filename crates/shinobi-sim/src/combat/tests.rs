@@ -276,3 +276,24 @@ fn a_slice_reports_slash_hit_with_the_target_and_slash_miss_when_it_finds_nothin
     assert!(ev.iter().any(|e| matches!(e, CombatEvent::SlashHit { target: 7, killed: false, .. })), "{ev:?}");
     assert!(!ev.iter().any(|e| matches!(e, CombatEvent::SlashMiss { .. })), "a hit is never also a miss");
 }
+
+#[test]
+fn a_slice_reports_a_piece_hit_for_pieces_in_the_blade_box() {
+    let mut w = world();
+    let origin = vector![0.0, 1.0, 0.0];
+    let (ch, cfg) = add_player(&mut w, origin);
+    // a printed piece 1.2 m ahead (tagged collider, GROUP_WORLD) and one far behind the blade
+    for (z, cell) in [(-1.2, [0, 1, -2]), (-9.0, [0, 1, -9])] {
+        w.colliders.insert(
+            ColliderBuilder::cuboid(0.5, 0.5, 0.1)
+                .translation(vector![0.0, 1.0, z])
+                .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL))
+                .user_data(crate::blocks::piece_user_data(cell))
+                .build(),
+        );
+    }
+    w.queries.update(&w.colliders);
+    let (ev, _) = slice_once(&w, &ch, &cfg, origin);
+    let hit: Vec<_> = ev.iter().filter_map(|e| if let CombatEvent::PieceHit { cell, kind, .. } = e { Some((*cell, *kind)) } else { None }).collect();
+    assert_eq!(hit, vec![([0, 1, -2], DamageKind::Slash)], "{ev:?}");
+}

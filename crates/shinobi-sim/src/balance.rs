@@ -43,6 +43,8 @@ pub struct ShurikenBalance {
     pub assist_cone_deg: f32,
     pub assist_strength: f32,
     pub assist_range: f32,
+    /// Damage a bounce does to a player-built piece (see `blocks.hp`).
+    pub piece_damage: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +55,8 @@ pub struct KatanaBalance {
     pub half_height: f32,
     /// How strongly the hit sweep bends toward the lock-on target (0 = off, 1 = onto the target), times the lock pull.
     pub magnet: f32,
+    /// Damage a swing does to each player-built piece in the blade box.
+    pub piece_damage: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -272,8 +276,9 @@ impl Default for Balance {
                     assist_cone_deg: s.assist_cone_deg,
                     assist_strength: s.assist_strength,
                     assist_range: s.assist_range,
+                    piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0, magnet: 0.8 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0, magnet: 0.8, piece_damage: 40.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -443,6 +448,7 @@ impl Balance {
             assist_cone_deg: b.assist_cone_deg,
             assist_strength: b.assist_strength,
             assist_range: b.assist_range,
+            piece_damage: b.piece_damage,
             ..ShurikenCfg::default()
         }
     }
@@ -455,6 +461,7 @@ impl Balance {
         k.half_width = b.half_width;
         k.half_height = b.half_height;
         k.magnet = b.magnet;
+        k.piece_damage = b.piece_damage;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -533,6 +540,8 @@ impl Balance {
         s!("combat.katana.half_width", F, self.combat.katana.half_width);
         s!("combat.katana.half_height", F, self.combat.katana.half_height);
         s!("combat.katana.magnet", F, self.combat.katana.magnet);
+        s!("combat.katana.piece_damage", F, self.combat.katana.piece_damage);
+        s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);

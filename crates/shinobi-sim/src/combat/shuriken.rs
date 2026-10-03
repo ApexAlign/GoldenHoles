@@ -32,6 +32,8 @@ pub struct ShurikenCfg {
     /// How far (0..=1) the throw is pulled from the crosshair toward the target's centre.
     pub assist_strength: f32,
     pub assist_range: f32,
+    /// Damage a bounce does to a player-built piece it strikes (Balance `combat.shuriken.piece_damage`).
+    pub piece_damage: f32,
     /// Collider groups this disc damages when it touches them.
     pub targets: Group,
     /// Collider groups it can touch at all (everything else is ignored).
@@ -53,6 +55,7 @@ impl Default for ShurikenCfg {
             assist_cone_deg: 6.0,
             assist_strength: 0.75,
             assist_range: 60.0,
+            piece_damage: 10.0,
             targets: TARGETS,
             mask: projectile_groups(),
         }
@@ -238,6 +241,9 @@ pub fn advance_disc_skipping(
             return DiscStep::Hit { collider: handle, point: d.pos };
         }
 
+        if let Some(cell) = world.colliders.get(handle).and_then(|c| crate::blocks::piece_cell(c.user_data)) {
+            events.push(CombatEvent::PieceHit { cell, amount: cfg.piece_damage, kind: DamageKind::Shuriken });
+        }
         d.bounces += 1;
         if d.bounces > cfg.max_bounces {
             events.push(CombatEvent::ShurikenGone { pos: d.pos });
