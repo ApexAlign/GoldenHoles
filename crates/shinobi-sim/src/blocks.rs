@@ -99,6 +99,22 @@ impl Blocks {
         v
     }
 
+    /// True if `owner` may place again at `tick` (cooldown over).
+    pub fn ready(&self, owner: u16, tick: u32) -> bool {
+        !self.ready_at.get(&owner).is_some_and(|&t| (tick.wrapping_sub(t) as i32) < 0)
+    }
+
+    /// True if `cell` has no block.
+    pub fn is_free(&self, cell: Cell) -> bool {
+        !self.cells.contains_key(&cell)
+    }
+
+    /// Whether a block at `cell` would entomb a player standing at one of `players` (body centres).
+    pub fn overlaps_player(&self, cell: Cell, players: &[[f32; 3]]) -> bool {
+        let (c, h) = (self.center(cell), self.cfg.size * 0.5);
+        players.iter().any(|p| (p[0] - c[0]).abs() < h + 0.5 && (p[1] - c[1]).abs() < h + 1.0 && (p[2] - c[2]).abs() < h + 0.5)
+    }
+
     /// Cell a build press aimed from `origin` along unit `dir` would fill: against the first solid hit (the cell
     /// in front of the face that was struck), else mid-air at `range` (bridging). `skip` = the builder's body.
     pub fn target_cell(&self, world: &PhysicsWorld, origin: [f32; 3], dir: [f32; 3], skip: RigidBodyHandle) -> Cell {
@@ -128,7 +144,7 @@ impl Blocks {
         players: &[[f32; 3]],
         events: &mut Vec<BlockEvent>,
     ) {
-        if self.ready_at.get(&owner).is_some_and(|&t| (tick.wrapping_sub(t) as i32) < 0) {
+        if !self.ready(owner, tick) {
             events.push(BlockEvent::Refused { tick, owner, why: PlaceError::Cooldown });
             return;
         }
@@ -160,8 +176,7 @@ impl Blocks {
         let c = self.center(cell);
         let h = self.cfg.size * 0.5;
         // generous capsule bound: half-width 0.5, half-height 1.0 around the body centre
-        let hit = |p: &[f32; 3]| (p[0] - c[0]).abs() < h + 0.5 && (p[1] - c[1]).abs() < h + 1.0 && (p[2] - c[2]).abs() < h + 0.5;
-        if players.iter().any(hit) {
+        if self.overlaps_player(cell, players) {
             return Err(PlaceError::Blocked);
         }
         let handle = world.colliders.insert(

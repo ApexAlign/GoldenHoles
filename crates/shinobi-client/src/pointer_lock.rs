@@ -68,10 +68,10 @@ impl PointerLock {
 /// Which actions are currently held, so `release_all` emits exactly the missing key-ups.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ButtonTracker {
-    held: u8,
+    held: u16,
 }
 
-fn bit(a: Action) -> u8 {
+fn bit(a: Action) -> u16 {
     1 << match a {
         Action::Jump => 0,
         Action::Dash => 1,
@@ -81,10 +81,11 @@ fn bit(a: Action) -> u8 {
         Action::Cling => 5,
         Action::Slide => 6,
         Action::Grapple => 7,
+        Action::Build => 8,
     }
 }
 
-const ALL: [Action; 8] = [Action::Jump, Action::Dash, Action::Roll, Action::Slice, Action::Fire, Action::Cling, Action::Slide, Action::Grapple];
+const ALL: [Action; 9] = [Action::Jump, Action::Dash, Action::Roll, Action::Slice, Action::Fire, Action::Cling, Action::Slide, Action::Grapple, Action::Build];
 
 impl ButtonTracker {
     pub fn apply(&mut self, e: &ButtonEvent) {
