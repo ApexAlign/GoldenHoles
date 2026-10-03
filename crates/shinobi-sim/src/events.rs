@@ -38,10 +38,13 @@ pub enum NetEvent {
     TeamAssign { player: u16, team: u8 },
     /// Team kills (cyan, orange) whenever either changes, and when a team match ends: `result` = `TEAM_RESULT_*` (running, who won, or sudden death in progress).
     TeamScore { tick: u32, score: [u16; 2], result: u8 },
-    /// A player-built block appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). Replayed to late joiners.
-    BlockPlaced { owner: u16, cell: [i32; 3] },
+    /// A player-built piece appeared in `cell` (grid cell, centre = (cell + 0.5) * block size). `kind`: 0 floor,
+    /// 1 wall; `axis`: a wall's normal (0 = X, 1 = Z); `scale_q`: size in 1/16ths (16 = 1.0). Replayed to late joiners.
+    BlockPlaced { owner: u16, cell: [i32; 3], kind: u8, axis: u8, scale_q: u8 },
     /// The block in `cell` is gone (evicted by its owner's cap, or its owner left).
     BlockRemoved { cell: [i32; 3] },
+    /// The piece in `cell` was destroyed: it de-rezzes (dissolves into pixels) instead of just vanishing.
+    BlockDerez { cell: [i32; 3] },
     /// Owner only: the build press was refused, `BLOCK_REFUSED_*`.
     BlockRefused { why: u8 },
 }
@@ -187,9 +190,16 @@ impl NetEvent {
                 w.write_varint(score[1] as u32);
                 w.write_bits(*result as u32 & 7, 3);
             }
-            Self::BlockPlaced { owner, cell } => {
+            Self::BlockPlaced { owner, cell, kind, axis, scale_q } => {
                 w.write_bits(16, 5);
                 w.write_bits(*owner as u32, 16);
+                write_v3(w, *cell, [0; 3]);
+                w.write_bits(*kind as u32 & 1, 1);
+                w.write_bits(*axis as u32 & 1, 1);
+                w.write_bits(*scale_q as u32, 8);
+            }
+            Self::BlockDerez { cell } => {
+                w.write_bits(19, 5);
                 write_v3(w, *cell, [0; 3]);
             }
             Self::BlockRemoved { cell } => {
@@ -266,7 +276,14 @@ impl NetEvent {
                 ];
                 Self::TeamScore { tick, score, result: r.read_bits(3)? as u8 }
             }
-            16 => Self::BlockPlaced { owner: r.read_bits(16)? as u16, cell: read_v3(r, [0; 3])? },
+            16 => Self::BlockPlaced {
+                owner: r.read_bits(16)? as u16,
+                cell: read_v3(r, [0; 3])?,
+                kind: r.read_bits(1)? as u8,
+                axis: r.read_bits(1)? as u8,
+                scale_q: r.read_bits(8)? as u8,
+            },
+            19 => Self::BlockDerez { cell: read_v3(r, [0; 3])? },
             17 => Self::BlockRemoved { cell: read_v3(r, [0; 3])? },
             18 => Self::BlockRefused { why: r.read_bits(2)? as u8 },
             _ => return Err(DecodeError::Malformed),
@@ -371,7 +388,8 @@ mod tests {
     #[test]
     fn block_events_roundtrip_and_stay_small() {
         let evs = [
-            NetEvent::BlockPlaced { owner: 7, cell: [-12, 3, 40] },
+            NetEvent::BlockPlaced { owner: 7, cell: [-12, 3, 40], kind: 1, axis: 1, scale_q: 24 },
+            NetEvent::BlockDerez { cell: [-12, 3, 40] },
             NetEvent::BlockRemoved { cell: [-12, 3, 40] },
             NetEvent::BlockRefused { why: BLOCK_REFUSED_COOLDOWN },
         ];
@@ -380,7 +398,7 @@ mod tests {
             e.write(&mut w);
         }
         let bytes = w.finish();
-        assert!(bytes.len() <= 14, "{} B for place + remove + refuse", bytes.len());
+        assert!(bytes.len() <= 16, "{} B for place + derez + remove + refuse", bytes.len());
         let mut r = BitReader::new(&bytes);
         for e in &evs {
             assert_eq!(&NetEvent::read(&mut r).unwrap(), e);

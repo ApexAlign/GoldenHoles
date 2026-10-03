@@ -176,7 +176,7 @@ pub fn build_intent(tick: u32, stick: (f32, f32), aim: &Aim, buttons: Buttons) -
         aim_yaw: q_yaw(aim.yaw),
         aim_pitch: q_pitch(aim.pitch),
         ultimate: false,
-        build: false,
+        build: false, build_wall: false,
         zip: false,
     }
 }

@@ -69,6 +69,8 @@ pub struct PlayerIntent {
     /// One-tick edge: place a block at the aimed spot (server validates range, charges, overlap; see the block
     /// building rules). Own wire bit, cleared on lost-packet repeat like `ultimate`.
     pub build: bool,
+    /// With `build`: place a wall (`M`) instead of a floor (`N`). Meaningless without `build`.
+    pub build_wall: bool,
     /// One-tick edge: fire the zipline gun at the aimed hookable anchor (server validates range, line of sight,
     /// cooldown, line cap). Own wire bit, cleared on lost-packet repeat.
     pub zip: bool,
@@ -77,7 +79,7 @@ pub struct PlayerIntent {
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, zip: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, zip: false }
     }
 }
 
@@ -107,6 +109,7 @@ impl PlayerIntent {
             && self.aim_pitch == o.aim_pitch
             && self.ultimate == o.ultimate
             && self.build == o.build
+            && self.build_wall == o.build_wall
             && self.zip == o.zip
     }
 
@@ -118,6 +121,7 @@ impl PlayerIntent {
         w.write_bits(self.aim_pitch.min(PITCH_MAX) as u32, PITCH_BITS);
         w.write_bool(self.ultimate);
         w.write_bool(self.build);
+        w.write_bool(self.build_wall);
         w.write_bool(self.zip);
     }
 
@@ -131,6 +135,7 @@ impl PlayerIntent {
             aim_pitch: r.read_bits(PITCH_BITS)? as u16,
             ultimate: r.read_bool()?,
             build: r.read_bool()?,
+            build_wall: r.read_bool()?,
             zip: r.read_bool()?,
         })
     }
@@ -301,7 +306,7 @@ impl IntentQueue {
                 tick,
                 buttons: Buttons(l.buttons.0 & !Buttons::EDGES),
                 ultimate: false,
-                build: false,
+                build: false, build_wall: false,
                 zip: false,
                 ..l
             })
@@ -318,7 +323,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, zip: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, zip: false }
     }
 
     #[test]

@@ -94,7 +94,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v7, for client authors)
+## Network events (protocol v8, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
@@ -104,7 +104,7 @@ flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`
 | `TeamAssign { player, team }` | player joined / moved to team 0 Cyan or 1 Orange; `TEAM_NONE` (3) = left. Replayed to late joiners | `team_of(id)`, `my_team()` |
 | `TeamScore { tick, score: [cyan, orange], result }` | team kills whenever they change; `result` 0 running, 1 Cyan won, 2 Orange won, 3 draw, 4 sudden death in progress (only in team mode) | `team_scores()`, `team_result()`, `in_sudden_death()` |
 | `RopeAttach { tick, player, anchor }` / `RopeRelease` | a player's wrist grapple hooked (anchor in 1/512 m) / let go, also on death or leaving | `rope_anchor(id)` |
-| `BlockPlaced { owner, cell }` / `BlockRemoved { cell }` | player-built block appeared / vanished (cell = grid cell, centre = (cell + 0.5) x size) | `blocks()` |
+| `BlockPlaced { owner, cell, kind, axis, scale_q }` / `BlockRemoved { cell }` / `BlockDerez { cell }` | player-built piece appeared / vanished / was destroyed and should de-rez (cell = grid cell; kind 0 floor 1 wall; axis = wall normal 0 X 1 Z; scale_q in 1/16ths; geometry via `Blocks::geometry`) | `blocks()` / `block_pieces()` |
 | `BlockRefused { why }` | your build press failed: 0 occupied, 1 body in the way, 2 cooldown (builder only) | via `take_events()` |
 
 Shurikens are snapshot entities with ids `PROJECTILE_ID_BASE` (0x4000) and up: `yaw` = owner id, `flags` = bounce

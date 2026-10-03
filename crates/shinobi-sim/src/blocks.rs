@@ -1,9 +1,15 @@
-//! Player-built blocks: grid-snapped solid cubes in the authoritative world.
+//! Player-built pieces ("print the grid", see DESIGN.md): grid-snapped solid slabs in the authoritative world.
 //!
-//! A block is a fixed cuboid in `GROUP_WORLD`, so movement, shurikens and spawn line-of-sight treat it like
-//! level geometry. Cells are integer grid coordinates (`cell * size` = centre), so server and clients derive
-//! identical positions from the same `(cx, cy, cz)`. Each owner has a cap; placing past it evicts their oldest.
-//! Callers must `world.queries.update` before raycasting after a change (same rule as every collider edit).
+//! Two kinds: `Floor` (a flat slab on the bottom of its cell: floors and, later, ramps) and `Wall` (an upright
+//! slab through the cell centre, facing along X or Z). A piece is a fixed cuboid in `GROUP_WORLD`, so movement,
+//! shurikens and spawn line-of-sight treat it like level geometry. Cells are integer grid coordinates
+//! (`cell * size`), so server and clients derive identical geometry from the same `(cell, piece, scale)`.
+//! One piece per cell. Each owner has a cap; placing past it evicts their oldest.
+//!
+//! Hooks (inert until tuned, all in `BlockCfg` / Balance `blocks.*`): per-piece health, age (older = more
+//! durable, `age_bonus_per_sec`), size scaling by the owner's kills (`scale_per_kill`, `scale_cap`), and the
+//! `DeRez` event when a piece is destroyed (`Blocks::damage`). Callers must `world.queries.update` before
+//! raycasting after a change (same rule as every collider edit).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -14,27 +20,136 @@ use crate::combat::GROUP_WORLD;
 
 pub type Cell = [i32; 3];
 
+/// Ticks per second for age maths (`shinobi_proto::TICK_HZ`).
+const HZ: f32 = 60.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PieceKind {
+    /// Flat slab on the bottom of the cell (`N` key).
+    Floor,
+    /// Upright slab through the cell centre (`M` key).
+    Wall,
+}
+
+impl PieceKind {
+    /// Wire value.
+    pub fn id(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_id(id: u8) -> Self {
+        if id == 1 {
+            PieceKind::Wall
+        } else {
+            PieceKind::Floor
+        }
+    }
+}
+
+/// What a cell holds: the kind plus, for walls, the axis the slab's normal points along (0 = X, 1 = Z;
+/// floors always 0). Picked from the builder's aim, so it is deterministic from the intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Piece {
+    pub kind: PieceKind,
+    pub axis: u8,
+}
+
+impl Piece {
+    pub const FLOOR: Piece = Piece { kind: PieceKind::Floor, axis: 0 };
+    /// Wall whose normal points along X (blocks movement along X).
+    pub const WALL_X: Piece = Piece { kind: PieceKind::Wall, axis: 0 };
+    /// Wall whose normal points along Z.
+    pub const WALL_Z: Piece = Piece { kind: PieceKind::Wall, axis: 1 };
+
+    /// A wall facing across the aim direction `dir`: its normal runs along the dominant horizontal axis.
+    pub fn wall_facing(dir: [f32; 3]) -> Piece {
+        Piece { kind: PieceKind::Wall, axis: u8::from(dir[2].abs() >= dir[0].abs()) }
+    }
+
+    /// The piece a press of `kind` places when aiming along `dir`.
+    pub fn for_press(kind: PieceKind, dir: [f32; 3]) -> Piece {
+        match kind {
+            PieceKind::Floor => Piece::FLOOR,
+            PieceKind::Wall => Piece::wall_facing(dir),
+        }
+    }
+
+    /// Half extents of the slab for a cell of edge `size`, slab `thick`ness, grown by `scale`.
+    pub fn half_extents(self, size: f32, thick: f32, scale: f32) -> [f32; 3] {
+        let (h, t) = (size * 0.5 * scale, thick * 0.5);
+        match (self.kind, self.axis) {
+            (PieceKind::Floor, _) => [h, t, h],
+            (PieceKind::Wall, 0) => [t, h, h],
+            (PieceKind::Wall, _) => [h, h, t],
+        }
+    }
+
+    /// Centre of the slab for `cell`: floors sit on the cell's bottom face, walls are centred.
+    pub fn center(self, cell: Cell, size: f32, thick: f32) -> [f32; 3] {
+        let c = cell.map(|c| (c as f32 + 0.5) * size);
+        match self.kind {
+            PieceKind::Floor => [c[0], cell[1] as f32 * size + thick * 0.5, c[2]],
+            PieceKind::Wall => c,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BlockCfg {
-    /// Edge length, metres.
+    /// Cell edge length, metres.
     pub size: f32,
-    /// Live blocks per owner; the oldest is evicted past this.
+    /// Slab thickness of floors and walls, metres.
+    pub thickness: f32,
+    /// Live pieces per owner; the oldest is evicted past this.
     pub max_per_owner: usize,
-    /// Furthest point (m, along the aim) a block can be placed at.
+    /// Furthest point (m, along the aim) a piece can be placed at.
     pub range: f32,
     /// Ticks between two placements by the same owner.
     pub cooldown_ticks: u32,
+    /// HOOK: damage a piece absorbs before it de-rezzes. Placeholder until balance decides.
+    pub hp: f32,
+    /// HOOK: older = more durable. Incoming damage is divided by `1 + age_bonus_per_sec * age_seconds`.
+    /// 0 = no bonus (inert).
+    pub age_bonus_per_sec: f32,
+    /// HOOK: piece size grows by this fraction per kill of its owner. 0 = no scaling (inert).
+    pub scale_per_kill: f32,
+    /// HOOK: largest scale factor scaling may reach; 0 = uncapped. Open design question, no number chosen.
+    pub scale_cap: f32,
 }
 
 impl Default for BlockCfg {
     fn default() -> Self {
-        Self { size: 1.0, max_per_owner: 64, range: 6.0, cooldown_ticks: 12 }
+        Self {
+            size: 1.0,
+            thickness: 0.2,
+            max_per_owner: 64,
+            range: 6.0,
+            cooldown_ticks: 12,
+            hp: 100.0,
+            age_bonus_per_sec: 0.0,
+            scale_per_kill: 0.0,
+            scale_cap: 0.0,
+        }
+    }
+}
+
+/// Scale is sent as 1/16ths (16 = 1.0): no float on the wire, identical on server and client.
+pub const SCALE_ONE: u8 = 16;
+
+impl BlockCfg {
+    /// Scale (1/16ths) for an owner with `kills` kills.
+    pub fn scale_q(&self, kills: u32) -> u8 {
+        let mut s = 1.0 + self.scale_per_kill * kills as f32;
+        if self.scale_cap > 0.0 {
+            s = s.min(self.scale_cap);
+        }
+        ((s * SCALE_ONE as f32).round() as i64).clamp(SCALE_ONE as i64, 255) as u8
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaceError {
-    /// Cell already holds a block.
+    /// Cell already holds a piece.
     Occupied,
     /// A player body overlaps the cell (would entomb them).
     Blocked,
@@ -45,15 +160,31 @@ pub enum PlaceError {
 /// What `Server` reports after a build attempt, in tick order (`Server::block_events`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockEvent {
-    Placed { tick: u32, owner: u16, cell: Cell },
+    Placed { tick: u32, owner: u16, cell: Cell, piece: Piece, scale_q: u8 },
     /// Removed: evicted by the owner's cap, or the owner left.
     Removed { tick: u32, cell: Cell },
+    /// Destroyed by damage: dissolves into pixels (Graphics).
+    DeRez { tick: u32, cell: Cell, owner: u16, piece: Piece },
     Refused { tick: u32, owner: u16, why: PlaceError },
+}
+
+/// One live piece, for replication and drawing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockInfo {
+    pub owner: u16,
+    pub cell: Cell,
+    pub piece: Piece,
+    pub scale_q: u8,
 }
 
 struct Block {
     owner: u16,
     handle: ColliderHandle,
+    piece: Piece,
+    scale_q: u8,
+    placed_tick: u32,
+    /// Damage absorbed so far (after the age discount).
+    hurt: f32,
 }
 
 #[derive(Default)]
@@ -75,9 +206,15 @@ impl Blocks {
         p.map(|v| (v / self.cfg.size).floor() as i32)
     }
 
-    /// Centre of `cell`.
+    /// Centre of `cell` (the cell box, not the slab: see `Piece::center`).
     pub fn center(&self, cell: Cell) -> [f32; 3] {
         cell.map(|c| (c as f32 + 0.5) * self.cfg.size)
+    }
+
+    /// Slab centre and half extents of `piece` in `cell` at `scale_q`, for drawing a ghost or replicated piece.
+    pub fn geometry(&self, cell: Cell, piece: Piece, scale_q: u8) -> ([f32; 3], [f32; 3]) {
+        let scale = scale_q as f32 / SCALE_ONE as f32;
+        (piece.center(cell, self.cfg.size, self.cfg.thickness), piece.half_extents(self.cfg.size, self.cfg.thickness, scale))
     }
 
     pub fn len(&self) -> usize {
@@ -92,10 +229,17 @@ impl Blocks {
         self.cells.get(&cell).map(|b| b.owner)
     }
 
-    /// All live blocks as `(owner, cell)`, sorted by cell (deterministic for replication).
+    /// All live pieces as `(owner, cell)`, sorted by cell (deterministic for replication).
     pub fn iter(&self) -> Vec<(u16, Cell)> {
         let mut v: Vec<_> = self.cells.iter().map(|(c, b)| (b.owner, *c)).collect();
         v.sort_by_key(|&(_, c)| c);
+        v
+    }
+
+    /// All live pieces with their kind and scale, sorted by cell.
+    pub fn pieces(&self) -> Vec<BlockInfo> {
+        let mut v: Vec<_> = self.cells.iter().map(|(c, b)| BlockInfo { owner: b.owner, cell: *c, piece: b.piece, scale_q: b.scale_q }).collect();
+        v.sort_by_key(|b| b.cell);
         v
     }
 
@@ -104,12 +248,13 @@ impl Blocks {
         !self.ready_at.get(&owner).is_some_and(|&t| (tick.wrapping_sub(t) as i32) < 0)
     }
 
-    /// True if `cell` has no block.
+    /// True if `cell` holds nothing.
     pub fn is_free(&self, cell: Cell) -> bool {
         !self.cells.contains_key(&cell)
     }
 
-    /// Whether a block at `cell` would entomb a player standing at one of `players` (body centres).
+    /// Whether a piece in `cell` would entomb a player standing at one of `players` (body centres). Uses the
+    /// whole cell box, so it is conservative for thin slabs.
     pub fn overlaps_player(&self, cell: Cell, players: &[[f32; 3]]) -> bool {
         let (c, h) = (self.center(cell), self.cfg.size * 0.5);
         players.iter().any(|p| (p[0] - c[0]).abs() < h + 0.5 && (p[1] - c[1]).abs() < h + 1.0 && (p[2] - c[2]).abs() < h + 0.5)
@@ -131,13 +276,16 @@ impl Blocks {
         self.cell_of([p.x, p.y, p.z])
     }
 
-    /// One build press at `tick`: cooldown, then `place`. Records the outcome in `events`.
+    /// One build press at `tick`: cooldown, then `place`. `kills` = the owner's kills (scale hook). Records the
+    /// outcome in `events`.
     #[allow(clippy::too_many_arguments)]
     pub fn try_build(
         &mut self,
         world: &mut PhysicsWorld,
         tick: u32,
         owner: u16,
+        kind: PieceKind,
+        kills: u32,
         origin: [f32; 3],
         dir: [f32; 3],
         skip: RigidBodyHandle,
@@ -149,10 +297,12 @@ impl Blocks {
             return;
         }
         let cell = self.target_cell(world, origin, dir, skip);
-        match self.place(world, owner, cell, players) {
+        let piece = Piece::for_press(kind, dir);
+        let scale_q = self.cfg.scale_q(kills);
+        match self.place(world, owner, cell, piece, scale_q, tick, players) {
             Ok(evicted) => {
                 self.ready_at.insert(owner, tick.wrapping_add(self.cfg.cooldown_ticks));
-                events.push(BlockEvent::Placed { tick, owner, cell });
+                events.push(BlockEvent::Placed { tick, owner, cell, piece, scale_q });
                 if let Some(e) = evicted {
                     events.push(BlockEvent::Removed { tick, cell: e });
                 }
@@ -161,31 +311,33 @@ impl Blocks {
         }
     }
 
-    /// Place a block. Refuses an occupied cell or one overlapping a player capsule (`players`: body centres).
+    /// Place a piece. Refuses an occupied cell or one overlapping a player capsule (`players`: body centres).
     /// Returns the cell evicted by the owner's cap, if any.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         world: &mut PhysicsWorld,
         owner: u16,
         cell: Cell,
+        piece: Piece,
+        scale_q: u8,
+        tick: u32,
         players: &[[f32; 3]],
     ) -> Result<Option<Cell>, PlaceError> {
         if self.cells.contains_key(&cell) {
             return Err(PlaceError::Occupied);
         }
-        let c = self.center(cell);
-        let h = self.cfg.size * 0.5;
-        // generous capsule bound: half-width 0.5, half-height 1.0 around the body centre
         if self.overlaps_player(cell, players) {
             return Err(PlaceError::Blocked);
         }
+        let (c, h) = self.geometry(cell, piece, scale_q);
         let handle = world.colliders.insert(
-            ColliderBuilder::cuboid(h, h, h)
+            ColliderBuilder::cuboid(h[0], h[1], h[2])
                 .translation(vector![c[0], c[1], c[2]])
                 .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL))
                 .build(),
         );
-        self.cells.insert(cell, Block { owner, handle });
+        self.cells.insert(cell, Block { owner, handle, piece, scale_q, placed_tick: tick, hurt: 0.0 });
         let q = self.order.entry(owner).or_default();
         q.push_back(cell);
         let evicted = if q.len() > self.cfg.max_per_owner { q.pop_front() } else { None };
@@ -195,7 +347,27 @@ impl Blocks {
         Ok(evicted)
     }
 
-    /// Remove the block in `cell`; true if there was one.
+    /// HOOK: `amount` damage to the piece in `cell` at `tick`. Older pieces take less (`age_bonus_per_sec`);
+    /// past `hp` (times its scale) the piece de-rezzes: removed, and `DeRez` pushed. True if destroyed.
+    /// Nothing calls this yet: weapons stay inert against pieces until balance decides the numbers.
+    pub fn damage(&mut self, world: &mut PhysicsWorld, cell: Cell, amount: f32, tick: u32, events: &mut Vec<BlockEvent>) -> bool {
+        let Some(b) = self.cells.get_mut(&cell) else { return false };
+        let age = tick.wrapping_sub(b.placed_tick) as f32 / HZ;
+        b.hurt += amount / (1.0 + self.cfg.age_bonus_per_sec * age);
+        let limit = self.cfg.hp * (b.scale_q as f32 / SCALE_ONE as f32);
+        if b.hurt < limit {
+            return false;
+        }
+        let (owner, piece) = (b.owner, b.piece);
+        if let Some(q) = self.order.get_mut(&owner) {
+            q.retain(|c| *c != cell);
+        }
+        self.remove_collider(world, cell);
+        events.push(BlockEvent::DeRez { tick, cell, owner, piece });
+        true
+    }
+
+    /// Remove the piece in `cell`; true if there was one.
     pub fn remove(&mut self, world: &mut PhysicsWorld, cell: Cell) -> bool {
         let Some(b) = self.cells.get(&cell) else { return false };
         let owner = b.owner;
@@ -205,7 +377,7 @@ impl Blocks {
         self.remove_collider(world, cell)
     }
 
-    /// Remove every block of `owner` (they left the match).
+    /// Remove every piece of `owner` (they left the match).
     pub fn clear_owner(&mut self, world: &mut PhysicsWorld, owner: u16) -> usize {
         self.ready_at.remove(&owner);
         let cells: Vec<Cell> = self.order.remove(&owner).map(|q| q.into_iter().collect()).unwrap_or_default();
@@ -217,6 +389,12 @@ impl Blocks {
         world.colliders.remove(b.handle, &mut world.islands, &mut world.bodies, false);
         true
     }
+}
+
+/// Test helper: a wall piece facing Z at normal scale, placed at tick 0.
+#[cfg(test)]
+pub(crate) fn put(b: &mut Blocks, world: &mut PhysicsWorld, owner: u16, cell: Cell, players: &[[f32; 3]]) -> Result<Option<Cell>, PlaceError> {
+    b.place(world, owner, cell, Piece { kind: PieceKind::Wall, axis: 1 }, SCALE_ONE, 0, players)
 }
 
 #[cfg(test)]
@@ -246,7 +424,7 @@ mod tests {
         let to = [0.5, 0.5, 8.5];
         s.world.queries.update(&s.world.colliders);
         assert!(!crate::spawn::blocked(&s.world, from, to));
-        assert_eq!(b.place(&mut s.world, 1, [0, 0, 0], &[]), Ok(None));
+        assert_eq!(put(&mut b, &mut s.world, 1, [0, 0, 0], &[]), Ok(None));
         s.world.queries.update(&s.world.colliders);
         assert!(crate::spawn::blocked(&s.world, from, to));
         assert!(b.remove(&mut s.world, [0, 0, 0]));
@@ -259,9 +437,9 @@ mod tests {
     fn occupied_and_entombing_placements_are_refused() {
         let mut s = server();
         let mut b = Blocks::default();
-        assert_eq!(b.place(&mut s.world, 1, [3, 0, 3], &[]), Ok(None));
-        assert_eq!(b.place(&mut s.world, 2, [3, 0, 3], &[]), Err(PlaceError::Occupied));
-        assert_eq!(b.place(&mut s.world, 1, [5, 0, 5], &[[5.5, 0.81, 5.5]]), Err(PlaceError::Blocked));
+        assert_eq!(put(&mut b, &mut s.world, 1, [3, 0, 3], &[]), Ok(None));
+        assert_eq!(put(&mut b, &mut s.world, 2, [3, 0, 3], &[]), Err(PlaceError::Occupied));
+        assert_eq!(put(&mut b, &mut s.world, 1, [5, 0, 5], &[[5.5, 0.81, 5.5]]), Err(PlaceError::Blocked));
         assert_eq!(b.len(), 1);
     }
 
@@ -270,12 +448,12 @@ mod tests {
         let mut s = server();
         let mut b = Blocks::new(BlockCfg { max_per_owner: 3, ..BlockCfg::default() });
         for x in 0..3 {
-            assert_eq!(b.place(&mut s.world, 1, [x, 0, 0], &[]), Ok(None));
+            assert_eq!(put(&mut b, &mut s.world, 1, [x, 0, 0], &[]), Ok(None));
         }
-        assert_eq!(b.place(&mut s.world, 1, [3, 0, 0], &[]), Ok(Some([0, 0, 0])));
+        assert_eq!(put(&mut b, &mut s.world, 1, [3, 0, 0], &[]), Ok(Some([0, 0, 0])));
         assert_eq!(b.len(), 3);
         assert_eq!(b.owner_of([0, 0, 0]), None);
-        assert_eq!(b.place(&mut s.world, 2, [9, 0, 9], &[]), Ok(None));
+        assert_eq!(put(&mut b, &mut s.world, 2, [9, 0, 9], &[]), Ok(None));
         assert_eq!(b.clear_owner(&mut s.world, 1), 3);
         assert_eq!(b.iter(), vec![(2, [9, 0, 9])]);
     }
@@ -346,11 +524,81 @@ mod leave_tests {
         s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
         s.add_player(1, [0.5, 0.81, 0.5]);
         s.add_player(2, [20.5, 0.81, 0.5]);
-        s.blocks.place(&mut s.world, 1, [5, 0, 5], &[]).unwrap();
-        s.blocks.place(&mut s.world, 2, [9, 0, 9], &[]).unwrap();
+        put(&mut s.blocks, &mut s.world, 1, [5, 0, 5], &[]).unwrap();
+        put(&mut s.blocks, &mut s.world, 2, [9, 0, 9], &[]).unwrap();
         assert!(s.remove_player(1));
         assert_eq!(s.blocks.iter(), vec![(2, [9, 0, 9])]);
         s.frame(Duration::from_nanos(16_666_667));
         assert!(s.block_events.iter().any(|e| matches!(e, BlockEvent::Removed { cell: [5, 0, 5], .. })), "{:?}", s.block_events);
+    }
+}
+
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use crate::character::Cfg;
+    use crate::combat::CombatEvent;
+    use crate::tick::Server;
+    use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, PITCH_LEVEL};
+    use std::time::Duration;
+
+    fn press(s: &mut Server, buttons: u8, build: bool, wall: bool) {
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, buttons: Buttons(buttons), aim_pitch: PITCH_LEVEL, build, build_wall: wall, ..Default::default() };
+        let pkt = ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() };
+        s.ingest(1, &pkt.encode().unwrap());
+        s.frame(Duration::from_nanos(16_666_667));
+    }
+
+    /// Build intent -> piece in the world (events say what and where) -> a disc thrown at it ricochets instead
+    /// of flying on. `Placed` is exactly what the replicator broadcasts as `NetEvent::BlockPlaced`.
+    #[test]
+    fn a_printed_wall_is_solid_to_discs_and_reported_with_its_kind() {
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_player(1, [0.5, 0.81, 0.5]);
+        press(&mut s, 0, true, true);
+        let placed = s.block_events.iter().find_map(|e| match e {
+            BlockEvent::Placed { cell, piece, scale_q, .. } => Some((*cell, *piece, *scale_q)),
+            _ => None,
+        });
+        let (cell, piece, scale_q) = placed.expect("server accepted the build press");
+        assert_eq!((piece, scale_q), (Piece::WALL_Z, SCALE_ONE), "aiming along -Z faces the wall across Z");
+        assert!(cell[2] < 0, "placed ahead of the builder: {cell:?}");
+        // throw at it
+        let mut bounced = false;
+        press(&mut s, Buttons::FIRE, false, false);
+        for _ in 0..40 {
+            s.frame(Duration::from_nanos(16_666_667));
+            bounced |= s.events.iter().any(|(_, e)| matches!(e, CombatEvent::ShurikenBounce { .. }));
+        }
+        assert!(bounced, "the disc bounced off the printed wall");
+    }
+
+    #[test]
+    fn floors_sit_on_the_cell_floor_and_scale_follows_kills_only_when_tuned() {
+        let mut b = Blocks::default();
+        let (c, h) = b.geometry([2, 3, 4], Piece::FLOOR, SCALE_ONE);
+        assert_eq!(c, [2.5, 3.0 + 0.1, 4.5]);
+        assert_eq!(h, [0.5, 0.1, 0.5]);
+        assert_eq!(b.cfg.scale_q(40), SCALE_ONE, "inert by default");
+        b.cfg.scale_per_kill = 0.05;
+        assert_eq!(b.cfg.scale_q(4), 19); // 1.2 * 16 = 19.2
+        b.cfg.scale_cap = 1.5;
+        assert_eq!(b.cfg.scale_q(1000), 24);
+    }
+
+    #[test]
+    fn damage_de_rezzes_a_piece_and_age_makes_it_tougher() {
+        let mut s = Server::new(Cfg::default());
+        let mut b = Blocks::new(BlockCfg { hp: 100.0, age_bonus_per_sec: 1.0, ..BlockCfg::default() });
+        let mut ev = Vec::new();
+        b.place(&mut s.world, 1, [0, 0, 0], Piece::FLOOR, SCALE_ONE, 0, &[]).unwrap();
+        b.place(&mut s.world, 1, [5, 0, 0], Piece::FLOOR, SCALE_ONE, 600, &[]).unwrap(); // placed 10 s later
+        // at tick 600 the first piece is 10 s old (x11 tougher); the second is brand new
+        assert!(!b.damage(&mut s.world, [0, 0, 0], 100.0, 600, &mut ev), "old piece shrugs off 100");
+        assert!(b.damage(&mut s.world, [5, 0, 0], 100.0, 600, &mut ev), "fresh piece dies to 100");
+        assert!(matches!(ev[..], [BlockEvent::DeRez { cell: [5, 0, 0], owner: 1, .. }]), "{ev:?}");
+        assert!(b.is_free([5, 0, 0]) && !b.is_free([0, 0, 0]));
     }
 }
