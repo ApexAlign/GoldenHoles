@@ -3,6 +3,7 @@
 
 pub mod camera;
 pub mod client_game;
+pub mod colour;
 pub mod font;
 pub mod fx;
 pub mod conn_watch;

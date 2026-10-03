@@ -5,6 +5,7 @@
 //! (lag comp, walls, obstacles, events live in `shinobi-sim`; interp/reconcile in `shinobi-client`)
 
 pub mod bits;
+pub mod colour;
 pub mod datagram;
 pub mod gameplay;
 pub mod intent;
