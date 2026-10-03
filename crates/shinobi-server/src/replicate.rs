@@ -213,6 +213,7 @@ impl Replicator {
                 }
                 BlockEvent::Removed { cell, .. } => self.broadcast(NetEvent::BlockRemoved { cell }),
                 BlockEvent::DeRez { cell, .. } => self.broadcast(NetEvent::BlockDerez { cell }),
+                BlockEvent::Damaged { .. } => {} // Network: replicate as a reliable BlockHit (cell, hp_q) for cracking visuals
                 BlockEvent::Refused { owner, why, .. } => {
                     let why = match why {
                         PlaceError::Occupied => BLOCK_REFUSED_OCCUPIED,

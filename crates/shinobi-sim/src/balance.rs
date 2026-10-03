@@ -278,7 +278,7 @@ impl Default for Balance {
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0, magnet: 0.8, piece_damage: 40.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.3, half_height: 1.0, magnet: 0.8, piece_damage: 60.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,

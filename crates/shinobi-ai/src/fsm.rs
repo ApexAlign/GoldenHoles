@@ -58,6 +58,8 @@ pub struct ThinkCtx<'a, 'w> {
     pub has_ticket: bool,
     pub perches: &'a [Perch],
     pub frustum: Frustum,
+    /// Ground-layer path grid (big maps); `None` until the host has built one.
+    pub nav: Option<&'a crate::nav::NavGrid>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -188,6 +190,10 @@ pub struct BotMem {
     perch_since: u32,
     was_wallrun: bool,
     top_ticks: u32,
+    // path following (NavGrid): waypoints to the target's last known cell, replanned every so often
+    path: Vec<[f32; 2]>,
+    path_goal: [f32; 2],
+    path_at: u32,
 }
 
 impl BotMem {
@@ -216,6 +222,9 @@ impl BotMem {
             perch_since: 0,
             was_wallrun: false,
             top_ticks: 0,
+            path: Vec::new(),
+            path_goal: [0.0; 2],
+            path_at: 0,
         }
     }
 
@@ -666,7 +675,7 @@ impl BotMem {
 
     /// Legs: finish a ledge hop in progress, start one when walking at a perch, otherwise steer around level
     /// geometry with whiskers.
-    fn traverse(&mut self, ctx: &ThinkCtx, _p: &Perception, dir: V3, mag: f32, buttons: &mut u8) -> (V3, f32) {
+    fn traverse(&mut self, ctx: &ThinkCtx, p: &Perception, dir: V3, mag: f32, buttons: &mut u8) -> (V3, f32) {
         let (tick, me, world) = (ctx.world.tick, ctx.me, ctx.world);
         let cfg = world.cfg;
 
@@ -711,7 +720,43 @@ impl BotMem {
         if mag < 0.05 {
             return (dir, mag);
         }
+        // approaching a target that is not in sight: follow a planned path instead of walking into the first wall
+        // (alcoves with baffled doors, big maps). Retreat / evade / strike keep their own direction.
+        let dir = match (ctx.nav, p.target) {
+            (Some(nav), Some(t)) if !t.los && t.dist > 5.0 && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone) => {
+                self.path_dir(nav, me.pos, t.view.pos, tick).unwrap_or(dir)
+            }
+            _ => {
+                self.path.clear();
+                dir
+            }
+        };
         (steer_static(world, me, dir), mag)
+    }
+
+    /// Direction along a path to `goal`, replanned when the goal moved to another cell, the plan is old, or the bot
+    /// strayed from it. Waypoints are consumed as the bot reaches them.
+    fn path_dir(&mut self, nav: &crate::nav::NavGrid, from: V3, goal: V3, tick: u32) -> Option<V3> {
+        const REPLAN_TICKS: u32 = 45;
+        const REACH: f32 = 1.6;
+        let goal2 = [goal.x, goal.z];
+        let moved = (self.path_goal[0] - goal2[0]).hypot(self.path_goal[1] - goal2[1]) > 4.0;
+        if self.path.is_empty() || moved || tick.wrapping_sub(self.path_at) >= REPLAN_TICKS {
+            self.path_at = tick;
+            self.path_goal = goal2;
+            self.path = nav.path([from.x, from.z], goal2, 40_000).unwrap_or_default();
+            self.path.reverse(); // pop from the back
+        }
+        while let Some(w) = self.path.last() {
+            if (w[0] - from.x).hypot(w[1] - from.z) < REACH && self.path.len() > 1 {
+                self.path.pop();
+            } else {
+                break;
+            }
+        }
+        let w = self.path.last()?;
+        let d = vector![w[0] - from.x, 0.0, w[1] - from.z];
+        (d.norm() > 0.05).then(|| d / d.norm())
     }
 
     // ------------------------------------------------------------------ attacks & aim
