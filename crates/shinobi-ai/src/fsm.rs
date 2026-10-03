@@ -354,7 +354,7 @@ impl BotMem {
         }
         self.was_wallrun = wr;
 
-        let (sx, sz) = stick_for(dir, mag, yaw);
+        let (sx, sz) = stick_for(dir, mag * self.skill.move_scale, yaw);
         out.intent = PlayerIntent {
             tick,
             buttons: Buttons(buttons),

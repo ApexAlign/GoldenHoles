@@ -35,13 +35,33 @@ pub struct BotHostCfg {
     pub frustum: Frustum,
     /// Re-pick a target only when another is this much closer (ratio).
     pub target_stickiness: f32,
+    /// Demo feel: a human who has not been in a fight or seen an enemy for this many seconds gets company ...
+    pub human_quiet_secs: f32,
+    /// ... from this many of the nearest bots, which path to the human and then fight normally (0 = off).
+    pub rubber_band_bots: usize,
+    /// Pace of the fights, 1.0 = the skill's own numbers. Below 1 bots shoot less often and less accurately
+    /// (fire gap / aggression, aim error / aggression): longer matches without touching the skill tiers.
+    pub aggression: f32,
 }
 
 impl Default for BotHostCfg {
     fn default() -> Self {
-        Self { seed: 0x5348_494E_4F42_4921, tickets: TicketCfg::default(), frustum: Frustum::default(), target_stickiness: 0.75 }
+        Self {
+            seed: 0x5348_494E_4F42_4921,
+            tickets: TicketCfg::default(),
+            frustum: Frustum::default(),
+            target_stickiness: 0.75,
+            human_quiet_secs: 15.0,
+            rubber_band_bots: 2,
+            aggression: 0.8, // demo pace: a touch below the skill tiers so a 10-kill FFA match runs minutes, not seconds
+        }
     }
 }
+
+/// Enemy this close with a clear line counts as "the human has action".
+const ACTION_RANGE: f32 = 35.0;
+/// A rubber-band summons lasts at most this long (seconds) if no fight starts.
+const SUMMON_MAX_SECS: u32 = 30;
 
 pub struct BotHost {
     pub cfg: BotHostCfg,
@@ -54,6 +74,10 @@ pub struct BotHost {
     /// Walkable-ground grid for path planning (built once per level, see `build_nav`).
     nav: Option<crate::nav::NavGrid>,
     sticky: Vec<(u16, u16)>, // (bot, target)
+    /// Last tick each human was in a fight or saw an enemy: `(human, tick)`.
+    human_action: Vec<(u16, u32)>,
+    /// Bots currently sent to a quiet human: `(bot, human, since tick)`.
+    summoned: Vec<(u16, u16, u32)>,
 }
 
 /// Three consecutive tick durations summing to exactly 3/60 s.
@@ -70,6 +94,8 @@ impl BotHost {
             perches: Vec::new(),
             perches_built: false,
             nav: None,
+            human_action: Vec::new(),
+            summoned: Vec::new(),
             sticky: Vec::new(),
         }
     }
@@ -83,7 +109,12 @@ impl BotHost {
         let spawn = server.pick_spawn(None);
         server.add_player(id, spawn);
         let pos = self.bots.binary_search_by_key(&id, |b| b.id).unwrap_or_else(|i| i);
-        self.bots.insert(pos, BotMem::new(id, archetype, skill.params(), self.cfg.seed));
+        let mut params = skill.params();
+        let a = self.cfg.aggression.clamp(0.2, 2.0);
+        params.fire_gap_ticks = ((params.fire_gap_ticks as f32) / a).round() as u32;
+        params.aim_error /= a.min(1.0);
+        params.move_scale = (0.5 + 0.5 * a).min(1.0);
+        self.bots.insert(pos, BotMem::new(id, archetype, params, self.cfg.seed));
         true
     }
 
@@ -232,6 +263,15 @@ impl BotHost {
         debug_assert_eq!(r.ticks, 1, "host must own the clock: one server step per bot tick");
         report.ticks += r.ticks;
         report.kicked.extend(r.kicked);
+        for e in &server.pvp_events {
+            if let shinobi_sim::pvp::PvpEvent::Hit { attacker, victim, .. } | shinobi_sim::pvp::PvpEvent::Kill { killer: attacker, victim, .. } = *e {
+                for id in [attacker, victim] {
+                    if !self.is_bot(id) {
+                        self.note_action(id, tick);
+                    }
+                }
+            }
+        }
         sinks.0.append(&mut server.events);
         sinks.1.append(&mut server.pvp_events);
         sinks.2.append(&mut server.pickup_events);
@@ -246,6 +286,68 @@ impl BotHost {
         }
     }
 
+    fn note_action(&mut self, human: u16, tick: u32) {
+        match self.human_action.iter_mut().find(|h| h.0 == human) {
+            Some(h) => h.1 = tick,
+            None => self.human_action.push((human, tick)),
+        }
+    }
+
+    /// Soft rubber-band for the demo: keep every living human supplied with action. A human who has not been in a
+    /// fight or seen an enemy for `human_quiet_secs` gets the nearest `rubber_band_bots` bots sent their way (they
+    /// path to the human via the normal targeting, then fight like any bot). A summons ends when a fight starts,
+    /// when the bot or human dies, or after `SUMMON_MAX_SECS`.
+    fn rubber_band(&mut self, world: &WorldView, tick: u32) {
+        let n = self.cfg.rubber_band_bots;
+        let quiet_ticks = (self.cfg.human_quiet_secs * TICK_HZ as f32) as u32;
+        let humans: Vec<PlayerView> = world.players.iter().filter(|p| p.alive && !p.is_bot).copied().collect();
+        for h in &humans {
+            if !self.human_action.iter().any(|a| a.0 == h.id) {
+                self.human_action.push((h.id, tick)); // the clock starts when we first see them
+            }
+            // seen an enemy: anybody close with a clear line (checked a few times a second)
+            if tick % 6 == 0 {
+                let near = world.players.iter().any(|o| o.alive && o.id != h.id && (o.pos - h.pos).norm() <= ACTION_RANGE && world.los(h.eye(), o.eye()));
+                if near {
+                    self.note_action(h.id, tick);
+                }
+            }
+        }
+        let last = |id: u16, s: &Self| s.human_action.iter().find(|a| a.0 == id).map_or(tick, |a| a.1);
+        // release finished summons
+        let timeout = SUMMON_MAX_SECS * TICK_HZ;
+        let keep: Vec<(u16, u16, u32)> = self
+            .summoned
+            .iter()
+            .copied()
+            .filter(|&(b, h, since)| {
+                world.player(b).map_or(false, |p| p.alive) && world.player(h).map_or(false, |p| p.alive) && last(h, self) <= since && tick.wrapping_sub(since) < timeout
+            })
+            .collect();
+        self.summoned = keep;
+        if n == 0 {
+            return;
+        }
+        for h in &humans {
+            let quiet = tick.wrapping_sub(last(h.id, self)) >= quiet_ticks;
+            let have = self.summoned.iter().filter(|s| s.1 == h.id).count();
+            if !quiet || have >= n {
+                continue;
+            }
+            // nearest living bots not already on a mission
+            let mut cands: Vec<(f32, u16)> = self
+                .bots
+                .iter()
+                .filter(|b| !self.summoned.iter().any(|s| s.0 == b.id))
+                .filter_map(|b| world.player(b.id).filter(|p| p.alive).map(|p| ((p.pos - h.pos).norm(), p.id)))
+                .collect();
+            cands.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            for (_, b) in cands.into_iter().take(n - have) {
+                self.summoned.push((b, h.id, tick));
+            }
+        }
+    }
+
     /// One decision per bot for `server.tick`. Pure with respect to the server (read-only).
     pub fn think_all(&mut self, server: &Server) -> Vec<(u16, PlayerIntent)> {
         if self.nav.is_none() {
@@ -254,6 +356,7 @@ impl BotHost {
         let ids: Vec<u16> = self.bots.iter().map(|b| b.id).collect();
         let world = WorldView::build(server, |id| ids.binary_search(&id).is_ok());
         let tick = world.tick;
+        self.rubber_band(&world, tick);
 
         // ---- director: targets (every bot is its own faction: nearest / weakest living enemy, sticky), then ranks
         // per target and archetype. Teammates (team mode only) are never targets; FFA players have no team.
@@ -263,6 +366,13 @@ impl BotHost {
                 targets.push(None);
                 continue;
             };
+            // sent to a quiet human: go to them first, fight normally once there
+            if let Some(&(_, human, _)) = self.summoned.iter().find(|s| s.0 == b.id) {
+                if world.player(human).map_or(false, |h| h.alive) {
+                    targets.push(Some(human));
+                    continue;
+                }
+            }
             let pool: Vec<&PlayerView> = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
             // wounded targets look closer: cost = distance scaled from 0.6x (nearly dead) to 1.0x (full health)
             let cost = |p: &PlayerView| (p.pos - me.pos).norm() * (0.6 + 0.4 * p.hp_frac);
