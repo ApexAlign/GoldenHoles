@@ -4,10 +4,10 @@ Pitch: a Tron grid FFA arena shooter where you run on walls, grapple, lock on wi
 discs, slice with a katana, and print floors/walls out of the grid that others can de-rez.
 
 ## Locked decisions (change only via Engine)
-- Mode: FREE-FOR-ALL. Demo default: 1 human + 7 bots (`BOTS=7 ./demo.sh`). Up to 16 players. Match: first to 15 kills
-  or 8 minutes, 3 s respawn, 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
-- Map: `levels/ffa.lvl`, fixed (no shrinking, no void-start in the demo). Default size HALF=112 m unless Cam&Mov's bot
-  data shows density needs smaller; 168 m is a later option. Layered: ground, mid towers, sky layer. Void edges + kill
+- Mode: FREE-FOR-ALL. Demo default: 1 human + 7 bots (`BOTS=7 ./demo.sh`). Up to 16 players. Match: first to 10 kills
+  or 6 minutes, 3 s respawn, 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
+- Map: `levels/ffa.lvl`, fixed (no shrinking, no void-start in the demo). Default `levels/ffa.lvl` = 224 m across (HALF=112). `levels/ffa_xl.lvl` = 336 m across (HALF=168) is optional; measured
+  density favours the 224 m map (18.7 vs 8.7 kills/min with 16 players, Network). Layered: ground, mid towers, sky layer. Void edges + kill
   plane. 24+ spread spawn pads, no mutual sightlines.
 - Building: N = floor/ramp (tap cycles), M = wall. Grid snapped. ANY player can destroy ANY piece, including their
   own. Piece hp 100; shuriken 12 dmg, katana 60 dmg to pieces; older pieces tougher (`age_bonus_per_sec` 0.02);
