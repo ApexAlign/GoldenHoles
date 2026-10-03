@@ -13,16 +13,18 @@ pub enum Use {
     Move,
     Jump,
     Dash,
+    Slide,
     Grapple,
     Build,
     Katana,
     Shuriken,
 }
 
-const ROWS: [(Use, &str, &str); 7] = [
+const ROWS: [(Use, &str, &str); 8] = [
     (Use::Move, "W A S D", "MOVE"),
     (Use::Jump, "SPACE", "JUMP  (AGAIN IN AIR)"),
     (Use::Dash, "SHIFT", "DASH"),
+    (Use::Slide, "C", "SLIDE"),
     (Use::Grapple, "E", "GRAPPLE  (HOLD C: SWING)"),
     (Use::Build, "N / M", "BUILD FLOOR / WALL"),
     (Use::Katana, "LMB", "KATANA"),
@@ -42,7 +44,7 @@ pub struct ControlsCard {
     /// Seconds of play so far (counted only while in the game).
     played: f32,
     /// Seconds since each row's first use (None = not used yet).
-    used: [Option<f32>; 7],
+    used: [Option<f32>; 8],
 }
 
 impl ControlsCard {
@@ -103,12 +105,12 @@ mod tests {
     #[test]
     fn all_rows_show_at_first_and_the_whole_card_fades_after_30_s() {
         let mut c = ControlsCard::default();
-        assert_eq!(c.rows().len(), 7);
+        assert_eq!(c.rows().len(), 8);
         assert!(c.rows().iter().all(|r| r.alpha == 1.0));
         for _ in 0..(29.0 * 60.0) as u32 {
             c.tick(1.0 / 60.0);
         }
-        assert_eq!(c.rows().len(), 7, "still up at 29 s");
+        assert_eq!(c.rows().len(), 8, "still up at 29 s");
         for _ in 0..(3.0 * 60.0) as u32 {
             c.tick(1.0 / 60.0);
         }
@@ -129,16 +131,16 @@ mod tests {
         for _ in 0..60 {
             c.tick(1.0 / 60.0);
         }
-        assert_eq!(c.rows().len(), 6, "the used row is gone");
+        assert_eq!(c.rows().len(), 7, "the used row is gone");
         // using it again changes nothing
         c.mark(Use::Grapple);
-        assert_eq!(c.rows().len(), 6);
+        assert_eq!(c.rows().len(), 7);
     }
 
     #[test]
     fn using_every_key_finishes_the_card_early() {
         let mut c = ControlsCard::default();
-        for u in [Use::Move, Use::Jump, Use::Dash, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken] {
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken] {
             c.mark(u);
         }
         for _ in 0..60 {

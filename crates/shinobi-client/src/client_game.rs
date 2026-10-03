@@ -416,6 +416,8 @@ pub struct RenderView {
     pub rope: Option<([f32; 3], [f32; 3])>,
     /// First-30-seconds controls card rows still showing (key, label, opacity).
     pub controls: Vec<ControlRow>,
+    /// Named district under the local player (HUD compass / radar zone label, per-district tint); `None` before the first position.
+    pub district: Option<shinobi_sim::level::District>,
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
     pub build_ghost: Option<BuildGhost>,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
@@ -519,6 +521,7 @@ impl ClientGame {
             match e.action {
                 Action::Jump => self.controls.mark(Use::Jump),
                 Action::Dash => self.controls.mark(Use::Dash),
+                Action::Slide => self.controls.mark(Use::Slide),
                 Action::Grapple => self.controls.mark(Use::Grapple),
                 Action::BuildFloor | Action::BuildWall => self.controls.mark(Use::Build),
                 Action::Slice => self.controls.mark(Use::Katana),
@@ -962,6 +965,7 @@ impl ClientGame {
             disc_owners,
             rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
             controls: self.controls.rows(),
+            district: local_pos.map(|p| self.level.district_at(p[0], p[2])),
         }
     }
 
