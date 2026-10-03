@@ -207,6 +207,39 @@ pub struct GrappleHud {
     pub hookable: bool,
 }
 
+/// Live movement readouts for the left panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Telemetry {
+    /// Horizontal speed, m/s.
+    pub speed: f32,
+    /// Eye height above the floor, metres.
+    pub altitude: f32,
+    /// Grapple rope length while attached.
+    pub rope: Option<f32>,
+}
+
+/// One radar blip: `pos` in view space, x right / y ahead, both -1..=1 (radar range maps to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RadarPing {
+    pub pos: (f32, f32),
+    pub colour: Rgba,
+    pub ally: bool,
+}
+
+/// Lock-on target brackets: normalized screen position of the target's chest, readouts, and lock progress.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetHud {
+    pub pos: (f32, f32),
+    pub name: String,
+    pub colour: Rgba,
+    /// Target health 0..=1 when known.
+    pub hp: Option<f32>,
+    pub dist: f32,
+    /// 0..=1 acquire progress; brackets close in as it fills.
+    pub progress: f32,
+    pub locked: bool,
+}
+
 /// Unique neon colour for a free-for-all player (golden-angle hues). Stand-in for the network layer's
 /// `player_colour(id)`: the bridge's `colour_of` points at this until that lands.
 pub fn ffa_colour(id: u16) -> Rgba {
@@ -256,6 +289,13 @@ pub struct HudState {
     pub grapple: Option<GrappleHud>,
     /// Free-for-all match: leaderboard + leading marker (teams off).
     pub ffa: bool,
+    pub telemetry: Option<Telemetry>,
+    pub radar: Vec<RadarPing>,
+    /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
+    pub heading: Option<f32>,
+    pub target: Option<TargetHud>,
+    /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
+    pub boot: Option<f32>,
     /// Kills that end a free-for-all match, when the server has a limit.
     pub kill_limit: Option<u16>,
     pub team_scores: Option<TeamScores>,
@@ -690,7 +730,7 @@ impl Hud {
 
         // Chin: hp bar (left), ultimate bar (right), and between them three cooldown arcs with weapon glyphs:
         // shuriken, katana, dash. Cyan ring = ready, orange sweep = recharging.
-        bar(&mut out, Rect::new(0.24, 0.93, 0.17, 0.014), s.hp, if low_hp { p.magenta } else { p.cyan }, pulse);
+        segmented_bar(&mut out, Rect::new(0.24, 0.93, 0.17, 0.014), s.hp, 10, if low_hp { p.magenta } else { p.cyan }, pulse);
         bar(&mut out, Rect::new(0.59, 0.93, 0.17, 0.014), s.ult, p.gold, 1.0);
         for (x, ready, glyph) in [(0.45, s.shuriken_ready, Glyph::Shuriken), (0.5, s.slice_ready, Glyph::Katana), (0.55, s.dash_ready, Glyph::Dash)] {
             cooldown_arc(&mut out, (x, 0.94), 0.026, ready, glyph, p);
@@ -836,6 +876,23 @@ impl Hud {
         if s.ffa {
             ffa_panel(&mut out, s, p);
         }
+        corner_brackets(&mut out, chrome.a(0.7 * pulse));
+        if let Some(yaw) = s.heading {
+            compass(&mut out, yaw, p);
+        }
+        if let Some(t) = &s.telemetry {
+            telemetry_panel(&mut out, t, s.wall_run, p);
+        }
+        if !s.radar.is_empty() || s.heading.is_some() {
+            radar_panel(&mut out, &s.radar, p);
+        }
+        if let Some(t) = &s.target {
+            target_brackets(&mut out, t, p);
+        }
+        if let Some(t) = s.boot {
+            boot_sequence(&mut out, t, p);
+        }
+        glitch(&mut out, s.time, p);
         killfeed(&mut out, s, p);
         if s.show_scoreboard {
             scoreboard(&mut out, s, p);
@@ -850,7 +907,7 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     let rows = s.killfeed.iter().filter(|k| k.age < KILLFEED_TIME).rev().take(KILLFEED_MAX);
     for (i, k) in rows.enumerate() {
         let fade = ((KILLFEED_TIME - k.age) / 1.0).clamp(0.0, 1.0);
-        let y = BROW_H + 0.035 + i as f32 * 0.034;
+        let y = BROW_H + 0.065 + i as f32 * 0.034;
         let base = if k.involves_local { p.gold } else { p.text };
         let tag = p.for_damage(k.weapon);
         // team match: names take their team colour; a gold underline still marks rows that involve you
@@ -874,7 +931,7 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 /// Top-centre team score bar: cyan score left, orange right, each side's bar fills outward from the middle
 /// toward the kill limit. The local team's side is brighter. Inside x 0.36..0.64 (clear of the side columns).
 fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, time: f32, p: &Palette) {
-    let (cx, y, half) = (0.5, 0.032, 0.11);
+    let (cx, y, half) = (0.5, 0.064, 0.11);
     let lim = ts.limit.max(1) as f32;
     for team in 0..2u8 {
         let sgn = if team == 0 { -1.0 } else { 1.0 };
@@ -922,6 +979,169 @@ fn ally_tag(out: &mut Vec<Prim>, t: &AllyTag, my_team: u8, p: &Palette) {
     if !t.clamped {
         out.push(Prim::Text { pos: (x, y + r + 0.022), text: format!("{:.0}M", t.dist), size: 0.016, color: p.text.a(0.6 * a), align: Align::Center });
     }
+}
+
+fn segmented_bar(out: &mut Vec<Prim>, r: Rect, frac: f32, segs: usize, color: Rgba, pulse: f32) {
+    let f = frac.clamp(0.0, 1.0);
+    let gap = r.w * 0.015;
+    let w = (r.w - gap * (segs as f32 - 1.0)) / segs as f32;
+    for i in 0..segs {
+        let seg = Rect::new(r.x + i as f32 * (w + gap), r.y, w, r.h);
+        // a segment lights fully once its share of the bar is covered, partially while it drains
+        let fill = ((f * segs as f32) - i as f32).clamp(0.0, 1.0);
+        out.push(Prim::Rect { r: seg, color: color.a(0.12), glow: 0.0 });
+        if fill > 0.0 {
+            out.push(Prim::Rect { r: Rect::new(seg.x, seg.y, seg.w * fill, seg.h), color: color.a(0.9 * pulse), glow: 0.005 });
+        }
+    }
+}
+
+/// Bezel corner brackets hugging the screen corners (inside the slim side margins).
+fn corner_brackets(out: &mut Vec<Prim>, c: Rgba) {
+    let (m, l) = (0.012, 0.035);
+    for (sx, sy) in [(1.0f32, 1.0f32), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+        let (x, y) = (if sx > 0.0 { m } else { 1.0 - m }, if sy > 0.0 { m * 1.6 } else { 1.0 - m * 1.6 });
+        out.push(Prim::Line { a: (x, y), b: (x + sx * l * 0.5625, y), color: c, glow: 0.003 });
+        out.push(Prim::Line { a: (x, y), b: (x, y + sy * l), color: c, glow: 0.003 });
+    }
+}
+
+/// Heading strip at the top centre: ticks every 15 degrees across a 120 degree window, N/E/S/W and
+/// intercardinals labelled, a caret and the numeric bearing in the middle.
+fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
+    let bearing = (-yaw.to_degrees()).rem_euclid(360.0); // 0 = north (-Z); turning left (+yaw) heads west
+    let (x0, x1, span) = (0.36f32, 0.64f32, 120.0f32);
+    let per = (x1 - x0) / span;
+    let first = ((bearing - span * 0.5) / 15.0).ceil() as i32;
+    let last = ((bearing + span * 0.5) / 15.0).floor() as i32;
+    for k in first..=last {
+        let deg = k as f32 * 15.0;
+        let x = 0.5 + (deg - bearing) * per;
+        let card = (k.rem_euclid(24)) % 6 == 0; // every 90 degrees
+        let mid = (k.rem_euclid(24)) % 3 == 0; // every 45
+        let edge = 1.0 - ((x - 0.5).abs() / (0.5 * (x1 - x0))).powi(2).min(1.0); // fade toward the ends
+        let a = (0.35 + 0.65 * edge) * if mid { 1.0 } else { 0.6 };
+        let top = if card { 0.008 } else { 0.014 };
+        out.push(Prim::Line { a: (x, top), b: (x, 0.026), color: p.cyan.a(a), glow: if card { 0.003 } else { 0.0 } });
+        if mid {
+            let label = match (k.rem_euclid(24)) / 3 {
+                0 => "N",
+                1 => "NE",
+                2 => "E",
+                3 => "SE",
+                4 => "S",
+                5 => "SW",
+                6 => "W",
+                _ => "NW",
+            };
+            out.push(Prim::Text { pos: (x, 0.047), text: label.into(), size: if card { 0.02 } else { 0.015 }, color: if label == "N" { p.orange } else { p.cyan }.a(a), align: Align::Center });
+        }
+    }
+    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 - 0.006 * 0.5625, 0.066), color: p.gold.a(0.9), glow: 0.003 });
+    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 + 0.006 * 0.5625, 0.066), color: p.gold.a(0.9), glow: 0.003 });
+}
+
+/// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
+fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palette) {
+    let (x, y0, w) = (0.03, 0.56, 0.15);
+    let rows: [(&str, String, Rgba); 4] = [
+        ("SPD", format!("{:.1} M/S", t.speed), p.cyan),
+        ("ALT", format!("{:.1} M", t.altitude), p.cyan),
+        ("ROPE", t.rope.map_or("--".into(), |r| format!("{r:.1} M")), if t.rope.is_some() { p.gold } else { p.text }),
+        ("WALL", if wall_run { "RUN".into() } else { "--".into() }, if wall_run { p.orange } else { p.text }),
+    ];
+    let h = 0.03 + rows.len() as f32 * 0.032;
+    out.push(Prim::Rect { r: Rect::new(x, y0, w, h), color: p.bg.a(0.35), glow: 0.0 });
+    out.push(Prim::Line { a: (x, y0), b: (x, y0 + h), color: p.cyan.a(0.7), glow: 0.004 });
+    out.push(Prim::Text { pos: (x + 0.008, y0 + 0.02), text: "TELEMETRY".into(), size: 0.015, color: p.text.a(0.5), align: Align::Left });
+    for (i, (k, v, c)) in rows.iter().enumerate() {
+        let y = y0 + 0.032 + (i + 1) as f32 * 0.032 - 0.01;
+        out.push(Prim::Text { pos: (x + 0.008, y), text: (*k).into(), size: 0.017, color: p.text.a(0.6), align: Align::Left });
+        out.push(Prim::Text { pos: (x + w - 0.006, y), text: v.clone(), size: 0.019, color: c.a(0.95), align: Align::Right });
+    }
+    // speed gauge under the heading row
+    let f = (t.speed / 25.0).clamp(0.0, 1.0);
+    out.push(Prim::Rect { r: Rect::new(x + 0.008, y0 + h + 0.006, w - 0.016, 0.004), color: p.cyan.a(0.14), glow: 0.0 });
+    out.push(Prim::Rect { r: Rect::new(x + 0.008, y0 + h + 0.006, (w - 0.016) * f, 0.004), color: p.cyan.a(0.9), glow: 0.004 });
+}
+
+/// Radar disc at the bottom-left: own marker in the middle pointing up (ahead), blips for what the caller allows
+/// (enemies only when close or just fired: no wallhack; allies always).
+fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
+    let (c, r) = ((0.085, 0.84), 0.075f32);
+    out.push(Prim::Ring { c, r, color: p.cyan.a(0.55), fill: false, glow: 0.004 });
+    out.push(Prim::Ring { c, r: r * 0.5, color: p.cyan.a(0.22), fill: false, glow: 0.0 });
+    out.push(Prim::Line { a: (c.0, c.1 - r), b: (c.0, c.1 + r), color: p.cyan.a(0.15), glow: 0.0 });
+    out.push(Prim::Line { a: (c.0 - r * ASPECT, c.1), b: (c.0 + r * ASPECT, c.1), color: p.cyan.a(0.15), glow: 0.0 });
+    // facing wedge
+    out.push(Prim::Line { a: c, b: (c.0 - 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
+    out.push(Prim::Line { a: c, b: (c.0 + 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
+    out.push(Prim::Ring { c, r: 0.004, color: p.gold, fill: true, glow: 0.004 });
+    for pg in pings {
+        let (x, y) = (pg.pos.0.clamp(-1.0, 1.0), pg.pos.1.clamp(-1.0, 1.0));
+        let (x, y) = if x * x + y * y > 1.0 { let n = (x * x + y * y).sqrt(); (x / n, y / n) } else { (x, y) };
+        out.push(Prim::Ring { c: (c.0 + x * r * ASPECT, c.1 - y * r), r: if pg.ally { 0.006 } else { 0.0075 }, color: pg.colour.a(0.95), fill: !pg.ally, glow: 0.006 });
+    }
+    out.push(Prim::Text { pos: (c.0, c.1 + r + 0.022), text: "RADAR".into(), size: 0.014, color: p.text.a(0.45), align: Align::Center });
+}
+
+/// Brackets around the lock target: they close in as lock progress rises, then snap tight and go solid.
+/// Name + distance above, a health bar below.
+fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
+    let (x, y) = t.pos;
+    let prog = t.progress.clamp(0.0, 1.0);
+    let half = if t.locked { 0.032 } else { 0.032 + 0.05 * (1.0 - prog) };
+    let col = if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
+    let l = 0.012;
+    for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let (cx, cy) = (x + sx * half * ASPECT * 1.4, y + sy * half);
+        out.push(Prim::Line { a: (cx, cy), b: (cx - sx * l * ASPECT * 1.4, cy), color: col, glow: 0.005 });
+        out.push(Prim::Line { a: (cx, cy), b: (cx, cy - sy * l), color: col, glow: 0.005 });
+    }
+    out.push(Prim::Text { pos: (x, y - half - 0.012), text: t.name.clone(), size: 0.018, color: col, align: Align::Center });
+    out.push(Prim::Text { pos: (x, y + half + 0.03), text: format!("{:.0}M", t.dist), size: 0.015, color: p.text.a(0.7), align: Align::Center });
+    if let Some(hp) = t.hp {
+        let w = half * ASPECT * 2.8;
+        let r = Rect::new(x - w * 0.5, y + half + 0.036, w, 0.005);
+        out.push(Prim::Rect { r, color: col.a(0.15), glow: 0.0 });
+        out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * hp.clamp(0.0, 1.0), r.h), color: col.a(0.95), glow: 0.003 });
+    }
+}
+
+/// Typed-out status lines at spawn, upper-left of the central band. Each line types in over ~0.5 s starting
+/// 0.35 s after the previous; everything fades over the last 0.5 s of `BOOT_TIME`.
+pub const BOOT_TIME: f32 = 2.6;
+const BOOT_LINES: [&str; 4] = ["LINK ESTABLISHED", "GRID SYNC OK", "WEAPONS ONLINE", "GOOD HUNTING"];
+fn boot_sequence(out: &mut Vec<Prim>, t: f32, p: &Palette) {
+    let fade = ((BOOT_TIME - t) / 0.5).clamp(0.0, 1.0);
+    for (i, line) in BOOT_LINES.iter().enumerate() {
+        let started = t - i as f32 * 0.35;
+        if started <= 0.0 {
+            continue;
+        }
+        let n = ((started / 0.5).clamp(0.0, 1.0) * line.len() as f32).ceil() as usize;
+        let mut text: String = line.chars().take(n).collect();
+        if n < line.len() && (t * 12.0) as i32 % 2 == 0 {
+            text.push('_'); // cursor while typing
+        }
+        out.push(Prim::Text { pos: (SIDE_CLEAR + 0.015, 0.3 + i as f32 * 0.03), text: format!("> {text}"), size: 0.022, color: if i == 3 { p.gold } else { p.cyan }.a(0.9 * fade), align: Align::Left });
+    }
+}
+
+/// Rare, brief horizontal glitch bar. Deterministic in `time`: a hash of the half-second picks whether this
+/// window glitches (about one in eight) and where; it lasts the first 60 ms of the window.
+fn glitch(out: &mut Vec<Prim>, time: f32, p: &Palette) {
+    let slot = (time * 2.0).floor() as u32;
+    let hsh = slot.wrapping_mul(2_654_435_761).rotate_left(13) ^ slot.wrapping_mul(40_503);
+    if hsh % 8 != 0 || (time * 2.0).fract() > 0.12 {
+        return;
+    }
+    let y = 0.1 + (hsh >> 8) as f32 % 80.0 / 100.0;
+    // stays inside the side margins' rails: a thin bar across the central band only, never over the cross
+    if (y - 0.5).abs() < 0.08 {
+        return;
+    }
+    out.push(Prim::Rect { r: Rect::new(SIDE_CLEAR, y, 1.0 - 2.0 * SIDE_CLEAR, 0.004), color: p.cyan.a(0.1), glow: 0.0 });
 }
 
 /// `N` / `M` keycaps with the active one lit, print-cooldown bar and placed count, in the free band above the
@@ -1243,21 +1463,36 @@ mod tests {
                 KillEntry { killer: "Ghost".into(), victim: "Kage".into(), weapon: DamageKind::Slash, age: 9.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None },
             ],
             time: 3.0,
+            telemetry: Some(Telemetry { speed: 14.2, altitude: 3.1, rope: Some(8.0) }),
+            radar: vec![RadarPing { pos: (0.4, 0.5), colour: Rgba::MAGENTA, ally: false }, RadarPing { pos: (-1.4, 0.2), colour: Rgba::CYAN, ally: true }],
+            heading: Some(0.7),
+            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false }),
+            boot: Some(1.0),
             ..Default::default()
         }
     }
 
+    /// What may sit in the side columns: hairline rails, the bezel ticks at the clear-zone edge, the corner
+    /// brackets, and the slim lower-half panels (telemetry, radar) inside the screen margin. Never the upper
+    /// half or anything near the centre cross.
+    fn side_ok(b: Rect) -> bool {
+        let rail = b.w <= RAIL_W + 1e-4;
+        let tick = b.x >= SIDE_CLEAR - 0.031 && b.x + b.w <= 1.0 - SIDE_CLEAR + 0.031;
+        let corner = (b.x + b.w <= 0.04 || b.x >= 0.96) && (b.y + b.h <= 0.08 || b.y >= 0.92);
+        let left = b.x >= 0.015 && b.x + b.w <= SIDE_CLEAR - 0.015;
+        let right = b.x >= 1.0 - SIDE_CLEAR + 0.015 && b.x + b.w <= 0.985;
+        let panel = (left || right) && b.y >= 0.55 && b.y + b.h <= 0.97;
+        rail || tick || corner || panel
+    }
+
     #[test]
-    fn peripheral_columns_hold_only_hairline_rails() {
+    fn peripheral_columns_hold_only_rails_corner_brackets_and_slim_lower_panels() {
         for s in [HudState::default(), busy()] {
             for p in Hud::build(&s) {
                 let Some(b) = bounds(&p) else { continue };
                 let in_side = b.x < SIDE_CLEAR - 1e-4 || b.x + b.w > 1.0 - SIDE_CLEAR + 1e-4;
                 if in_side {
-                    // only the thin vertical rails or the bezel ticks that touch the clear-zone edge
-                    let rail = b.w <= RAIL_W + 1e-4;
-                    let tick = b.x >= SIDE_CLEAR - 0.031 && b.x + b.w <= 1.0 - SIDE_CLEAR + 0.031;
-                    assert!(rail || tick, "content in peripheral column: {b:?}");
+                    assert!(side_ok(b), "content in peripheral column: {b:?} ({p:?})");
                 }
             }
         }
@@ -1728,7 +1963,7 @@ mod tests {
         // arcs live in the chin centre: nothing in the peripheral columns
         for q in Hud::build(&half) {
             if let Some(b) = bounds(&q) {
-                assert!(b.x >= SIDE_CLEAR - 0.04 || b.w <= RAIL_W + 1e-4);
+                assert!(b.x >= SIDE_CLEAR - 0.04 || side_ok(b), "{b:?}");
             }
         }
     }
@@ -1877,5 +2112,31 @@ mod tests {
             Hud::build_with(&s, &p).iter().filter(|x| matches!(x, Prim::Ring { r, color, .. } if (*r - 0.065).abs() < 1e-6 && (color.0, color.1, color.2) == if valid { (p.cyan.0, p.cyan.1, p.cyan.2) } else { (p.magenta.0, p.magenta.1, p.magenta.2) })).count()
         };
         assert_eq!((ring(true), ring(false)), (1, 1));
+    }
+
+    #[test]
+    fn cyber_panels_compass_segments_and_boot_sequence() {
+        let p = Palette::TRON;
+        let texts = |s: &HudState| -> Vec<String> {
+            Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        };
+        let t = texts(&busy());
+        for want in ["TELEMETRY", "SPD", "14.2 M/S", "ROPE", "8.0 M", "RADAR", "GHOST", "18M"] {
+            assert!(t.contains(&want.to_string()), "{want}");
+        }
+        // facing -Z is north; yaw 0.7 rad to the left of north (west side), so NW is nearer than NE
+        let north = texts(&HudState { hp: 1.0, heading: Some(0.0), ..Default::default() });
+        assert!(north.contains(&"N".to_string()) && north.contains(&"NE".to_string()) && north.contains(&"NW".to_string()));
+        let east = texts(&HudState { hp: 1.0, heading: Some(-std::f32::consts::FRAC_PI_2), ..Default::default() });
+        assert!(east.contains(&"E".to_string()) && !east.contains(&"W".to_string()), "-yaw turns east");
+
+        // segmented health: half health lights about half the segments
+        let lit = |hp: f32| {
+            Hud::build_with(&HudState { hp, ..Default::default() }, &p)
+                .iter()
+                .filter(|x| matches!(x, Prim::Rect { r, color, .. } if r.y == 0.93 && color.3 > 0.5))
+                .count()
+        };
+        assert_eq!((lit(1.0), lit(0.5), lit(0.0)), (10, 5, 0));
     }
 }

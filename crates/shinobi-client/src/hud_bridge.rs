@@ -9,7 +9,8 @@ use crate::client_game::RenderView;
 use std::collections::HashMap;
 
 use crate::hud::{
-    bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, TeamScores,
+    bearing_to, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
+    Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
 };
 use crate::netclient::NetClient;
@@ -48,6 +49,20 @@ impl TeamInfo {
     }
 }
 
+/// Lock-on state as combat publishes it (`LockOn { target, pos, progress, locked }`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LockInfo {
+    pub target: u16,
+    pub pos: [f32; 3],
+    pub progress: f32,
+    pub locked: bool,
+}
+
+/// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
+pub const RADAR_RANGE: f32 = 40.0;
+pub const RADAR_ENEMY_RANGE: f32 = 12.0;
+pub const RADAR_FIRE_SECS: f32 = 2.0;
+
 #[derive(Default)]
 pub struct HudBridge {
     pub teams: Option<TeamInfo>,
@@ -59,6 +74,13 @@ pub struct HudBridge {
     /// Build / grapple readouts, filled by the shell from the combat and movement state once those expose it.
     pub build: Option<crate::hud::BuildHud>,
     pub grapple: Option<crate::hud::GrappleHud>,
+    /// Lock-on target from combat (`RenderView.lock` once it exists): world position + progress. Stub input.
+    pub lock: Option<LockInfo>,
+    boot: Option<f32>,
+    was_dead: bool,
+    booted: bool,
+    /// Seconds of enemy-reveal left after our last throw.
+    fire_reveal: f32,
     /// Viewport width / height for projecting ally tags (<= 0 means 16:9).
     pub aspect: f32,
     pub fx: HudFx,
@@ -177,6 +199,66 @@ impl HudBridge {
             ..Default::default()
         };
         let mut hs = HudState::from_frame(net, &stats, &self.fx, self.time);
+        // --- cyber layer: telemetry, radar, compass, lock brackets, boot-up ---
+        let (yaw, pitch) = view.look_angles();
+        hs.heading = Some(yaw);
+        hs.telemetry = Some(Telemetry {
+            speed: view.fx.speed,
+            altitude: view.eye[1],
+            rope: view.rope.map(|(a, bb)| ((a[0] - bb[0]).powi(2) + (a[1] - bb[1]).powi(2) + (a[2] - bb[2]).powi(2)).sqrt()),
+        });
+        if view.fx.threw.is_some() {
+            self.fire_reveal = RADAR_FIRE_SECS;
+        } else {
+            self.fire_reveal = (self.fire_reveal - dt).max(0.0);
+        }
+        let firing = self.fire_reveal > 0.0;
+        let (sy, cy) = yaw.sin_cos();
+        let (fwd, right) = ([-sy, -cy], [cy, -sy]);
+        for (id, smp) in &view.remotes {
+            let ally = teams.as_ref().map_or(false, |t| t.team_of.get(id).copied().map(|x| x != 0) == Some(t.my_team != 0));
+            let (dx, dz) = (smp.pos[0] - me[0], smp.pos[2] - me[2]);
+            let dist = (dx * dx + dz * dz).sqrt();
+            // no wallhack: enemies appear only when close or just after we fired; allies always
+            if dist > RADAR_RANGE || (!ally && dist > RADAR_ENEMY_RANGE && !firing) {
+                continue;
+            }
+            let pos = ((dx * right[0] + dz * right[1]) / RADAR_RANGE, (dx * fwd[0] + dz * fwd[1]) / RADAR_RANGE);
+            let colour = match &teams {
+                Some(t) => t.team_of.get(id).map_or(crate::hud::Palette::TRON.magenta, |x| crate::hud::Palette::TRON.team(*x)),
+                None => colour_of(*id),
+            };
+            hs.radar.push(RadarPing { pos, colour, ally });
+        }
+        if let Some(l) = self.lock {
+            let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
+            let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
+            if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, l.pos) {
+                let colour = match &teams {
+                    Some(t) => crate::hud::Palette::TRON.team(t.team_of.get(&l.target).copied().unwrap_or(1)),
+                    None => colour_of(l.target),
+                };
+                // keep the brackets in the central band, away from the side columns
+                let pos = (x.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), y.clamp(BROW_H + 0.15, CHIN_TOP - 0.1));
+                hs.target = Some(TargetHud { pos, name: format!("PLAYER {}", l.target), colour, hp: None, dist, progress: l.progress, locked: l.locked });
+            }
+        }
+        // boot-up plays on first link and on every respawn
+        if hs.dead {
+            self.was_dead = true;
+            self.boot = None;
+        } else if view.connected && (self.was_dead || !self.booted) {
+            self.was_dead = false;
+            self.booted = true;
+            self.boot = Some(0.0);
+        }
+        if let Some(t) = self.boot.as_mut() {
+            *t += dt;
+            if *t >= crate::hud::BOOT_TIME {
+                self.boot = None;
+            }
+        }
+        hs.boot = self.boot;
         hs.ffa = teams.is_none();
         hs.kill_limit = if teams.is_none() { self.kill_limit } else { None };
         hs.build = self.build;
@@ -379,5 +461,45 @@ mod tests {
         b.teams = Some(TeamInfo { my_team: 0, scores: [0, 0], score_limit: 50, result: 0, team_of: Default::default() });
         let s = b.update(0.016, &v, &net(), false);
         assert!(!s.ffa && s.kill_limit.is_none());
+    }
+
+    #[test]
+    fn cyber_layer_telemetry_radar_without_wallhack_lock_brackets_and_boot() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.connected = true;
+        v.eye = [0.0, 2.5, 0.0];
+        v.camera.fov = 90.0;
+        v.fx.speed = 9.0;
+        v.local_pos = Some([0.0, 1.0, 0.0]);
+        let smp = |x: f32, z: f32| crate::interp::Sample { pos: [x, 0.5, z], yaw: 0.0, extrapolated: false };
+        // near enemy (6 m ahead), far enemy (30 m right), an ally 30 m behind
+        v.remotes = vec![(2, smp(0.0, -6.0)), (3, smp(30.0, 0.0)), (4, smp(0.0, 30.0))];
+        b.teams = Some(TeamInfo { my_team: 0, scores: [0, 0], score_limit: 50, result: 0, team_of: [(2, 1), (3, 1), (4, 0)].into_iter().collect() });
+        let s = b.update(0.016, &v, &net(), false);
+        let t = s.telemetry.unwrap();
+        assert!((t.speed - 9.0).abs() < 1e-6 && (t.altitude - 2.5).abs() < 1e-6 && t.rope.is_none());
+        assert_eq!(s.heading, Some(0.0));
+        // enemy 2 close: shown ahead; enemy 3 far and we have not fired: hidden; ally 4 always shown, behind
+        assert_eq!(s.radar.len(), 2);
+        assert!(s.radar[0].pos.1 > 0.0 && !s.radar[0].ally);
+        assert!(s.radar[1].pos.1 < 0.0 && s.radar[1].ally);
+        // a throw reveals the far enemy for a couple of seconds
+        v.fx.threw = Some([0.0, 0.0, -1.0]);
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.radar.len(), 3);
+        v.fx.threw = None;
+        // boot-up plays on link-up and ends
+        assert!(s.boot.is_some());
+        let mut last = s;
+        for _ in 0..200 {
+            last = b.update(0.02, &v, &net(), false);
+        }
+        assert!(last.boot.is_none());
+        // lock brackets: projected, in the central band
+        b.lock = Some(LockInfo { target: 2, pos: [0.0, 1.0, -10.0], progress: 0.4, locked: false });
+        let s = b.update(0.016, &v, &net(), false);
+        let tg = s.target.expect("target brackets");
+        assert!(tg.pos.0 >= SIDE_CLEAR && tg.pos.0 <= 1.0 - SIDE_CLEAR && (tg.dist - 10.1).abs() < 0.3 && !tg.locked);
     }
 }
