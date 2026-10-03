@@ -21,6 +21,24 @@ seconds. Add `OFFLINE=1` if the machine has no network but the crate cache is wa
 
 Quit by closing the window; the server stops with it.
 
+## Testing a bad connection (lag proxy)
+
+`shinobi-lagproxy` sits between the game and the server and adds delay, jitter, loss, reordering and a bandwidth cap, so
+you can feel (and measure) an internet match on one machine. Delay, jitter, loss and reorder apply to **each direction**
+(`--delay-ms 50` is a 100 ms round trip).
+
+```bash
+cargo build --release -p shinobi-bot            # builds target/release/shinobi-lagproxy
+scripts/play.sh --server-only &                 # or any running server on 127.0.0.1:7777
+target/release/shinobi-lagproxy --listen 127.0.0.1:7778 --to 127.0.0.1:7777 \
+    --delay-ms 50 --jitter-ms 40 --loss 5       # optional: --reorder 10 --bw-kbps 256 --seed 1 --stats-secs 10
+cd crates/shinobi-game && cargo run -- --server 127.0.0.1:7778 --level ../../levels/ffa.lvl
+```
+
+Check the numbers afterwards in the TELEMETRY lines (client ping, corrections, inputs rejected / invented).
+No window? `LAG=50:40:5 scripts/demo_headless.sh` runs the scripted clients through the proxy (50 ms one way, +-40 ms jitter,
+5% loss each way) for 70 s and prints the same telemetry; `LAG_BW_KBPS=128` adds a bandwidth cap.
+
 ## Controls
 
 WASD move, mouse aim, Space jump (again = double jump), Shift dash, Q roll, C slide, W into a wall = wall-run,
@@ -50,7 +68,12 @@ The server prints `TELEMETRY` lines every 60 s and when a match ends, in the ter
   the real effect of the aim assist);
 - lock-on: times locked, seconds locked out of seconds alive;
 - katana swings and hits, grapple fired / attached / missed, pieces built and lost;
-- network: how far ahead of the server clock your inputs arrived (headroom) and how often one was late.
+- network: the game's own **ping** (average / max) and **reconcile corrections** (how often the server had to move you
+  after your prediction guessed wrong), reported by your game once a second; how far ahead of the server clock your
+  inputs arrived (headroom) and how often one was late; and server-side input trouble (inputs rejected as too far ahead,
+  ticks the server had to invent because your input was late or lost). Ping is the latency of the *freshest* data: with
+  heavy jitter it reads lower than the mean round trip (about half of it at +-40 ms of jitter) because overtaken packets
+  are ignored. Bots show no client line (they have no game).
 
 The bots are summed in one row so you can compare yourself with them. Numbers are per match (they reset when a match
 starts). Definitions are at the top of `crates/shinobi-server/src/telemetry.rs` (a hit is counted when it lands, and

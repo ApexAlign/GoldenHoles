@@ -358,3 +358,14 @@ fn client_measured_ping_matches_the_link() {
     assert!((80.0..140.0).contains(&s), "50 ms one way measured as {s} ms RTT");
     assert!(f < 40.0, "zero-latency link measured as {f} ms");
 }
+
+/// With 40 ms of jitter the echo names the newest packet to ARRIVE at the server and the client skips snapshots that were
+/// overtaken, so both directions favour the fast paths: the figure is the latency of the FRESHEST data (what the player
+/// feels), about half the mean round trip here. It must stay in a sane band (documented in PLAYTEST.md).
+#[test]
+fn client_measured_ping_under_jitter_is_biased_low_but_sane() {
+    let o = run_ex(3.0, 2.4, 0.0, 9, 1500, false, 8);
+    let p = o.final_ping.expect("ping measured");
+    eprintln!("ping under 50 ms +-40 ms jitter (true RTT 100 ms): {p:.0} ms");
+    assert!((35.0..110.0).contains(&p), "{p}");
+}

@@ -278,6 +278,10 @@ pub struct IntentQueue {
     /// Smallest `newest intent tick - server tick` of the packets since `take_margin` (ticks of headroom; negative
     /// = late). Reported to the client so it can size its intent lead.
     margin_min: Option<i32>,
+    /// Intents dropped for being more than `MAX_FUTURE_TICKS` ahead of the server clock (cumulative).
+    pub rejected_future: u32,
+    /// Ticks the server had to synthesise (repeat the last input) because the real intent had not arrived (cumulative).
+    pub repeated_ticks: u32,
 }
 
 /// One-shot actions of a late intent, carried to the next tick (bitwise OR / last build wall wins).
@@ -337,6 +341,7 @@ impl IntentQueue {
         for it in pkt.intents.iter().rev() {
             if it.tick > ceiling {
                 rejected += 1;
+                self.rejected_future = self.rejected_future.saturating_add(1);
                 continue;
             }
             // a view of tick 0 means "none"; stays none. Otherwise age it by how much older this intent is.
@@ -439,6 +444,9 @@ impl IntentQueue {
             Some(it)
         } else {
             // lost tick: repeat state; the view keeps advancing with the (extrapolated) client clock
+            if self.last_executed.is_some() {
+                self.repeated_ticks = self.repeated_ticks.saturating_add(1);
+            }
             if self.latest_view.from_tick != 0 {
                 self.latest_view.from_tick += 1;
             }

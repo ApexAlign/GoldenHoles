@@ -55,7 +55,7 @@ fn main() {
         let status = match (r.connect_failed, r.kicked, r.bad_datagrams) {
             (true, _, _) => "CONNECT FAILED".to_string(),
             (_, Some(k), _) => format!("KICKED ({})", k.as_str()),
-            (_, _, b) if b > 0 => format!("{b} bad datagrams"),
+            (_, _, b) if b > 0 => format!("{b} bad datagrams (last: {})", r.last_error.as_deref().unwrap_or("?")),
             _ => "ok".to_string(),
         };
         failed |= status != "ok";

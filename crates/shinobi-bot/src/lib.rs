@@ -2,6 +2,8 @@
 //! behaviour. Used by `shinobi-bot` (CLI) and by the server's soak test. Bots exercise exactly the wire path a
 //! real client uses: HELLO/WELCOME, redundant intent packets, acks, delta snapshots, reliable events.
 
+pub mod lagproxy;
+
 use std::f32::consts::TAU;
 use std::io::ErrorKind;
 use std::net::UdpSocket;
@@ -80,6 +82,8 @@ pub struct BotReport {
     pub connect_failed: bool,
     pub kicked: Option<KickReason>,
     pub bad_datagrams: u32,
+    /// Debug text of the last decode error, if any.
+    pub last_error: Option<String>,
     pub packets_sent: u64,
     pub datagrams_recv: u64,
     pub snapshots: u64,
@@ -255,6 +259,7 @@ pub fn run(cfg: &BotConfig, stop: &AtomicBool) -> BotReport {
     }
 
     rep.bad_datagrams = nc.bad_datagrams;
+    rep.last_error = nc.last_decode_error.as_ref().map(|e| format!("{e:?}"));
     rep.team = nc.my_team();
     rep.teams_known = nc.teams_known() as u32;
     rep

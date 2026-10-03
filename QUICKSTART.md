@@ -94,6 +94,8 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--teams`: opt-in team deathmatch, Cyan (team 0) vs Orange (team 1). Players join the smaller team (then the one
   with fewer kills). First team to 50 team kills wins, or the higher team score at the time limit; a tie goes to a
   60 s sudden death (first team kill wins, else a draw). Frags of players who leave stay on their team's score.
+- `shinobi-lagproxy` (`shinobi-bot` crate): UDP relay that adds delay / jitter / loss / reorder / bandwidth cap between a
+  game and the server, for testing over a bad link; see docs/PLAYTEST.md.
 - `--telemetry FILE`: append playtest telemetry (`TELEMETRY` text + JSON lines: shots, hit %, lock-on, grapple, building,
   deaths by cause per player) to FILE; it is always printed to the console every 60 s and at match end.
 - `--team-size N` (e.g. `--team-size 8` for 8v8): implies `--teams` and keeps every team at N players with bots;

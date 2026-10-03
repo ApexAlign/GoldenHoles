@@ -67,6 +67,10 @@ pub struct PlayerStats {
     corr_first: Option<u16>,
     corr_last: u16,
     report_tick: Option<u32>,
+    /// Server-side input trouble this match: intents rejected as too far ahead, ticks synthesised for lost / late input.
+    pub rejected_future: u32,
+    pub repeated_ticks: u32,
+    queue_base: Option<(u32, u32)>,
 }
 
 impl PlayerStats {
@@ -104,6 +108,8 @@ impl PlayerStats {
         self.margin_n += o.margin_n;
         self.margin_min = if self.margin_n == o.margin_n { o.margin_min } else { self.margin_min.min(o.margin_min) };
         self.late += o.late;
+        self.rejected_future += o.rejected_future;
+        self.repeated_ticks += o.repeated_ticks;
         self.ping_sum += o.ping_sum;
         self.ping_n += o.ping_n;
         self.ping_max = self.ping_max.max(o.ping_max);
@@ -191,6 +197,10 @@ impl Telemetry {
                 }
             }
             s.was_locked = locked;
+            let q = (p.queue.rejected_future, p.queue.repeated_ticks);
+            let base = *s.queue_base.get_or_insert(q);
+            s.rejected_future = q.0.saturating_sub(base.0);
+            s.repeated_ticks = q.1.saturating_sub(base.1);
             // the client's own ping / correction report, once per report
             if let Some((r, at)) = p.client_report {
                 if s.report_tick != Some(at) {
@@ -368,6 +378,12 @@ impl Telemetry {
                 s.corrections()
             ));
         }
+        if net && (s.rejected_future > 0 || s.repeated_ticks > 0) {
+            self.text.push(format!(
+                "TELEMETRY    server input trouble: {} intents rejected as too far ahead, {} ticks synthesised (late or lost input)",
+                s.rejected_future, s.repeated_ticks
+            ));
+        }
         if net && s.margin_n > 0 {
             self.text.push(format!(
                 "TELEMETRY    net: intent headroom avg {:.1} min {} ticks, late {} of {} reports",
@@ -381,7 +397,7 @@ impl Telemetry {
 
     fn json_line(match_no: u32, last: bool, secs: f64, who: &str, human: bool, s: &PlayerStats) -> String {
         format!(
-            "{{\"match\":{match_no},\"final\":{last},\"secs\":{secs:.1},\"player\":\"{who}\",\"human\":{human},\"kills\":{},\"deaths\":{},\"deaths_by\":{{\"shuriken\":{},\"katana\":{},\"beam\":{},\"void\":{},\"hazard\":{}}},\"avg_life_s\":{:.1},\"thrown\":{},\"shuriken_hits\":{},\"headshots\":{},\"thrown_locked\":{},\"hits_locked\":{},\"lock_engaged\":{},\"locked_s\":{:.1},\"alive_s\":{:.1},\"swings\":{},\"katana_hits\":{},\"grapple_attach\":{},\"grapple_miss\":{},\"built\":{},\"lost\":{},\"ping_avg_ms\":{:.0},\"ping_max_ms\":{},\"corrections\":{},\"headroom_avg\":{:.2},\"headroom_min\":{},\"late\":{},\"reports\":{}}}",
+            "{{\"match\":{match_no},\"final\":{last},\"secs\":{secs:.1},\"player\":\"{who}\",\"human\":{human},\"kills\":{},\"deaths\":{},\"deaths_by\":{{\"shuriken\":{},\"katana\":{},\"beam\":{},\"void\":{},\"hazard\":{}}},\"avg_life_s\":{:.1},\"thrown\":{},\"shuriken_hits\":{},\"headshots\":{},\"thrown_locked\":{},\"hits_locked\":{},\"lock_engaged\":{},\"locked_s\":{:.1},\"alive_s\":{:.1},\"swings\":{},\"katana_hits\":{},\"grapple_attach\":{},\"grapple_miss\":{},\"built\":{},\"lost\":{},\"rejected_future\":{},\"repeated_ticks\":{},\"ping_avg_ms\":{:.0},\"ping_max_ms\":{},\"corrections\":{},\"headroom_avg\":{:.2},\"headroom_min\":{},\"late\":{},\"reports\":{}}}",
             s.kills,
             s.deaths_total(),
             s.deaths[0],
@@ -404,6 +420,8 @@ impl Telemetry {
             s.grapple_miss,
             s.built,
             s.lost,
+            s.rejected_future,
+            s.repeated_ticks,
             if s.ping_n > 0 { s.ping_sum as f64 / s.ping_n as f64 } else { 0.0 },
             s.ping_max,
             s.corrections(),

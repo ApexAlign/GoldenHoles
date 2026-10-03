@@ -115,6 +115,8 @@ pub struct NetClient {
     corrections: u32,
     /// Datagrams that failed to decode (for a debug overlay / disconnect heuristics).
     pub bad_datagrams: u32,
+    /// The most recent decode error (for logs and bot reports).
+    pub last_decode_error: Option<DecodeError>,
 }
 
 impl Default for NetClient {
@@ -155,6 +157,7 @@ impl Default for NetClient {
             ping: None,
             corrections: 0,
             bad_datagrams: 0,
+            last_decode_error: None,
         }
     }
 }
@@ -205,6 +208,8 @@ impl NetClient {
 
     /// `local_tick`: client clock in (fractional) sim ticks; any monotonic clock at 60 ticks/s works.
     pub fn on_datagram(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
+        // a snapshot that overtook the WELCOME (reordering on a jittery link) is dropped, not corruption
+        let early_snapshot = buf.first() == Some(&TAG_SNAPSHOT) && self.player_id().is_none();
         let r = match buf.first() {
             // before everything else: valid even while still connecting (server full) and repeated by the server
             Some(&TAG_KICK) => decode_kick(buf).map(|why| {
@@ -221,8 +226,9 @@ impl NetClient {
             Some(&TAG_SNAPSHOT) if self.player_id().is_some() => self.on_snapshot(buf, local_tick),
             _ => Err(DecodeError::Malformed),
         };
-        if r.is_err() {
+        if let (Err(e), false) = (&r, early_snapshot) {
             self.bad_datagrams += 1;
+            self.last_decode_error = Some(e.clone());
         }
         r
     }
@@ -654,6 +660,19 @@ mod tests {
 
     /// A one-shot action (zip / dash / jump / build) keeps riding in every datagram until the server's
     /// `intent_complete` covers it; then the window shrinks back to the base.
+    /// Under reordering a snapshot can arrive before the WELCOME: it is rejected (nothing applied) but is not counted as a
+    /// corrupt datagram, so health checks do not fail on a merely jittery link.
+    #[test]
+    fn a_snapshot_that_overtakes_the_welcome_is_dropped_without_counting_as_bad() {
+        let mut c = NetClient::default();
+        assert!(c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &encode_delta(None, &snap(5, 0))), 0.0).is_err());
+        assert_eq!((c.bad_datagrams, c.last_decode_error.clone()), (0, None));
+        welcome(&mut c, 1, 0);
+        assert!(c.on_datagram(&[TAG_SNAPSHOT, 9], 1.0).is_err());
+        assert_eq!(c.bad_datagrams, 1, "a genuinely corrupt datagram still counts");
+        assert!(c.last_decode_error.is_some());
+    }
+
     #[test]
     fn unacked_edges_are_resent_until_the_server_confirms_them() {
         let mut c = NetClient::default();
