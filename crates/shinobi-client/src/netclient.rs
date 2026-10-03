@@ -17,7 +17,7 @@ use shinobi_proto::intent::{Buttons, ClientPacket, PlayerIntent, BASE_REDUNDANCY
 use shinobi_proto::quant::dq_pos3;
 use shinobi_proto::snapshot::decode_delta;
 use shinobi_proto::TICK_HZ;
-use shinobi_sim::blocks::{BlockInfo, Piece, PieceKind};
+use shinobi_sim::blocks::{BlockInfo, BlockRules, Piece, PieceKind};
 use shinobi_sim::events::{EventInbox, NetEvent};
 use shinobi_sim::own_state::OwnState;
 
@@ -74,6 +74,8 @@ pub struct NetClient {
     team_result: u8,
     /// Live player-built blocks: grid cell -> owner id (from `BlockPlaced` / `BlockRemoved`).
     blocks: HashMap<[i32; 3], (u16, Piece, u8)>,
+    /// The server's build rules (`NetEvent::BlockRules`), once received.
+    block_rules: Option<BlockRules>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -121,6 +123,7 @@ impl Default for NetClient {
             team_score: [0; 2],
             team_result: 0,
             blocks: HashMap::new(),
+            block_rules: None,
             anchor: None,
             kicked: None,
             own: None,
@@ -253,6 +256,7 @@ impl NetClient {
                 NetEvent::BlockPlaced { owner, cell, kind, axis, scale_q } => {
                     self.blocks.insert(cell, (owner, Piece { kind: PieceKind::from_id(kind), axis }, scale_q));
                 }
+                NetEvent::BlockRules(r) => self.block_rules = Some(r),
                 NetEvent::BlockRemoved { cell } | NetEvent::BlockDerez { cell } => {
                     self.blocks.remove(&cell);
                 }
@@ -422,6 +426,11 @@ impl NetClient {
         let mut v: Vec<_> = self.blocks.iter().map(|(c, (o, _, _))| (*o, *c)).collect();
         v.sort_by_key(|&(_, c)| c);
         v
+    }
+
+    /// Build rules from the server (None until the join catch-up arrives).
+    pub fn block_rules(&self) -> Option<BlockRules> {
+        self.block_rules
     }
 
     /// Live pieces with kind and scale, sorted by cell (what the shell draws and the predicted world collides with).

@@ -211,13 +211,13 @@ impl Predicted {
     }
 
     /// The build press, run through the same `Blocks::try_build` the server uses.
-    fn predict_build(&mut self, owner: u16, tick: u32, kind: PieceKind, aim: &CombatAim) {
+    fn predict_build(&mut self, owner: u16, tick: u32, kind: PieceKind, kills: u32, aim: &CombatAim) {
         self.world.queries.update(&self.world.colliders);
         let f = aim.forward();
         let mut ev = Vec::new();
         let body = self.ch.body;
-        // kills only scale pieces (a hook, 0 by default); the server's value arrives with the confirming BlockPlaced
-        self.blocks.try_build(&mut self.world, tick, owner, kind, 0, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], body, &[self.pos], &mut ev);
+        // size scales with the owner's kills (rules + kills known to the client; the server's BlockPlaced corrects any drift)
+        self.blocks.try_build(&mut self.world, tick, owner, kind, kills, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], body, &[self.pos], &mut ev);
         for e in ev {
             if let BlockEvent::Placed { cell, .. } = e {
                 self.block_pending.push((cell, tick));
@@ -227,13 +227,13 @@ impl Predicted {
     }
 
     /// Where a press would place a block right now, and whether it would be accepted.
-    fn build_ghost(&mut self, owner: u16, tick: u32, kind: PieceKind, aim: &CombatAim) -> BuildGhost {
+    fn build_ghost(&mut self, owner: u16, tick: u32, kind: PieceKind, kills: u32, aim: &CombatAim) -> BuildGhost {
         self.world.queries.update(&self.world.colliders);
         let f = aim.forward();
         let cell = self.blocks.target_cell(&self.world, [aim.origin.x, aim.origin.y, aim.origin.z], [f.x, f.y, f.z], self.ch.body);
         let valid = self.blocks.is_free(cell) && !self.blocks.overlaps_player(cell, &[self.pos]);
         let piece = Piece::for_press(kind, [f.x, f.y, f.z]);
-        let (center, half) = self.blocks.geometry(cell, piece, SCALE_ONE);
+        let (center, half) = self.blocks.geometry(cell, piece, self.blocks.cfg.scale_q(kills));
         BuildGhost { cell, piece, center, half, valid, ready: self.blocks.ready(owner, tick) }
     }
 
@@ -684,10 +684,14 @@ impl ClientGame {
             Some(p) => {
                 // blocks before anything moves: the world this tick collides with = the server's blocks + our own unconfirmed ones
                 let my_id = own_id_for_blocks;
+                if let Some(r) = self.net.block_rules() {
+                    p.blocks.cfg = p.blocks.cfg.with_rules(&r);
+                }
                 p.sync_blocks(&self.net.block_pieces(), tick);
+                let my_kills = self.net.board().and_then(|b| b.rows.iter().find(|r| r.id as u16 == my_id).map(|r| r.kills as u32)).unwrap_or(0);
                 if let Some(kind) = press {
                     let aim = CombatAim { origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]], yaw: dq_yaw(intent.aim_yaw), pitch: dq_pitch(intent.aim_pitch) };
-                    p.predict_build(my_id, tick, kind, &aim);
+                    p.predict_build(my_id, tick, kind, my_kills, &aim);
                 }
                 // combat first, like the server: cosmetics + cooldown mirror (lunge is not applied, see Predicted)
                 let mut ev = Vec::new();
@@ -865,7 +869,8 @@ impl ClientGame {
                     yaw: self.aim.yaw,
                     pitch: self.aim.pitch,
                 };
-                (Some(p.build_ghost(id, self.last_input_tick, self.build_sel, &aim)), p.blocks.pieces())
+                let kills = self.net.board().and_then(|b| b.rows.iter().find(|r| r.id as u16 == id).map(|r| r.kills as u32)).unwrap_or(0);
+                (Some(p.build_ghost(id, self.last_input_tick, self.build_sel, kills, &aim)), p.blocks.pieces())
             }
             _ => (None, self.net.block_pieces()),
         };

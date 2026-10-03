@@ -107,7 +107,7 @@ impl Piece {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockCfg {
     /// Cell edge length, metres.
     pub size: f32,
@@ -146,10 +146,51 @@ impl Default for BlockCfg {
     }
 }
 
+/// The build rules a client needs to predict placement exactly like the server (sent once on join as
+/// `NetEvent::BlockRules`). Fixed point, so server and client derive identical floats: the server runs its own
+/// config through `BlockCfg::quantized` when a balance is loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockRules {
+    pub thickness_mm: u16,
+    pub range_dm: u16,
+    pub cooldown_ticks: u16,
+    pub scale_per_kill_milli: u16,
+    pub scale_cap_centi: u16,
+    pub max_per_owner: u16,
+}
+
 /// Scale is sent as 1/16ths (16 = 1.0): no float on the wire, identical on server and client.
 pub const SCALE_ONE: u8 = 16;
 
 impl BlockCfg {
+    pub fn rules(&self) -> BlockRules {
+        let q = |v: f32, k: f32| (v * k).round().clamp(0.0, u16::MAX as f32) as u16;
+        BlockRules {
+            thickness_mm: q(self.thickness, 1000.0),
+            range_dm: q(self.range, 10.0),
+            cooldown_ticks: self.cooldown_ticks.min(u16::MAX as u32) as u16,
+            scale_per_kill_milli: q(self.scale_per_kill, 1000.0),
+            scale_cap_centi: q(self.scale_cap, 100.0),
+            max_per_owner: self.max_per_owner.min(u16::MAX as usize) as u16,
+        }
+    }
+
+    /// `base` with the client-relevant fields replaced by `r` (hp and age stay server-only).
+    pub fn with_rules(mut self, r: &BlockRules) -> BlockCfg {
+        self.thickness = r.thickness_mm as f32 / 1000.0;
+        self.range = r.range_dm as f32 / 10.0;
+        self.cooldown_ticks = r.cooldown_ticks as u32;
+        self.scale_per_kill = r.scale_per_kill_milli as f32 / 1000.0;
+        self.scale_cap = r.scale_cap_centi as f32 / 100.0;
+        self.max_per_owner = r.max_per_owner as usize;
+        self
+    }
+
+    /// This config as a client reconstructs it from `rules()`: identical floats on both sides.
+    pub fn quantized(self) -> BlockCfg {
+        self.with_rules(&self.rules())
+    }
+
     /// Scale (1/16ths) for an owner with `kills` kills.
     pub fn scale_q(&self, kills: u32) -> u8 {
         let mut s = 1.0 + self.scale_per_kill * kills as f32;
@@ -662,5 +703,24 @@ mod weapon_damage_tests {
         }
         assert!(derezzed, "30 hp / 12 per bounce: three hits de-rez the wall ({throws} throws)");
         assert!(s.blocks.is_free([0, 1, -4]), "the destroyed piece is gone from the world");
+    }
+}
+
+#[cfg(test)]
+mod rules_tests {
+    use super::*;
+
+    #[test]
+    fn a_client_rebuilds_the_servers_quantized_rules_exactly_and_scales_identically() {
+        let tuned = BlockCfg { thickness: 0.237, range: 6.35, cooldown_ticks: 17, scale_per_kill: 0.0537, scale_cap: 1.9, max_per_owner: 40, ..BlockCfg::default() };
+        let server = tuned.quantized();
+        let client = BlockCfg::default().with_rules(&server.rules());
+        assert_eq!((client.thickness, client.range, client.cooldown_ticks, client.max_per_owner), (server.thickness, server.range, server.cooldown_ticks, server.max_per_owner));
+        assert_eq!((client.scale_per_kill, client.scale_cap), (server.scale_per_kill, server.scale_cap));
+        for kills in 0..300 {
+            assert_eq!(client.scale_q(kills), server.scale_q(kills), "scale at {kills} kills");
+        }
+        assert_eq!(server.scale_q(1000), (1.9f32 * 16.0).round() as u8, "capped by scale_cap");
+        assert_eq!(server.quantized(), server, "quantizing is idempotent");
     }
 }

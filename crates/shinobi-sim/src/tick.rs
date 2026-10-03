@@ -258,7 +258,7 @@ impl Server {
             p.vitals.hp = p.vitals.hp.min(b.player.max_hp);
             p.combat.apply_balance(&b, &self.cfg);
         }
-        self.blocks.cfg = b.blocks.cfg();
+        self.blocks.cfg = b.blocks.cfg().quantized(); // clients rebuild the same floats from `BlockRules`
         self.hazards.cfg.obstacle_damage = b.hazards.obstacle_damage;
         self.hazards.cfg.wall_damage = b.hazards.wall_damage;
         self.hazards.cfg.rearm_ticks = b.hazards.rearm_ticks;

@@ -16,6 +16,8 @@ pub enum ImpactKind {
     Gone,
     /// Damage dealt: big flash + sparks (`kill` makes it bigger).
     Hit { kill: bool },
+    /// Katana connected (predicted, instant): bigger flash; `killed` adds a dense data-fragment burst.
+    Slash { killed: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +122,8 @@ fn spawn_impacts(
             ImpactKind::Gone => (8, 5.0, 0.2, 0.05, 0.3, 0.1, team_mat(im.color, false)),
             ImpactKind::Hit { kill: false } => (18, 9.0, 0.3, 0.07, 1.0, 0.15, team_mat(im.color, true)),
             ImpactKind::Hit { kill: true } => (36, 12.0, 0.5, 0.09, 2.2, 0.25, team_mat(im.color, true)),
+            ImpactKind::Slash { killed: false } => (24, 11.0, 0.28, 0.06, 1.4, 0.12, team_mat(im.color, true)),
+            ImpactKind::Slash { killed: true } => (56, 14.0, 0.6, 0.09, 2.8, 0.25, team_mat(im.color, true)),
         };
         for i in 0..count {
             let s = seed.wrapping_add(i * 31);
