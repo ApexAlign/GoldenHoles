@@ -14,10 +14,21 @@ use shinobi_client::hud::Palette;
 use shinobi_client::viewmodel::{KatanaViewModel, ViewCfg};
 use shinobi_client::viewmodel_draw::{katana_draw, HitPulse, ShurikenViewModel};
 
+use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::{Net, ViewRes};
+use crate::team::LocalColour;
 use crate::play::{FxRes, ShotImage};
 
 const LAYER: usize = 1;
+const FLARE_S: f32 = 0.2;
+const WHIFF_S: f32 = 0.3;
+
+/// Arc ribbon multipliers: (brightness, alpha). Flare after a connect, dimmed after a whiff, neutral otherwise.
+pub fn arc_gain(flare: f32, whiff: f32) -> (f32, f32) {
+    let f = (flare / FLARE_S).clamp(0.0, 1.0);
+    let w = (whiff / WHIFF_S).clamp(0.0, 1.0);
+    (1.0 + 2.5 * f, 1.0 - 0.65 * w)
+}
 
 #[derive(Resource)]
 pub struct Vm {
@@ -25,6 +36,12 @@ pub struct Vm {
     pub shuriken: ShurikenViewModel,
     pub pulse: HitPulse,
     flip: bool,
+    /// Hit-stop: seconds the held weapons stay frozen after a katana hit (client-only; the sim never pauses).
+    freeze: f32,
+    /// Seconds left of the dimmed whiff arc after a swing that hit nothing.
+    whiff: f32,
+    /// Seconds left of the bright arc flare after a katana connect.
+    flare: f32,
 }
 
 #[derive(Resource)]
@@ -41,7 +58,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup));
     }
 }
@@ -156,6 +173,8 @@ pub fn update(
     net: Res<Net>,
     mut fx: ResMut<FxRes>,
     mut vm: ResMut<Vm>,
+    local: Res<LocalColour>,
+    mut impacts: ResMut<ImpactQueue>,
     ents: Res<VmEnts>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -182,8 +201,24 @@ pub fn update(
     for h in view.0.hits.iter().filter(|h| !h.taken) {
         vm.pulse.on_hit(h.kill);
     }
-    vm.katana.update(dt);
-    vm.shuriken.update(dt);
+    // katana feedback from the predicted sim: connect = flash + arc flare + hit-stop, whiff = dim arc
+    let l = &view.0.fx;
+    if let Some(h) = l.slash_hit {
+        vm.pulse.on_hit(h.killed);
+        vm.flare = FLARE_S;
+        impacts.0.push(Impact { pos: Vec3::from(h.point), color: local.0, kind: ImpactKind::Slash { killed: h.killed } });
+    }
+    if l.slash_miss {
+        vm.whiff = WHIFF_S;
+    }
+    vm.freeze = vm.freeze.max(l.hit_stop);
+    // hit-stop freezes the held weapons (not the pulse/flash, which sells the impact); sim never pauses
+    let step = if vm.freeze > 0.0 { 0.0 } else { dt };
+    vm.freeze = (vm.freeze - dt).max(0.0);
+    vm.flare = (vm.flare - dt).max(0.0);
+    vm.whiff = (vm.whiff - dt).max(0.0);
+    vm.katana.update(step);
+    vm.shuriken.update(step);
     vm.pulse.update(dt);
     let pulse = vm.pulse.amount();
     for (m, c, g) in &ents.glow {
@@ -202,11 +237,14 @@ pub fn update(
     let t = pose.translation;
     let q = pose.rotation;
     if let Ok(mut b) = tf.get_mut(ents.blade) {
-        b.translation = Vec3::new(t.x, t.y - w.y_dip, t.z + w.back - 0.06 * pulse);
+        // hit-stop: the frozen blade trembles (viewmodel only; the crosshair/aim is never moved)
+        let shake = if vm.freeze > 0.0 { (time.elapsed_secs() * 140.0).sin() * 0.006 } else { 0.0 };
+        b.translation = Vec3::new(t.x + shake, t.y - w.y_dip + shake * 0.6, t.z + w.back - 0.06 * pulse);
         b.rotation = Quat::from_rotation_x(w.pitch) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
     }
 
     // arc ribbons -> quads
+    let gain = arc_gain(vm.flare, vm.whiff);
     let mut pos = Vec::<[f32; 3]>::new();
     let mut col = Vec::<[f32; 4]>::new();
     let mut idx = Vec::<u32>::new();
@@ -217,12 +255,13 @@ pub fn update(
             continue;
         }
         let n = Vec3::new(-d.y, d.x, 0.0).normalize_or(Vec3::Y);
+        let c = [r.color[0] * gain.0, r.color[1] * gain.0, r.color[2] * gain.0, r.color[3] * gain.1];
         let base = pos.len() as u32;
         for (p, wid) in [(a, r.p0[3]), (b, r.p1[3])] {
             pos.push((p + n * wid * 0.5).to_array());
             pos.push((p - n * wid * 0.5).to_array());
-            col.push(r.color);
-            col.push(r.color);
+            col.push(c);
+            col.push(c);
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
     }
@@ -247,5 +286,20 @@ pub fn update(
     }
     if let Ok(mut v) = vis.get_mut(ents.shuriken) {
         *v = if s.scale <= 0.001 { Visibility::Hidden } else { Visibility::Visible };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arc_flares_on_connect_dims_on_whiff() {
+        assert_eq!(arc_gain(0.0, 0.0), (1.0, 1.0));
+        let (b, a) = arc_gain(FLARE_S, 0.0);
+        assert!(b > 3.0 && a == 1.0, "connect brightens the arc");
+        let (b, a) = arc_gain(0.0, WHIFF_S);
+        assert!(b == 1.0 && a < 0.4, "whiff dims the arc");
+        assert!(arc_gain(FLARE_S * 5.0, WHIFF_S * 5.0).0 <= 3.5, "gains clamp");
     }
 }
