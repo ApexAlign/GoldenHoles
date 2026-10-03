@@ -909,7 +909,7 @@ impl Hud {
                 } else {
                     Rgba(tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 0.9)
                 };
-                out.push(Prim::Text { pos: (0.03, 0.585), text: name.clone(), size: 0.018, color: col, align: Align::Left });
+                out.push(Prim::Text { pos: (0.03, 0.59), text: name.clone(), size: 0.018, color: col, align: Align::Left });
             }
             // below the floor plane: falling toward the void kill plane
             if t.altitude < 0.0 && !s.dead {
@@ -1094,7 +1094,7 @@ fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
 
 /// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
 fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palette) {
-    let (x, y0, w) = (0.03, 0.60, 0.15);
+    let (x, y0, w) = (0.03, 0.605, 0.15);
     let rows: [(&str, String, Rgba); 4] = [
         ("SPD", format!("{:.1} M/S", t.speed), p.cyan),
         ("ALT", format!("{:.1} M", t.altitude), if t.altitude < 0.0 { p.magenta } else { p.cyan }),
@@ -1119,7 +1119,7 @@ fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, p: &Palet
 /// Radar disc at the bottom-left: own marker in the middle pointing up (ahead), blips for what the caller allows
 /// (enemies only when close or just fired: no wallhack; allies always).
 fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
-    let (c, r) = ((0.085, 0.865), 0.07f32);
+    let (c, r) = ((0.09, 0.868), 0.09f32);
     out.push(Prim::Ring { c, r, color: p.cyan.a(0.55), fill: false, glow: 0.004 });
     out.push(Prim::Ring { c, r: r * 0.5, color: p.cyan.a(0.22), fill: false, glow: 0.0 });
     out.push(Prim::Line { a: (c.0, c.1 - r), b: (c.0, c.1 + r), color: p.cyan.a(0.15), glow: 0.0 });
@@ -1133,7 +1133,8 @@ fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
         let (x, y) = if x * x + y * y > 1.0 { let n = (x * x + y * y).sqrt(); (x / n, y / n) } else { (x, y) };
         out.push(Prim::Ring { c: (c.0 + x * r * ASPECT, c.1 - y * r), r: if pg.ally { 0.006 } else { 0.0075 }, color: pg.colour.a(0.95), fill: !pg.ally, glow: 0.006 });
     }
-    out.push(Prim::Text { pos: (c.0, c.1 + r + 0.022), text: "RADAR".into(), size: 0.014, color: p.text.a(0.45), align: Align::Center });
+    // range label inside the ring, under the centre (keeps the left column clear below the disc)
+    out.push(Prim::Text { pos: (c.0, c.1 + r * 0.62), text: format!("{:.0}M", crate::hud_bridge::RADAR_RANGE), size: 0.013, color: p.text.a(0.45), align: Align::Center });
 }
 
 /// Brackets around the lock target: they close in as lock progress rises, then snap tight and go solid.
@@ -2215,7 +2216,7 @@ mod tests {
             Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect()
         };
         let t = texts(&busy());
-        for want in ["TELEMETRY", "SPD", "14.2 M/S", "ROPE", "8.0 M", "RADAR", "GHOST", "18M"] {
+        for want in ["TELEMETRY", "SPD", "14.2 M/S", "ROPE", "8.0 M", "90M", "GHOST", "18M"] {
             assert!(t.contains(&want.to_string()), "{want}");
         }
         // facing -Z is north; yaw 0.7 rad to the left of north (west side), so NW is nearer than NE
