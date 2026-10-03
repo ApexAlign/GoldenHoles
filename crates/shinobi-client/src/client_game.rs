@@ -408,6 +408,8 @@ pub struct RenderView {
     pub aim: Aim,
     /// Shurikens in flight: world position, direction (own from prediction, others from the snapshot).
     pub discs: Vec<([f32; 3], [f32; 3])>,
+    /// Owner player id of each entry in `discs` (same index), for per-player colours. 0 = unknown.
+    pub disc_owners: Vec<u16>,
     /// Own wrist-grapple rope as (hand/eye, anchor) while attached, from the prediction.
     pub rope: Option<([f32; 3], [f32; 3])>,
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
@@ -813,11 +815,13 @@ impl ClientGame {
         };
         // other players' shurikens ride in the snapshot; our own are drawn from the prediction (no latency)
         let mut discs: Vec<([f32; 3], [f32; 3])> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles());
+        let mut disc_owners: Vec<u16> = vec![own_id.unwrap_or(0); discs.len()];
         if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
             for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && Some(st.yaw) != own_id) {
                 if let Some(s) = self.net.interp.sample(*id, rt) {
                     let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
                     discs.push((s.pos, v));
+                    disc_owners.push(st.yaw);
                 }
             }
         }
@@ -898,6 +902,7 @@ impl ClientGame {
             block_thickness: BlockCfg::default().thickness,
             aim: self.aim,
             discs,
+            disc_owners,
             rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
         }
     }
