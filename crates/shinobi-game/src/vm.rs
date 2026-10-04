@@ -32,6 +32,59 @@ pub fn recoil_kick(left: f32) -> (f32, f32) {
     (0.05 * e, 0.06 * e)
 }
 
+/// Target speed-line intensity 0..1: dash is full, a grapple pull strong, plain running fades in above ~14 m/s.
+pub fn streak_target(dashing: bool, grappling: bool, speed: f32) -> f32 {
+    let run = ((speed - 14.0) / 18.0).clamp(0.0, 0.45);
+    let mut t = run;
+    if grappling {
+        t = t.max(0.7);
+    }
+    if dashing {
+        t = 1.0;
+    }
+    t
+}
+
+/// Radial speed lines in view space (the same units as the katana arc: depth plane `depth`, aspect-stretched): lines
+/// stream outward from the screen centre, longer and brighter with `intensity`. Deterministic in `t`.
+pub fn streak_quads(t: f32, intensity: f32, aspect: f32, depth: f32, rgb: [f32; 3]) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
+    let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
+    if intensity < 0.02 {
+        return (pos, col, idx);
+    }
+    let hh = depth * (45.0f32).to_radians().tan(); // half height of the view at `depth` (90 deg vertical fov)
+    let n = (8.0 + 24.0 * intensity) as u32;
+    for i in 0..n {
+        let h = |k: u32| {
+            let mut x = (i * 3 + k).wrapping_mul(0x9e37_79b1) ^ 0x85eb_ca6b;
+            x ^= x >> 15;
+            x = x.wrapping_mul(0x2c1b_3c6d);
+            ((x >> 8) & 0xffff) as f32 / 65536.0
+        };
+        let ang = h(0) * std::f32::consts::TAU;
+        let phase = (h(1) + t * (1.3 + 1.2 * h(2)) * (0.6 + intensity)).fract();
+        let r0 = (0.30 + 0.75 * phase) * hh;
+        let len = (0.10 + 0.28 * intensity) * hh * (0.5 + h(3));
+        let (c, s) = (ang.cos(), ang.sin());
+        let w = 0.0025 * hh * (1.0 + 2.0 * h(3));
+        // stay inside the screen ellipse (the CRT barrel curves the corners away)
+        let b = (r0 + len).min(0.97 * hh);
+        let a = r0.min(b - 0.02 * hh);
+        let alpha = intensity * (1.0 - phase) * 0.7;
+        let base = pos.len() as u32;
+        for (r, al) in [(a, alpha * 0.2), (b, alpha)] {
+            let p = [c * r * aspect, s * r];
+            let n = [-s * w * aspect, c * w];
+            pos.push([p[0] + n[0], p[1] + n[1], -depth]);
+            pos.push([p[0] - n[0], p[1] - n[1], -depth]);
+            let cc = [rgb[0] * 2.5, rgb[1] * 2.5, rgb[2] * 2.5, al];
+            col.extend([cc, cc]);
+        }
+        idx.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+    }
+    (pos, col, idx)
+}
+
 /// Arc ribbon multipliers: (brightness, alpha). Flare after a connect, dimmed after a whiff, neutral otherwise.
 pub fn arc_gain(flare: f32, whiff: f32) -> (f32, f32) {
     let f = (flare / FLARE_S).clamp(0.0, 1.0);
@@ -53,6 +106,8 @@ pub struct Vm {
     flare: f32,
     /// Seconds left of the shoulder recoil after a shuriken throw.
     recoil: f32,
+    /// Smoothed speed-line intensity 0..1 (dash / grapple / fast running).
+    streak: f32,
 }
 
 #[derive(Resource)]
@@ -60,6 +115,10 @@ pub struct VmEnts {
     blade: Entity,
     ribbons_mesh: Handle<Mesh>,
     ribbons: Entity,
+    /// Speed lines (dash / grapple / fast running), on the viewmodel layer.
+    streaks: Entity,
+    streaks_mesh: Handle<Mesh>,
+    streaks_mat: Handle<StandardMaterial>,
     shuriken: Entity,
     /// (material, base colour, gain) flared by hit confirmation
     glow: Vec<(Handle<StandardMaterial>, shinobi_client::hud::Rgba, f32)>,
@@ -69,7 +128,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0 })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup));
     }
 }
@@ -163,7 +222,12 @@ fn spawn(
         ..default()
     });
     let ribbons = commands
-        .spawn((Mesh3d(ribbons_mesh.clone()), MeshMaterial3d(ribbon_mat), Transform::default(), layer.clone(), NoFrustumCulling))
+        .spawn((Mesh3d(ribbons_mesh.clone()), MeshMaterial3d(ribbon_mat.clone()), Transform::default(), layer.clone(), NoFrustumCulling))
+        .id();
+    // speed lines: same additive vertex-colour material, own mesh (empty until moving fast)
+    let streaks_mesh = meshes.add(degenerate());
+    let streaks = commands
+        .spawn((Mesh3d(streaks_mesh.clone()), MeshMaterial3d(ribbon_mat.clone()), Transform::default(), Visibility::Hidden, layer.clone(), NoFrustumCulling))
         .id();
 
     let shuriken = commands
@@ -175,7 +239,7 @@ fn spawn(
         ))
         .id();
 
-    commands.insert_resource(VmEnts { blade, ribbons_mesh, ribbons, shuriken, glow });
+    commands.insert_resource(VmEnts { blade, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
 }
 
 pub fn update(
@@ -257,6 +321,26 @@ pub fn update(
         b.rotation = Quat::from_rotation_x(w.pitch + rp) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
     }
 
+    // speed lines (dash / grapple / fast running), smoothed so they ease in and out
+    {
+        let target = streak_target(l.dashing, l.grappling, l.speed);
+        vm.streak += (target - vm.streak) * (1.0 - (-9.0 * dt).exp());
+        let (pos, col, idx) = streak_quads(time.elapsed_secs(), vm.streak, 16.0 / 9.0, 0.8, local.0);
+        if let Some(mut m) = meshes.get_mut(&ents.streaks_mesh) {
+            *m = if idx.is_empty() {
+                degenerate()
+            } else {
+                Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
+                    .with_inserted_indices(bevy::mesh::Indices::U32(idx))
+            };
+        }
+        if let Ok(mut v) = vis.get_mut(ents.streaks) {
+            v.set_if_neq(if vm.streak > 0.02 { Visibility::Inherited } else { Visibility::Hidden });
+        }
+    }
+
     // arc ribbons -> quads
     let gain = arc_gain(vm.flare, vm.whiff);
     let mut pos = Vec::<[f32; 3]>::new();
@@ -313,6 +397,20 @@ mod tests {
         let (b, p) = recoil_kick(RECOIL_S);
         assert!(b > 0.04 && p > 0.05);
         assert!(recoil_kick(RECOIL_S * 0.5).0 < b, "eases out");
+    }
+
+    #[test]
+    fn speed_lines_scale_with_intensity_and_stay_on_screen() {
+        assert!(streak_quads(0.0, 0.0, 1.78, 0.8, [1.0; 3]).2.is_empty(), "off at rest");
+        let few = streak_quads(1.0, 0.2, 1.78, 0.8, [1.0; 3]).2.len();
+        let many = streak_quads(1.0, 1.0, 1.78, 0.8, [1.0; 3]).2.len();
+        assert!(many > few * 2, "more lines when dashing: {few} vs {many}");
+        let (pos, col, _) = streak_quads(2.0, 1.0, 1.78, 0.8, [1.0; 3]);
+        assert!(pos.iter().all(|p| p[0].abs() < 1.45 && p[1].abs() < 0.82 && p[2] == -0.8), "inside the screen");
+        assert!(col.iter().all(|c| (0.0..=1.0).contains(&c[3])));
+        assert!(streak_target(true, false, 0.0) == 1.0 && streak_target(false, true, 0.0) > 0.5);
+        assert!(streak_target(false, false, 30.0) > streak_target(false, false, 16.0));
+        assert_eq!(streak_target(false, false, 5.0), 0.0);
     }
 
     #[test]

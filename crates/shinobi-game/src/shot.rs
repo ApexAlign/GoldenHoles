@@ -188,6 +188,9 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.fx.hit_stop = 0.06;
                 }
             }
+            // speed lines: `dashfx` (full), `grapplefx`
+            "dashfx" => v.fx.dashing = true,
+            "grapplefx" => v.fx.grappling = true,
             "rope" => {
                 let e = v.eye;
                 v.rope = Some((e, [e[0] + 4.0, e[1] + 7.0, e[2] - 18.0]));
