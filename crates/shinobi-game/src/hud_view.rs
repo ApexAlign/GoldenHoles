@@ -39,13 +39,13 @@ impl Plugin for HudPlugin {
         for w in warnings {
             eprintln!("settings: {w}");
         }
-        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default(), perf: Perf::default() })
+        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default(), perf: Perf::default(), screen: Screen::InGame, reconnect: false })
             .insert_resource(SettingsRes(settings))
             .init_resource::<MenuRes>()
             .init_resource::<ConsoleRes>()
             .add_systems(Startup, enable_radial)
             .add_systems(Startup, spawn.after(crate::play::setup))
-            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, sync_audio, perf_tick, update).chain());
+            .add_systems(Update, (menu_input.before(crate::play::input), reconnect_system, mode_ui.after(crate::play::input), sync_settings, sync_audio, perf_tick, update).chain());
     }
 }
 
@@ -153,11 +153,20 @@ fn menu_input(
     mut settings: ResMut<SettingsRes>,
     mut exit: MessageWriter<AppExit>,
     mut prev_locked: Local<bool>,
-    net: Res<crate::net::Net>,
+    mut ctl: ResMut<HudCtl>,
 ) {
-    // the server dropped us (kick / ban): there is no reconnect, so Enter / Esc closes the game to re-launch it
-    if net.0.game.net.kicked().is_some() && (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Space)) {
-        exit.write(AppExit::Success);
+    // kicked / disconnected: Esc quits, Enter rebuilds the session once the kick cooldown is over
+    let wait = match &ctl.screen {
+        Screen::Kicked { retry_in_s, .. } => Some(*retry_in_s),
+        Screen::Disconnected { .. } => Some(0.0),
+        _ => None,
+    };
+    if let Some(retry_in_s) = wait {
+        if keys.just_pressed(KeyCode::Escape) {
+            exit.write(AppExit::Success);
+        } else if (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space)) && retry_in_s <= 0.0 {
+            ctl.reconnect = true;
+        }
         return;
     }
     let locked = lock.p.locked();
@@ -274,6 +283,40 @@ fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
     mode.machine.cfg.radial_hold_secs = 0.25;
 }
 
+/// Enter on the kicked / disconnected screen: a fresh `UdpGame` (new socket, new HELLO) replaces the dead session and
+/// every per-session HUD / input state is reset. The player's settings are re-applied by `sync_settings`.
+fn reconnect_system(
+    mut ctl: ResMut<HudCtl>,
+    mut net: ResMut<Net>,
+    label: Option<Res<ServerLabel>>,
+    level: Option<Res<crate::net::LevelRes>>,
+    mut settings: ResMut<SettingsRes>,
+    mut pending: ResMut<crate::net::PendingInput>,
+    mut menu: ResMut<MenuRes>,
+) {
+    if !std::mem::take(&mut ctl.reconnect) {
+        return;
+    }
+    let (Some(label), Some(level)) = (label, level) else { return };
+    let Ok(addr) = label.0.parse::<std::net::SocketAddr>() else {
+        eprintln!("reconnect: bad server address {:?}", label.0);
+        return;
+    };
+    match shinobi_client::udp_game::UdpGame::new(addr, level.0.clone(), shinobi_client::client_game::ClientGameCfg::default()) {
+        Ok(g) => {
+            net.0 = g;
+            ctl.watch = ConnWatch::default();
+            ctl.bridge = HudBridge::default();
+            ctl.screen = Screen::Connecting { elapsed_s: 0.0 };
+            pending.0 = Default::default();
+            menu.menu = Menu::Closed;
+            settings.set_changed(); // re-apply sensitivity / fov / touch layout to the new game
+            eprintln!("reconnecting to {addr}");
+        }
+        Err(e) => eprintln!("reconnect failed: {e}"),
+    }
+}
+
 /// F3 toggles the performance overlay; every frame feeds it the frame time, fixed steps run and the reconcile offset.
 fn perf_tick(
     keys: Res<ButtonInput<KeyCode>>,
@@ -367,6 +410,10 @@ struct HudCtl {
     watch: ConnWatch,
     /// F3 performance overlay state.
     perf: Perf,
+    /// Last screen the connection watcher chose (the kicked / disconnected screens read their retry time from it).
+    screen: Screen,
+    /// Enter on a kicked / disconnected screen: `reconnect_system` rebuilds the session.
+    reconnect: bool,
 }
 
 /// Printable server address for the "server unreachable" screen.
@@ -417,6 +464,7 @@ fn update(
         label.as_ref().map_or("?", |l| l.0.as_str()),
     );
 
+    ctl.screen = screen.clone();
     let mut prims = Hud::build(&state);
     if let Some(t) = touch.as_ref().filter(|t| t.visible) {
         prims.extend(t.s.draw(state.dash_ready, state.shuriken_ready, &pal));
