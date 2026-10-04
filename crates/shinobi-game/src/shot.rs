@@ -127,6 +127,10 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
         let p: f32 = arg.parse().unwrap_or(0.5);
         match name {
             "lock" | "locked" | "break" => {
+                // `locked`: the Locked edge fires at frame 112 so the snap ring is mid-flight at capture
+                if name == "locked" && frame == 112 {
+                    v.lock_edges.push(shinobi_sim::combat::aim_assist::LockEdge::Locked);
+                }
                 // remote 4 hovers at (+8, ~1.6, -14) of our spawn: aim the triangle at its chest
                 let pos = v.remotes.iter().find(|(id, _)| *id == 4).map_or([bx + 8.0, by + 1.4, bz - 14.0], |(_, s)| [s.pos[0], s.pos[1] + 0.2, s.pos[2]]);
                 v.lock = Some(LockOn {

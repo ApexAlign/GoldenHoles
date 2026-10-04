@@ -28,6 +28,15 @@ struct LockViz {
     mat: Handle<StandardMaterial>,
     /// Seconds left of the lock "snap" flare.
     snap: f32,
+    /// Expanding pulse ring at the moment of lock.
+    ring: Entity,
+    ring_mat: Handle<StandardMaterial>,
+    /// Seconds since the lock snapped (large = no ring).
+    ring_t: f32,
+    /// Render-side smoothed aim point / progress / target (the sim steps at 60 Hz; the eye does not).
+    smooth_pos: Option<Vec3>,
+    smooth_p: f32,
+    last_target: Option<u16>,
 }
 
 pub struct LockPlugin;
@@ -69,7 +78,33 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let edges = commands
         .spawn((Mesh3d(edge_mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
         .id();
-    commands.insert_resource(LockViz { dots, halos, edges, edge_mesh, emitter, beams, beam_mesh, mat, snap: 0.0 });
+    let ring_mat = mats.add(StandardMaterial { base_color: Color::BLACK, unlit: true, alpha_mode: AlphaMode::Add, double_sided: true, cull_mode: None, ..default() });
+    let ring = commands
+        .spawn((
+            Mesh3d(meshes.add(Annulus::new(0.45, 0.5))),
+            MeshMaterial3d(ring_mat.clone()),
+            Transform::default(),
+            Visibility::Hidden,
+            NoFrustumCulling,
+        ))
+        .id();
+    commands.insert_resource(LockViz {
+        dots,
+        halos,
+        edges,
+        edge_mesh,
+        emitter,
+        beams,
+        beam_mesh,
+        mat,
+        snap: 0.0,
+        ring,
+        ring_mat,
+        ring_t: 9.0,
+        smooth_pos: None,
+        smooth_p: 0.0,
+        last_target: None,
+    });
 }
 
 /// Triangle layout for one frame: (radius in metres on the chest, rotation angle, size multiplier).
@@ -79,16 +114,31 @@ pub fn layout(phase: LockPhase, p: f32, t: f32, snap: f32) -> (f32, f32, f32) {
     match phase {
         LockPhase::Search => (0.0, 0.0, 0.0),
         LockPhase::Acquire => {
-            let e = p * p * (3.0 - 2.0 * p); // smoothstep
-            (0.55 + (0.12 - 0.55) * e, t * 1.6 * (1.0 - p) + 0.4, 1.0)
+            // dots fly in from wide and spiral onto the target: ease-out (fast at first, settling softly)
+            let e = 1.0 - (1.0 - p).powi(3);
+            (1.1 + (0.12 - 1.1) * e, t * 1.2 + (1.0 - e) * 2.4, 1.0)
         }
         LockPhase::Locked => {
             let flare = (snap / SNAP_S).clamp(0.0, 1.0);
             (0.10 + 0.012 * (t * 22.0).sin() - 0.03 * flare, t * 0.4, 1.0 + 1.6 * flare)
         }
         // progress decays 1 -> 0 while breaking: scatter outward and shrink away
-        LockPhase::Break => (0.12 + (1.0 - p) * 0.9, t * 6.0, p.max(0.0)),
+        LockPhase::Break => (0.12 + (1.0 - p).sqrt() * 1.8, t * 9.0, p.max(0.0)),
     }
+}
+
+/// Exponential smoothing toward `target`, frame-rate independent (`rate` per second; ~25 follows within a frame or two).
+pub fn smooth_toward(cur: Vec3, target: Vec3, dt: f32, rate: f32) -> Vec3 {
+    cur.lerp(target, 1.0 - (-rate * dt).exp())
+}
+
+/// The lock pulse ring `secs` after the snap: (progress 0..1 across its life, HDR gain). `None` once finished.
+pub fn ring_state(secs: f32) -> Option<(f32, f32)> {
+    const LIFE: f32 = 0.32;
+    (secs >= 0.0 && secs < LIFE).then(|| {
+        let u = secs / LIFE;
+        (u, 9.0 * (1.0 - u) * (1.0 - u))
+    })
 }
 
 /// The three dot offsets in the plane facing the viewer (`right`, `up` span that plane).
@@ -113,8 +163,13 @@ fn update(
     if view.0.lock_edges.iter().any(|e| matches!(e, LockEdge::Locked)) {
         viz.snap = SNAP_S;
     }
+    let dt = time.delta_secs();
+    viz.ring_t += dt;
+    if view.0.lock_edges.iter().any(|e| matches!(e, LockEdge::Locked)) {
+        viz.ring_t = 0.0;
+    }
     let hide = |viz: &LockViz, tf: &mut Query<(&mut Transform, &mut Visibility)>| {
-        for e in viz.dots.iter().chain(viz.halos.iter()).chain([&viz.emitter, &viz.beams, &viz.edges]) {
+        for e in viz.dots.iter().chain(viz.halos.iter()).chain([&viz.emitter, &viz.beams, &viz.edges, &viz.ring]) {
             if let Ok((_, mut v)) = tf.get_mut(*e) {
                 *v = Visibility::Hidden;
             }
@@ -122,19 +177,35 @@ fn update(
     };
     let Some(lock) = view.0.lock.filter(|l| l.phase != LockPhase::Search) else {
         hide(&viz, &mut tf);
+        viz.smooth_pos = None;
+        viz.last_target = None;
         return;
     };
+    // render-side smoothing: the sim steps at 60 Hz, the picture should not
+    let raw = Vec3::from(lock.pos);
+    let smoothed = match (viz.smooth_pos, viz.last_target == Some(lock.target)) {
+        (Some(cur), true) => smooth_toward(cur, raw, dt, 28.0),
+        _ => raw, // new target: start on it (no sweep across the map)
+    };
+    viz.smooth_pos = Some(smoothed);
+    viz.last_target = Some(lock.target);
+    viz.smooth_p = match lock.phase {
+        LockPhase::Locked => 1.0,
+        LockPhase::Break => lock.progress,
+        _ => viz.smooth_p + (lock.progress - viz.smooth_p) * (1.0 - (-18.0 * dt).exp()),
+    };
+    let lock_progress = viz.smooth_p;
 
     let eye = Vec3::from(view.0.eye);
     // the triangle floats just in front of the chest surface (the aim point is the body centre: dots inside the torso
     // would be hidden by the depth test)
-    let pos = Vec3::from(lock.pos);
+    let pos = smoothed;
     let to_eye = (eye - pos).normalize_or(Vec3::Z);
     let pos = pos + to_eye * 0.35;
     let right = to_eye.cross(Vec3::Y).normalize_or(Vec3::X);
     let up = right.cross(to_eye).normalize_or(Vec3::Y);
     let dist = eye.distance(pos);
-    let (r, angle, mult) = layout(lock.phase, lock.progress, t, viz.snap);
+    let (r, angle, mult) = layout(lock.phase, lock_progress, t, viz.snap);
     // screen-constant size: layout metres are scaled so the locked triangle is ~15 px in radius and each dot ~6 px across
     // at any range (1080p-ish: 270 px per metre at 1 m, / dist)
     let d = dist.clamp(2.0, 80.0);
@@ -166,7 +237,7 @@ fn update(
     // faint triangle edges joining the dots (brighter once locked), camera-facing thin quads
     {
         let (mut pv, mut cv, mut iv) = (Vec::new(), Vec::new(), Vec::new());
-        let al = if lock.phase == LockPhase::Locked { 0.7 } else { 0.35 } * mult.min(1.0);
+        let al = if lock.phase == LockPhase::Locked { 0.7 } else { 0.35 } * mult.min(1.0) * if lock.phase == LockPhase::Break { mult * mult } else { 1.0 };
         for i in 0..3 {
             let (a, b) = (pos + dots[i], pos + dots[(i + 1) % 3]);
             let side = (b - a).cross(to_eye).normalize_or(Vec3::Y) * (0.003 * d);
@@ -186,6 +257,24 @@ fn update(
         }
         if let Ok((_, mut v)) = tf.get_mut(viz.edges) {
             *v = if mult > 0.01 { Visibility::Visible } else { Visibility::Hidden };
+        }
+    }
+
+    // lock pulse ring: expands from the triangle outward and fades, facing the camera
+    {
+        let ring = ring_state(viz.ring_t).filter(|_| lock.phase == LockPhase::Locked);
+        if let Some((u, gain)) = ring {
+            let r_px = 15.0 + 70.0 * u;
+            let diameter = 2.0 * r_px * d / 270.0;
+            if let Some(mut m) = mats.get_mut(&viz.ring_mat) {
+                m.base_color = Color::linear_rgb(c[0] * gain, c[1] * gain, c[2] * gain);
+            }
+            if let Ok((mut rt, mut v)) = tf.get_mut(viz.ring) {
+                *rt = Transform::from_translation(pos).with_rotation(Quat::from_rotation_arc(Vec3::Z, to_eye)).with_scale(Vec3::splat(diameter));
+                *v = Visibility::Visible;
+            }
+        } else if let Ok((_, mut v)) = tf.get_mut(viz.ring) {
+            *v = Visibility::Hidden;
         }
     }
 
@@ -212,6 +301,21 @@ fn update(
                 pos_v.push((p + side * w).to_array());
                 pos_v.push((p - side * w).to_array());
                 let cc = [c[0] * 3.0, c[1] * 3.0, c[2] * 3.0, al];
+                col.extend([cc, cc]);
+            }
+            idx.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+        // tether: a thin line from just in front of the crosshair to the target (foreshortened: crosshair -> target on screen)
+        {
+            let dir = (pos - eye).normalize_or(Vec3::NEG_Z);
+            let a = eye + dir * 0.7;
+            let b = pos;
+            let side = dir.cross(Vec3::Y).normalize_or(Vec3::X) * 0.0025 * d.max(1.0);
+            let base = pos_v.len() as u32;
+            for (p, al) in [(a, 0.0), (b, 0.35)] {
+                pos_v.push((p + side).to_array());
+                pos_v.push((p - side).to_array());
+                let cc = [c[0] * 2.5, c[1] * 2.5, c[2] * 2.5, al];
                 col.extend([cc, cc]);
             }
             idx.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
@@ -253,6 +357,34 @@ mod tests {
         assert!(at(0.2).0 > at(0.9).0, "radius grows as progress falls");
         assert!(at(0.2).2 < at(0.9).2, "dots shrink away");
         assert_eq!(layout(LockPhase::Search, 0.0, 0.0, 0.0).2, 0.0);
+    }
+
+    #[test]
+    fn acquire_is_ease_out_fast_at_first_and_settles() {
+        let r = |p| layout(LockPhase::Acquire, p, 0.0, 0.0).0;
+        // the first third of the progress covers more than half of the distance travelled
+        let total = r(0.0) - r(1.0);
+        assert!((r(0.0) - r(0.33)) > 0.5 * total);
+        assert!(r(0.0) > 1.0, "dots start wide");
+    }
+
+    #[test]
+    fn smoothing_converges_and_is_frame_rate_independent() {
+        let (a, b) = (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0));
+        let one = smooth_toward(a, b, 1.0 / 30.0, 25.0);
+        let two = smooth_toward(smooth_toward(a, b, 1.0 / 60.0, 25.0), b, 1.0 / 60.0, 25.0);
+        assert!((one - two).length() < 1e-4, "two 60 Hz steps == one 30 Hz step");
+        assert!(smooth_toward(a, b, 1.0, 25.0).x > 9.99);
+        assert_eq!(smooth_toward(a, b, 0.0, 25.0), a);
+    }
+
+    #[test]
+    fn lock_ring_lives_a_third_of_a_second_and_fades() {
+        assert!(ring_state(-0.1).is_none());
+        let (u0, g0) = ring_state(0.0).unwrap();
+        let (u1, g1) = ring_state(0.2).unwrap();
+        assert!(u1 > u0 && g1 < g0);
+        assert!(ring_state(0.33).is_none());
     }
 
     #[test]
