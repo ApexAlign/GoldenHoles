@@ -208,6 +208,7 @@ fn sync_blocks(
     fog: Option<Res<crate::grid::FogFar>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut tf: Query<&mut Transform>,
+    mut vis: Query<&mut Visibility>,
 ) {
     let (size, thick) = (view.0.block_size.max(0.1), view.0.block_thickness.max(0.02));
     let Some(cube) = viz.cube.clone() else { return };
@@ -294,7 +295,9 @@ fn sync_blocks(
         // heavily damaged pieces flicker
         if let Some((e, lv)) = viz.live[&cell].crack {
             let on = lv < 5 || (t * 22.0 + seed as f32 * 0.37).sin() > -0.5;
-            commands.entity(e).insert(if on { Visibility::Visible } else { Visibility::Hidden });
+            if let Ok(mut v) = vis.get_mut(e) {
+                v.set_if_neq(if on { Visibility::Visible } else { Visibility::Hidden });
+            }
         }
     }
 

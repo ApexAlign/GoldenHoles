@@ -477,6 +477,7 @@ fn sync_remotes(
     mut body_mats: ResMut<BodyMats>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut tf: Query<&mut Transform>,
+    mut vis: Query<&mut Visibility>,
 ) {
     let s = &net.0;
     let v = &view.0;
@@ -540,7 +541,9 @@ fn sync_remotes(
             bt.translation = Vec3::new(0.0, 4.2, 0.0);
             bt.scale = Vec3::new(w, 6.5, w);
         }
-        commands.entity(ent.beacon).insert(if dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
+        if let Ok(mut bv) = vis.get_mut(ent.beacon) {
+            bv.set_if_neq(if dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
+        }
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
             r.translation = Vec3::from(d.pos);

@@ -39,7 +39,7 @@ impl Plugin for HudPlugin {
         for w in warnings {
             eprintln!("settings: {w}");
         }
-        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default(), perf: Perf::default(), screen: Screen::InGame, reconnect: false })
+        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default(), perf: Perf::default(), screen: Screen::InGame, reconnect: false, last_sig: None })
             .insert_resource(SettingsRes(settings))
             .init_resource::<MenuRes>()
             .init_resource::<ConsoleRes>()
@@ -419,6 +419,8 @@ struct HudCtl {
     screen: Screen,
     /// Enter on a kicked / disconnected screen: `reconnect_system` rebuilds the session.
     reconnect: bool,
+    /// Signature of the geometry last uploaded to the HUD mesh (skip identical uploads).
+    last_sig: Option<u64>,
 }
 
 /// Printable server address for the "server unreachable" screen.
@@ -512,6 +514,14 @@ fn update(
     }
     let g = tessellate(&prims, aspect);
 
+    // a replaced mesh is re-extracted and re-uploaded (buffer free + alloc) by the renderer: skip it when the HUD
+    // geometry is bit-identical to last frame's (idle screens, paused menus)
+    let sig = geometry_signature(&g.pos, &g.col, &g.idx);
+    if ctl.last_sig == Some(sig) {
+        return;
+    }
+    ctl.last_sig = Some(sig);
+
     if let Some(mut m) = meshes.get_mut(&hud.0) {
         *m = if g.idx.is_empty() {
             blank()
@@ -521,5 +531,42 @@ fn update(
                 .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, g.col)
                 .with_inserted_indices(Indices::U32(g.idx))
         };
+    }
+}
+
+/// FNV-1a over the exact bits of a tessellated HUD (positions, colours, indices).
+fn geometry_signature(pos: &[[f32; 2]], col: &[[f32; 4]], idx: &[u32]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |v: u32| {
+        h ^= v as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for p in pos {
+        p.iter().for_each(|f| eat(f.to_bits()));
+    }
+    for c in col {
+        c.iter().for_each(|f| eat(f.to_bits()));
+    }
+    idx.iter().for_each(|i| eat(*i));
+    eat(pos.len() as u32);
+    h
+}
+
+#[cfg(test)]
+mod sig_tests {
+    use super::*;
+
+    #[test]
+    fn signature_changes_with_any_vertex_colour_or_index() {
+        let (p, c, i) = (vec![[0.0, 1.0], [2.0, 3.0]], vec![[1.0; 4], [0.5; 4]], vec![0u32, 1, 0]);
+        let base = geometry_signature(&p, &c, &i);
+        assert_eq!(base, geometry_signature(&p, &c, &i), "stable");
+        let mut p2 = p.clone();
+        p2[1][0] = 2.0001;
+        assert_ne!(base, geometry_signature(&p2, &c, &i));
+        let mut c2 = c.clone();
+        c2[0][3] = 0.9;
+        assert_ne!(base, geometry_signature(&p, &c2, &i));
+        assert_ne!(base, geometry_signature(&p, &c, &[0, 1, 1]));
     }
 }
