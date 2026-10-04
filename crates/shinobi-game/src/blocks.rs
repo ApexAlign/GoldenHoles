@@ -23,7 +23,11 @@ type Cell = [i32; 3];
 
 const PRINT_S: f32 = 0.35;
 const DEREZ_S: f32 = 0.65;
-const VOXELS: usize = 22;
+const VOXELS: usize = 34;
+
+/// Review-shot hook: force every piece to this crack bucket (0..=8) instead of the replicated health.
+#[derive(Resource, Clone, Copy)]
+pub struct CrackOverride(pub Option<u8>);
 
 #[derive(Component)]
 struct PrintHead {
@@ -209,6 +213,7 @@ fn sync_blocks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut tf: Query<&mut Transform>,
     mut vis: Query<&mut Visibility>,
+    crack_override: Option<Res<CrackOverride>>,
 ) {
     let (size, thick) = (view.0.block_size.max(0.1), view.0.block_thickness.max(0.02));
     let Some(cube) = viz.cube.clone() else { return };
@@ -260,7 +265,7 @@ fn sync_blocks(
                 Mesh3d(cube.clone()),
                 MeshMaterial3d(m.clone()),
                 Transform::from_translation(l.center + off).with_scale(Vec3::splat(span * 0.1)),
-                Voxel { vel, age: 0.0, life: DEREZ_S * (0.6 + 0.4 * hash01(s ^ 0x4444)), size: span * (0.06 + 0.1 * hash01(s ^ 0x5555)), phase: hash01(s ^ 0x6666) * 6.28 },
+                Voxel { vel, age: 0.0, life: DEREZ_S * (0.6 + 0.4 * hash01(s ^ 0x4444)), size: span * (0.09 + 0.14 * hash01(s ^ 0x5555)), phase: hash01(s ^ 0x6666) * 6.28 },
             ));
         }
     }
@@ -269,7 +274,8 @@ fn sync_blocks(
     let t = time.elapsed_secs();
     let cells: Vec<Cell> = viz.live.keys().copied().collect();
     for cell in cells {
-        let level = crack_level(net.0.game.net.block_hp_q(cell));
+        // shots can force a crack level (`SHOT_FX=cracks:N`); live play reads the replicated piece health
+        let level = crack_override.as_ref().and_then(|o| o.0).unwrap_or_else(|| crack_level(net.0.game.net.block_hp_q(cell)));
         let (owner, seed, thin, entity, have) = {
             let l = &viz.live[&cell];
             (l.owner, l.seed, l.thin, l.entity, l.crack)

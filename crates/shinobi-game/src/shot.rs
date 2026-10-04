@@ -104,7 +104,9 @@ struct OfflineSpawn([f32; 3]);
 
 /// Visual-review aid: `SHOT_FX=lock:0.5,locked,break:0.4,pieces,discs` (comma list) overlays synthetic lock-on state,
 /// pieces and discs on the published view so the offline shot shows them. Unset = untouched (goldens stay exact).
-fn inject_fx(mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>) {
+fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>, mut frame: Local<u32>) {
+    *frame += 1;
+    let frame = *frame;
     use shinobi_client::client_game::LockOn;
     use shinobi_sim::blocks::{BlockInfo, Piece, SCALE_ONE};
     use shinobi_sim::combat::aim_assist::LockPhase;
@@ -153,6 +155,31 @@ fn inject_fx(mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>) {
                     v.blocks.push(BlockInfo { owner, cell, piece, scale_q: SCALE_ONE });
                 }
             }
+            // pieces that appear late (frame 108 of ~120): the print scan-in caught mid-build
+            "print" => {
+                if frame >= 108 {
+                    v.blocks.extend(review_pieces(v.block_size, base.0));
+                }
+            }
+            // pieces that vanish at frame 100: the voxel de-rez caught ~0.3 s into the dissolve
+            "derez" => {
+                if frame < 100 {
+                    v.blocks.extend(review_pieces(v.block_size, base.0));
+                }
+            }
+            // `cracks:N` (0..=8): every piece shows that damage bucket
+            "cracks" => {
+                v.blocks.extend(review_pieces(v.block_size, base.0));
+                commands.insert_resource(crate::blocks::CrackOverride(Some(p as u8)));
+            }
+            // katana connect at frame 114: hit flash + kill burst + arc flare + hit-stop (`katana` = hit, `katanakill`)
+            "katana" | "katanakill" => {
+                if frame == 114 {
+                    let e = v.eye;
+                    v.fx.slash_hit = Some(shinobi_client::client_game::PredictedSlashHit { point: [e[0], e[1] - 0.2, e[2] - 4.0], killed: name == "katanakill" });
+                    v.fx.hit_stop = 0.06;
+                }
+            }
             "rope" => {
                 let e = v.eye;
                 v.rope = Some((e, [e[0] + 4.0, e[1] + 7.0, e[2] - 18.0]));
@@ -167,6 +194,23 @@ fn inject_fx(mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>) {
             _ => {}
         }
     }
+}
+
+/// The five review pieces (floor, two walls, two ramps) in front of the camera spawn.
+fn review_pieces(block_size: f32, base: [f32; 3]) -> Vec<shinobi_sim::blocks::BlockInfo> {
+    use shinobi_sim::blocks::{BlockInfo, Piece, PieceKind, SCALE_ONE};
+    let sz = block_size.max(0.5);
+    let c = |x: i32, y: i32, z: i32| [(base[0] / sz).floor() as i32 + x * 2, (base[1] / sz).floor() as i32 + y, (base[2] / sz).floor() as i32 + z * 2];
+    [
+        (2, c(-2, 0, -2), Piece::FLOOR),
+        (3, c(-1, 0, -3), Piece::WALL_X),
+        (5, c(1, 0, -3), Piece::WALL_Z),
+        (7, c(0, 0, -4), Piece { kind: PieceKind::Ramp, axis: 0 }),
+        (9, c(2, 0, -2), Piece { kind: PieceKind::Ramp, axis: 1 }),
+    ]
+    .into_iter()
+    .map(|(owner, cell, piece)| BlockInfo { owner, cell, piece, scale_q: SCALE_ONE })
+    .collect()
 }
 
 fn connect_offline(mut net: ResMut<Net>) {

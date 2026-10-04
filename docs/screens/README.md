@@ -23,3 +23,5 @@ swing 0.12 s before capture. The big star in the centre of non-idle shots is the
 it sits bottom-left. Frames: `graphics_*.png`.
 
 UPDATE: plain `--shot-offline` is now IDLE (rest pose, no scripted swing/throw). Pass `--action` for the old scripted swing + throw (golden_check.sh does). Frame: `graphics_default_offline_spawn3.png`.
+
+More `SHOT_FX` hooks: `print` (pieces appear at frame 108: scan-in mid-build), `derez` (pieces vanish at frame 100: voxel dissolve), `cracks:N` (damage bucket 0-8 on every piece), `katana` / `katanakill` (katana connect at frame 114: flash, sparks, arc flare, hit-stop). Flashes are capped to 30% of the eye distance so melee hits never white out the screen.

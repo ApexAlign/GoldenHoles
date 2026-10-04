@@ -80,7 +80,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     commands.insert_resource(Look {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         sphere: meshes.add(Sphere::new(0.5)),
-        white: mat(&mut mats, [1.0; 3], 10.0),
+        white: mat(&mut mats, [1.0; 3], 5.0),
         sparks: Default::default(),
     });
 }
@@ -113,6 +113,7 @@ fn spawn_impacts(
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut q: ResMut<ImpactQueue>,
     time: Res<Time>,
+    view: Res<ViewRes>,
 ) {
     let base = (time.elapsed_secs() * 1000.0) as u32;
     for (n, im) in q.0.drain(..).enumerate() {
@@ -146,7 +147,8 @@ fn spawn_impacts(
             Mesh3d(look.sphere.clone()),
             MeshMaterial3d(look.white.clone()),
             Transform::from_translation(im.pos).with_scale(Vec3::splat(0.01)),
-            Flash { age: 0.0, life: flife, size: flash },
+            // never let a flash fill the screen: at close range (katana hits) cap its size by the distance to the eye
+            Flash { age: 0.0, life: flife, size: f32::min(flash, 0.3 * Vec3::from(view.0.eye).distance(im.pos).max(1.0)) },
         ));
     }
 }
