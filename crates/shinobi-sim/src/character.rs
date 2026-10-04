@@ -657,7 +657,7 @@ impl CharacterSystem {
         // ---- KCC ----
         let shape = Capsule::new_y(cfg.half_height, cfg.radius);
         let desired = self.vel * dt;
-        let mut wall_normals: Vec<Vector<Real>> = Vec::new();
+        let mut wall_hits: Vec<(ColliderHandle, Vector<Real>)> = Vec::new();
         let mut mv = self.kcc.move_shape(
             dt,
             &w.bodies,
@@ -667,7 +667,7 @@ impl CharacterSystem {
             &Isometry::translation(pos.x, pos.y, pos.z),
             desired,
             self.filter(),
-            |c| wall_normals.push(c.hit.normal1.into_inner()),
+            |c| wall_hits.push((c.handle, c.hit.normal1.into_inner())),
         );
         // Wedge recovery: pressed flat against a wall face inside the skin (a wall-run exit, a grapple into a wall, a
         // corner seam) the controller can return no motion at all, even along the wall. Step 3 cm out of the face along
@@ -675,7 +675,17 @@ impl CharacterSystem {
         let dh = flat(desired);
         let mut new_pos = pos + mv.translation;
         if dh.norm() > 0.05 && flat(mv.translation).norm() < dh.norm() * 0.1 {
-            if let Some(n) = wall_normals.iter().map(|n| flat(*n)).find(|n| n.norm() > 0.5).map(|n| n.normalize()) {
+            // static geometry only: another player's capsule is not a wall (and the predictor may not even see it)
+            let is_static = |h: &ColliderHandle| {
+                w.colliders.get(*h).map_or(false, |c| {
+                    let player = c.collision_groups().memberships == crate::combat::GROUP_PLAYER;
+                    !player && c.parent().map_or(true, |b| w.bodies.get(b).map_or(true, |rb| rb.is_fixed()))
+                })
+            };
+            // ...and only when no player is part of the pile-up: a body in the way is the server's call, not a wedge
+            let touching_player = wall_hits.iter().any(|(h, _)| w.colliders.get(*h).map_or(false, |c| c.collision_groups().memberships == crate::combat::GROUP_PLAYER));
+            let wall = if touching_player { None } else { wall_hits.iter().filter(|(h, _)| is_static(h)).map(|(_, n)| flat(*n)).find(|n| n.norm() > 0.5) };
+            if let Some(n) = wall.map(|n| n.normalize()) {
                 let away = -n * WEDGE_NUDGE; // `n` points from the character into the wall
                 let tangent = dh - n * dh.dot(&n).max(0.0);
                 let retry = Vector::new(tangent.x, desired.y, tangent.z);
