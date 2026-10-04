@@ -17,6 +17,7 @@ use shinobi_client::screens::{self, MenuItem, Screen, SettingRow};
 use shinobi_client::console::{self, Console};
 use shinobi_client::hud::BuildSlot;
 use shinobi_client::input_mode::Mode;
+use shinobi_client::perf::{self, Perf};
 use shinobi_client::radial;
 use shinobi_client::settings::Settings;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -38,13 +39,13 @@ impl Plugin for HudPlugin {
         for w in warnings {
             eprintln!("settings: {w}");
         }
-        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default() })
+        app.insert_resource(HudCtl { bridge: HudBridge::default(), watch: ConnWatch::default(), perf: Perf::default() })
             .insert_resource(SettingsRes(settings))
             .init_resource::<MenuRes>()
             .init_resource::<ConsoleRes>()
             .add_systems(Startup, enable_radial)
             .add_systems(Startup, spawn.after(crate::play::setup))
-            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, sync_audio, update).chain());
+            .add_systems(Update, (menu_input.before(crate::play::input), mode_ui.after(crate::play::input), sync_settings, sync_audio, perf_tick, update).chain());
     }
 }
 
@@ -273,6 +274,25 @@ fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
     mode.machine.cfg.radial_hold_secs = 0.25;
 }
 
+/// F3 toggles the performance overlay; every frame feeds it the frame time, fixed steps run and the reconcile offset.
+fn perf_tick(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time<Real>>,
+    view: Res<crate::net::ViewRes>,
+    mut ctl: ResMut<HudCtl>,
+    mut last_steps: Local<u32>,
+) {
+    if keys.just_pressed(KeyCode::F3) {
+        ctl.perf.toggle();
+    }
+    // FIXED_STEPS is a free-running counter that play.rs's PERF line also zeroes every 3 s: a smaller value = a reset
+    let now = crate::net::FIXED_STEPS.load(std::sync::atomic::Ordering::Relaxed);
+    let steps = if now >= *last_steps { now - *last_steps } else { now };
+    *last_steps = now;
+    let c = view.0.correction_offset;
+    ctl.perf.record(time.delta_secs(), steps, (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt());
+}
+
 /// Master volume / mute -> the telemetry speaker glyph (absent when the game runs without the audio plugin).
 fn sync_audio(audio: Option<Res<crate::audio::AudioSettings>>, mut ctl: ResMut<HudCtl>) {
     ctl.bridge.audio = audio.map(|a| (a.volume, a.muted));
@@ -345,6 +365,8 @@ fn mode_ui(
 struct HudCtl {
     bridge: HudBridge,
     watch: ConnWatch,
+    /// F3 performance overlay state.
+    perf: Perf,
 }
 
 /// Printable server address for the "server unreachable" screen.
@@ -422,7 +444,19 @@ fn update(
             _ => {}
         }
     }
-    let prims = shinobi_client::hud::with_text_shadows(prims, &pal);
+    let mut prims = shinobi_client::hud::with_text_shadows(prims, &pal);
+    if ctl.perf.visible {
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        let lock = match view.0.lock.map(|l| l.phase) {
+            Some(LockPhase::Acquire) => "ACQUIRE",
+            Some(LockPhase::Locked) => "LOCKED",
+            Some(LockPhase::Break) => "BREAK",
+            _ => "SEARCH",
+        };
+        let c = view.0.correction_offset;
+        let inputs = perf::PerfInputs { ping_ms: state.ping_ms, correction_m: (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt(), lock };
+        prims.extend(perf::draw(&ctl.perf, &inputs, &pal));
+    }
     let g = tessellate(&prims, aspect);
 
     if let Some(mut m) = meshes.get_mut(&hud.0) {

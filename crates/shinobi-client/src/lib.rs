@@ -7,6 +7,7 @@ pub mod colour;
 pub mod console;
 pub mod hud_raster;
 pub mod hud_scenarios;
+pub mod perf;
 pub mod radial;
 pub mod font;
 pub mod fx;
