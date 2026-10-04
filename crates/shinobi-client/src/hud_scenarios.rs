@@ -94,6 +94,10 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let flank = HudState {
         since_damage: Some((0.2, -2.4)),
         damage_frac: 0.3,
+        enemy_tags: vec![
+            crate::hud::EnemyTag { pos: (0.42, 0.45), name: callsign(2), dist: 8.0, team: None, colour: Some(player_rgba(2)), hp: None },
+            crate::hud::EnemyTag { pos: (0.64, 0.5), name: callsign(3), dist: 21.0, team: None, colour: Some(player_rgba(3)), hp: Some(0.6) },
+        ],
         enemy_ticks: vec![crate::hud::EnemyTick { bearing: 1.9, dist: 12.0 }, crate::hud::EnemyTick { bearing: -0.4 - 1.0, dist: 33.0 }],
         ..base()
     };
