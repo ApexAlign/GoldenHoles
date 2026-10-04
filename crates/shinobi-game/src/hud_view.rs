@@ -348,10 +348,15 @@ fn mode_ui(
     mut typed: MessageReader<KeyboardInput>,
     mut console: ResMut<ConsoleRes>,
     mut settings: ResMut<SettingsRes>,
+    keys: Res<ButtonInput<KeyCode>>,
     ctl: Res<HudCtl>,
     mut net: ResMut<Net>,
     mut audio: Option<ResMut<crate::audio::AudioSettings>>,
 ) {
+    // F1: bring the first-30-seconds controls strip back (or put it away)
+    if keys.just_pressed(KeyCode::F1) {
+        net.0.game.toggle_controls();
+    }
     let Some(out) = mode.out else {
         typed.clear();
         return;

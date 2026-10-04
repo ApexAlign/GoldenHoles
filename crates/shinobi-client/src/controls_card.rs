@@ -21,14 +21,14 @@ pub enum Use {
 }
 
 const ROWS: [(Use, &str, &str); 8] = [
-    (Use::Move, "W A S D", "MOVE"),
-    (Use::Jump, "SPACE", "JUMP  AGAIN IN AIR"),
+    (Use::Move, "WASD", "MOVE"),
+    (Use::Jump, "SPACE", "JUMP"),
     (Use::Dash, "SHIFT", "DASH"),
     (Use::Slide, "C", "SLIDE"),
-    (Use::Grapple, "E", "GRAPPLE  HOLD C TO SWING"),
-    (Use::Build, "N / M", "BUILD FLOOR / WALL"),
+    (Use::Grapple, "E", "GRAPPLE"),
+    (Use::Build, "N M", "BUILD"),
     (Use::Katana, "LMB", "KATANA"),
-    (Use::Shuriken, "RMB", "SHURIKEN"),
+    (Use::Shuriken, "RMB", "THROW + LOCK"),
 ];
 
 /// One drawn row: key text, action text, opacity 0..1.
@@ -45,6 +45,8 @@ pub struct ControlsCard {
     played: f32,
     /// Seconds since each row's first use (None = not used yet).
     used: [Option<f32>; 8],
+    /// F1: show every row at full strength until toggled off again.
+    pinned: bool,
 }
 
 impl ControlsCard {
@@ -63,12 +65,20 @@ impl ControlsCard {
         }
     }
 
+    /// F1: bring the strip back (all rows, no fading) or put it away again.
+    pub fn toggle_pin(&mut self) {
+        self.pinned = !self.pinned;
+    }
+
     pub fn finished(&self) -> bool {
-        self.played >= LIFETIME + FADE || self.used.iter().all(|u| u.map_or(false, |t| t >= ROW_FADE))
+        !self.pinned && (self.played >= LIFETIME + FADE || self.used.iter().all(|u| u.map_or(false, |t| t >= ROW_FADE)))
     }
 
     /// Rows still worth drawing (alpha > 0), with their opacity.
     pub fn rows(&self) -> Vec<ControlRow> {
+        if self.pinned {
+            return ROWS.iter().map(|r| ControlRow { key: r.1, label: r.2, alpha: 1.0 }).collect();
+        }
         let global = ((LIFETIME + FADE - self.played) / FADE).clamp(0.0, 1.0);
         ROWS.iter()
             .zip(self.used.iter())
@@ -81,19 +91,20 @@ impl ControlsCard {
     }
 }
 
-/// Draw list for the card: slim panel on the left edge, clear of the crosshair and the side rails' content.
+/// Draw list for the strip: a compact two-line block above the chin, centred in the clear band (x 0.26 to 0.74, y 0.75
+/// to 0.80), four `KEY ACTION` entries per line. Rows that were used (faded out) drop away and the rest re-flow.
 pub fn prims(rows: &[ControlRow], p: &Palette) -> Vec<Prim> {
     let mut out = Vec::new();
     if rows.is_empty() {
         return out;
     }
-    let (x, y0, dy) = (0.045, 0.30, 0.034);
-    let a = rows.iter().map(|r| r.alpha).fold(0.0f32, f32::max);
-    out.push(Prim::Text { pos: (x, y0 - 0.026), text: "CONTROLS".into(), size: 0.013, color: p.cyan.a(0.55 * a), align: Align::Left });
+    let (x0, col_w, y0, dy) = (0.26f32, 0.12f32, 0.76f32, 0.03f32);
     for (i, r) in rows.iter().enumerate() {
-        let y = y0 + i as f32 * dy;
+        let (col, line) = ((i % 4) as f32, (i / 4) as f32);
+        let (x, y) = (x0 + col * col_w, y0 + line * dy);
+        let key_w = r.key.chars().count() as f32 * 0.0088 + 0.008;
         out.push(Prim::Text { pos: (x, y), text: r.key.into(), size: 0.016, color: p.gold.a(0.95 * r.alpha), align: Align::Left });
-        out.push(Prim::Text { pos: (x + 0.075, y), text: r.label.into(), size: 0.015, color: p.text.a(0.8 * r.alpha), align: Align::Left });
+        out.push(Prim::Text { pos: (x + key_w, y), text: r.label.into(), size: 0.015, color: p.text.a(0.8 * r.alpha), align: Align::Left });
     }
     out
 }
@@ -150,12 +161,24 @@ mod tests {
     }
 
     #[test]
-    fn the_card_stays_off_the_centre_of_the_screen() {
-        let c = ControlsCard::default();
+    fn the_strip_sits_low_in_the_clear_band_and_f1_brings_it_back() {
+        let mut c = ControlsCard::default();
         for pr in prims(&c.rows(), &Palette::TRON) {
             if let Prim::Text { pos, .. } = pr {
-                assert!(pos.0 < 0.3 && (pos.1 < 0.4 || pos.1 > 0.6 || pos.0 < 0.3), "{pos:?}");
+                assert!(pos.0 >= 0.26 && pos.0 <= 0.74 && pos.1 > 0.7 && pos.1 < 0.84, "{pos:?}");
             }
         }
+        // finish it, then F1 shows everything again at full strength, F1 again hides it
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken] {
+            c.mark(u);
+        }
+        for _ in 0..60 {
+            c.tick(1.0 / 60.0);
+        }
+        assert!(c.finished() && c.rows().is_empty());
+        c.toggle_pin();
+        assert!(!c.finished() && c.rows().len() == 8 && c.rows().iter().all(|r| r.alpha == 1.0));
+        c.toggle_pin();
+        assert!(c.rows().is_empty());
     }
 }

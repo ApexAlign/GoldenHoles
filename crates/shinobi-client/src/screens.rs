@@ -76,10 +76,13 @@ pub fn kick_hint(reason: &str) -> Option<&'static str> {
     })
 }
 
+/// Seconds before Enter reconnects after a kick. The server bans an ADDRESS and a reconnect uses a new socket, so a
+/// long wait protects nothing; this only stops a held key from hammering the server.
+pub const RECONNECT_WAIT_S: f32 = 2.0;
+
 pub fn kick_cooldown_s(r: KickReason) -> f32 {
     match r {
-        KickReason::Cheat | KickReason::Flood => 10.0,
-        KickReason::ServerFull => 3.0,
+        KickReason::Cheat | KickReason::Flood | KickReason::ServerFull => RECONNECT_WAIT_S,
         KickReason::Timeout | KickReason::Other | KickReason::BadVersion => 0.0,
     }
 }
@@ -484,13 +487,13 @@ mod tests {
     fn kick_cooldown_counts_down_then_offers_reconnect() {
         let p = Palette::TRON;
         let k = |since| Screen::kicked(KickReason::Cheat, since);
-        assert_eq!(k(0.0), Screen::Kicked { reason: "CHEAT DETECTION".into(), retry_in_s: 10.0 });
-        assert!(texts(&draw(&k(2.5), &p, 0.0)).contains(&"RETRY IN 8S".to_string()), "ceil of 7.5");
-        assert!(texts(&draw(&k(10.0), &p, 0.0)).contains(&"PRESS ENTER TO RECONNECT".to_string()));
+        assert_eq!(k(0.0), Screen::Kicked { reason: "CHEAT DETECTION".into(), retry_in_s: RECONNECT_WAIT_S });
+        assert!(texts(&draw(&k(0.5), &p, 0.0)).contains(&"RETRY IN 2S".to_string()), "ceil of 1.5");
+        assert!(texts(&draw(&k(RECONNECT_WAIT_S), &p, 0.0)).contains(&"PRESS ENTER TO RECONNECT".to_string()));
         assert_eq!(k(99.0), Screen::Kicked { reason: "CHEAT DETECTION".into(), retry_in_s: 0.0 });
         // a timeout kick has no ban: reconnect immediately
         assert!(matches!(Screen::kicked(KickReason::Timeout, 0.0), Screen::Kicked { retry_in_s, .. } if retry_in_s == 0.0));
-        assert_eq!(kick_cooldown_s(KickReason::ServerFull), 3.0);
+        assert_eq!(kick_cooldown_s(KickReason::ServerFull), RECONNECT_WAIT_S);
     }
 
     #[test]

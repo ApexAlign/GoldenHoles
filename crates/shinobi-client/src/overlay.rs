@@ -10,7 +10,7 @@ pub fn window_title(locked: bool) -> &'static str {
     if locked { "Golden Shinobi" } else { "Golden Shinobi - click the window to play" }
 }
 
-const CONTROLS: [(&str, &str); 13] = [
+const CONTROLS: [(&str, &str); 14] = [
     ("W A S D", "MOVE"),
     ("MOUSE", "AIM"),
     ("SPACE", "JUMP / DOUBLE JUMP"),
@@ -21,6 +21,7 @@ const CONTROLS: [(&str, &str); 13] = [
     ("N / M", "BUILD FLOOR OR RAMP / WALL"),
     ("TAB", "SCOREBOARD"),
     ("BACKQUOTE", "CONSOLE"),
+    ("F1 / F3", "CONTROLS STRIP / PERF"),
     ("LEFT CLICK", "KATANA SLICE"),
     ("RIGHT CLICK", "THROW SHURIKEN"),
     ("ESC", "RELEASE MOUSE"),
@@ -39,7 +40,7 @@ pub fn click_to_play(p: &Palette, time: f32) -> Vec<Prim> {
     let pulse = 0.65 + 0.35 * (time * 3.0).sin().abs();
     out.push(Prim::Text { pos: (0.5, 0.27), text: "CLICK TO PLAY".into(), size: 0.05, color: p.orange.a(pulse), align: Align::Center });
     for (i, (key, what)) in CONTROLS.iter().enumerate() {
-        let y = 0.36 + i as f32 * 0.04;
+        let y = 0.36 + i as f32 * 0.037;
         out.push(Prim::Text { pos: (0.30, y), text: (*key).into(), size: 0.026, color: p.cyan, align: Align::Left });
         out.push(Prim::Text { pos: (0.70, y), text: (*what).into(), size: 0.026, color: p.text, align: Align::Right });
     }

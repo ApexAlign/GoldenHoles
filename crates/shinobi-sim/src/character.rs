@@ -666,6 +666,18 @@ impl CharacterSystem {
             |_| {},
         );
         let mut new_pos = pos + mv.translation;
+        // wedged against a ledge just short of the release radius: the reel is driving into geometry and the capsule
+        // barely moves, so let go (carrying the real speed, not the phantom reel speed) instead of hanging there
+        if let Some(g) = self.grapple {
+            let want = desired.norm();
+            if want > 0.05 && mv.translation.norm() < want * 0.2 {
+                let eye = pos + Vector::y() * cfg.eye_above_center;
+                if (g.anchor - eye).norm() < cfg.grapple_arrive + 0.6 {
+                    self.grapple_release();
+                    self.vel = mv.translation / dt;
+                }
+            }
+        }
         if desired.y > 0.0 && mv.translation.y < desired.y * 0.5 {
             self.vel.y = self.vel.y.min(0.0); // ceiling
         }

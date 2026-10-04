@@ -92,6 +92,8 @@ pub struct HudBridge {
     grapple_flash: f32,
     /// The last kill that eliminated us (shown while dead).
     last_death: Option<KilledBy>,
+    /// World position of the killer when the kill landed.
+    last_death_pos: Option<[f32; 3]>,
     /// Seconds we have been invulnerable (spawn protection) since last becoming so.
     invuln_t: f32,
     /// Master volume and mute from the audio settings, for the speaker glyph (the shell sets it each frame).
@@ -155,7 +157,9 @@ impl HudBridge {
                 if let shinobi_sim::events::NetEvent::Kill { victim, .. } = e {
                     if *victim == local_id {
                         let tint = k.killer_team.map(|t| crate::hud::Palette::TRON.team(t)).or(k.killer_colour);
-                        self.last_death = Some(KilledBy { name: k.killer.clone(), colour: tint, weapon: k.weapon, void: k.void });
+                        self.last_death = Some(KilledBy { name: k.killer.clone(), colour: tint, weapon: k.weapon, void: k.void, bearing: None, dist: None, kd: None });
+                        // where the killer stood (if we can see them this frame)
+                        self.last_death_pos = if k.void { None } else if let shinobi_sim::events::NetEvent::Kill { killer, .. } = e { view.remotes.iter().find(|(id, _)| id == killer).map(|(_, s)| s.pos) } else { None };
                     }
                 }
                 self.killfeed.push(k);
@@ -299,6 +303,13 @@ impl HudBridge {
         hs.boot = self.boot;
         // death overlay, spawn shield, match result, audio glyph
         hs.killed_by = if hs.dead { self.last_death.clone() } else { None };
+        if let Some(k) = hs.killed_by.as_mut() {
+            if let Some(pos) = self.last_death_pos {
+                k.bearing = Some(bearing_to(me, view.aim.yaw, pos));
+                k.dist = Some(((pos[0] - me[0]).powi(2) + (pos[2] - me[2]).powi(2)).sqrt());
+            }
+            k.kd = hs.scoreboard.iter().find(|r| r.local).map(|r| (r.kills, r.deaths));
+        }
         if hs.invulnerable && !hs.dead {
             self.invuln_t += dt;
             hs.shield = Some((1.0 - self.invuln_t / SPAWN_SHIELD_SECS).clamp(0.0, 1.0));
@@ -695,5 +706,20 @@ mod tests {
         let mut b = HudBridge::default();
         let s = b.update(0.016, &RenderView::default(), &net(), false);
         assert_eq!((s.kill_limit, s.time_limit_secs), (Some(ffa_kill_limit()), None));
+    }
+
+    #[test]
+    fn the_killers_position_is_remembered_for_the_death_arrow() {
+        use shinobi_sim::events::NetEvent;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.remotes = vec![(7, crate::interp::Sample { pos: [10.0, 0.5, -20.0], yaw: 0.0, extrapolated: false })];
+        v.events = vec![NetEvent::Kill { killer: 7, victim: 0, kind: shinobi_proto::gameplay::KIND_SHURIKEN, tick: 1 }];
+        b.update(0.016, &v, &net(), false);
+        assert_eq!(b.last_death_pos, Some([10.0, 0.5, -20.0]));
+        // a void death has no killer to point at
+        v.events = vec![NetEvent::Kill { killer: 0, victim: 0, kind: 200, tick: 2 }];
+        b.update(0.016, &v, &net(), false);
+        assert_eq!(b.last_death_pos, None);
     }
 }
