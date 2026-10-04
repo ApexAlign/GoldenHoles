@@ -184,7 +184,7 @@ fn update(
     // render-side smoothing: the sim steps at 60 Hz, the picture should not
     let raw = Vec3::from(lock.pos);
     let smoothed = match (viz.smooth_pos, viz.last_target == Some(lock.target)) {
-        (Some(cur), true) => smooth_toward(cur, raw, dt, 28.0),
+        (Some(cur), true) => smooth_toward(cur + Vec3::from(lock.target_vel) * dt, raw, dt, 28.0), // lead along the target velocity
         _ => raw, // new target: start on it (no sweep across the map)
     };
     viz.smooth_pos = Some(smoothed);
@@ -205,7 +205,7 @@ fn update(
     let right = to_eye.cross(Vec3::Y).normalize_or(Vec3::X);
     let up = right.cross(to_eye).normalize_or(Vec3::Y);
     let dist = eye.distance(pos);
-    let (r, angle, mult) = layout(lock.phase, lock_progress, t, viz.snap);
+    let (r, angle, mult) = layout(lock.phase, if lock.phase == LockPhase::Break { (1.0 - lock.t_since_phase / 0.25).clamp(0.0, 1.0) } else { lock_progress }, t, viz.snap);
     // screen-constant size: layout metres are scaled so the locked triangle is ~15 px in radius and each dot ~6 px across
     // at any range (1080p-ish: 270 px per metre at 1 m, / dist)
     let d = dist.clamp(2.0, 80.0);
@@ -262,7 +262,9 @@ fn update(
 
     // lock pulse ring: expands from the triangle outward and fades, facing the camera
     {
-        let ring = ring_state(viz.ring_t).filter(|_| lock.phase == LockPhase::Locked);
+        // timing comes from the lock state itself (`t_since_phase`); the edge-driven clock is the fallback
+        let since = if lock.t_since_phase > 0.0 || viz.ring_t > 1.0 { lock.t_since_phase } else { viz.ring_t };
+        let ring = ring_state(since).filter(|_| lock.phase == LockPhase::Locked);
         if let Some((u, gain)) = ring {
             let r_px = 15.0 + 70.0 * u;
             let diameter = 2.0 * r_px * d / 270.0;
