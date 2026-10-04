@@ -107,6 +107,10 @@ pub fn kill_limit_to_show(override_limit: Option<u16>, from_server: Option<u16>)
     override_limit.or(from_server).unwrap_or_else(ffa_kill_limit)
 }
 
+/// Seconds out of the fight before health regeneration starts (`Balance::player.regen_delay_s`).
+pub fn regen_delay_s() -> f32 {
+    shinobi_sim::balance::Balance::demo().player.regen_delay_s
+}
 pub fn ffa_kill_limit() -> u16 {
     shinobi_sim::balance::Balance::demo().matches.frag_limit.min(u16::MAX as u32) as u16
 }
@@ -143,6 +147,10 @@ pub struct HudBridge {
     invuln_t: f32,
     /// Master volume and mute from the audio settings, for the speaker glyph (the shell sets it each frame).
     pub audio: Option<(f32, bool)>,
+    /// Seconds without damage before health regeneration starts (`None` = the demo balance's value).
+    pub regen_delay: Option<f32>,
+    prev_hp: Option<f32>,
+    since_damage: f32,
     was_dead: bool,
     booted: bool,
     /// Seconds of enemy-reveal left after our last throw.
@@ -298,6 +306,17 @@ impl HudBridge {
             ..Default::default()
         };
         let mut hs = HudState::from_frame(net, &stats, &self.fx, self.time);
+        // regeneration: the delay counts from the last damage taken (a hit or any hp drop), then hp climbs back
+        if view.hits.iter().any(|h| h.taken) || self.prev_hp.map_or(false, |p| stats.hp < p - 1e-4) {
+            self.since_damage = 0.0;
+        } else {
+            self.since_damage += dt;
+        }
+        self.prev_hp = Some(stats.hp);
+        if !hs.dead && stats.hp < 0.999 && view.hp.is_some() {
+            let delay = self.regen_delay.unwrap_or_else(regen_delay_s).max(0.01);
+            hs.regen = Some(if self.since_damage >= delay { crate::hud::Regen::Healing } else { crate::hud::Regen::Waiting((self.since_damage / delay).clamp(0.0, 1.0)) });
+        }
         // --- cyber layer: telemetry, radar, compass, lock brackets, boot-up ---
         let (yaw, pitch) = view.look_angles();
         hs.heading = Some(yaw);
@@ -583,6 +602,31 @@ mod tests {
         assert!(s.show_scoreboard && s.scoreboard.len() == 1);
         assert_eq!(s.match_clock, Some((PhaseKind::Intermission, Some(9))));
         assert_eq!(s.banner.as_ref().map(|x| x.text.as_str()), Some("MATCH OVER"));
+    }
+
+    #[test]
+    fn regen_waits_for_the_delay_then_heals_and_resets_on_damage() {
+        use crate::hud::Regen;
+        let mut b = HudBridge::default();
+        b.regen_delay = Some(4.0);
+        let mut v = RenderView::default();
+        v.hp = Some(MAX_HP);
+        assert_eq!(b.update(0.1, &v, &net(), false).regen, None, "full health: nothing to show");
+        v.hp = Some(MAX_HP * 0.5);
+        let s = b.update(0.1, &v, &net(), false);
+        assert_eq!(s.regen, Some(Regen::Waiting(0.0)), "the drop itself restarts the delay");
+        let s = b.update(2.0, &v, &net(), false);
+        match s.regen {
+            Some(Regen::Waiting(f)) => assert!((f - 0.5).abs() < 1e-4, "{f}"),
+            r => panic!("{r:?}"),
+        }
+        assert_eq!(b.update(2.5, &v, &net(), false).regen, Some(Regen::Healing));
+        v.hp = Some(MAX_HP * 0.7); // climbing: still healing, not a damage event
+        assert_eq!(b.update(0.1, &v, &net(), false).regen, Some(Regen::Healing));
+        v.hp = Some(MAX_HP * 0.6); // hit again
+        assert_eq!(b.update(0.1, &v, &net(), false).regen, Some(Regen::Waiting(0.0)));
+        v.hp = Some(MAX_HP);
+        assert_eq!(b.update(0.1, &v, &net(), false).regen, None);
     }
 
     #[test]

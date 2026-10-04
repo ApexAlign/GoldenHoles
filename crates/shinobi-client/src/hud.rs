@@ -314,6 +314,15 @@ pub const RESPAWN_SECS: f32 = shinobi_sim::pvp::RESPAWN_TICKS as f32 / 60.0;
 /// Spawn protection length for the shield indicator (docs/DEMO.md: 1.5 s).
 pub const SPAWN_SHIELD_SECS: f32 = 1.5;
 
+/// Health regeneration phase of the local player (`None` in `HudState::regen` = at full health or dead).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Regen {
+    /// Out of the fight for this fraction (0..1) of the regen delay.
+    Waiting(f32),
+    /// Delay over: hp is climbing back.
+    Healing,
+}
+
 /// Plain data the HUD draws from. Fill it once per frame from the latest snapshot / server events plus
 /// the local `HudFx`; `Hud` never reaches into sim or net state itself.
 #[derive(Clone, Debug, Default)]
@@ -352,6 +361,7 @@ pub struct HudState {
     pub killed_by: Option<KilledBy>,
     /// Spawn protection left as a fraction 0..=1 (`None` = not protected).
     pub shield: Option<f32>,
+    pub regen: Option<Regen>,
     /// End-of-match result (intermission screen).
     pub winner: Option<Winner>,
     /// End-of-match awards derived from the match's kill events (what the client saw).
@@ -823,6 +833,21 @@ impl Hud {
         // Chin: hp bar (left), ultimate bar (right), and between them three cooldown arcs with weapon glyphs:
         // shuriken, katana, dash. Cyan ring = ready, orange sweep = recharging.
         segmented_bar(&mut out, Rect::new(0.225, 0.93, 0.145, 0.014), s.hp, 10, if low_hp { p.magenta } else { p.cyan }, pulse);
+        if let Some(rg) = s.regen {
+            // under the hp bar: a thin line filling toward the regen start, then a pulsing "+ REGEN" while healing
+            let r = Rect::new(0.225, 0.949, 0.145, 0.003);
+            match rg {
+                Regen::Waiting(f) => {
+                    out.push(Prim::Rect { r, color: p.cyan.a(0.15), glow: 0.0 });
+                    out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * f, r.h), color: p.cyan.a(0.7), glow: 0.0 });
+                }
+                Regen::Healing => {
+                    let a = 0.65 + 0.35 * (s.time * 8.0).sin();
+                    out.push(Prim::Rect { r, color: p.cyan.a(a), glow: 0.004 });
+                    out.push(Prim::Text { pos: (0.225, 0.972), text: "+ REGEN".into(), size: 0.018, color: p.cyan.a(a), align: Align::Left });
+                }
+            }
+        }
         bar(&mut out, Rect::new(0.59, 0.93, 0.17, 0.014), s.ult, p.gold, 1.0);
         for (x, ready, glyph) in [(0.45, s.shuriken_ready, Glyph::Shuriken), (0.5, s.slice_ready, Glyph::Katana), (0.55, s.dash_ready, Glyph::Dash)] {
             cooldown_arc(&mut out, (x, 0.94), 0.026, ready, glyph, p);
@@ -1854,6 +1879,18 @@ pub fn bounds(p: &Prim) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn regen_indicator_shows_only_while_hurt_and_labels_healing() {
+        let pal = Palette::TRON;
+        let texts = |r: Option<Regen>| {
+            let s = HudState { hp: 0.5, regen: r, ..Default::default() };
+            Hud::build_with(&s, &pal).iter().filter_map(|p| if let Prim::Text { text, .. } = p { Some(text.clone()) } else { None }).collect::<Vec<_>>()
+        };
+        assert!(!texts(None).iter().any(|t| t.contains("REGEN")));
+        assert!(!texts(Some(Regen::Waiting(0.4))).iter().any(|t| t.contains("REGEN")));
+        assert!(texts(Some(Regen::Healing)).iter().any(|t| t == "+ REGEN"));
+    }
+
     #[test]
     fn hud_scale_one_is_identity_and_scaling_keeps_corners() {
         let prims = vec![
