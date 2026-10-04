@@ -119,12 +119,16 @@ fn btn(action: Action, down: bool) -> ButtonEvent {
 fn miss(stick: (f32, f32), hold: &[Action], look: (f32, f32), alpha: f64) -> f32 {
     let mut rig = Rig::new();
     let mut f = InputFrame { stick, look, ..Default::default() };
+    // ground movement ramps to full speed in ~0.13 s and a slide needs run speed: press the buttons after the ramp
+    for _ in 0..15 {
+        rig.tick(&f, 0.0);
+        f.look = (0.0, 0.0);
+    }
     for a in hold {
         f.buttons.push(btn(*a, true));
     }
-    for _ in 0..240 {
+    for _ in 0..225 {
         rig.tick(&f, 0.0);
-        f.look = (0.0, 0.0);
         f.buttons.clear();
     }
     assert!(rig.game.predicting(), "prediction must be running");

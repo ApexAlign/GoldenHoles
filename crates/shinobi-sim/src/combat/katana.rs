@@ -283,10 +283,10 @@ mod tests {
         let mut cd = 0.0f32;
         let mut now = 0.0;
         let mut swings = (0, 0);
-        for t in 0..600u32 {
+        for t in 0..1000u32 {
             // slice taps at irregular intervals, dash taps that sometimes steal the dash cooldown first
             let slice = t % 25 == 3 || t % 91 == 50;
-            let dash = t % 53 == 20;
+            let dash = t % 100 == 76 || t % 53 == 20;
             let yaw = t as f32 * 0.05;
             w.queries.update(&w.colliders);
 

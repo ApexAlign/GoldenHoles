@@ -74,6 +74,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let col = P.base.rgb + P.tint.rgb * (lines * 0.55 * fade * pulse + edge * 3.2);
         return vec4<f32>(col, 1.0);
     }
-    let col = P.base.rgb + P.glow.rgb * lines * fade * pulse;
+    // floor: a soft glow halo around the major lines, and data pulses sliding diagonally across them
+    // (only near the camera: far away the wide halos of converging lines would merge into a flat bright haze)
+    let near = 1.0 - smoothstep(P.grid.w * 0.04, P.grid.w * 0.22, dist);
+    let halo = grid_line(uv, P.grid.x * P.grid.y, P.grid.z * 7.0) * 0.22 * near;
+    let wave = pow(max(0.0, sin(TAU * (uv.x * 0.012 + uv.y * 0.017) - globals.time * 1.1)), 14.0);
+    let col = P.base.rgb + P.glow.rgb * ((lines + halo) * fade * pulse + major * wave * 3.2 * fade * near);
     return vec4<f32>(col, 1.0);
 }

@@ -127,22 +127,32 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
         let p: f32 = arg.parse().unwrap_or(0.5);
         match name {
             "lock" | "locked" | "break" => {
+                // `locked`: the Locked edge fires at frame 112 so the snap ring is mid-flight at capture
+                if name == "locked" && frame == 112 {
+                    v.lock_edges.push(shinobi_sim::combat::aim_assist::LockEdge::Locked);
+                }
                 // remote 4 hovers at (+8, ~1.6, -14) of our spawn: aim the triangle at its chest
                 let pos = v.remotes.iter().find(|(id, _)| *id == 4).map_or([bx + 8.0, by + 1.4, bz - 14.0], |(_, s)| [s.pos[0], s.pos[1] + 0.2, s.pos[2]]);
+                let since = match name {
+                    "locked" => (frame.saturating_sub(112)) as f32 / 60.0,
+                    "break" => 0.12,
+                    _ => 1.0,
+                };
+                let progress = if name == "locked" { 1.0 } else if name == "break" { 1.0 - since / 0.25 } else { p };
                 v.lock = Some(LockOn {
                     target: 4,
                     pos,
-                    progress: if name == "locked" { 1.0 } else { p },
+                    progress,
                     locked: name == "locked",
                     phase: match name {
                         "locked" => LockPhase::Locked,
                         "break" => LockPhase::Break,
                         _ => LockPhase::Acquire,
                     },
-                    eased: if name == "locked" { 1.0 } else { p * p * (3.0 - 2.0 * p) },
-                    t_since_phase: 0.5,
+                    eased: progress * progress * (3.0 - 2.0 * progress),
+                    t_since_phase: since,
                     target_vel: [0.0; 3],
-                    blend: if name == "break" { 0.5 } else { 1.0 },
+                    blend: progress,
                 });
             }
             "pieces" => {
@@ -184,6 +194,9 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.fx.hit_stop = 0.06;
                 }
             }
+            // speed lines: `dashfx` (full), `grapplefx`
+            "dashfx" => v.fx.dashing = true,
+            "grapplefx" => v.fx.grappling = true,
             "rope" => {
                 let e = v.eye;
                 v.rope = Some((e, [e[0] + 4.0, e[1] + 7.0, e[2] - 18.0]));

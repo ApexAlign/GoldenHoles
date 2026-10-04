@@ -97,7 +97,7 @@ mod tests {
         let a_cap = w.bodies[a.body].colliders()[0];
         let run = PlayerInput { move_dir: vector![1.0, 0.0, 0.0], ..Default::default() };
         let mut now = 0.0;
-        for _ in 0..75 {
+        for _ in 0..110 {
             step_player(&mut a, &run, &mut w, now, DT);
             now += DT;
         }

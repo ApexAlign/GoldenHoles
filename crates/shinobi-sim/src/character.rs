@@ -14,6 +14,10 @@ pub struct Cfg {
     pub half_height: f32,
     pub radius: f32,
     pub run_speed: f32,
+    /// Ground acceleration toward the stick (m/s^2): ~0.12 s to full run speed.
+    pub ground_accel: f32,
+    /// Ground braking when the stick is released or reversed (m/s^2): a ~0.25 m stop from a full run, no skating.
+    pub ground_decel: f32,
     pub air_accel: f32,
     pub gravity: f32,
     pub terminal: f32,
@@ -88,8 +92,10 @@ impl Default for Cfg {
         Self {
             half_height: 0.5,
             radius: 0.3,
-            run_speed: 9.0,
-            air_accel: 70.0,
+            run_speed: 6.5,
+            ground_accel: 54.0,
+            ground_decel: 85.0,
+            air_accel: 22.0,
             gravity: 28.0,
             terminal: 40.0,
             ground_stick: -2.0,
@@ -98,16 +104,16 @@ impl Default for Cfg {
             peak_window: 2.5,
             coyote: 0.1,
             jump_buffer: 0.12,
-            dash_speed: 30.0,
-            dash_time: 0.18,
-            dash_cd: 0.6,
-            roll_speed: 14.0,
-            roll_time: 0.4,
+            dash_speed: 18.0,
+            dash_time: 0.3,
+            dash_cd: 1.2,
+            roll_speed: 9.0,
+            roll_time: 0.35,
             wall_probe: 0.35,
             wall_min_speed: 4.0,
-            wall_speed: 11.0,
+            wall_speed: 8.0,
             wall_stick: 1.5,
-            wall_max_time: 1.5,
+            wall_max_time: 1.8,
             wall_jump_push: 9.0,
             snap_dist: 0.25,
             slope_limit: 45f32.to_radians(),
@@ -115,10 +121,10 @@ impl Default for Cfg {
             trail_life: 4.0,
             trail_height: 1.6,
             trail_thick: 0.15,
-            slide_start_speed: 6.0,
-            slide_boost: 14.0,
+            slide_start_speed: 5.0,
+            slide_boost: 9.0,
             slide_friction: 12.0,
-            slide_min_speed: 5.0,
+            slide_min_speed: 3.5,
             slide_max_time: 1.2,
             slide_cd: 0.5,
             kcc_offset: 0.01,
@@ -126,7 +132,7 @@ impl Default for Cfg {
             slide_eye_drop: 0.35,
             grapple_range: 40.0,
             grapple_min_len: 2.5,
-            grapple_speed: 26.0,
+            grapple_speed: 20.0,
             grapple_accel: 80.0,
             grapple_cd: 0.5,
             grapple_arrive: 2.0,
@@ -135,9 +141,9 @@ impl Default for Cfg {
             grapple_lift: 3.0,
             grapple_steer: 0.35,
             grapple_miss_cd: 0.15,
-            grapple_max_speed: 28.0,
+            grapple_max_speed: 22.0,
             grapple_ease_in: 0.25,
-            grapple_arrive_speed: 14.0,
+            grapple_arrive_speed: 10.0,
             grapple_soft_dist: 6.0,
             grapple_brake: 70.0,
         }
@@ -558,11 +564,17 @@ impl CharacterSystem {
                 self.vel.x = sl.dir.x * sl.speed;
                 self.vel.z = sl.dir.z * sl.speed;
             } else {
-                // instant horizontal accel
+                // horizontal accel: weighty on the ground (ramp up, hard brake on release / reversal), steering-only in the air
                 let target = dir_in * cfg.run_speed;
                 let h = flat(self.vel);
                 let delta = target - h;
-                let max = if grounded_state { f32::INFINITY } else { cfg.air_accel * dt };
+                let max = if grounded_state {
+                    let speed = h.norm();
+                    let turning = dir_in.norm_squared() > 0.0 && speed > 0.5 && h.dot(&dir_in) < 0.8 * speed * dir_in.norm();
+                    if dir_in.norm_squared() == 0.0 || turning { cfg.ground_decel * dt } else { cfg.ground_accel * dt }
+                } else {
+                    cfg.air_accel * dt
+                };
                 let step = if self.grapple.is_some() {
                     // on the rope the stick only nudges; it never brakes the swing or the reel, and once the player is
                     // faster than a run it can only steer (sideways), never add speed (no runaway on the rope)
@@ -1069,7 +1081,7 @@ mod tests {
             assert!(matches!(ch.state, MoveState::WallRun { .. }), "tick {i}: {:?}", ch.state);
         }
         assert!((y(&ch, &w) - 5.0).abs() < 0.01, "gravity must be off, y = {}", y(&ch, &w));
-        assert!(w.bodies[ch.body].translation().z < -8.0, "ran along the wall");
+        assert!(w.bodies[ch.body].translation().z < -6.0, "ran along the wall");
         // releasing cling (and not holding jump) drops out of the run on the next tick
         tick(&mut ch, &mut w, &PlayerInput { move_dir: input.move_dir, ..Default::default() }, &mut now);
         assert_eq!(ch.state, MoveState::Airborne);
@@ -1119,17 +1131,80 @@ mod tests {
         assert_eq!(ch.state, MoveState::Grounded);
     }
 
-    #[test]
-    fn acceleration_is_instant_on_the_ground() {
+    /// Ticks to reach full run speed from rest, and the distance covered stopping from it after the stick is released.
+    fn ground_run_numbers() -> (u32, f32, f32) {
         let mut w = world();
         floor(&mut w);
         let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
         let mut now = 0.0;
         settle(&mut ch, &mut w, &mut now);
-        tick(&mut ch, &mut w, &PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() }, &mut now);
-        assert!((ch.vel.z + ch.cfg.run_speed).abs() < 1e-4, "full speed on the first tick, vel.z = {}", ch.vel.z);
-        tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
-        assert!(flat(ch.vel).norm() < 1e-4, "and a dead stop on release");
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        let mut to_full = 0;
+        while flat(ch.vel).norm() < ch.cfg.run_speed - 1e-3 && to_full < 120 {
+            tick(&mut ch, &mut w, &run, &mut now);
+            to_full += 1;
+        }
+        let top = flat(ch.vel).norm();
+        for _ in 0..5 {
+            tick(&mut ch, &mut w, &run, &mut now); // cruising
+        }
+        let z0 = w.bodies[ch.body].translation().z;
+        let mut stop_ticks = 0;
+        while flat(ch.vel).norm() > 1e-4 && stop_ticks < 120 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+            stop_ticks += 1;
+        }
+        let stop_dist = (z0 - w.bodies[ch.body].translation().z).abs();
+        eprintln!("ground feel: top {top:.2} m/s, {to_full} ticks ({:.3} s) to full, stop in {stop_ticks} ticks ({:.3} s) over {stop_dist:.3} m", to_full as f32 * DT, stop_ticks as f32 * DT);
+        (to_full, stop_dist, top)
+    }
+
+    #[test]
+    fn ground_movement_has_weight_ramps_up_and_stops_dead_without_skating() {
+        let (to_full, stop_dist, top) = ground_run_numbers();
+        assert!((top - Cfg::default().run_speed).abs() < 1e-3);
+        assert!((5..=10).contains(&to_full), "about 0.1 s to full speed: {to_full} ticks");
+        assert!(stop_dist < 0.6, "stops inside 0.6 m from a full run: {stop_dist}");
+        // after the stick is released there is no drift: a few ticks later the velocity is exactly zero and stays zero
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let run = PlayerInput { move_dir: vector![0.3, 0.0, -1.0].normalize(), ..Default::default() };
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        for _ in 0..8 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        let p = *w.bodies[ch.body].translation();
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        assert!(flat(ch.vel).norm() == 0.0, "no residual velocity");
+        assert!((*w.bodies[ch.body].translation() - p).norm() < 1e-3, "and no drift");
+    }
+
+    #[test]
+    fn reversing_direction_on_the_ground_brakes_hard_instead_of_arcing() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let fwd = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &fwd, &mut now);
+        }
+        let back = PlayerInput { move_dir: vector![0.0, 0.0, 1.0], ..Default::default() };
+        let mut ticks = 0;
+        while ch.vel.z < ch.cfg.run_speed - 1e-3 && ticks < 60 {
+            tick(&mut ch, &mut w, &back, &mut now);
+            ticks += 1;
+            assert!(ch.vel.x.abs() < 1e-4, "straight reverse does not drift sideways: {}", ch.vel.x);
+        }
+        assert!(ticks <= 14, "a full reversal takes ~0.2 s, took {ticks} ticks");
     }
 
     /// Jump, optionally double-jump at the apex; returns peak feet height above the start.
@@ -1229,9 +1304,9 @@ mod tests {
         settle(&mut ch, &mut w, &mut now);
         let run = PlayerInput { move_dir: vector![1.0, 0.0, 0.0], ..Default::default() };
         let mut air = 0;
-        for i in 0..150 {
+        for i in 0..260 {
             tick(&mut ch, &mut w, &run, &mut now);
-            if i > 60 && ch.state != MoveState::Grounded {
+            if i > 110 && ch.state != MoveState::Grounded {
                 air += 1; // well past the lip: every tick from here is on the slope
             }
         }
@@ -1273,7 +1348,9 @@ mod tests {
         settle(&mut ch, &mut w, &mut now);
         // get up to running speed
         let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
-        tick(&mut ch, &mut w, &run, &mut now);
+        for _ in 0..12 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
         (w, ch, now)
     }
 
@@ -1283,7 +1360,7 @@ mod tests {
         let input = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], slide: true, ..Default::default() };
         tick(&mut ch, &mut w, &input, &mut now);
         assert!(ch.slide.is_some());
-        assert!(flat(ch.vel).norm() > ch.cfg.run_speed + 3.0, "boost over run speed: {}", flat(ch.vel).norm());
+        assert!(flat(ch.vel).norm() > ch.cfg.run_speed + 2.0, "boost over run speed: {}", flat(ch.vel).norm());
         let mut ticks = 1;
         while ch.slide.is_some() && ticks < 120 {
             tick(&mut ch, &mut w, &input, &mut now);
@@ -1612,7 +1689,7 @@ mod tests {
             let mut ch = player(&mut w, [0.0, 3.0, 0.0]);
             let mut now = 0.0;
             tick(&mut ch, &mut w, &fire([aim_at[0], aim_at[1] - 3.6, aim_at[2]]), &mut now);
-            for i in 0..400 {
+            for i in 0..700 {
                 tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
                 assert!(finite(&ch, &w), "NaN at tick {i} for {aim_at:?}");
             }

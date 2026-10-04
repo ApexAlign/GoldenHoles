@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn rewound_slice_hits_a_target_that_has_since_moved_away() {
         let t0 = crossing_tick(-3.0);
-        let fire = t0 + 24; // screen showed B at x ~ 0 (in the box); live B is ~3.6 m off (outside box + aim assist)
+        let fire = t0 + 36; // screen showed B at x ~ 0 (in the box); live B is ~3.9 m off (outside box + aim assist)
         let rewound = duel(Buttons::SLICE, fire, 24, -3.0);
         assert!(!rewound.player(B).vitals.alive() || rewound.player(B).vitals.deaths > 0, "rewound slice must hit");
         let live = duel(Buttons::SLICE, fire, 0, -3.0);
