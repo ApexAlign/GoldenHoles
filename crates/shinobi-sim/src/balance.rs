@@ -29,6 +29,10 @@ pub struct PlayerBalance {
     pub invuln_ticks: u32,
     /// Protection on first join (0 = none; the demo sets 3 s so a new player can find their feet). Otherwise same minimum.
     pub first_spawn_invuln_ticks: u32,
+    /// Health regeneration: after `regen_delay_s` seconds without taking damage, heal `regen_per_s` hp per second
+    /// up to max (0 = off; the demo turns it on).
+    pub regen_delay_s: f32,
+    pub regen_per_s: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -287,6 +291,8 @@ impl Default for Balance {
                 respawn_ticks: crate::pvp::RESPAWN_TICKS,
                 invuln_ticks: crate::pvp::INVULN_TICKS,
                 first_spawn_invuln_ticks: 0,
+                regen_delay_s: 4.0,
+                regen_per_s: 0.0,
             },
             combat: CombatBalance {
                 shuriken: ShurikenBalance {
@@ -440,6 +446,7 @@ impl Balance {
         let mut b = Balance::default();
         b.combat.katana.damage = 60.0;
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
+        b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
         b.combat.shuriken.speed = 70.0;
         b.combat.shuriken.damage = 12.0;
@@ -554,6 +561,8 @@ impl Balance {
         s!("player.respawn_ticks", U, self.player.respawn_ticks);
         s!("player.invuln_ticks", U, self.player.invuln_ticks);
         s!("player.first_spawn_invuln_ticks", U, self.player.first_spawn_invuln_ticks);
+        s!("player.regen_delay_s", F, self.player.regen_delay_s);
+        s!("player.regen_per_s", F, self.player.regen_per_s);
 
         s!("combat.shuriken.speed", F, self.combat.shuriken.speed);
         s!("combat.shuriken.damage", F, self.combat.shuriken.damage);
@@ -739,6 +748,9 @@ impl Balance {
                 "player.first_spawn_invuln_ticks must be 0 or >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.first_spawn_invuln_ticks
             ));
+        }
+        if self.player.regen_delay_s < 0.0 || self.player.regen_per_s < 0.0 {
+            e.push("player.regen_delay_s and player.regen_per_s must be >= 0".into());
         }
         if self.matches.min_players == 0 {
             e.push("match.min_players must be >= 1".into());

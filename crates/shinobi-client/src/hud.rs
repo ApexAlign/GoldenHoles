@@ -2019,6 +2019,7 @@ mod tests {
             deaths: 2,
             dead_until_tick: dead_until,
             invuln_until_tick: invuln_until,
+            last_damage_tick: 0,
             spawn: [0.0; 3],
             hitbox: shinobi_sim::rapier3d::prelude::ColliderHandle::invalid(),
         }

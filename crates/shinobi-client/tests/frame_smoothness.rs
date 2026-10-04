@@ -75,7 +75,8 @@ impl Rig {
         let lv = level();
         let mut srv = Server::new(Cfg::default());
         lv.apply_to_server(&mut srv);
-        let mut r = Self { game: ClientGame::new(lv, ClientGameCfg::default()), srv, tick: 0.0, down: vec![] };
+        // steady-motion harness: the look assist would bend the aim (and so the path) toward the remote player
+        let mut r = Self { game: ClientGame::new(lv, ClientGameCfg { assist: shinobi_sim::balance::AssistBalance { friction: 0.0, magnet: 0.0, centre: 0.0, touch_mult: 1.0 }, ..ClientGameCfg::default() }), srv, tick: 0.0, down: vec![] };
         for _ in 0..4 {
             r.step(&InputFrame::default(), 0.0);
         }

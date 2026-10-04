@@ -40,6 +40,8 @@ pub struct Vitals {
     pub dead_until_tick: Option<u32>,
     /// Damage-immune while `tick < invuln_until_tick`.
     pub invuln_until_tick: u32,
+    /// Tick of the last damage taken (or of the spawn): health regen waits `regen_delay_s` after it.
+    pub last_damage_tick: u32,
     pub spawn: [f32; 3],
     pub hitbox: ColliderHandle,
 }
@@ -127,6 +129,7 @@ pub fn new_vitals(world: &mut PhysicsWorld, cfg: &Cfg, id: u16, spawn: [f32; 3],
         deaths: 0,
         dead_until_tick: None,
         invuln_until_tick: 0,
+        last_damage_tick: 0,
         spawn,
         hitbox,
     }
@@ -287,6 +290,7 @@ pub fn apply_hits(
             continue;
         }
         v.vitals.hp -= h.amount;
+        v.vitals.last_damage_tick = tick;
         let victim_id = v.id;
         let dead = v.vitals.hp <= 0.0;
         if dead {
@@ -388,6 +392,7 @@ pub fn revive(p: &mut Player, world: &mut PhysicsWorld, s: [f32; 3], tick: u32, 
     p.ch.vel = Vector::zeros();
     p.ch.clear_grapple();
     p.vitals.hp = p.vitals.max_hp;
+    p.vitals.last_damage_tick = tick;
     p.vitals.dead_until_tick = None;
     p.vitals.invuln_until_tick = tick + invuln_ticks;
     p.combat.reset_projectiles();
@@ -396,6 +401,20 @@ pub fn revive(p: &mut Player, world: &mut PhysicsWorld, s: [f32; 3], tick: u32, 
 
 /// End of tick: history gets the post-move pose (the tick a snapshot would be labelled with), and hitboxes
 /// return to "now" so nothing else queries a rewound frame.
+/// Health regeneration: a living, hurt player who has taken no damage for `delay_ticks` heals `per_tick` hp per tick
+/// up to max (`per_tick` 0 = off).
+pub fn regen(players: &mut [Player], tick: u32, delay_ticks: u32, per_tick: f32) {
+    if per_tick <= 0.0 {
+        return;
+    }
+    for p in players.iter_mut() {
+        let v = &mut p.vitals;
+        if v.alive() && v.hp < v.max_hp && tick.wrapping_sub(v.last_damage_tick) >= delay_ticks {
+            v.hp = (v.hp + per_tick).min(v.max_hp);
+        }
+    }
+}
+
 pub fn finish_tick(players: &mut [Player], world: &mut PhysicsWorld, tick: u32) {
     for p in players.iter_mut() {
         let t = world.bodies[p.ch.body].translation();
@@ -780,6 +799,11 @@ mod tests {
     /// A acts with `button` at `fire_tick`; every packet carries a view `rewind` ticks behind the server.
     fn duel(button: u8, fire_tick: u32, rewind: u32, b_z: f32) -> Sim {
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [-3.0, 0.81, b_z])]);
+        // this is about lag compensation: no aim assist bending the live shot onto the mover
+        let mut b = sim.s.balance.clone();
+        b.combat.shuriken.assist_strength = 0.0;
+        b.combat.shuriken.assist_lead = 0.0;
+        sim.s.set_balance(b).unwrap();
         let run = PlayerIntent { move_x: 127, ..IDLE };
         for t in 0..90 {
             let a = if t == fire_tick { press(button) } else { IDLE };
@@ -809,5 +833,33 @@ mod tests {
         let live = duel(Buttons::SLICE, fire, 0, -3.0);
         assert_eq!(live.player(B).vitals.deaths, 0, "without lag compensation the slice misses");
         assert_eq!(live.player(B).vitals.hp, MAX_HP);
+    }
+}
+
+#[cfg(test)]
+mod regen_tests {
+    use super::*;
+
+    fn hurt(hp: f32, last: u32) -> Vitals {
+        Vitals { hp, max_hp: 100.0, kills: 0, deaths: 0, dead_until_tick: None, invuln_until_tick: 0, last_damage_tick: last, spawn: [0.0; 3], hitbox: ColliderHandle::invalid() }
+    }
+
+    #[test]
+    fn regen_waits_for_the_delay_then_heals_to_max_and_skips_the_dead() {
+        let mut s = crate::tick::Server::new(Cfg::default());
+        s.add_player(1, [0.0, 1.0, 0.0]);
+        s.add_player(2, [5.0, 1.0, 0.0]);
+        s.players[0].vitals = Vitals { hitbox: s.players[0].vitals.hitbox, ..hurt(40.0, 100) };
+        s.players[1].vitals = Vitals { hitbox: s.players[1].vitals.hitbox, dead_until_tick: Some(500), ..hurt(0.0, 0) };
+        regen(&mut s.players, 339, 240, 1.0 / 3.0);
+        assert_eq!(s.players[0].vitals.hp, 40.0, "still inside the 4 s delay");
+        regen(&mut s.players, 340, 240, 1.0 / 3.0);
+        assert!(s.players[0].vitals.hp > 40.0, "delay over: healing");
+        for t in 341..700 {
+            regen(&mut s.players, t, 240, 1.0 / 3.0);
+        }
+        assert_eq!(s.players[0].vitals.hp, 100.0, "capped at max");
+        assert_eq!(s.players[1].vitals.hp, 0.0, "the dead do not heal");
+        regen(&mut s.players, 1000, 240, 0.0);
     }
 }

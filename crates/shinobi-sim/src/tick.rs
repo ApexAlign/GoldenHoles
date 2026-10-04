@@ -619,6 +619,10 @@ impl Server {
         if !frozen {
             self.pickups.update(tick, &self.world, &mut self.players, &self.cfg, &mut self.pickup_events);
         }
+        if !frozen {
+            let pb = &self.balance.player;
+            pvp::regen(&mut self.players, tick, (pb.regen_delay_s * crate::match_state::TICK_HZ as f32) as u32, pb.regen_per_s / crate::match_state::TICK_HZ as f32);
+        }
         pvp::finish_tick(&mut self.players, &mut self.world, tick);
         self.tick = tick.wrapping_add(1);
         self.now += dt;
