@@ -88,6 +88,11 @@ impl FrameGovernor {
         Self { budget_ms: 16.6, window_s: 2.0, cooldown_s: 4.0, samples: Vec::new(), span: 0.0, cooldown: 0.0 }
     }
 
+    /// Ignore frames for `secs` (shader compilation and window setup hitch the first seconds).
+    pub fn warmup(&mut self, secs: f32) {
+        self.cooldown = secs;
+    }
+
     /// Feed one frame (`dt_s` seconds). Returns the window's p95 (ms) when it is over budget at the end of a window.
     pub fn push(&mut self, dt_s: f32) -> Option<f32> {
         if self.cooldown > 0.0 {

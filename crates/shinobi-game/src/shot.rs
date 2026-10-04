@@ -63,7 +63,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
             .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() }),
     )
     .add_plugins(NetPlugin { server, offline, level: o.level.clone() })
-    .add_plugins(MobilePlugin { quality: o.quality, touch_overlay: o.touch, screen: (dims.0 as f32, dims.1 as f32) })
+    .add_plugins(MobilePlugin { quality: o.quality, auto_tier: false, touch_overlay: o.touch, screen: (dims.0 as f32, dims.1 as f32) })
     .add_plugins(grid::GridPlugin)
     .add_plugins(crt::CrtPlugin)
     .add_plugins(sky::SkyPlugin)

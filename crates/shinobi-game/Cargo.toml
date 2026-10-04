@@ -18,10 +18,15 @@ bevy = { version = "=0.19.1", default-features = false, features = [
     "bevy_post_process", # bloom
 ] }
 
+# only to turn on winit's dlopen of libwayland (so no wayland dev headers are needed to build)
+winit = { version = "0.30", default-features = false, features = ["wayland-dlopen"], optional = true }
+
 [features]
-default = []
+default = ["wayland"]
 # Procedural synth sound via bevy_audio (needs alsa headers on Linux). No asset files.
 audio = ["bevy/bevy_audio", "bevy/wav"]
+# Native Wayland window (dlopen: no system headers needed). Without it the game runs through XWayland.
+wayland = ["bevy/wayland", "dep:winit"]
 
 [profile.dev]
 opt-level = 1

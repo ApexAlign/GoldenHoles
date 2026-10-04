@@ -60,6 +60,17 @@ fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
     }
 }
 
+fn present_mode(s: Option<&str>) -> bevy::window::PresentMode {
+    use bevy::window::PresentMode;
+    match s.map(str::to_ascii_lowercase).as_deref() {
+        Some("mailbox") => PresentMode::Mailbox,
+        Some("immediate") | Some("novsync") => PresentMode::AutoNoVsync,
+        Some("relaxed") | Some("fiforelaxed") => PresentMode::FifoRelaxed,
+        Some("fifo") => PresentMode::Fifo,
+        _ => PresentMode::AutoVsync,
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let server: SocketAddr = arg_value(&args, "--server")
@@ -68,7 +79,11 @@ fn main() {
         .expect("--server ADDR:PORT");
 
     let flag = |k: &str| args.iter().any(|a| a == k);
-    let tier = arg_value(&args, "--tier").map(|t| Tier::parse(&t).expect("--tier high|medium|low")).unwrap_or_default();
+    // `--tier high|medium|low` pins the quality tier; without it (or with `--tier auto`) the live game picks one from
+    // the GPU class and steps down when frames run long. Shots always use a fixed tier (default high).
+    let tier_arg = arg_value(&args, "--tier").filter(|t| !t.eq_ignore_ascii_case("auto"));
+    let tier = tier_arg.as_deref().map(|t| Tier::parse(t).expect("--tier high|medium|low|auto")).unwrap_or_default();
+    let auto_tier = tier_arg.is_none();
     let opts = shot::ShotOpts {
         // offline review shots are idle (rest pose) unless `--action` asks for the scripted swing + throw (goldens use it)
         idle: flag("--idle") || (flag("--shot-offline") && !flag("--action")),
@@ -113,19 +128,54 @@ fn main() {
     if let Some(f) = opts.scale {
         app.insert_resource(play::ForcedScale(f));
     }
-    app
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: shinobi_client::overlay::window_title(false).into(), ..default() }),
-            ..default()
-        }))
-        .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone() })
-        .add_plugins(mobile::MobilePlugin { quality: opts.quality, touch_overlay: opts.touch, screen: (1280.0, 720.0) })
-        .add_plugins(grid::GridPlugin)
-        .add_plugins(crt::CrtPlugin)
-        .add_plugins(sky::SkyPlugin)
-        .add_plugins(play::PlayPlugin)
-        .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::audio::AudioFxPlugin))
-        .add_plugins(hud_view::HudPlugin);
+    // profiling aid: SHINOBI_DISABLE=sky,hud,vm,crt,fx (comma list) leaves those plugins out to find what a frame costs
+    let disabled = std::env::var("SHINOBI_DISABLE").unwrap_or_default();
+    let off = |n: &str| disabled.split(',').any(|d| d.trim() == n);
+    // window system: `--x11` forces X11/XWayland even when a Wayland session is available (winit's own switch)
+    if flag("--x11") {
+        std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+    }
+    // `--present auto|mailbox|immediate|relaxed` (or SHINOBI_PRESENT): swap-chain mode. Default `auto` = vsync (Fifo),
+    // the smoothest and coolest; `mailbox` / `immediate` trade tearing / heat for lower latency.
+    let present = present_mode(arg_value(&args, "--present").or_else(|| std::env::var("SHINOBI_PRESENT").ok()).as_deref());
+    // SHINOBI_GPU=igpu|dgpu|auto: adapter power preference (WGPU_ADAPTER_NAME=<substring> still picks by name)
+    let power = match std::env::var("SHINOBI_GPU").ok().as_deref() {
+        Some("igpu") | Some("low") => bevy::render::settings::PowerPreference::LowPower,
+        Some("dgpu") | Some("high") => bevy::render::settings::PowerPreference::HighPerformance,
+        _ => bevy::render::settings::PowerPreference::default(),
+    };
+    eprintln!("WINDOW: present mode {present:?}, power preference {power:?}");
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window { title: shinobi_client::overlay::window_title(false).into(), present_mode: present, ..default() }),
+                ..default()
+            })
+            .set(bevy::render::RenderPlugin {
+                render_creation: bevy::render::settings::WgpuSettings { power_preference: power, ..default() }.into(),
+                ..default()
+            }),
+    )
+    .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone() })
+    .add_plugins(mobile::MobilePlugin { quality: opts.quality, auto_tier, touch_overlay: opts.touch, screen: (1280.0, 720.0) })
+    .add_plugins(grid::GridPlugin);
+    if !off("crt") {
+        app.add_plugins(crt::CrtPlugin);
+    }
+    if !off("sky") {
+        app.add_plugins(sky::SkyPlugin);
+    }
+    app.add_plugins(play::PlayPlugin);
+    if !off("vm") {
+        app.add_plugins(vm::VmPlugin);
+    }
+    app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
+    if !off("fx") {
+        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin));
+    }
+    if !off("hud") {
+        app.add_plugins(hud_view::HudPlugin);
+    }
     if flag("--demo") {
         app.add_plugins(demo::DemoPlugin);
     }

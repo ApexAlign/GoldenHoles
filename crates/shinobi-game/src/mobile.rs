@@ -22,6 +22,82 @@ use crate::play::ShotRequest;
 #[derive(Resource, Clone, Copy)]
 pub struct QualityRes(pub Quality);
 
+/// Automatic quality: pick the starting tier from the GPU class, then step down while the frame time p95 stays over
+/// the 60 fps budget. Off when `--tier` is given explicitly (and in shots, which must be deterministic).
+#[derive(Resource)]
+pub struct AutoTier {
+    pub on: bool,
+    gov: shinobi_client::quality::FrameGovernor,
+}
+
+impl AutoTier {
+    pub fn new(on: bool) -> Self {
+        let mut gov = shinobi_client::quality::FrameGovernor::new();
+        gov.warmup(6.0);
+        Self { on, gov }
+    }
+}
+
+/// PreStartup: log the adapter and, in auto mode, choose the starting tier from its device type, before `play::setup`
+/// builds the cameras from `QualityRes`.
+fn pick_tier(
+    info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
+    auto: Res<AutoTier>,
+    mut q: ResMut<QualityRes>,
+) {
+    use shinobi_client::quality::{DeviceKind, Tier};
+    let Some(info) = info else { return };
+    let mut kind = DeviceKind::from_wgpu_name(&format!("{:?}", info.device_type));
+    // SHINOBI_DEVICE=discrete|integrated|software overrides the detected class (testing, odd drivers)
+    match std::env::var("SHINOBI_DEVICE").ok().as_deref() {
+        Some("discrete") => kind = DeviceKind::Discrete,
+        Some("integrated") => kind = DeviceKind::Integrated,
+        Some("software") => kind = DeviceKind::Software,
+        _ => {}
+    }
+    let how = if auto.on {
+        let t = Tier::for_device(kind);
+        q.0 = Quality::from_tier(t);
+        "auto"
+    } else {
+        "forced"
+    };
+    eprintln!("GPU: {} | {:?} | {:?} | driver {} -> quality tier {:?} ({how})", info.name, info.device_type, info.backend, info.driver, q.0.tier);
+    if kind == DeviceKind::Software {
+        eprintln!("GPU: SOFTWARE rasteriser: no hardware GPU was selected (check drivers, VK_ICD_FILENAMES, SHINOBI_GPU=igpu|dgpu)");
+    }
+}
+
+/// Update: drop a tier when p95 frame time has been over budget for 2 s. Live only where the cheaper tier needs no
+/// new render targets: Medium -> Low (both already render through the scaled scene image). A slow High tier just says so.
+fn govern(
+    time: Res<Time<Real>>,
+    mut auto: ResMut<AutoTier>,
+    mut q: ResMut<QualityRes>,
+    ds: Option<ResMut<DynScale>>,
+    cam: Query<Entity, With<crate::play::PlayerCam>>,
+    mut commands: Commands,
+) {
+    if !auto.on {
+        return;
+    }
+    let Some(p95) = auto.gov.push(time.delta_secs()) else { return };
+    let cur = q.0.tier;
+    let Some(next) = cur.lower() else { return };
+    match (cur, ds) {
+        (shinobi_client::quality::Tier::Medium, Some(mut ds)) => {
+            let low = Quality::from_tier(next);
+            ds.dr = DynRes::new(low.dyn_res.expect("low tier has dynamic resolution"));
+            if let Ok(c) = cam.single() {
+                commands.entity(c).remove::<bevy::post_process::bloom::Bloom>().remove::<crate::crt::CrtEffect>();
+            }
+            q.0 = low;
+            eprintln!("QUALITY: p95 frame {p95:.1} ms > 16.6 -> tier {cur:?} -> {next:?}");
+        }
+        _ => eprintln!("QUALITY: p95 frame {p95:.1} ms > 16.6 on tier {cur:?}; cannot drop live from here: restart with --tier {}", format!("{next:?}").to_lowercase()),
+    }
+}
+
 const PRESENT_LAYER: usize = 3;
 
 /// Present path state (only exists when the tier enables dynamic resolution).
@@ -153,6 +229,8 @@ pub fn touch_input(
 
 pub struct MobilePlugin {
     pub quality: Quality,
+    /// Pick / adapt the tier automatically (live game without `--tier`).
+    pub auto_tier: bool,
     pub touch_overlay: bool,
     pub screen: (f32, f32),
 }
@@ -160,6 +238,9 @@ pub struct MobilePlugin {
 impl Plugin for MobilePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(QualityRes(self.quality))
+            .insert_resource(AutoTier::new(self.auto_tier))
+            .add_systems(PreStartup, pick_tier)
+            .add_systems(Update, govern)
             .insert_resource(TouchRes { s: TouchSession::new(self.screen.0, self.screen.1), visible: self.touch_overlay })
             .add_systems(Update, update_scale);
     }
