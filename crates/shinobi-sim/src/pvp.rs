@@ -650,6 +650,38 @@ mod tests {
         assert!(!near_miss_hits(true, 0), "weak while acquiring");
     }
 
+    /// A is a perfect tracker (crosshair always on B's current position, no lead) and throws at B strafing at
+    /// ~`speed` across the line of fire at `dist` m. `lead` is `combat.shuriken.assist_lead`.
+    fn strafing_throw_hits(dist: f32, lead: f32) -> bool {
+        use shinobi_proto::quant::q_yaw;
+        let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [-4.0, 0.81, -dist])]);
+        let mut b = sim.s.balance.clone();
+        b.combat.shuriken.speed = 70.0; // the demo's flat, fast stars
+        b.combat.shuriken.assist_lead = lead;
+        sim.s.set_balance(b).unwrap();
+        let mut fired = false;
+        for t in 0..140u32 {
+            let bp = sim.player(B).pos(&sim.s.world);
+            let yaw = (-bp[0]).atan2(-bp[2]);
+            let fire = t == 50; // lock has formed while tracking
+            let a = PlayerIntent { aim_yaw: q_yaw(yaw), aim_pitch: 2048, buttons: Buttons(if fire { Buttons::FIRE } else { 0 }), ..IDLE };
+            fired |= fire;
+            // B walks right (+x) for the first 70 ticks
+            let bi = PlayerIntent { move_x: 127, ..IDLE };
+            sim.tick(&[(A, a, 0), (B, if t < 70 { bi } else { IDLE }, 0)]);
+        }
+        assert!(fired);
+        sim.pvp.iter().any(|e| matches!(e, PvpEvent::Hit { victim: B, kind: DamageKind::Shuriken, .. }))
+    }
+
+    #[test]
+    fn a_locked_throw_leads_a_strafing_target() {
+        for dist in [12.0f32, 20.0, 30.0] {
+            assert!(strafing_throw_hits(dist, 1.0), "locked throw at {dist} m leads the mover");
+            assert!(!strafing_throw_hits(dist, 0.0), "without lead the same throw trails a mover at {dist} m");
+        }
+    }
+
     #[test]
     fn shuriken_hits_a_player() {
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [0.0, 0.81, -8.0])]);

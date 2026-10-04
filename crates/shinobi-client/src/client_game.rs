@@ -107,6 +107,8 @@ pub struct ClientGameCfg {
     /// Hit-stop after a katana hit / kill, seconds (Balance `feedback.hitstop_*`). Client-only: the sim never pauses.
     pub hitstop_slash: f32,
     pub hitstop_kill: f32,
+    /// Look assist strengths (Balance `assist.*`): friction / magnetism while a target is in the lock cone.
+    pub assist: shinobi_sim::combat::aim_assist::AssistCfg,
 }
 
 impl Default for ClientGameCfg {
@@ -118,6 +120,7 @@ impl Default for ClientGameCfg {
             rad_per_unit: 0.0022,
             hitstop_slash: FeedbackBalance::default().hitstop_slash_ms / 1000.0,
             hitstop_kill: FeedbackBalance::default().hitstop_kill_ms / 1000.0,
+            assist: Default::default(),
         }
     }
 }
@@ -485,6 +488,9 @@ pub struct ClientGame {
     pub cfg: ClientGameCfg,
     pub net: NetClient,
     pub aim: Aim,
+    /// Look assist state (previous target angles) and whether the last look input came from touch.
+    look_assist: shinobi_sim::combat::aim_assist::AimAssist,
+    look_touch: bool,
     pub settings: Settings,
     screen: (f32, f32),
     pub reconciler: Reconciler,
@@ -533,6 +539,8 @@ impl ClientGame {
             cfg,
             net: NetClient::default(),
             aim: Aim::default(),
+            look_assist: Default::default(),
+            look_touch: false,
             settings: Settings::default(),
             screen: (1280.0, 720.0),
             reconciler: Reconciler::default(),
@@ -754,13 +762,16 @@ impl ClientGame {
         for e in &frame.buttons {
             self.button_event(*e);
         }
+        let aim_before = (self.aim.yaw, self.aim.pitch);
         let (dx, dy) = frame.look;
         if dx != 0.0 || dy != 0.0 {
             self.settings.look(&mut self.aim, dx, dy, false);
+            self.look_touch = false;
         }
         let (tx, ty) = self.touch.take_look();
         if tx != 0.0 || ty != 0.0 {
             self.settings.look(&mut self.aim, tx, ty, true); // the aim pad has its own sensitivity
+            self.look_touch = true;
         }
         let stick = if frame.stick != (0.0, 0.0) { frame.stick } else { self.touch.stick() };
         self.reconciler.decay(TICK_DT);
@@ -782,6 +793,20 @@ impl ClientGame {
                 self.controls.mark(Use::Move);
             }
         }
+        // look assist: slow the look and follow the target's motion while one is locked. It edits the aim BEFORE the
+        // intent is built, so the server sees exactly the aim the player (and the predictor) used.
+        let assist_in = self.pred.as_ref().filter(|p| p.combat.lock.holding()).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
+            eye: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
+            target: vector![p.combat.lock.pos[0], p.combat.lock.pos[1], p.combat.lock.pos[2]],
+            target_id: p.combat.lock.target_id,
+            pull: p.combat.lock.pull(&p.combat.lock_cfg),
+            cone_deg: p.combat.assist_cone_deg,
+            touch: self.look_touch,
+            dt: TICK_DT,
+        });
+        let (ay, ap) = self.look_assist.apply(&self.cfg.assist, assist_in.as_ref(), aim_before, (self.aim.yaw, self.aim.pitch));
+        self.aim.yaw = ay;
+        self.aim.pitch = ap;
         let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
         intent.zip = std::mem::take(&mut self.zip_edge);
         let press = self.build_edge.take();

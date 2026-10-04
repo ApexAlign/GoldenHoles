@@ -31,6 +31,8 @@ pub struct ShurikenCfg {
     pub assist_cone_deg: f32,
     /// How far (0..=1) the throw is pulled from the crosshair toward the target's centre.
     pub assist_strength: f32,
+    /// Fraction of the lead (target velocity x flight time) a locked throw aims ahead by (0 = off, 1 = full lead).
+    pub assist_lead: f32,
     pub assist_range: f32,
     /// Damage a bounce does to a player-built piece it strikes (Balance `combat.shuriken.piece_damage`).
     pub piece_damage: f32,
@@ -54,6 +56,7 @@ impl Default for ShurikenCfg {
             recoil_pitch_deg: 1.2,
             assist_cone_deg: 6.0,
             assist_strength: 0.75,
+            assist_lead: 1.0,
             assist_range: 60.0,
             piece_damage: 12.0,
             targets: TARGETS,
@@ -161,10 +164,22 @@ fn assisted_dir(cfg: &ShurikenCfg, ctx: &FireCtx) -> Vector<Real> {
     let filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask)).exclude_rigid_body(ctx.ch.body);
     let ray = Ray::new(Point::from(ctx.aim.origin), fwd);
     let first = ctx.world.queries.cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, cfg.assist_range, true, filter);
-    if first.map_or(false, |(h, _)| ctx.world.colliders.get(h).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets))) {
+    let moving = cfg.assist_lead > 0.0 && hint.vel.norm() > 0.5;
+    if !moving && first.map_or(false, |(h, _)| ctx.world.colliders.get(h).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets))) {
         return fwd;
     }
-    super::aim_assist::bend(fwd, hint.dir, cfg.assist_strength * hint.pull)
+    // a moving target is led: aim where it will be when the disc arrives (two refinements of the flight time)
+    let eye = Point::from(ctx.aim.origin);
+    let lead_dir = |lead: f32| {
+        let mut p = hint.centre;
+        for _ in 0..2 {
+            let t = (p - eye).norm() / cfg.speed.max(1.0);
+            p = hint.centre + hint.vel * t * lead;
+        }
+        (p - eye).normalize()
+    };
+    let aim_at = if moving { lead_dir(cfg.assist_lead.min(1.0)) } else { hint.dir };
+    super::aim_assist::bend(fwd, aim_at, cfg.assist_strength * hint.pull)
 }
 
 pub enum DiscStep {

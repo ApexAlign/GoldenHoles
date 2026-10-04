@@ -243,9 +243,10 @@ impl CombatSystem {
     ) {
         // lock first: one best_target per tick feeds the lock state and every weapon fired this tick
         let (eye, fwd) = (aim.origin, aim.forward());
-        let found = aim_assist::best_target(world, eye, fwd, self.assist_cone_deg, self.assist_range, &self.allies, ch.body);
+        let held = self.lock.target.filter(|_| self.lock.holding());
+        let found = aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &self.allies, ch.body, held);
         self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
-        let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider });
+        let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.vel });
         self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }

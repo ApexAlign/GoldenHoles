@@ -751,13 +751,28 @@ impl BotMem {
             self.stuck_check = ([me.pos.x, me.pos.z], tick);
             if moved < 0.4 && me.grounded() && !matches!(self.phase, Phase::Strike { .. }) {
                 let knee = vector![me.pos.x, me.pos.y - 0.3, me.pos.z];
-                let mut best = (-1.0f32, vector![1.0, 0.0, 0.0]);
+                // freest direction, ties broken away from whatever is touching us: pressed flat against a wall's end the
+                // body can be wedged even along the wall, and only a step back off the face frees it
+                let mut dirs = Vec::with_capacity(8);
+                let mut away = Vector::<f32>::zeros();
                 for k in 0..8 {
                     let a = k as f32 * std::f32::consts::FRAC_PI_4 + (tick % 7) as f32 * 0.1;
                     let d = vector![a.cos(), 0.0, a.sin()];
-                    let room = world.ray(knee, d, 4.0).unwrap_or(4.0);
-                    if room > best.0 {
-                        best = (room, d);
+                    if world.ray(knee, d, 0.6).is_some() {
+                        away -= d;
+                    }
+                    dirs.push((world.ray(knee, d, 4.0).unwrap_or(4.0), d));
+                }
+                let top = dirs.iter().map(|d| d.0).fold(0.0f32, f32::max);
+                let away = unit_or_zero(away);
+                let mut best = (-1.0f32, vector![1.0, 0.0, 0.0]);
+                for (room, d) in dirs {
+                    if room < top - 0.01 {
+                        continue;
+                    }
+                    let score = d.dot(&away);
+                    if score > best.0 {
+                        best = (score, d);
                     }
                 }
                 self.unstick_dir = best.1;

@@ -170,3 +170,42 @@ fn a_joining_human_survives_the_first_30_seconds_in_most_seeds() {
     println!("survived {alive}/{n}");
     assert!(alive * 100 >= n * 80, "human survived only {alive}/{n} seeds");
 }
+
+/// Katana swings thrown vs swings that hit, bots only (is the bot katana too forgiving?).
+///   cargo test --release -p shinobi-ai --test demo_feel katana_hit_rate -- --ignored --nocapture
+#[test]
+#[ignore]
+fn katana_hit_rate() {
+    use shinobi_sim::combat::CombatEvent;
+    for seed in [1u64, 2, 3] {
+        let Some((mut s, _)) = ffa() else { return };
+        s.match_state.cfg.frag_limit = u16::MAX;
+        s.match_state.cfg.time_limit_ticks = u32::MAX / 2;
+        if let Some(m) = std::env::var("KATANA_MAGNET").ok().and_then(|v| v.parse().ok()) {
+            let mut b = s.balance.clone();
+            b.combat.katana.magnet = m;
+            s.set_balance(b).unwrap();
+        }
+        let mut h = shinobi_ai::BotHost::new(shinobi_ai::BotHostCfg { seed, warmup_secs: 0.0, ..Default::default() });
+        h.rebuild_perches(&s);
+        for i in 0..8 {
+            assert!(h.add_bot(&mut s, 201 + i, if i % 3 == 0 { Archetype::Heavy } else { Archetype::Light }, BotSkill::Normal));
+        }
+        let (mut swings, mut lunges, mut hits, mut misses) = (0u32, 0u32, 0u32, 0u32);
+        for _ in 0..180 * 60 {
+            step(&mut h, &mut s);
+            for (_, e) in &s.events {
+                match e {
+                    CombatEvent::Slash { lunge, .. } => {
+                        swings += 1;
+                        lunges += *lunge as u32;
+                    }
+                    CombatEvent::SlashHit { .. } => hits += 1,
+                    CombatEvent::SlashMiss { .. } => misses += 1,
+                    _ => {}
+                }
+            }
+        }
+        println!("seed {seed}: {swings} swings ({lunges} lunges), {hits} hits, {misses} misses -> hit rate {:.0}%", 100.0 * hits as f32 / swings.max(1) as f32);
+    }
+}

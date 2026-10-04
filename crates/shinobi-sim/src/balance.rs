@@ -44,6 +44,8 @@ pub struct ShurikenBalance {
     pub recoil_pitch_deg: f32,
     pub assist_cone_deg: f32,
     pub assist_strength: f32,
+    /// Fraction of the target's lead a locked throw aims ahead by (0 = off, 1 = full).
+    pub assist_lead: f32,
     pub assist_range: f32,
     /// Damage a bounce does to a player-built piece (see `blocks.hp`).
     pub piece_damage: f32,
@@ -131,6 +133,26 @@ impl BlockBalance {
             scale_per_kill: self.scale_per_kill,
             scale_cap: self.scale_cap,
         }
+    }
+}
+
+/// Client-side look assist (`aim_assist::AimAssist`): console-shooter friction and magnetism on the aim while a
+/// target is in the lock cone. All strengths scale with the lock pull (weak while acquiring, full at lock).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssistBalance {
+    /// Look-speed reduction on target (0 = none, 0.5 = half speed at the cone centre).
+    pub friction: f32,
+    /// Fraction of the target's angular motion the crosshair follows by itself while it is on the target.
+    pub magnet: f32,
+    /// Pull toward the target centre, fraction of the remaining offset per second.
+    pub centre: f32,
+    /// Strength multiplier for touch input (thumb aiming is coarser than a mouse).
+    pub touch_mult: f32,
+}
+
+impl Default for AssistBalance {
+    fn default() -> Self {
+        Self { friction: 0.35, magnet: 0.6, centre: 1.5, touch_mult: 1.6 }
     }
 }
 
@@ -238,6 +260,7 @@ pub struct Balance {
     pub hazards: HazardBalance,
     pub blocks: BlockBalance,
     pub feedback: FeedbackBalance,
+    pub assist: AssistBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -278,6 +301,7 @@ impl Default for Balance {
                     recoil_pitch_deg: s.recoil_pitch_deg,
                     assist_cone_deg: s.assist_cone_deg,
                     assist_strength: s.assist_strength,
+                    assist_lead: s.assist_lead,
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
@@ -297,6 +321,7 @@ impl Default for Balance {
             },
             blocks: BlockBalance::default(),
             feedback: FeedbackBalance::default(),
+            assist: AssistBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -452,6 +477,7 @@ impl Balance {
             recoil_pitch_deg: b.recoil_pitch_deg,
             assist_cone_deg: b.assist_cone_deg,
             assist_strength: b.assist_strength,
+            assist_lead: b.assist_lead,
             assist_range: b.assist_range,
             piece_damage: b.piece_damage,
             ..ShurikenCfg::default()
@@ -540,6 +566,7 @@ impl Balance {
         s!("combat.shuriken.recoil_pitch_deg", F, self.combat.shuriken.recoil_pitch_deg);
         s!("combat.shuriken.assist_cone_deg", F, self.combat.shuriken.assist_cone_deg);
         s!("combat.shuriken.assist_strength", F, self.combat.shuriken.assist_strength);
+        s!("combat.shuriken.assist_lead", F, self.combat.shuriken.assist_lead);
         s!("combat.shuriken.assist_range", F, self.combat.shuriken.assist_range);
         s!("combat.katana.damage", F, self.combat.katana.damage);
         s!("combat.katana.blade_len", F, self.combat.katana.blade_len);
@@ -553,6 +580,10 @@ impl Balance {
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
         s!("feedback.hitstop_slash_ms", F, self.feedback.hitstop_slash_ms);
         s!("feedback.hitstop_kill_ms", F, self.feedback.hitstop_kill_ms);
+        s!("assist.friction", F, self.assist.friction);
+        s!("assist.magnet", F, self.assist.magnet);
+        s!("assist.centre", F, self.assist.centre);
+        s!("assist.touch_mult", F, self.assist.touch_mult);
         s!("combat.knockback_slash", F, self.combat.knockback_slash);
         s!("combat.knockback_shuriken", F, self.combat.knockback_shuriken);
         s!("combat.knockback_ultimate", F, self.combat.knockback_ultimate);
