@@ -848,7 +848,7 @@ mod tests {
         v.eye = [0.0, 1.5, 0.0];
         v.camera.fov = 90.0;
         assert!(b.update(0.016, &v, &net(), false).target.is_none());
-        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked });
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0; 3], blend: 1.0 });
         let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
         assert!(t.locked && t.name == callsign(5) && (t.dist - 20.0).abs() < 0.1);
         assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");

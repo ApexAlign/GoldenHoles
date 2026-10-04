@@ -139,6 +139,10 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                         "break" => LockPhase::Break,
                         _ => LockPhase::Acquire,
                     },
+                    eased: if name == "locked" { 1.0 } else { p * p * (3.0 - 2.0 * p) },
+                    t_since_phase: 0.5,
+                    target_vel: [0.0; 3],
+                    blend: if name == "break" { 0.5 } else { 1.0 },
                 });
             }
             "pieces" => {

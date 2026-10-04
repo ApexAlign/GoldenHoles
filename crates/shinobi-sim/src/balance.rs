@@ -50,6 +50,10 @@ pub struct ShurikenBalance {
     pub assist_strength: f32,
     /// Fraction of the target's lead a locked throw aims ahead by (0 = off, 1 = full).
     pub assist_lead: f32,
+    /// Locked throws curve toward the target at up to this many rad/s (0 = straight).
+    pub homing_turn: f32,
+    /// Speed fraction a disc keeps per bounce.
+    pub bounce_retention: f32,
     pub assist_range: f32,
     /// Damage a bounce does to a player-built piece (see `blocks.hp`).
     pub piece_damage: f32,
@@ -89,6 +93,8 @@ pub struct CombatBalance {
     pub lock_pull_min: f32,
     /// Seconds the broken lock lingers (scatter / fade) before it returns to SEARCH.
     pub lock_break_secs: f32,
+    /// Seconds the lock's assist takes to ramp in after acquiring (it ramps out over `lock_break_secs`).
+    pub lock_blend_secs: f32,
 }
 
 /// Player-built pieces (`blocks.rs`). The hook values are inert until the owner decides them.
@@ -308,6 +314,8 @@ impl Default for Balance {
                     assist_cone_deg: s.assist_cone_deg,
                     assist_strength: s.assist_strength,
                     assist_lead: s.assist_lead,
+                    homing_turn: s.homing_turn,
+                    bounce_retention: s.bounce_retention,
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
@@ -324,6 +332,7 @@ impl Default for Balance {
                 lock_secs: 0.35,
                 lock_pull_min: 0.25,
                 lock_break_secs: 0.25,
+                lock_blend_secs: 0.15,
             },
             blocks: BlockBalance::default(),
             feedback: FeedbackBalance::default(),
@@ -485,6 +494,8 @@ impl Balance {
             assist_cone_deg: b.assist_cone_deg,
             assist_strength: b.assist_strength,
             assist_lead: b.assist_lead,
+            homing_turn: b.homing_turn,
+            bounce_retention: b.bounce_retention,
             assist_range: b.assist_range,
             piece_damage: b.piece_damage,
             ..ShurikenCfg::default()
@@ -576,6 +587,8 @@ impl Balance {
         s!("combat.shuriken.assist_cone_deg", F, self.combat.shuriken.assist_cone_deg);
         s!("combat.shuriken.assist_strength", F, self.combat.shuriken.assist_strength);
         s!("combat.shuriken.assist_lead", F, self.combat.shuriken.assist_lead);
+        s!("combat.shuriken.homing_turn", F, self.combat.shuriken.homing_turn);
+        s!("combat.shuriken.bounce_retention", F, self.combat.shuriken.bounce_retention);
         s!("combat.shuriken.assist_range", F, self.combat.shuriken.assist_range);
         s!("combat.katana.damage", F, self.combat.katana.damage);
         s!("combat.katana.blade_len", F, self.combat.katana.blade_len);
@@ -587,6 +600,7 @@ impl Balance {
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
+        s!("combat.lock_blend_secs", F, self.combat.lock_blend_secs);
         s!("feedback.hitstop_slash_ms", F, self.feedback.hitstop_slash_ms);
         s!("feedback.hitstop_kill_ms", F, self.feedback.hitstop_kill_ms);
         s!("assist.friction", F, self.assist.friction);

@@ -122,11 +122,13 @@ pub struct LockCfg {
     pub pull_min: f32,
     /// Seconds the broken lock lingers (visual scatter) before the state returns to Search.
     pub break_secs: f32,
+    /// Seconds the assist takes to ramp in once a target is acquired (it ramps out over `break_secs`).
+    pub blend_secs: f32,
 }
 
 impl Default for LockCfg {
     fn default() -> Self {
-        Self { lock_secs: 0.35, pull_min: 0.25, break_secs: 0.25 }
+        Self { lock_secs: 0.35, pull_min: 0.25, break_secs: 0.25, blend_secs: 0.15 }
     }
 }
 
@@ -164,19 +166,58 @@ pub struct LockState {
     pub pos: [f32; 3],
     pub dir: Vector<Real>,
     /// Smoothed target velocity (m/s), measured from its aim point between ticks (0 on a fresh lock).
-    pub vel: Vector<Real>,
+    pub target_vel: Vector<Real>,
+    /// Seconds since the phase last changed (or a new target was acquired): lets the shell animate each phase.
+    pub t_since_phase: f32,
+    /// 0..=1 weight of the assist: ramps in over `blend_secs` after acquiring and out over `break_secs` after
+    /// losing the target, so the pull never snaps on or off.
+    pub blend: f32,
     break_left: f32,
 }
 
 impl Default for LockState {
     fn default() -> Self {
-        Self { phase: LockPhase::Search, target: None, target_id: 0, progress: 0.0, pos: [0.0; 3], dir: Vector::z(), vel: Vector::zeros(), break_left: 0.0 }
+        Self { phase: LockPhase::Search, target: None, target_id: 0, progress: 0.0, pos: [0.0; 3], dir: Vector::z(), target_vel: Vector::zeros(), t_since_phase: 0.0, blend: 0.0, break_left: 0.0 }
     }
 }
 
 impl LockState {
     /// Advance by `dt` given this tick's `best_target`. Returns the edge that happened, if any.
     pub fn update(&mut self, dt: f32, cfg: &LockCfg, found: Option<&Target>) -> Option<LockEdge> {
+        let old = self.phase;
+        let edge = self.step(dt, cfg, found);
+        if edge == Some(LockEdge::Acquired) || self.phase != old {
+            self.t_since_phase = 0.0;
+        } else {
+            self.t_since_phase += dt;
+        }
+        // the assist weight eases toward 1 while holding and back to 0 otherwise
+        if self.holding() {
+            self.blend = (self.blend + dt / cfg.blend_secs.max(1e-3)).min(1.0);
+        } else {
+            self.blend = (self.blend - dt / cfg.break_secs.max(1e-3)).max(0.0);
+        }
+        edge
+    }
+
+    /// Progress with smoothstep easing (no per-tick stepping in the visuals).
+    pub fn eased(&self) -> f32 {
+        let p = self.progress.clamp(0.0, 1.0);
+        p * p * (3.0 - 2.0 * p)
+    }
+
+    /// Where the target is estimated to be now: the last aim point carried along its velocity for the time since
+    /// the lock last saw it (fading out after a break, the point keeps moving instead of freezing).
+    pub fn pos_now(&self) -> [f32; 3] {
+        let k = if self.phase == LockPhase::Break { self.break_elapsed() } else { 0.0 };
+        [self.pos[0] + self.target_vel.x * k, self.pos[1] + self.target_vel.y * k, self.pos[2] + self.target_vel.z * k]
+    }
+
+    fn break_elapsed(&self) -> f32 {
+        self.t_since_phase
+    }
+
+    fn step(&mut self, dt: f32, cfg: &LockCfg, found: Option<&Target>) -> Option<LockEdge> {
         match found {
             Some(t) => {
                 let same = self.target == Some(t.collider) && matches!(self.phase, LockPhase::Acquire | LockPhase::Locked);
@@ -184,9 +225,9 @@ impl LockState {
                     let moved = (t.centre.coords - Vector::new(self.pos[0], self.pos[1], self.pos[2])) / dt;
                     // clamp (a rewind or respawn jump is not motion) and smooth (tick-to-tick positions are quantised)
                     let moved = if moved.norm() > MAX_LEAD_SPEED { moved * (MAX_LEAD_SPEED / moved.norm()) } else { moved };
-                    self.vel = self.vel * 0.6 + moved * 0.4;
+                    self.target_vel = self.target_vel * 0.6 + moved * 0.4;
                 } else {
-                    self.vel = Vector::zeros();
+                    self.target_vel = Vector::zeros();
                 }
                 self.pos = [t.centre.x, t.centre.y, t.centre.z];
                 self.dir = t.dir;
@@ -231,8 +272,9 @@ impl LockState {
     /// acquiring, full at lock.
     pub fn pull(&self, cfg: &LockCfg) -> f32 {
         match self.phase {
-            LockPhase::Acquire | LockPhase::Locked => cfg.pull_min + (1.0 - cfg.pull_min) * self.progress,
-            _ => 0.0,
+            LockPhase::Search => 0.0,
+            // Break keeps pulling (fading with `blend`) so releasing the lock ramps out instead of cutting
+            _ => self.blend * (cfg.pull_min + (1.0 - cfg.pull_min) * self.progress),
         }
     }
 
@@ -404,7 +446,7 @@ mod tests {
 
     #[test]
     fn lock_ramps_snaps_breaks_and_pulls_harder_as_it_builds() {
-        let cfg = LockCfg { lock_secs: 0.5, pull_min: 0.2, break_secs: 0.25 };
+        let cfg = LockCfg { lock_secs: 0.5, pull_min: 0.2, break_secs: 0.25, blend_secs: 0.001 };
         let mut w = world();
         let body = own_body(&mut w);
         let h = enemy(&mut w, vector![0.0, 1.0, -10.0], 1);
@@ -427,12 +469,63 @@ mod tests {
         // losing the target breaks the lock, fades, and returns to search
         assert_eq!(l.update(0.1, &cfg, None), Some(LockEdge::Broken));
         assert_eq!(l.phase, LockPhase::Break);
-        assert_eq!(l.pull(&cfg), 0.0, "no pull while breaking");
+        assert!(l.pull(&cfg) < 1.0, "the pull fades out while breaking instead of cutting");
         assert!(l.progress < 1.0 || l.update(0.1, &cfg, None).is_none());
         for _ in 0..5 {
             l.update(0.1, &cfg, None);
         }
         assert_eq!(l.phase, LockPhase::Search);
         assert!(l.target.is_none());
+    }
+
+    #[test]
+    fn the_pull_blends_in_and_out_and_the_shell_gets_continuous_values() {
+        let cfg = LockCfg { lock_secs: 0.5, pull_min: 0.4, break_secs: 0.2, blend_secs: 0.15 };
+        let mut w = world();
+        let body = own_body(&mut w);
+        enemy(&mut w, vector![0.0, 1.0, -10.0], 1);
+        w.queries.update(&w.colliders);
+        let t = best_target(&w, EYE, FWD, 5.0, 40.0, &[], body).unwrap();
+        let dt = 1.0 / 60.0;
+        let mut l = LockState::default();
+        l.update(dt, &cfg, Some(&t));
+        let mut last = l.pull(&cfg);
+        assert!(last < 0.4 * 0.2, "no snap when acquired: {last}");
+        for _ in 0..9 {
+            l.update(dt, &cfg, Some(&t));
+            let p = l.pull(&cfg);
+            assert!(p >= last, "monotone ramp in");
+            last = p;
+        }
+        assert!((l.blend - 1.0).abs() < 1e-5, "fully blended after ~0.15 s");
+        assert!(l.t_since_phase > 0.1, "time since the phase started keeps counting");
+        assert!(l.eased() < l.progress || l.progress > 0.5 || l.eased() >= 0.0);
+        // lose the target: pull ramps out over break_secs, never jumping to zero
+        l.update(dt, &cfg, None);
+        let first_out = l.pull(&cfg);
+        assert!(first_out > 0.0 && first_out < last, "ramps out: {first_out} vs {last}");
+        assert_eq!(l.t_since_phase, 0.0, "break restarts the phase clock");
+        for _ in 0..20 {
+            l.update(dt, &cfg, None);
+        }
+        assert_eq!(l.pull(&cfg), 0.0);
+        assert_eq!(l.blend, 0.0);
+    }
+
+    #[test]
+    fn target_velocity_is_measured_while_the_lock_holds() {
+        let cfg = LockCfg::default();
+        let mut w = world();
+        let body = own_body(&mut w);
+        let h = enemy(&mut w, vector![0.0, 1.0, -10.0], 1);
+        let mut l = LockState::default();
+        let dt = 1.0 / 60.0;
+        for i in 0..20 {
+            w.colliders[h].set_translation(vector![-0.5 + i as f32 * 4.0 * dt, 1.0, -10.0]);
+            w.queries.update(&w.colliders);
+            let t = best_target(&w, EYE, FWD, 9.0, 40.0, &[], body).unwrap();
+            l.update(dt, &cfg, Some(&t));
+        }
+        assert!((l.target_vel.x - 4.0).abs() < 0.5, "4 m/s sideways: {:?}", l.target_vel);
     }
 }

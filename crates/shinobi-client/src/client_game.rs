@@ -405,6 +405,14 @@ pub struct LockOn {
     pub locked: bool,
     /// `Acquire` (dots converge), `Locked` (snap + pulse), `Break` (scatter / fade).
     pub phase: LockPhase,
+    /// `progress` with smoothstep easing: animate the dots with this, not the raw per-tick value.
+    pub eased: f32,
+    /// Seconds since the phase changed (or a new target was acquired): drives snap pulses and scatter timing.
+    pub t_since_phase: f32,
+    /// Target velocity (m/s, smoothed): lead the dots / brackets along it between ticks.
+    pub target_vel: [f32; 3],
+    /// 0..=1 weight the assist has right now (ramps in over ~0.15 s, out over the break time).
+    pub blend: f32,
 }
 
 /// Block placement preview for the shell: draw a translucent cube at `center` (cyan when `valid`, red otherwise);
@@ -795,9 +803,9 @@ impl ClientGame {
         }
         // look assist: slow the look and follow the target's motion while one is locked. It edits the aim BEFORE the
         // intent is built, so the server sees exactly the aim the player (and the predictor) used.
-        let assist_in = self.pred.as_ref().filter(|p| p.combat.lock.holding()).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
+        let assist_in = self.pred.as_ref().filter(|p| p.combat.lock.pull(&p.combat.lock_cfg) > 0.0).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
             eye: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
-            target: vector![p.combat.lock.pos[0], p.combat.lock.pos[1], p.combat.lock.pos[2]],
+            target: { let t = p.combat.lock.pos_now(); vector![t[0], t[1], t[2]] },
             target_id: p.combat.lock.target_id,
             pull: p.combat.lock.pull(&p.combat.lock_cfg),
             cone_deg: p.combat.assist_cone_deg,
@@ -1032,10 +1040,14 @@ impl ClientGame {
             let l = &p.combat.lock;
             (l.phase != LockPhase::Search).then(|| LockOn {
                 target: l.target_id as EntityId,
-                pos: l.pos,
+                pos: l.pos_now(),
                 progress: l.progress,
                 locked: l.phase == LockPhase::Locked,
                 phase: l.phase,
+                eased: l.eased(),
+                t_since_phase: l.t_since_phase,
+                target_vel: [l.target_vel.x, l.target_vel.y, l.target_vel.z],
+                blend: l.blend,
             })
         });
         // yaw / pitch stay the live aim; the rest of the pose is blended from the previous tick's to this one's

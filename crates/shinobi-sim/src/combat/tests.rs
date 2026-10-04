@@ -247,7 +247,7 @@ fn allies_are_ignored_by_the_blade_and_discs_fly_through_them() {
 
     // disc: passes the ally, hits the enemy behind it, and never bounced off the ally
     let scfg = ShurikenCfg::default();
-    let mut d = Disc { pos: Point::new(0.0, 1.0, -0.5), dir: vector![0.0, 0.0, -1.0], bounces: 0, age: 0.0 };
+    let mut d = Disc { pos: Point::new(0.0, 1.0, -0.5), dir: vector![0.0, 0.0, -1.0], bounces: 0, age: 0.0, speed_scale: 1.0, homing: None };
     let mut evs = Vec::new();
     let mut hit = None;
     for _ in 0..30 {
@@ -296,4 +296,104 @@ fn a_slice_reports_a_piece_hit_for_pieces_in_the_blade_box() {
     let (ev, _) = slice_once(&w, &ch, &cfg, origin);
     let hit: Vec<_> = ev.iter().filter_map(|e| if let CombatEvent::PieceHit { cell, kind, .. } = e { Some((*cell, *kind)) } else { None }).collect();
     assert_eq!(hit, vec![([0, 1, -2], DamageKind::Slash)], "{ev:?}");
+}
+
+mod disc_physics {
+    use super::*;
+    use crate::combat::shuriken::{advance_disc, Disc, DiscStep, ShurikenCfg};
+
+    fn disc(pos: [f32; 3], dir: Vector<Real>) -> Disc {
+        Disc { pos: Point::new(pos[0], pos[1], pos[2]), dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing: None }
+    }
+
+    fn wall(w: &mut PhysicsWorld, z: f32, half_thickness: f32, piece: Option<[i32; 3]>) {
+        let mut b = ColliderBuilder::cuboid(6.0, 4.0, half_thickness)
+            .translation(vector![0.0, 1.0, z])
+            .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL));
+        if let Some(cell) = piece {
+            b = b.user_data(crate::blocks::piece_user_data(cell));
+        }
+        w.colliders.insert(b.build());
+    }
+
+    #[test]
+    fn a_very_fast_disc_never_tunnels_through_a_thin_wall() {
+        let mut w = world();
+        wall(&mut w, -10.0, 0.02, None); // 4 cm sheet
+        w.queries.update(&w.colliders);
+        for speed in [40.0f32, 120.0, 300.0, 600.0] {
+            let cfg = ShurikenCfg { speed, ..ShurikenCfg::default() };
+            let mut d = disc([0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
+            let mut ev = Vec::new();
+            for _ in 0..30 {
+                advance_disc(&w, &mut d, &cfg, DT, None, &mut ev);
+            }
+            assert!(d.bounces >= 1, "{speed} m/s: the sheet must bounce the disc");
+            assert!(d.pos.z > -10.0, "{speed} m/s: stayed on this side (z = {})", d.pos.z);
+        }
+    }
+
+    #[test]
+    fn each_bounce_keeps_a_fraction_of_the_speed() {
+        let mut w = world();
+        wall(&mut w, -6.0, 0.1, None);
+        wall(&mut w, 6.0, 0.1, None);
+        w.queries.update(&w.colliders);
+        let cfg = ShurikenCfg { speed: 60.0, bounce_retention: 0.8, max_bounces: 3, ..ShurikenCfg::default() };
+        let mut d = disc([0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
+        let mut ev = Vec::new();
+        let mut travelled = Vec::new();
+        let mut last = d.pos;
+        for _ in 0..40 {
+            if matches!(advance_disc(&w, &mut d, &cfg, DT, None, &mut ev), DiscStep::Gone) {
+                break;
+            }
+            travelled.push((d.pos - last).norm());
+            last = d.pos;
+        }
+        assert!((d.speed_scale - 0.8f32.powi(d.bounces as i32)).abs() < 1e-5, "scale {} after {} bounces", d.speed_scale, d.bounces);
+        let early = travelled[1];
+        let late = *travelled.last().unwrap();
+        assert!(late < early * 0.9, "slower after bouncing: {early} -> {late}");
+    }
+
+    #[test]
+    fn a_disc_ricochets_off_a_player_built_piece_and_damages_it() {
+        let mut w = world();
+        wall(&mut w, -5.0, 0.1, Some([0, 1, -5]));
+        w.queries.update(&w.colliders);
+        let cfg = ShurikenCfg::default();
+        let mut d = disc([0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
+        let mut ev = Vec::new();
+        for _ in 0..20 {
+            advance_disc(&w, &mut d, &cfg, DT, None, &mut ev);
+        }
+        assert!(d.bounces >= 1 && d.dir.z > 0.0, "reflected back toward the thrower: {:?}", d.dir);
+        assert!(ev.iter().any(|e| matches!(e, CombatEvent::PieceHit { cell: [0, 1, -5], .. })));
+        assert!(ev.iter().any(|e| matches!(e, CombatEvent::ShurikenBounce { .. })));
+    }
+
+    #[test]
+    fn a_locked_throw_curves_onto_a_target_that_is_off_line_and_a_plain_one_misses() {
+        let mut w = world();
+        add_enemy(&mut w, vector![3.0, 1.0, -20.0], 9); // 8.5 degrees off the line of fire
+        w.queries.update(&w.colliders);
+        let target = w.colliders.iter().find(|(_, c)| c.user_data == 9).map(|(h, _)| h).unwrap();
+        let cfg = ShurikenCfg { speed: 60.0, ..ShurikenCfg::default() };
+        let run = |homing: Option<ColliderHandle>| {
+            let mut d = disc([0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
+            d.homing = homing;
+            let mut ev = Vec::new();
+            for _ in 0..60 {
+                match advance_disc(&w, &mut d, &cfg, DT, None, &mut ev) {
+                    DiscStep::Hit { collider, .. } => return Some(w.colliders[collider].user_data),
+                    DiscStep::Gone => return None,
+                    DiscStep::Flying => {}
+                }
+            }
+            None
+        };
+        assert_eq!(run(None), None, "straight flight misses");
+        assert_eq!(run(Some(target)), Some(9), "the homing disc curves onto the target");
+    }
 }

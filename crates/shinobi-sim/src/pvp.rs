@@ -677,6 +677,7 @@ mod tests {
         let mut b = sim.s.balance.clone();
         b.combat.shuriken.speed = 70.0; // the demo's flat, fast stars
         b.combat.shuriken.assist_lead = lead;
+        b.combat.shuriken.homing_turn = 0.0; // this test is about the lead; homing has its own
         sim.s.set_balance(b).unwrap();
         let mut fired = false;
         for t in 0..140u32 {
