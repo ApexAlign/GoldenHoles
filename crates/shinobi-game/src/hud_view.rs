@@ -283,8 +283,8 @@ fn enable_radial(mut mode: ResMut<crate::play::ModeRes>) {
     mode.machine.cfg.radial_hold_secs = 0.25;
 }
 
-/// Enter on the kicked / disconnected screen: a fresh `UdpGame` (new socket, new HELLO) replaces the dead session and
-/// every per-session HUD / input state is reset. The player's settings are re-applied by `sync_settings`.
+/// Enter on the kicked / disconnected screen: `UdpGame::reconnect` (new socket, new HELLO, clean `ClientGame`) replaces
+/// the dead session and every per-session HUD / input state is reset (live-tested in shinobi-server/tests/reconnect.rs). The player's settings are re-applied by `sync_settings`.
 fn reconnect_system(
     mut ctl: ResMut<HudCtl>,
     mut net: ResMut<Net>,
@@ -297,21 +297,16 @@ fn reconnect_system(
     if !std::mem::take(&mut ctl.reconnect) {
         return;
     }
-    let (Some(label), Some(level)) = (label, level) else { return };
-    let Ok(addr) = label.0.parse::<std::net::SocketAddr>() else {
-        eprintln!("reconnect: bad server address {:?}", label.0);
-        return;
-    };
-    match shinobi_client::udp_game::UdpGame::new(addr, level.0.clone(), shinobi_client::client_game::ClientGameCfg::default()) {
-        Ok(g) => {
-            net.0 = g;
+    let Some(level) = level else { return };
+    match net.0.reconnect(level.0.clone(), shinobi_client::client_game::ClientGameCfg::default()) {
+        Ok(()) => {
             ctl.watch = ConnWatch::default();
             ctl.bridge = HudBridge::default();
             ctl.screen = Screen::Connecting { elapsed_s: 0.0 };
             pending.0 = Default::default();
             menu.menu = Menu::Closed;
             settings.set_changed(); // re-apply sensitivity / fov / touch layout to the new game
-            eprintln!("reconnecting to {addr}");
+            eprintln!("reconnecting to {}", label.as_ref().map_or("?", |l| l.0.as_str()));
         }
         Err(e) => eprintln!("reconnect failed: {e}"),
     }
