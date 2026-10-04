@@ -517,6 +517,15 @@ impl NetClient {
         v
     }
 
+    /// Health of player `id` from the newest snapshot, in 1/31 steps: 31 = full, 0 = dead (or nearly: the wire has 32
+    /// levels, `hp_lost5`). `None` when the entity is not in the newest snapshot. Replicated for every player already
+    /// (spare bits of the entity `flags`), so no protocol change; works for your own entity too.
+    pub fn remote_hp(&self, id: u16) -> Option<u8> {
+        use shinobi_proto::snapshot::{hp_lost5, FLAG_DEAD, HP_STEPS};
+        let st = self.interp.newest_tick().and_then(|t| self.interp.get(t))?.get(id)?;
+        Some(if st.flags & FLAG_DEAD != 0 { 0 } else { HP_STEPS.saturating_sub(hp_lost5(st.flags)) })
+    }
+
     /// Kills to win a free-for-all match (None until the join catch-up arrives).
     pub fn frag_limit(&self) -> Option<u16> {
         self.match_rules.map(|r| r.0)
@@ -938,6 +947,22 @@ mod tests {
         ob.write_pending(&mut w, 480);
         c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
         assert_eq!(c.blocks(), vec![(1, [1, 0, 0])]);
+    }
+
+    #[test]
+    fn remote_hp_reads_the_health_bits_of_the_newest_snapshot() {
+        use shinobi_proto::snapshot::{with_hp_frac, FLAG_DEAD};
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        assert_eq!(c.remote_hp(2), None, "nothing received yet");
+        let ent = |id, flags| (id, EntityState { pos: [512, 512, 0], flags, ..Default::default() });
+        let snap = Snapshot { tick: 10, entities: vec![ent(2, 0), ent(3, with_hp_frac(0, 0.5)), ent(4, with_hp_frac(FLAG_DEAD, 0.0))] };
+        let dg = frame_snapshot_v3(&no_events(), &[], &[], &encode_delta(None, &snap));
+        c.on_datagram(&dg, 1.0).unwrap();
+        assert_eq!(c.remote_hp(2), Some(31), "full health");
+        assert!(matches!(c.remote_hp(3), Some(15 | 16)), "half: {:?}", c.remote_hp(3));
+        assert_eq!(c.remote_hp(4), Some(0), "dead");
+        assert_eq!(c.remote_hp(9), None, "not in the snapshot");
     }
 
     #[test]
