@@ -27,7 +27,7 @@ pub struct PlayerBalance {
     pub respawn_ticks: u32,
     /// Spawn protection. Must be >= `MAX_REWIND_TICKS` (a laggy rewound shot must not hit a fresh respawn).
     pub invuln_ticks: u32,
-    /// Protection on first join (longer than a respawn so a new player can find their feet). Same minimum.
+    /// Protection on first join (0 = none; the demo sets 3 s so a new player can find their feet). Otherwise same minimum.
     pub first_spawn_invuln_ticks: u32,
 }
 
@@ -263,7 +263,7 @@ impl Default for Balance {
                 max_hp: crate::pvp::MAX_HP,
                 respawn_ticks: crate::pvp::RESPAWN_TICKS,
                 invuln_ticks: crate::pvp::INVULN_TICKS,
-                first_spawn_invuln_ticks: 180,
+                first_spawn_invuln_ticks: 0,
             },
             combat: CombatBalance {
                 shuriken: ShurikenBalance {
@@ -408,12 +408,13 @@ impl Balance {
     ///   ~1.7 s; level crosshair (head height) is a 1.5x headshot, ~1.1 s;
     /// * light-walls 34 per touch (3 to kill), obstacles 60 (2 to kill), 1 s re-arm so one pass is one hit, and
     ///   your own trail never hurts you (it still blocks you);
-    /// * hp 100, respawn 3 s, 1.5 s spawn protection;
+    /// * hp 100, respawn 3 s, 1.5 s spawn protection (3 s on first join);
     /// * the match starts 3 s after the first player (min_players 1, so one human plus bots works), first to
     ///   10 frags or 6 minutes, 8 s intermission (docs/DEMO.md).
     pub fn demo() -> Self {
         let mut b = Balance::default();
         b.combat.katana.damage = 60.0;
+        b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
         b.combat.shuriken.speed = 70.0;
         b.combat.shuriken.damage = 12.0;
@@ -702,9 +703,9 @@ impl Balance {
                 self.player.invuln_ticks
             ));
         }
-        if self.player.first_spawn_invuln_ticks < MAX_REWIND_TICKS {
+        if self.player.first_spawn_invuln_ticks != 0 && self.player.first_spawn_invuln_ticks < MAX_REWIND_TICKS {
             e.push(format!(
-                "player.first_spawn_invuln_ticks must be >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
+                "player.first_spawn_invuln_ticks must be 0 or >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.first_spawn_invuln_ticks
             ));
         }
@@ -741,6 +742,20 @@ impl Balance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_join_is_protected_in_the_demo_balance_only() {
+        use crate::character::Cfg;
+        let mut d = crate::tick::Server::new(Cfg::default());
+        d.set_balance(Balance::demo()).unwrap();
+        d.add_player(1, [0.0, 1.0, 0.0]);
+        assert!(d.players[0].vitals.spawn_protected(d.tick + 179));
+        assert!(!d.players[0].vitals.spawn_protected(d.tick + 180));
+        let mut p = crate::tick::Server::new(Cfg::default());
+        p.add_player(1, [0.0, 1.0, 0.0]);
+        assert!(!p.players[0].vitals.spawn_protected(p.tick));
+        assert!(Balance::from_text("player.first_spawn_invuln_ticks = 3\n").is_err());
+    }
 
     #[test]
     fn defaults_are_valid_and_round_trip_through_text() {

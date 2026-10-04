@@ -132,10 +132,10 @@ fn least_recent(candidates: Vec<usize>, history: u32) -> Option<usize> {
 pub const NEAR_BEST: f32 = 0.7;
 /// Rotation needs at least this many candidates to avoid back-to-back repeats.
 pub const MIN_POOL: usize = 3;
-/// Spawns padding the pool below `MIN_POOL` must be at least this far (metres) from every enemy.
-pub /// Preferred minimum distance (m) from every enemy for a spawn, when the map has one.
+/// Preferred minimum distance (m) from every enemy for a spawn, when the map has one.
 const FAR_DIST: f32 = 60.0;
-const SAFE_DIST: f32 = 15.0;
+/// Spawns padding the pool below `MIN_POOL` must be at least this far (metres) from every enemy.
+pub const SAFE_DIST: f32 = 15.0;
 
 #[cfg(test)]
 mod tests {
