@@ -35,7 +35,7 @@ pub struct Settings {
     pub head_bob: bool,
 }
 
-pub const MOUSE_SENS: (f32, f32, f32) = (0.0002, 0.02, 0.0022); // (min, max, default)
+pub const MOUSE_SENS: (f32, f32, f32) = (0.0002, 0.02, 0.0012); // (min, max, default)
 pub const AIM_PAD_SENS: (f32, f32, f32) = (0.001, 0.02, 0.006);
 pub const STICK_RADIUS: (f32, f32, f32) = (0.06, 0.25, 0.13);
 pub const STICK_DEADZONE: (f32, f32, f32) = (0.0, 0.5, 0.12);
