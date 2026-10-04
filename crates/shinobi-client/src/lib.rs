@@ -19,6 +19,7 @@ pub mod overlay;
 pub mod pointer_lock;
 pub mod controls_card;
 pub mod display_clock;
+pub mod gamepad;
 pub mod hud;
 pub mod input;
 pub mod input_mode;

@@ -28,6 +28,9 @@ winit = { version = "0.30", default-features = false, features = ["wayland-dlope
 default = ["wayland"]
 # Procedural synth sound via bevy_audio (needs alsa headers on Linux). No asset files.
 audio = ["bevy/bevy_audio", "bevy/wav"]
+# Controller support (bevy_gilrs; on Linux it needs libudev dev headers, absent on the CI box). The mapping itself
+# (shinobi_client::gamepad) is always compiled; without this feature no pad ever reports input.
+gamepad = ["bevy/bevy_gilrs"]
 # Native Wayland window (dlopen: no system headers needed). Without it the game runs through XWayland.
 wayland = ["bevy/wayland", "dep:winit"]
 
@@ -35,3 +38,7 @@ wayland = ["bevy/wayland", "dep:winit"]
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
+
+# Windows / macOS: controllers on by default (gilrs needs no system headers there)
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+bevy = { version = "=0.19.1", default-features = false, features = ["bevy_gilrs"] }

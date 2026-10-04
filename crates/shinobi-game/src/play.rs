@@ -284,6 +284,8 @@ pub struct ModeRes {
     pub out: Option<ModeOut>,
     /// Seconds a build key (N / M) has been held continuously.
     build_holds: shinobi_client::input_mode::BuildHolds,
+    /// Gamepad -> move / look / button edges (`shinobi_client::gamepad`).
+    pad: shinobi_client::gamepad::PadMapper,
 }
 
 impl ModeRes {
@@ -307,6 +309,7 @@ pub fn input(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     cursor: Option<Single<&mut CursorOptions>>,
+    pads: Query<&Gamepad>,
     mut focus: MessageReader<WindowFocused>,
     mut lock: ResMut<Lock>,
     mut menu: ResMut<crate::hud_view::MenuRes>,
@@ -329,8 +332,19 @@ pub fn input(
     });
     mode.out = Some(mode_out);
 
+    // gamepad: the first pad with any input this frame (or the first connected) becomes a snapshot for the mapper
+    let pad_out = {
+        let pad = pads.iter().find(|g| pad_snapshot(g).1).or_else(|| pads.iter().next());
+        let snap = pad.map_or_else(Default::default, |g| pad_snapshot(g).0);
+        mode.pad.update(&snap, time.delta_secs(), net.0.game.settings.mouse_sens)
+    };
+
     // window events -> state machine (focus first, then Esc, then the click, so one frame behaves sensibly)
     let mut events = Vec::new();
+    // Start on a pad grabs the pointer like a click does, so a controller player never has to touch the mouse
+    if pad_out.start_pressed && !menu.open() && !lock.p.locked() {
+        events.push(LockEvent::LeftClick);
+    }
     for e in focus.read() {
         events.push(if e.focused { LockEvent::FocusGained } else { LockEvent::FocusLost });
     }
@@ -378,6 +392,11 @@ pub fn input(
             g.settings.look(&mut g.aim, motion.delta.x, motion.delta.y, false);
             view.0.aim = g.aim;
         }
+        if pad_out.look != (0.0, 0.0) {
+            let g = &mut net.0.game;
+            g.settings.look(&mut g.aim, pad_out.look.0, pad_out.look.1, false);
+            view.0.aim = g.aim;
+        }
     }
     if mode_out.flags.allow_move {
         f.stick = keys_to_stick(
@@ -386,6 +405,9 @@ pub fn input(
             keys.pressed(KeyCode::KeyS),
             keys.pressed(KeyCode::KeyD),
         );
+        if pad_out.stick != (0.0, 0.0) && f.stick == (0.0, 0.0) {
+            f.stick = pad_out.stick;
+        }
     }
     // Build keys print on RELEASE so a long hold can open the radial menu instead (it replaces the print). Each key
     // is judged by its OWN hold, and this runs before the action gate so tapping M while N holds the radial open still
@@ -419,10 +441,37 @@ pub fn input(
     ] {
         key_events(&mut out, p, r, a);
     }
+    out.extend(pad_out.events.iter().copied());
     for e in out {
         lock.tracker.apply(&e);
         f.buttons.push(e);
     }
+}
+
+/// The mapper's view of a bevy gamepad, and whether anything on it is active (stick past a rough deadzone, a trigger or a
+/// button down).
+fn pad_snapshot(g: &Gamepad) -> (shinobi_client::gamepad::PadSnapshot, bool) {
+    use shinobi_client::gamepad::{Pad, PadSnapshot};
+    let mut s = PadSnapshot::default();
+    let (l, r) = (g.left_stick(), g.right_stick());
+    s.left = (l.x, l.y);
+    s.right = (r.x, r.y);
+    s.lt = g.get(GamepadButton::LeftTrigger2).unwrap_or(0.0);
+    s.rt = g.get(GamepadButton::RightTrigger2).unwrap_or(0.0);
+    for (b, p) in [
+        (GamepadButton::South, Pad::South),
+        (GamepadButton::East, Pad::East),
+        (GamepadButton::West, Pad::West),
+        (GamepadButton::North, Pad::North),
+        (GamepadButton::LeftTrigger, Pad::LeftBumper),
+        (GamepadButton::RightTrigger, Pad::RightBumper),
+        (GamepadButton::DPadRight, Pad::DPadRight),
+        (GamepadButton::Start, Pad::Start),
+    ] {
+        s.set(p, g.pressed(b));
+    }
+    let active = l.length() > 0.3 || r.length() > 0.3 || s.lt > 0.3 || s.rt > 0.3 || g.get_pressed().next().is_some();
+    (s, active)
 }
 
 /// OS window title follows the lock state ("click the window to play" until the mouse is grabbed).
