@@ -140,6 +140,9 @@ struct Predicted {
     hookable: bool,
     /// Client clock (ticks) at the most recent `sim_tick`; interpolation alpha is measured from here.
     sim_local: f64,
+    /// Predicted position per recent sim tick, `(client tick clock, pos)`, oldest first: the draw time can sit up to
+    /// `display_clock::MAX_LAG` ticks behind the newest tick, so a single previous position is not enough to interpolate.
+    hist: std::collections::VecDeque<(f64, [f32; 3])>,
     /// Replicated + predicted blocks as colliders in `world` (same code as the server: `shinobi_sim::blocks`).
     blocks: Blocks,
     /// Blocks placed locally and not yet confirmed by the server: `(cell, local tick placed)`.
@@ -264,6 +267,25 @@ impl Predicted {
         self.prev_pos = self.pos;
         self.pos = [t.x, t.y, t.z];
         self.pos
+    }
+
+    /// Predicted position at client time `t` (ticks): linear between the bracketing ticks, held outside the history.
+    fn sample(&self, t: f64) -> [f32; 3] {
+        let h = &self.hist;
+        let (Some(first), Some(last)) = (h.front(), h.back()) else { return self.pos };
+        if t <= first.0 {
+            return first.1;
+        }
+        if t >= last.0 {
+            return last.1;
+        }
+        for w in h.iter().collect::<Vec<_>>().windows(2) {
+            if t <= w[1].0 {
+                let a = ((t - w[0].0) / (w[1].0 - w[0].0).max(1e-9)) as f32;
+                return std::array::from_fn(|i| w[0].1[i] + (w[1].1[i] - w[0].1[i]) * a);
+            }
+        }
+        last.1
     }
 
     /// Can the grapple grab something along this view direction from here? (Crosshair tint.)
@@ -650,6 +672,8 @@ impl ClientGame {
             self.corrections += 1;
             pred.pos = p;
             pred.prev_pos = p; // the offset already keeps the screen where it was
+            pred.hist.clear();
+            pred.hist.push_back((pred.sim_local + 1.0, p));
             pred.combat.set_slice_cooldown_left(pred.ch.slice_cooldown());
             // a jump the reconciler refused to smooth (offset reset) is a server teleport: respawn, match start
             let jump = (0..3).map(|i| (rendered[i] - p[i]).powi(2)).sum::<f32>().sqrt();
@@ -693,6 +717,7 @@ impl ClientGame {
             prev_pos: ack.own.pos,
             hookable: false,
             sim_local: 0.0,
+            hist: std::collections::VecDeque::new(),
             // the server evicts at its cap and says so (BlockRemoved): never evict locally on our own
             blocks: Blocks::new(BlockCfg { max_per_owner: usize::MAX, ..BlockCfg::default() }),
             block_pending: Vec::new(),
@@ -816,6 +841,10 @@ impl ClientGame {
                 let vy_before = p.ch.vel.y; // fall speed for the landing dip (the controller zeroes it on landing)
                 let pos = p.step(&sink);
                 p.sim_local = local_tick;
+                p.hist.push_back((local_tick + 1.0, pos)); // the state after tick T is what is on screen at T + 1 (one tick of interpolation delay)
+                while p.hist.len() > 8 {
+                    p.hist.pop_front();
+                }
                 self.reconciler.record(intent, pos);
                 p.probe_hook(intent.aim_yaw, intent.aim_pitch);
                 match p.ch.grapple_event {
@@ -919,9 +948,8 @@ impl ClientGame {
         let off = self.reconciler.visual_offset;
         let local_pos = match &self.pred {
             Some(p) => {
-                let a = (local_tick - p.sim_local).clamp(0.0, 1.0) as f32;
-                let l = |i: usize| p.prev_pos[i] + (p.pos[i] - p.prev_pos[i]) * a + off[i];
-                Some([l(0), l(1), l(2)])
+                let q = p.sample(local_tick);
+                Some([q[0] + off[0], q[1] + off[1], q[2] + off[2]])
             }
             None => own_id
                 .zip(self.net.render_tick(local_tick))
