@@ -39,7 +39,15 @@ pub const MOUSE_SENS: (f32, f32, f32) = (0.0002, 0.02, 0.0022); // (min, max, de
 pub const AIM_PAD_SENS: (f32, f32, f32) = (0.001, 0.02, 0.006);
 pub const STICK_RADIUS: (f32, f32, f32) = (0.06, 0.25, 0.13);
 pub const STICK_DEADZONE: (f32, f32, f32) = (0.0, 0.5, 0.12);
-pub const FOV: (f32, f32, f32) = (60.0, 120.0, 90.0);
+pub const FOV: (f32, f32, f32) = (80.0, 110.0, 90.0);
+
+/// Mouse DPI the cm/360 readout assumes (the pointer API gives counts, not distance).
+pub const ASSUMED_DPI: f32 = 800.0;
+
+/// Centimetres of mouse travel for a full turn at `sens` radians per count (at `ASSUMED_DPI`).
+pub fn cm_per_360(sens: f32) -> f32 {
+    (std::f32::consts::TAU / sens.max(1e-6)) / (ASSUMED_DPI / 2.54)
+}
 pub const FX_INTENSITY: (f32, f32, f32) = (0.0, 1.0, 1.0);
 pub const CRT_WARP: (f32, f32, f32) = (0.0, 1.0, 1.0);
 

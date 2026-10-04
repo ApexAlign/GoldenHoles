@@ -239,7 +239,7 @@ impl SettingRow {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::MouseSens => "MOUSE SENS",
+            Self::MouseSens => "SENS CM/360",
             Self::AimPadSens => "AIM PAD SENS",
             Self::StickRadius => "STICK SIZE",
             Self::StickDeadzone => "STICK DEADZONE",
@@ -251,6 +251,17 @@ impl SettingRow {
             Self::HeadBob => "HEAD BOB",
             Self::LeftHanded => "LEFT HANDED",
         }
+    }
+
+    /// Sensitivities are felt as ratios, so their sliders are logarithmic: equal steps change the turn speed by an equal
+    /// percentage and the low end (where aim is precise) gets as much room as the high end.
+    pub fn log_scale(self) -> bool {
+        matches!(self, Self::MouseSens | Self::AimPadSens)
+    }
+
+    /// Keyboard step in slider fraction: fine for sensitivities (about 1 percent of turn speed per press), coarse else.
+    pub fn key_step(self) -> f32 {
+        if self.log_scale() { 0.01 } else { 0.05 }
     }
 
     /// `(min, max, default)` for slider rows, `None` for toggles.
@@ -291,9 +302,9 @@ impl SettingRow {
     }
 }
 
-const SET_PANEL: Rect = Rect { x: 0.22, y: 0.12, w: 0.56, h: 0.76 };
+const SET_PANEL: Rect = Rect { x: 0.22, y: 0.07, w: 0.56, h: 0.84 };
 const SET_ROW_H: f32 = 0.058;
-const SET_TRACK_X: f32 = 0.52;
+const SET_TRACK_X: f32 = 0.47;
 const SET_TRACK_W: f32 = 0.18;
 
 fn setting_rect(i: usize) -> Rect {
@@ -303,7 +314,8 @@ fn setting_rect(i: usize) -> Rect {
 /// Slider position 0..=1 of a row (`None` for toggles).
 pub fn setting_frac(s: &Settings, row: SettingRow) -> Option<f32> {
     let (lo, hi, _) = row.range()?;
-    Some(((row.slider_value(s)? - lo) / (hi - lo)).clamp(0.0, 1.0))
+    let v = row.slider_value(s)?;
+    Some(if row.log_scale() { ((v / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0) } else { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) })
 }
 
 /// Value readout: percent for 0..1 sliders, degrees for FOV, plain number for sensitivities, ON/OFF for toggles.
@@ -313,8 +325,10 @@ pub fn setting_text(s: &Settings, row: SettingRow) -> String {
     }
     let v = row.slider_value(s).unwrap_or(0.0);
     match row {
-        SettingRow::Fov => format!("{:.0}\u{b0}", v),
-        SettingRow::MouseSens | SettingRow::AimPadSens => format!("{:.4}", v),
+        SettingRow::Fov => format!("{:.0} DEG", v),
+        // mouse sensitivity reads as centimetres of mouse travel per full turn (smaller = faster), at an assumed 800 DPI
+        SettingRow::MouseSens => format!("{:.1}", cfg::cm_per_360(v)),
+        SettingRow::AimPadSens => format!("{:.4}", v),
         _ => format!("{:.0}%", v * 100.0),
     }
 }
@@ -333,7 +347,8 @@ pub fn settings_hit(x: f32, y: f32) -> Option<(SettingRow, f32)> {
 /// flip when `click` is true (a drag across them must not flicker). Result is always clamped.
 pub fn settings_apply(s: &mut Settings, row: SettingRow, frac: f32, click: bool) {
     if let Some((lo, hi, _)) = row.range() {
-        let v = lo + frac.clamp(0.0, 1.0) * (hi - lo);
+        let f = frac.clamp(0.0, 1.0);
+        let v = if row.log_scale() { lo * (hi / lo).powf(f) } else { lo + f * (hi - lo) };
         match row {
             SettingRow::MouseSens => s.mouse_sens = v,
             SettingRow::AimPadSens => s.aim_pad_sens = v,
@@ -386,7 +401,7 @@ pub fn draw_settings(s: &Settings, selected: usize, p: &Palette) -> Vec<Prim> {
             }
         }
     }
-    out.push(Prim::Text { pos: (0.5, SET_PANEL.y + SET_PANEL.h - 0.02), text: "ESC TO GO BACK".into(), size: 0.024, color: p.text.a(0.5), align: Align::Center });
+    out.push(Prim::Text { pos: (0.5, SET_PANEL.y + SET_PANEL.h - 0.02), text: "ARROWS ADJUST   RIGHT = FASTER   ESC BACK".into(), size: 0.02, color: p.text.a(0.5), align: Align::Center });
     out
 }
 
@@ -539,7 +554,7 @@ mod tests {
         for row in SettingRow::ALL {
             assert!(t.contains(&row.label().to_string()), "{row:?}");
         }
-        assert!(t.contains(&"100\u{b0}".to_string()) && t.contains(&"SETTINGS".to_string()));
+        assert!(t.contains(&"100 DEG".to_string()) && t.contains(&"SETTINGS".to_string()));
         assert!(draw_settings(&s, 4, &p).len() > draw_settings(&s, 99, &p).len());
         // all geometry stays on screen
         for q in &out {
@@ -562,5 +577,41 @@ mod tests {
         assert!(t.contains(&"PRESS ENTER TO RECONNECT".to_string()) && t.contains(&"ESC TO QUIT".to_string()));
         assert_eq!(kick_hint("SOMETHING ELSE"), None);
         assert!(kick_hint("CLIENT OUT OF DATE").is_some());
+    }
+
+    #[test]
+    fn sensitivity_slider_is_logarithmic_reads_in_cm_per_360_and_fov_is_80_to_110() {
+        let mut s = Settings::default();
+        // ends and a round trip through the log mapping
+        settings_apply(&mut s, SettingRow::MouseSens, 0.0, false);
+        assert!((s.mouse_sens - cfg::MOUSE_SENS.0).abs() < 1e-7);
+        settings_apply(&mut s, SettingRow::MouseSens, 1.0, false);
+        assert!((s.mouse_sens - cfg::MOUSE_SENS.1).abs() < 1e-6);
+        settings_apply(&mut s, SettingRow::MouseSens, 0.5, false);
+        let mid = s.mouse_sens;
+        assert!((mid - (cfg::MOUSE_SENS.0 * cfg::MOUSE_SENS.1).sqrt()).abs() < 1e-6, "midpoint is the geometric mean");
+        assert!((setting_frac(&s, SettingRow::MouseSens).unwrap() - 0.5).abs() < 1e-4);
+        // equal key steps = equal ratio, anywhere on the slider
+        let ratio = |at: f32| {
+            let mut t = Settings::default();
+            settings_apply(&mut t, SettingRow::MouseSens, at, false);
+            let before = t.mouse_sens;
+            settings_apply(&mut t, SettingRow::MouseSens, at + SettingRow::MouseSens.key_step(), false);
+            t.mouse_sens / before
+        };
+        assert!((ratio(0.2) - ratio(0.7)).abs() < 1e-3, "{} {}", ratio(0.2), ratio(0.7));
+        assert!(SettingRow::MouseSens.key_step() < SettingRow::Fov.key_step(), "sensitivity steps are fine");
+        // default 0.0022 rad/count at 800 DPI is about 9 cm per turn; the readout agrees and faster = smaller number
+        let d = Settings::default();
+        let cm: f32 = setting_text(&d, SettingRow::MouseSens).parse().unwrap();
+        assert!((cm - 9.1).abs() < 0.2, "{cm}");
+        let mut fast = d;
+        fast.mouse_sens *= 2.0;
+        assert!(setting_text(&fast, SettingRow::MouseSens).parse::<f32>().unwrap() < cm);
+        // FOV slider spans exactly 80..110
+        settings_apply(&mut s, SettingRow::Fov, 0.0, false);
+        assert_eq!(s.fov_deg, 80.0);
+        settings_apply(&mut s, SettingRow::Fov, 1.0, false);
+        assert_eq!(s.fov_deg, 110.0);
     }
 }

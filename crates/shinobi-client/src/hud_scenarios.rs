@@ -106,6 +106,8 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         out.push((name, Hud::build_with(&s, &p)));
     }
 
+    out.push(("settings", crate::screens::draw_settings(&crate::settings::Settings::default(), 0, &p)));
+
     let mut con = Console::default();
     let mut st = crate::settings::Settings::default();
     for line in ["/help", "/fov 100", "/colour", "/log"] {

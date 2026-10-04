@@ -226,9 +226,10 @@ fn menu_input(
                 sel = (sel + 1) % n;
             }
             let row = SettingRow::ALL[sel];
+            let before = settings.0;
             let st = &mut settings.0;
             if let Some(f) = screens::setting_frac(st, row) {
-                let step = 0.05;
+                let step = row.key_step();
                 if keys.just_pressed(KeyCode::ArrowLeft) {
                     screens::settings_apply(st, row, f - step, false);
                 }
@@ -245,6 +246,10 @@ fn menu_input(
                 }
             }
             menu.menu = Menu::Settings(sel);
+            // persist every edit as soon as it is final (not mid-drag): a crash or kill never loses a tuned sensitivity
+            if settings.0 != before && !mouse.pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+                save(&settings.0);
+            }
             if esc {
                 save(&settings.0);
                 menu.menu = Menu::Main(1);
