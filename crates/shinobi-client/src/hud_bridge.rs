@@ -108,6 +108,9 @@ pub fn kill_limit_to_show(override_limit: Option<u16>, from_server: Option<u16>)
 }
 
 /// Seconds out of the fight before health regeneration starts (`Balance::player.regen_delay_s`).
+/// Rate (1/s) the lock brackets chase the target: matches the 3D lock dots' `smooth_toward`.
+pub const LOCK_SMOOTH_RATE: f32 = 28.0;
+
 pub fn regen_delay_s() -> f32 {
     shinobi_sim::balance::Balance::demo().player.regen_delay_s
 }
@@ -150,6 +153,8 @@ pub struct HudBridge {
     /// Seconds without damage before health regeneration starts (`None` = the demo balance's value).
     pub regen_delay: Option<f32>,
     prev_hp: Option<f32>,
+    /// Render-smoothed lock target position (and whose): the sim steps at 60 Hz, the brackets should not.
+    lock_smooth: Option<(u16, [f32; 3])>,
     since_damage: f32,
     was_dead: bool,
     booted: bool,
@@ -285,6 +290,7 @@ impl HudBridge {
         // enemies within range but off screen -> edge ticks (teams: the other team; free-for-all: everyone else)
         let mut enemy_ticks = Vec::new();
         let mut enemy_tags: Vec<crate::hud::EnemyTag> = Vec::new();
+        let locked_id = self.lock.map(|l| l.target).or_else(|| view.lock.map(|l| l.target as u16));
         {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let (yaw, pitch) = view.look_angles();
@@ -308,7 +314,8 @@ impl HudBridge {
                     enemy_ticks.push(crate::hud::EnemyTick { bearing: bearing_to(me, yaw, smp.pos), dist: d });
                 }
                 // no tags through walls: the client game ray-checks eye -> chest against the level
-                if d <= crate::hud::ENEMY_TAG_RANGE && view.los_ids.contains(id) {
+                // the lock target already wears the lock label: no second name over it
+                if d <= crate::hud::ENEMY_TAG_RANGE && view.los_ids.contains(id) && Some(*id) != locked_id {
                     let head = [smp.pos[0], smp.pos[1] + 1.1, smp.pos[2]];
                     if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
                         if (0.08..=0.92).contains(&x) && (BROW_H + 0.05..=CHIN_TOP - 0.03).contains(&y) {
@@ -433,7 +440,19 @@ impl HudBridge {
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             // target health from the replicated snapshot flags (31 steps), when the target is in the newest snapshot
             let target_hp = net.interp.newest_tick().and_then(|t| net.interp.get(t)).and_then(|s| s.get(l.target)).map(|e| shinobi_proto::snapshot::hp_frac(e.flags));
-            if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, l.pos) {
+            // exp smoothing (rate 28, frame-rate independent) with the target's velocity as feed-forward, as the 3D lock
+            // dots do; a new target starts on itself (no sweep across the map)
+            let vel = view.lock.map_or([0.0; 3], |lk| lk.target_vel);
+            let k = 1.0 - (-LOCK_SMOOTH_RATE * dt).exp();
+            let sm = match self.lock_smooth {
+                Some((id, cur)) if id == l.target => std::array::from_fn(|i| {
+                    let lead = cur[i] + vel[i] * dt;
+                    lead + (l.pos[i] - lead) * k
+                }),
+                _ => l.pos,
+            };
+            self.lock_smooth = Some((l.target, sm));
+            if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, sm) {
                 let colour = match &teams {
                     Some(t) => crate::hud::Palette::TRON.team(t.team_of.get(&l.target).copied().unwrap_or(1)),
                     None => colour_of(l.target),
@@ -442,6 +461,9 @@ impl HudBridge {
                 let pos = (x.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), y.clamp(BROW_H + 0.15, CHIN_TOP - 0.1));
                 hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp,  dist, progress: l.progress, locked: l.locked });
             }
+        }
+        if lock.is_none() {
+            self.lock_smooth = None;
         }
         // boot-up plays on first link and on every respawn
         if hs.dead {
@@ -545,6 +567,42 @@ impl HudBridge {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lock_brackets_smooth_between_sim_steps_lead_the_target_and_hide_its_name_tag() {
+        use crate::client_game::LockOn;
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        let lock = |x: f32, vx: f32, target| LockOn { target, pos: [x, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [vx, 0.0, 0.0], blend: 1.0 };
+        v.lock = Some(lock(0.0, 0.0, 5));
+        let x0 = b.update(1.0 / 60.0, &v, &net(), false).target.unwrap().pos.0;
+        // the sim target jumps 1 m in one step: the bracket moves part of the way, not all of it
+        v.lock = Some(lock(1.0, 0.0, 5));
+        let x1 = b.update(1.0 / 144.0, &v, &net(), false).target.unwrap().pos.0;
+        let raw = crate::hud::project(v.eye, 0.0, 0.0, 90.0, 16.0 / 9.0, [1.0, 1.5, -20.0]).unwrap().0;
+        assert!(x1 > x0 && x1 < raw - 1e-4, "smoothed: {x0} < {x1} < {raw}");
+        // frame-rate independent: 1 s later (any step size) it has arrived
+        for _ in 0..144 {
+            b.update(1.0 / 144.0, &v, &net(), false);
+        }
+        let xe = b.update(1.0 / 144.0, &v, &net(), false).target.unwrap().pos.0;
+        assert!((xe - raw).abs() < 1e-3, "{xe} vs {raw}");
+        // a new target starts on itself
+        v.lock = Some(lock(-3.0, 0.0, 6));
+        let xn = b.update(1.0 / 144.0, &v, &net(), false).target.unwrap().pos.0;
+        let rawn = crate::hud::project(v.eye, 0.0, 0.0, 90.0, 16.0 / 9.0, [-3.0, 1.5, -20.0]).unwrap().0;
+        assert!((xn - rawn).abs() < 1e-4, "{xn} vs {rawn}");
+        // the lock target gets no world name tag (the lock label already names it)
+        let smp = |p: [f32; 3]| crate::interp::Sample { pos: p, yaw: 0.0, extrapolated: false };
+        v.remotes = vec![(6, smp([-3.0, 0.0, -10.0])), (7, smp([2.0, 0.0, -10.0]))];
+        v.los_ids = vec![6, 7];
+        let s = b.update(1.0 / 144.0, &v, &net(), false);
+        assert_eq!(s.enemy_tags.len(), 1);
+        assert_eq!(s.enemy_tags[0].name, callsign(7));
+    }
+
     #[test]
     fn enemy_name_tags_for_visible_enemies_in_range_nearest_four() {
         let mut b = HudBridge::default();
