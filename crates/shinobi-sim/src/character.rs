@@ -6,6 +6,9 @@ pub const TRAIL_CAP: usize = 128;
 pub const GROUP_ENEMY: Group = Group::GROUP_2;
 pub const GROUP_TRAIL: Group = Group::GROUP_3;
 
+/// How far a wedged capsule is stepped out of a wall face before the controller retries (see `CharacterSystem::update`).
+const WEDGE_NUDGE: f32 = 0.03;
+
 #[derive(Clone, Copy)]
 pub struct Cfg {
     pub half_height: f32,
@@ -654,7 +657,8 @@ impl CharacterSystem {
         // ---- KCC ----
         let shape = Capsule::new_y(cfg.half_height, cfg.radius);
         let desired = self.vel * dt;
-        let mv = self.kcc.move_shape(
+        let mut wall_normals: Vec<Vector<Real>> = Vec::new();
+        let mut mv = self.kcc.move_shape(
             dt,
             &w.bodies,
             &w.colliders,
@@ -663,9 +667,37 @@ impl CharacterSystem {
             &Isometry::translation(pos.x, pos.y, pos.z),
             desired,
             self.filter(),
-            |_| {},
+            |c| wall_normals.push(c.hit.normal1.into_inner()),
         );
+        // Wedge recovery: pressed flat against a wall face inside the skin (a wall-run exit, a grapple into a wall, a
+        // corner seam) the controller can return no motion at all, even along the wall. Step 3 cm out of the face along
+        // its normal and retry with the move projected onto the wall plane. Stateless, so replay / parity are unaffected.
+        let dh = flat(desired);
         let mut new_pos = pos + mv.translation;
+        if dh.norm() > 0.05 && flat(mv.translation).norm() < dh.norm() * 0.1 {
+            if let Some(n) = wall_normals.iter().map(|n| flat(*n)).find(|n| n.norm() > 0.5).map(|n| n.normalize()) {
+                let away = -n * WEDGE_NUDGE; // `n` points from the character into the wall
+                let tangent = dh - n * dh.dot(&n).max(0.0);
+                let retry = Vector::new(tangent.x, desired.y, tangent.z);
+                let from = pos + away;
+                let mv2 = self.kcc.move_shape(
+                    dt,
+                    &w.bodies,
+                    &w.colliders,
+                    &w.queries,
+                    &shape,
+                    &Isometry::translation(from.x, from.y, from.z),
+                    retry,
+                    self.filter(),
+                    |_| {},
+                );
+                if flat(mv2.translation).norm() > flat(mv.translation).norm() + 1e-3 {
+                    new_pos = from + mv2.translation;
+                    mv = mv2;
+                    mv.translation += away;
+                }
+            }
+        }
         // wedged against a ledge just short of the release radius: the reel is driving into geometry and the capsule
         // barely moves, so let go (carrying the real speed, not the phantom reel speed) instead of hanging there
         if let Some(g) = self.grapple {
@@ -1654,6 +1686,79 @@ mod tests {
             }
         }
         assert!(on_b, "should catch wall B after the pull, state {:?} grapple {:?}", ch.state, ch.grapple.is_some());
+    }
+
+    /// Grounded capsule pressed against a wall face at `gap` m: it must still slide along the wall.
+    fn slide_along_wall(gap: f32, into_wall: f32, vy: f32) -> f32 {
+        let mut w = world();
+        boxc(&mut w, [0.0, -0.5, 0.0], [50.0, 0.5, 50.0]); // floor, top at y = 0
+        boxc(&mut w, [3.0, 5.0, 0.0], [2.0, 5.0, 50.0]); // wall, face at x = 1
+        let cfg = Cfg::default();
+        let x = 1.0 - cfg.radius - gap;
+        let mut ch = player(&mut w, [x, cfg.half_height + cfg.radius + 0.02, 0.0]);
+        ch.vel.y = vy;
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let z0 = w.bodies[ch.body].translation().z;
+        let input = PlayerInput { move_dir: vector![into_wall, 0.0, -1.0].normalize(), ..Default::default() };
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &input, &mut now);
+        }
+        z0 - w.bodies[ch.body].translation().z
+    }
+
+    #[test]
+    fn a_grounded_capsule_pressed_against_a_wall_still_slides_along_it() {
+        let run = Cfg::default().run_speed;
+        for gap in [-0.02, -0.01, -0.003, 0.0, 0.002, 0.005, 0.01, 0.015, 0.02, 0.05] {
+            for into in [0.0, 0.2, 1.0, 3.0] {
+                let d = slide_along_wall(gap, into, 0.0);
+                let along = 1.0 / (1.0 + into * into as f32).sqrt(); // the move_dir's share along the wall
+                assert!(d > run * along * 0.5 * 0.8, "gap {gap} into-wall {into}: moved only {d:.3} m along the wall in 0.5 s");
+            }
+        }
+    }
+
+    /// The same slide along a wall built from several boxes (seams at z = -2, -5 and a rolled-edge neighbour), grounded or
+    /// falling, from a standing start and with the stick pushed into the wall.
+    fn slide_along_seamed_wall(gap: f32, into: f32, airborne: bool) -> f32 {
+        let mut w = world();
+        boxc(&mut w, [0.0, -0.5, 0.0], [50.0, 0.5, 50.0]);
+        for (i, zc) in [(0, 0.0f32), (1, -4.0), (2, -8.0), (3, -12.0), (4, -16.0)] {
+            // alternating wall thickness so seams are not coplanar in depth, like a built district
+            let half_x = if i % 2 == 0 { 2.0 } else { 1.5 };
+            boxc(&mut w, [1.0 + half_x, 5.0, zc], [half_x, 5.0, 2.0]);
+        }
+        let cfg = Cfg::default();
+        let x = 1.0 - cfg.radius - gap;
+        let y = if airborne { 3.0 } else { cfg.half_height + cfg.radius + 0.02 };
+        let mut ch = player(&mut w, [x, y, 1.0]);
+        let mut now = 0.0;
+        if !airborne {
+            settle(&mut ch, &mut w, &mut now);
+        }
+        let z0 = w.bodies[ch.body].translation().z;
+        let input = PlayerInput { move_dir: vector![into, 0.0, -1.0].normalize(), ..Default::default() };
+        for _ in 0..90 {
+            tick(&mut ch, &mut w, &input, &mut now);
+        }
+        z0 - w.bodies[ch.body].translation().z
+    }
+
+    #[test]
+    fn sliding_along_a_wall_built_from_boxes_never_catches_on_the_seams() {
+        let cfg = Cfg::default();
+        for airborne in [false, true] {
+            for gap in [0.0, 0.005, 0.01, 0.02] {
+                for into in [0.0, 0.3, 1.0] {
+                    let d = slide_along_seamed_wall(gap, into, airborne);
+                    let along = 1.0 / (1.0 + into * into as f32).sqrt();
+                    // 1.5 s of input: it must cover most of the 17 m run / a good share of the speed (air accel is slower)
+                    let want = cfg.run_speed * along * 1.5 * if airborne { 0.35 } else { 0.8 };
+                    assert!(d > want.min(14.0), "airborne {airborne} gap {gap} into {into}: moved {d:.2} m, want > {want:.2}");
+                }
+            }
+        }
     }
 
     #[test]
