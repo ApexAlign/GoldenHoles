@@ -104,7 +104,7 @@ fn hook_pull_release_over_the_ffa_map_never_snags_clips_or_goes_nonfinite() {
                         t.bad_speed.push(format!("{tag}: non-finite at tick {k}"));
                         break;
                     }
-                    if v.norm() > cfg.grapple_max_speed * 1.6 {
+                    if v.norm() > cfg.grapple_max_speed.max(cfg.terminal) * 1.2 {
                         t.bad_speed.push(format!("{tag}: speed {:.1} at tick {k}", v.norm()));
                     }
                     if l.level.boxes.iter().any(|b| inside(b, [p.x, p.y, p.z])) {
