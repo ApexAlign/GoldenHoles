@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn resent_hits_survive_loss_and_surface_once() {
-        let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false };
+        let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false, head: false };
         let blk = |hits: Vec<HitMsg>, seq: u8| {
             let x = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: seq, ..Default::default() };
             let mut w = BitWriter::new();
@@ -1026,7 +1026,7 @@ mod tests {
     fn own_extras_surface_with_position_hp_and_hits() {
         let mut c = NetClient::default();
         welcome(&mut c, 1, 0); // our entity id = 1 (see snap())
-        let hit = HitMsg { other: 2, amount: 30, kind: 0, taken: false, kill: false };
+        let hit = HitMsg { other: 2, amount: 30, kind: 0, taken: false, kill: false, head: false };
         let d = frame_snapshot_v3(&no_events(), &own_block(true, 77, 755, vec![hit]), &[], &encode_delta(None, &snap(10, 6400)));
         c.on_datagram(&d, 1.0).unwrap();
         let u = c.take_own_state().expect("own update");

@@ -473,10 +473,10 @@ mod tests {
         let head = s.balance.combat.shuriken.damage * s.balance.combat.headshot_mult;
         s.events = vec![(1, thrown()), (1, thrown()), (1, slash()), (1, CombatEvent::GrappleAttach { origin: Point::origin(), anchor: Point::origin() }), (1, CombatEvent::GrappleMiss { origin: Point::origin(), dir: Vector::z() })];
         s.pvp_events = vec![
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: s.balance.combat.shuriken.damage, kind: DamageKind::Shuriken },
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: head, kind: DamageKind::Shuriken },
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: 60.0, kind: DamageKind::Slash },
-            PvpEvent::Kill { tick: 20, killer: 1, victim: BOT_ID_BASE, kind: DamageKind::Slash },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: s.balance.combat.shuriken.damage, kind: DamageKind::Shuriken, head: false },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: head, kind: DamageKind::Shuriken, head: false },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: 60.0, kind: DamageKind::Slash, head: false },
+            PvpEvent::Kill { tick: 20, killer: 1, victim: BOT_ID_BASE, kind: DamageKind::Slash, head: false },
         ];
         s.block_events = vec![
             BlockEvent::Placed { tick: 20, owner: 1, cell: [0, 0, 0], piece: shinobi_sim::blocks::Piece::FLOOR, scale_q: 16 },

@@ -356,22 +356,22 @@ impl Replicator {
         let who = |id: u16| if id == NO_ATTACKER { 0 } else { id };
         for ev in pvp {
             match ev {
-                PvpEvent::Hit { attacker, victim, amount, kind, .. } => {
+                PvpEvent::Hit { attacker, victim, amount, kind, head, .. } => {
                     let (amount, kind) = (amount.round().clamp(0.0, 255.0) as u8, weapon_code(kind));
-                    self.push_hit(attacker, HitMsg { other: victim, amount, kind, taken: false, kill: false });
-                    self.push_hit(victim, HitMsg { other: who(attacker), amount, kind, taken: true, kill: false });
+                    self.push_hit(attacker, HitMsg { other: victim, amount, kind, taken: false, kill: false, head });
+                    self.push_hit(victim, HitMsg { other: who(attacker), amount, kind, taken: true, kill: false, head });
                 }
-                PvpEvent::Kill { tick, killer, victim, kind } => {
+                PvpEvent::Kill { tick, killer, victim, kind, head } => {
                     let kind = weapon_code(kind);
                     self.log_line(tick, format!("KILL    p{killer} {} p{victim}", kind_verb(kind)));
                     self.broadcast(NetEvent::Kill { tick, killer: who(killer), victim, kind });
-                    self.push_hit(killer, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true });
-                    self.push_hit(victim, HitMsg { other: who(killer), amount: 0, kind, taken: true, kill: true });
+                    self.push_hit(killer, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head });
+                    self.push_hit(victim, HitMsg { other: who(killer), amount: 0, kind, taken: true, kill: true, head });
                 }
                 PvpEvent::HazardHit { victim, amount, source, .. } => {
                     let (kind, owner) = hazard_code(source);
                     let amount = amount.round().clamp(0.0, 255.0) as u8;
-                    self.push_hit(victim, HitMsg { other: owner, amount, kind, taken: true, kill: false });
+                    self.push_hit(victim, HitMsg { other: owner, amount, kind, taken: true, kill: false, head: false });
                 }
                 PvpEvent::HazardKill { tick, victim, source, killer } => {
                     let (kind, _) = hazard_code(source);
@@ -384,9 +384,9 @@ impl Replicator {
                     };
                     self.log_line(tick, format!("KILL    p{victim} {verb}{by}"));
                     self.broadcast(NetEvent::Kill { tick, killer: killer.unwrap_or(0), victim, kind });
-                    self.push_hit(victim, HitMsg { other: killer.unwrap_or(0), amount: 0, kind, taken: true, kill: true });
+                    self.push_hit(victim, HitMsg { other: killer.unwrap_or(0), amount: 0, kind, taken: true, kill: true, head: false });
                     if let Some(k) = killer {
-                        self.push_hit(k, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true });
+                        self.push_hit(k, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head: false });
                     }
                 }
                 PvpEvent::Respawn { tick, player } => {
@@ -1360,9 +1360,10 @@ mod tests {
         let (mut s, mut r) = two_peers();
         r.add_peer(&s, 3, 0); // a bystander (no Player needed for routing)
         let tick = s.tick;
-        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 34.4, kind: DamageKind::Slash });
+        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 34.4, kind: DamageKind::Slash, head: false });
+        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 68.8, kind: DamageKind::Shuriken, head: true });
         s.pvp_events.push(PvpEvent::HazardHit { tick, victim: 2, amount: 100.0, source: HazardSource::Wall { id: 9, owner: 1 } });
-        s.pvp_events.push(PvpEvent::Kill { tick, killer: 1, victim: 2, kind: DamageKind::Slash });
+        s.pvp_events.push(PvpEvent::Kill { tick, killer: 1, victim: 2, kind: DamageKind::Slash, head: false });
         s.pvp_events.push(PvpEvent::Respawn { tick, player: 2 });
         r.post_frame(&mut s);
         assert!(s.pvp_events.is_empty(), "drained");
@@ -1374,10 +1375,12 @@ mod tests {
             own => decode_own(own).0.hits,
         };
         let attacker = hits_of(1);
-        assert_eq!(attacker.len(), 2); // the hit + the kill marker
+        assert_eq!(attacker.len(), 3); // the hit + the headshot + the kill marker
+        assert!(attacker[1].head && !attacker[0].head && !attacker[2].head, "only the shuriken hit is a headshot: {attacker:?}");
+        assert!(hits_of(2).iter().any(|h| h.taken && h.head), "the victim is told it was a headshot too");
         assert!(attacker.iter().all(|h| !h.taken && h.other == 2));
         assert_eq!((attacker[0].amount, attacker[0].kind, attacker[0].kill), (34, KIND_SLASH, false));
-        assert!(attacker[1].kill);
+        assert!(attacker[2].kill);
         let victim = hits_of(2);
         assert!(victim.iter().all(|h| h.taken));
         assert!(victim.iter().any(|h| h.kind == KIND_WALL && h.other == 1 && h.amount == 100), "wall owner named: {victim:?}");
@@ -1417,7 +1420,7 @@ mod tests {
         let (mut s, mut r) = two_peers();
         let tick = s.tick;
         for _ in 0..200 {
-            s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 1.0, kind: DamageKind::Shuriken });
+            s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 1.0, kind: DamageKind::Shuriken, head: false });
             r.post_frame(&mut s);
         }
         assert!(r.peers[&1].hits.len() <= MAX_PENDING_HITS);

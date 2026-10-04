@@ -597,7 +597,7 @@ impl Server {
         let first_new = self.pvp_events.len();
         pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
-            if let PvpEvent::Kill { tick, killer, victim, kind } = *e {
+            if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {
                     // the katana's SlashHit was emitted before the damage resolved: tell it the target died
                     for (id, ev) in self.events.iter_mut() {

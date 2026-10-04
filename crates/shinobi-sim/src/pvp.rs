@@ -86,8 +86,9 @@ pub enum Cause {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PvpEvent {
-    Hit { tick: u32, attacker: u16, victim: u16, amount: f32, kind: DamageKind },
-    Kill { tick: u32, killer: u16, victim: u16, kind: DamageKind },
+    /// `head`: a shuriken that struck head height (`HeadCfg`), for the headshot marker.
+    Hit { tick: u32, attacker: u16, victim: u16, amount: f32, kind: DamageKind, head: bool },
+    Kill { tick: u32, killer: u16, victim: u16, kind: DamageKind, head: bool },
     /// Obstacle / light-wall contact on a player. `Wall` hits carry the owner in `source`.
     HazardHit { tick: u32, victim: u16, amount: f32, source: HazardSource },
     /// `killer`: wall owner when it is another player; `None` for obstacles and self-kills.
@@ -106,6 +107,8 @@ pub struct PvpHit {
     pub victim: usize,
     pub amount: f32,
     pub cause: Cause,
+    /// A headshot (shuriken above `HeadCfg::min_height`).
+    pub head: bool,
 }
 
 pub fn new_vitals(world: &mut PhysicsWorld, cfg: &Cfg, id: u16, spawn: [f32; 3], max_hp: f32) -> Vitals {
@@ -216,8 +219,9 @@ pub fn player_hits(
                 if v != attacker && !crate::tick::allied(atk.team, players[v].team) {
                     // `point` is the disc centre at impact; the hitbox is at its rewound position right now
                     let centre_y = world.colliders.get(collider).map_or(point.y, |c| c.translation().y);
-                    let amount = if kind == DamageKind::Shuriken && point.y - centre_y >= head.min_height { amount * head.mult } else { amount };
-                    out.push(PvpHit { attacker: atk.id, victim: v, amount, cause: Cause::Weapon(kind) });
+                    let is_head = kind == DamageKind::Shuriken && point.y - centre_y >= head.min_height;
+                    let amount = if is_head { amount * head.mult } else { amount };
+                    out.push(PvpHit { attacker: atk.id, victim: v, amount, cause: Cause::Weapon(kind), head: is_head });
                 }
             }
         }
@@ -237,7 +241,7 @@ pub fn player_hits(
             }
             let Some((p0, p1)) = rewound_segment(&p.history, rt) else { continue };
             if swept_hit([a0.x, a0.y, a0.z], [a1.x, a1.y, a1.z], body, p0, p1, hit_body(cfg)).is_some() {
-                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash) });
+                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash), head: false });
                 // the box test missed this target (it moved across the tick), so no raw `Damage` exists yet: emit
                 // it, so every `PvpEvent::Hit` has its combat-side twin (FX, hit markers, bookkeeping)
                 synthesized.push(CombatEvent::Damage {
@@ -260,7 +264,7 @@ pub fn void_hits(players: &[Player], world: &PhysicsWorld, plane_y: f32) -> Vec<
         .iter()
         .enumerate()
         .filter(|(_, p)| p.vitals.alive() && world.bodies[p.ch.body].translation().y < plane_y)
-        .map(|(i, p)| PvpHit { attacker: NO_ATTACKER, victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID) })
+        .map(|(i, p)| PvpHit { attacker: NO_ATTACKER, victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false })
         .collect()
 }
 
@@ -293,9 +297,9 @@ pub fn apply_hits(
         let killer = players.iter().position(|p| p.id == h.attacker && p.id != victim_id);
         match h.cause {
             Cause::Weapon(kind) => {
-                out.push(PvpEvent::Hit { tick, attacker: h.attacker, victim: victim_id, amount: h.amount, kind });
+                out.push(PvpEvent::Hit { tick, attacker: h.attacker, victim: victim_id, amount: h.amount, kind, head: h.head });
                 if dead {
-                    out.push(PvpEvent::Kill { tick, killer: h.attacker, victim: victim_id, kind });
+                    out.push(PvpEvent::Kill { tick, killer: h.attacker, victim: victim_id, kind, head: h.head });
                 }
             }
             Cause::Hazard(source) => {

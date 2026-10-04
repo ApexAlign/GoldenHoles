@@ -367,7 +367,7 @@ mod tests {
     }
 
     fn hit(taken: bool, other: u16) -> HitMsg {
-        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false }
+        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false, head: false }
     }
 
     #[test]
@@ -469,7 +469,7 @@ mod tests {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
         v.hp = Some(MAX_HP * 0.1);
-        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true });
+        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true, head: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.hit_kill && s.hp < 0.3);
         assert!(crate::hud::Hud::build(&s).iter().any(|p| matches!(p, crate::hud::Prim::Ring { .. })), "kill ring drawn");
@@ -479,7 +479,7 @@ mod tests {
     fn hazard_damage_shows_no_direction_arrow_but_a_weapon_hit_does() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false });
+        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false, head: false });
         assert!(b.update(0.016, &v, &net(), false).since_damage.is_none());
         v.hits.clear();
         v.hits.push(hit(true, 5));

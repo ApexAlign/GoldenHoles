@@ -1925,13 +1925,13 @@ mod tests {
     #[test]
     fn pvp_kill_makes_a_killfeed_row_and_hits_route_by_who_was_hit() {
         let name = |id: u16| format!("P{id}");
-        let kill = PvpEvent::Kill { tick: 10, killer: 1, victim: 2, kind: DamageKind::Slash };
+        let kill = PvpEvent::Kill { tick: 10, killer: 1, victim: 2, kind: DamageKind::Slash, head: false };
         let k = KillEntry::from_pvp(&kill, 2, name).unwrap();
         assert_eq!((k.killer.as_str(), k.victim.as_str(), k.involves_local), ("P1", "P2", true));
         assert!(KillEntry::from_pvp(&PvpEvent::Respawn { tick: 1, player: 1 }, 1, name).is_none());
         assert!(!KillEntry::from_pvp(&kill, 9, name).unwrap().involves_local);
 
-        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken };
+        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false };
         let mut fx = HudFx::default();
         fx.on_pvp(&hit(5, 6), 5, |_| panic!("not hurt"));
         let mut s = HudState::default();
