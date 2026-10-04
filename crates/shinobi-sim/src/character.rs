@@ -1601,6 +1601,62 @@ mod tests {
     }
 
     #[test]
+    fn wall_jump_kicks_away_from_the_wall_and_up() {
+        let (mut w, mut ch) = wall_scene(); // the wall is on +x
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], wall_cling: true, ..Default::default() };
+        let mut now = 0.0;
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        assert!(matches!(ch.state, MoveState::WallRun { .. }));
+        let mut jump = run;
+        jump.jump_pressed = true;
+        jump.jump_held = true;
+        tick(&mut ch, &mut w, &jump, &mut now);
+        assert!(ch.vel.x < -cfg_push() * 0.5, "pushed off the wall (-x), vel = {:?}", ch.vel);
+        assert!(ch.vel.y > 2.0, "and up, vel = {:?}", ch.vel);
+        assert!(ch.vel.z < -3.0, "keeping the run direction, vel = {:?}", ch.vel);
+        assert!(!matches!(ch.state, MoveState::WallRun { .. }));
+    }
+
+    fn cfg_push() -> f32 {
+        Cfg::default().wall_jump_push
+    }
+
+    #[test]
+    fn chaining_wall_run_to_grapple_to_the_opposite_wall_keeps_moving_and_finite() {
+        let mut w = world();
+        boxc(&mut w, [1.5, 5.0, -40.0], [1.0, 10.0, 60.0]); // wall A on +x
+        boxc(&mut w, [-14.0, 5.0, -40.0], [1.0, 10.0, 60.0]); // wall B on -x, 15 m away
+        boxc(&mut w, [0.0, -50.0, 0.0], [100.0, 0.5, 100.0]);
+        let mut ch = player(&mut w, [0.0, 5.0, 0.0]);
+        ch.vel = vector![0.0, 0.0, -9.0];
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], wall_cling: true, ..Default::default() };
+        let mut now = 0.0;
+        for _ in 0..25 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        assert!(matches!(ch.state, MoveState::WallRun { .. }), "on wall A");
+        // hook wall B ahead-left, reel across, then cling to B
+        let mut f = fire([-12.0, 2.0, -14.0]);
+        f.move_dir = run.move_dir;
+        tick(&mut ch, &mut w, &f, &mut now);
+        assert!(ch.grapple.is_some(), "hooked wall B");
+        let mut on_b = false;
+        for i in 0..240 {
+            tick(&mut ch, &mut w, &run, &mut now);
+            assert!(finite(&ch, &w), "tick {i}");
+            if let MoveState::WallRun { normal, .. } = ch.state {
+                if normal.x > 0.5 {
+                    on_b = true; // B's face looks toward +x
+                    break;
+                }
+            }
+        }
+        assert!(on_b, "should catch wall B after the pull, state {:?} grapple {:?}", ch.state, ch.grapple.is_some());
+    }
+
+    #[test]
     fn hooking_while_sliding_cancels_the_slide_and_lifts_off() {
         let mut w = world();
         boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
