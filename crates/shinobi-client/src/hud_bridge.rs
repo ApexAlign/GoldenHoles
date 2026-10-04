@@ -116,6 +116,10 @@ impl HudBridge {
         let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
         let me = view.local_pos.unwrap_or([0.0; 3]);
+        // predicted katana hit: confirm at once, the server's HitMsg (with the damage number) follows a round trip later
+        if let Some(sh) = view.fx.slash_hit {
+            self.fx.on_hit_amount(shinobi_sim::combat::DamageKind::Slash, sh.killed, 0);
+        }
         for h in &view.hits {
             if h.taken && h.other == 0 {
                 // environmental damage (obstacle / void): nobody to point at, so no direction arrow
@@ -661,5 +665,18 @@ mod tests {
         // audio passes through
         b.audio = Some((0.5, true));
         assert_eq!(b.update(0.016, &v, &net(), false).audio, Some((0.5, true)));
+    }
+
+    #[test]
+    fn a_predicted_katana_hit_confirms_before_the_server_message() {
+        use crate::client_game::PredictedSlashHit;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.fx.slash_hit = Some(PredictedSlashHit { point: [0.0; 3], killed: false });
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.since_hit.is_some() && s.hit_kind == Some(shinobi_sim::combat::DamageKind::Slash) && !s.hit_kill);
+        assert_eq!(s.hit_amount, 0, "no number until the server confirms the damage");
+        v.fx.slash_hit = Some(PredictedSlashHit { point: [0.0; 3], killed: true });
+        assert!(b.update(0.016, &v, &net(), false).hit_kill, "predicted kill shows the kill marker");
     }
 }

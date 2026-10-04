@@ -64,6 +64,18 @@ impl Screen {
 }
 
 /// Server-side ban length we should wait out before retrying.
+/// One line of plain language under the kick reason (reasons are `KickReason::as_str` uppercased).
+pub fn kick_hint(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "CHEAT DETECTION" => "THE SERVER FLAGGED YOUR MOVEMENT",
+        "PACKET FLOOD" => "TOO MANY PACKETS WERE SENT",
+        "SERVER FULL" => "NO FREE SLOT: TRY AGAIN",
+        "TIMED OUT" => "THE SERVER HEARD NOTHING FOR TOO LONG",
+        "CLIENT OUT OF DATE" => "UPDATE THE GAME TO CONTINUE",
+        _ => return None,
+    })
+}
+
 pub fn kick_cooldown_s(r: KickReason) -> f32 {
     match r {
         KickReason::Cheat | KickReason::Flood => 10.0,
@@ -148,21 +160,26 @@ pub fn draw(screen: &Screen, p: &Palette, time: f32) -> Vec<Prim> {
         Screen::Disconnected { reason } => {
             dim(&mut out, p, 0.92);
             panel(&mut out, PANEL, p.magenta, p);
-            title(&mut out, "DISCONNECTED", 0.46, p.magenta);
-            out.push(Prim::Text { pos: (0.5, 0.54), text: clip(reason), size: 0.032, color: p.text.a(0.9), align: Align::Center });
-            out.push(Prim::Text { pos: (0.5, 0.64), text: "PRESS ENTER TO RECONNECT".into(), size: 0.028, color: p.orange.a(0.6 + 0.4 * (time * 3.0).sin().abs()), align: Align::Center });
+            title(&mut out, "DISCONNECTED", 0.43, p.magenta);
+            out.push(Prim::Text { pos: (0.5, 0.52), text: clip(reason), size: 0.032, color: p.text.a(0.9), align: Align::Center });
+            out.push(Prim::Text { pos: (0.5, 0.62), text: "PRESS ENTER TO RECONNECT".into(), size: 0.028, color: p.orange.a(0.6 + 0.4 * (time * 3.0).sin().abs()), align: Align::Center });
+            out.push(Prim::Text { pos: (0.5, 0.67), text: "ESC TO QUIT".into(), size: 0.022, color: p.text.a(0.6), align: Align::Center });
         }
         Screen::Kicked { reason, retry_in_s } => {
             dim(&mut out, p, 0.94);
             panel(&mut out, PANEL, p.orange, p);
-            title(&mut out, "KICKED", 0.46, p.orange);
-            out.push(Prim::Text { pos: (0.5, 0.54), text: clip(reason), size: 0.032, color: p.text.a(0.9), align: Align::Center });
+            title(&mut out, "KICKED", 0.43, p.orange);
+            out.push(Prim::Text { pos: (0.5, 0.51), text: clip(reason), size: 0.036, color: p.orange.a(1.0), align: Align::Center });
+            if let Some(h) = kick_hint(reason) {
+                out.push(Prim::Text { pos: (0.5, 0.565), text: h.into(), size: 0.022, color: p.text.a(0.8), align: Align::Center });
+            }
             let (msg, col) = if *retry_in_s > 0.0 {
                 (format!("RETRY IN {}S", retry_in_s.ceil() as u32), p.orange.a(0.8))
             } else {
                 ("PRESS ENTER TO RECONNECT".into(), p.cyan.a(0.6 + 0.4 * (time * 3.0).sin().abs()))
             };
-            out.push(Prim::Text { pos: (0.5, 0.64), text: msg, size: 0.028, color: col, align: Align::Center });
+            out.push(Prim::Text { pos: (0.5, 0.62), text: msg, size: 0.028, color: col, align: Align::Center });
+            out.push(Prim::Text { pos: (0.5, 0.67), text: "ESC TO QUIT".into(), size: 0.022, color: p.text.a(0.6), align: Align::Center });
         }
         Screen::Paused { selected } => {
             dim(&mut out, p, 0.6);
@@ -530,5 +547,20 @@ mod tests {
                 assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= 1.0 && b.y + b.h <= 1.0, "{b:?}");
             }
         }
+    }
+
+    #[test]
+    fn kicked_and_disconnected_screens_explain_and_offer_reconnect_and_quit() {
+        let p = Palette::TRON;
+        let t = texts(&draw(&Screen::Kicked { reason: "CHEAT DETECTION".into(), retry_in_s: 4.2 }, &p, 0.0));
+        for want in ["KICKED", "CHEAT DETECTION", "THE SERVER FLAGGED YOUR MOVEMENT", "RETRY IN 5S", "ESC TO QUIT"] {
+            assert!(t.contains(&want.to_string()), "{want}");
+        }
+        let t = texts(&draw(&Screen::Kicked { reason: "PACKET FLOOD".into(), retry_in_s: 0.0 }, &p, 0.0));
+        assert!(t.contains(&"PRESS ENTER TO RECONNECT".to_string()) && t.contains(&"ESC TO QUIT".to_string()));
+        let t = texts(&draw(&Screen::Disconnected { reason: "CONNECTION LOST".into() }, &p, 0.0));
+        assert!(t.contains(&"PRESS ENTER TO RECONNECT".to_string()) && t.contains(&"ESC TO QUIT".to_string()));
+        assert_eq!(kick_hint("SOMETHING ELSE"), None);
+        assert!(kick_hint("CLIENT OUT OF DATE").is_some());
     }
 }

@@ -425,7 +425,7 @@ pub fn input(
 }
 
 /// OS window title follows the lock state ("click the window to play" until the mouse is grabbed).
-fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<Time<Real>>, mut fps: Local<(f32, u32, u32)>, mut rep: Local<(f32, f32, u32)>) {
+fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<Time<Real>>, mut fps: Local<(f32, u32, u32)>, mut rep: Local<(f32, f32, u32)>, mut ft: Local<Vec<f32>>, clock: Res<crate::net::DisplayClockRes>) {
     let Some(mut w) = window else { return };
     // smoothed frame rate in the title (refreshed twice a second) so a slow machine is visible at a glance
     fps.0 += time.delta_secs();
@@ -434,9 +434,20 @@ fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<
     rep.0 += time.delta_secs();
     rep.1 = rep.1.max(time.delta_secs());
     rep.2 += 1;
+    ft.push(time.delta_secs());
     if rep.0 >= 3.0 {
         let steps = crate::net::FIXED_STEPS.swap(0, std::sync::atomic::Ordering::Relaxed);
-        eprintln!("PERF {:.0} fps | worst frame {:.1} ms | fixed steps/s {:.0} (want 60)", rep.2 as f32 / rep.0, rep.1 * 1000.0, steps as f32 / rep.0);
+        // frame-time spread: stddev and p99 (ms). Smooth motion needs an even frame time, not just a high fps
+        let mean = ft.iter().sum::<f32>() / ft.len().max(1) as f32;
+        let sd = (ft.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / ft.len().max(1) as f32).sqrt();
+        ft.sort_by(|a, b| a.total_cmp(b));
+        let p99 = ft.get(((ft.len() as f32 * 0.99) as usize).min(ft.len().saturating_sub(1))).copied().unwrap_or(0.0);
+        eprintln!(
+            "PERF {:.0} fps | frame ms: mean {:.1} sd {:.1} p99 {:.1} worst {:.1} | fixed steps/s {:.0} (want 60) | display clock {} lag {:.2} ticks",
+            rep.2 as f32 / rep.0, mean * 1000.0, sd * 1000.0, p99 * 1000.0, rep.1 * 1000.0, steps as f32 / rep.0,
+            if clock.0.raw { "RAW" } else { "smoothed" }, clock.1
+        );
+        ft.clear();
         *rep = (0.0, 0.0, 0);
     }
     if fps.0 >= 0.5 {

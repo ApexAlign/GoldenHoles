@@ -72,6 +72,11 @@ impl UdpGame {
 
     /// Like `view`, but `frac` (0..1, how far the render frame is into the current fixed step) lets the own
     /// position and the remote players glide between 60 Hz ticks instead of stepping.
+    /// Draw at an explicit client time in ticks (`DisplayClock` output).
+    pub fn view_at(&mut self, t: f64) -> RenderView {
+        self.game.view(t)
+    }
+
     pub fn view_frac(&mut self, frac: f64) -> RenderView {
         self.game.view(self.local_tick + frac.clamp(0.0, 1.0))
     }

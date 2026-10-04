@@ -830,7 +830,7 @@ impl Hud {
         if let Some(t) = s.since_hit.filter(|t| *t < HIT_MARK_TIME) {
             let f = 1.0 - t / HIT_MARK_TIME;
             let kind_col = s.hit_kind.map_or(p.gold, |k| p.for_damage(k));
-            let (arm, col) = if s.hit_kill { (0.04, p.gold) } else { (0.026, kind_col) };
+            let (arm, col) = if s.hit_kill { (0.045, p.gold) } else { (0.03, kind_col) };
             let d = 0.012 + 0.016 * (1.0 - f);
             let punch = f.sqrt();
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -838,6 +838,8 @@ impl Hud {
                 out.push(Prim::Line { a, b, color: p.bg.a(0.85 * punch), glow: 0.014 });
                 out.push(Prim::Line { a, b, color: col.a(punch), glow: 0.006 });
             }
+            // every hit sends a ring out from the crosshair in the weapon's colour: motion reads even when the X is missed
+            out.push(Prim::Ring { c: (cx, cy), r: 0.02 + 0.045 * (1.0 - f), color: kind_col.a(0.65 * f), fill: false, glow: 0.008 });
             if s.hit_kill {
                 out.push(Prim::Ring { c: (cx, cy), r: 0.03 + 0.02 * (1.0 - f), color: p.gold.a(0.7 * f), fill: false, glow: 0.008 });
             } else if s.hit_kind == Some(DamageKind::Slash) {
@@ -850,7 +852,7 @@ impl Hud {
                 out.push(Prim::Text {
                     pos: (cx, cy - 0.05 - 0.03 * (1.0 - f)),
                     text: s.hit_amount.to_string(),
-                    size: if s.hit_kill { 0.032 } else { 0.026 },
+                    size: if s.hit_kill { 0.038 } else { 0.03 },
                     color: col.a(f),
                     align: Align::Center,
                 });
@@ -2104,7 +2106,8 @@ mod tests {
         let base = HudState { hp: 1.0, since_hit: Some(0.02), hit_kind: Some(DamageKind::Slash), ..Default::default() };
         let normal = Hud::build(&base);
         let kill = Hud::build(&HudState { hit_kill: true, ..base.clone() });
-        assert!(kill.iter().any(|p| matches!(p, Prim::Ring { .. })) && !normal.iter().any(|p| matches!(p, Prim::Ring { .. })));
+        let rings = |v: &[Prim]| v.iter().filter(|p| matches!(p, Prim::Ring { .. })).count();
+        assert_eq!((rings(&normal), rings(&kill)), (1, 2), "every hit sends one ring, a kill adds the gold one");
         let mut fx = HudFx::default();
         fx.on_hit(DamageKind::Slash, true);
         let mut s = HudState::default();
