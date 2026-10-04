@@ -327,6 +327,9 @@ fn main() -> std::io::Result<()> {
 
         // --- who leaves this frame, and why ---
         let mut gone: Vec<(u16, KickReason)> = Vec::new();
+        for line in server.strike_log.drain(..) {
+            eprintln!("strike: {line}");
+        }
         for id in &report.kicked {
             eprintln!("kick player {id} (cheat)");
             gone.push((*id, KickReason::Cheat));
@@ -344,6 +347,7 @@ fn main() -> std::io::Result<()> {
                 continue;
             }
             let n = std::mem::take(&mut p.drops).min(MAX_FLOOD_STRIKES);
+            eprintln!("strike: player {} packet rate over {PEER_PPS} pkt/s (burst {PEER_BURST}): {n} datagram(s) dropped", p.id);
             if let Some(pl) = server.players.iter_mut().find(|pl| pl.id == p.id) {
                 if pl.guard.strike_n(n, &ac) == Verdict::Kick && !gone.iter().any(|g| g.0 == p.id) {
                     eprintln!("kick player {} (packet flood)", p.id);

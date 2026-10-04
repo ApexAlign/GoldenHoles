@@ -36,8 +36,12 @@ impl AntiCheatCfg {
 impl AntiCheatCfg {
     /// The server's standard ceilings (25% slack). `Server::new` uses the same numbers; use this when a
     /// caller outside `shinobi-sim` needs a cfg for `Guard::strike_n`.
+    ///
+    /// The aim slew ceiling is off (`PI` = any turn is legal): a big flick, or the mouse motion a hitching client
+    /// accumulated and delivers in one tick, is indistinguishable from a snap and is no cheat signal (an aimbot turns
+    /// exactly as fast); striking it only kicked honest players. Position ceilings and flood limits still apply.
     pub fn standard(cfg: &Cfg) -> Self {
-        Self::for_character(cfg, shinobi_proto::TICK_DT, 0.25)
+        Self { max_turn: std::f32::consts::PI, ..Self::for_character(cfg, shinobi_proto::TICK_DT, 0.25) }
     }
 }
 

@@ -34,7 +34,7 @@ pub struct OwnUpdate {
 }
 
 /// Intent-lead controller (see `NetClient::on_lead_margin`). Ticks unless noted. The server rejects an intent more
-/// than `MAX_FUTURE_TICKS` (12) ahead of its own clock, so the lead must never leave more headroom than that.
+/// than `MAX_FUTURE_TICKS` (24) ahead of its own clock, so the lead must never leave more headroom than that.
 const LEAD_MIN: u32 = 4;
 const LEAD_MAX: u32 = 16;
 /// Headroom the newest intent should have when it reaches the server: below LOW -> grow now.

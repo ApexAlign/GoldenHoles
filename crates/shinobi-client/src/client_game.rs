@@ -100,7 +100,7 @@ pub struct ClientGameCfg {
     pub sim: Cfg,
     pub camera: FpsCameraCfg,
     /// Ticks of headroom the intent clock gets over the server-clock estimate. It must cover RTT plus jitter
-    /// (the estimate lags the real server tick by one one-way trip), and stay under `MAX_FUTURE_TICKS` (12).
+    /// (the estimate lags the real server tick by one one-way trip), and stay under `MAX_FUTURE_TICKS` (24).
     pub lead_ticks: u32,
     /// Look sensitivity, radians per device unit.
     pub rad_per_unit: f32,

@@ -20,9 +20,13 @@ pub const PITCH_BITS: u32 = 12;
 pub const PITCH_MAX: u16 = (1 << PITCH_BITS) - 1;
 /// Code for pitch 0 (level).
 pub const PITCH_LEVEL: u16 = 1 << (PITCH_BITS - 1);
-/// Newest intent may lead the server clock by at most this many ticks (12 = 200 ms, covers clock drift and the
-/// redundancy window). Anything further is a flood/time-skip attempt and is dropped.
-pub const MAX_FUTURE_TICKS: u32 = 12;
+/// Newest intent may lead the server clock by at most this many ticks (24 = 400 ms: the largest adaptive lead plus a
+/// catch-up burst after a client hitch). Anything further is dropped.
+pub const MAX_FUTURE_TICKS: u32 = 24;
+/// Intents further ahead than this are a clock cheat or a flood and cost a strike; between `MAX_FUTURE_TICKS` and this
+/// they are only dropped (a client that hitches and then catches up in one burst runs ahead of the server clock
+/// for a moment, and its redundancy re-sends them once the server has caught up).
+pub const STRIKE_FUTURE_TICKS: u32 = 120;
 
 /// Client -> server datagram. Name used by the design docs; one type, no parallel codec.
 pub type PlayerIntentPacket = ClientPacket;
@@ -325,7 +329,7 @@ impl Carry {
 }
 
 impl IntentQueue {
-    const MAX_QUEUED: usize = 16;
+    const MAX_QUEUED: usize = 32;
     /// Gaps older than this many ticks behind the newest received tick are given up on (`complete_tick`).
     const GAP_WINDOW: u32 = 32;
 
@@ -340,8 +344,10 @@ impl IntentQueue {
         self.margin_min = Some(self.margin_min.map_or(margin, |m| m.min(margin)));
         for it in pkt.intents.iter().rev() {
             if it.tick > ceiling {
-                rejected += 1;
                 self.rejected_future = self.rejected_future.saturating_add(1);
+                if it.tick > server_tick.saturating_add(STRIKE_FUTURE_TICKS) {
+                    rejected += 1;
+                }
                 continue;
             }
             // a view of tick 0 means "none"; stays none. Otherwise age it by how much older this intent is.

@@ -80,6 +80,9 @@ pub struct Player {
     pub last_pkt: Option<(u16, u32)>,
     /// The client's own ping / correction report and the server tick it arrived on (telemetry only).
     pub client_report: Option<(shinobi_proto::intent::ClientReport, u32)>,
+    /// Server tick of the newest intent whose aim was applied (a hitching client may skip ticks: the aim slew
+    /// allowance grows with the gap).
+    pub last_aim_tick: u32,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -119,6 +122,9 @@ pub struct KillTag {
 pub struct Server {
     /// Next tick to simulate.
     pub tick: u32,
+    /// Why strikes were handed out (player, tick, check and the values), for the server's log. The host drains it.
+    pub strike_log: Vec<String>,
+
     pub world: PhysicsWorld,
     pub players: Vec<Player>,
     /// Combat events of the most recent `frame` (cleared at the start of each frame).
@@ -190,6 +196,7 @@ impl Server {
             spawn_teams: Vec::new(),
             spawn_counter: 0,
             kill_tags: Vec::new(),
+            strike_log: Vec::new(),
             blocks: crate::blocks::Blocks::default(),
             block_events: Vec::new(),
             pending_block_events: Vec::new(),
@@ -249,6 +256,7 @@ impl Server {
             team,
             last_pkt: None,
             client_report: None,
+            last_aim_tick: 0,
         });
     }
 
@@ -366,9 +374,15 @@ impl Server {
                     p.client_report = Some((r, tick));
                 }
                 let rejected = p.queue.push_packet(&pkt, tick);
+                if rejected > 0 {
+                    self.strike_log.push(format!("player {id} tick {tick}: future-tick intents x{rejected} (newest {}, ceiling {})", pkt.intents.first().map_or(0, |i| i.tick), tick + shinobi_proto::intent::STRIKE_FUTURE_TICKS));
+                }
                 p.guard.strike_n(rejected, &ac)
             }
-            Err(_) => p.guard.strike_n(1, &ac),
+            Err(e) => {
+                self.strike_log.push(format!("player {id} tick {tick}: malformed datagram ({} B): {e:?}", bytes.len()));
+                p.guard.strike_n(1, &ac)
+            }
         }
     }
 
@@ -425,7 +439,18 @@ impl Server {
             // aim: clamp claimed slew, then derive everything from the server copy
             if let Some(it) = &intent {
                 let p = &mut self.players[i];
-                let (yaw, v) = p.guard.limit_yaw(dq_yaw(p.yaw), dq_yaw(it.aim_yaw), &ac);
+                // the slew ceiling is per tick: a client that hitched and skipped ticks may legitimately arrive with the
+                // whole flick of the gap in one intent, so the allowance scales with the ticks it covers
+                let gap = tick.saturating_sub(p.last_aim_tick).max(1);
+                let mut turn_cfg = ac;
+                turn_cfg.max_turn = ac.max_turn * gap as f32;
+                let (prev, claimed) = (dq_yaw(p.yaw), dq_yaw(it.aim_yaw));
+                let (yaw, v) = p.guard.limit_yaw(prev, claimed, &turn_cfg);
+                p.last_aim_tick = tick;
+                if yaw != claimed {
+                    let turn = (claimed - prev + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    self.strike_log.push(format!("player {} tick {tick}: aim slew {:.1} deg over {gap} tick(s), allowed {:.1}", p.id, turn.to_degrees(), turn_cfg.max_turn.to_degrees()));
+                }
                 p.yaw = q_yaw(yaw);
                 p.pitch = it.aim_pitch;
                 if v == Verdict::Kick {
@@ -546,6 +571,7 @@ impl Server {
             match p.guard.check_step(before, after, 0.0, &ac) {
                 Verdict::Ok => {}
                 Verdict::SnapBack { to } => {
+                    self.strike_log.push(format!("player {} tick {tick}: moved {:.2} m in one tick (ceiling {:.2}), vel {:.1} m/s, state {:?}", p.id, ((after[0] - before[0]).powi(2) + (after[1] - before[1]).powi(2) + (after[2] - before[2]).powi(2)).sqrt(), ac.max_step, p.ch.vel.norm(), p.ch.state));
                     let to = vector![to[0], to[1], to[2]];
                     self.world.bodies[p.ch.body].set_position(Isometry::translation(to.x, to.y, to.z), true);
                     crate::character::sync_body_colliders(&mut self.world, p.ch.body);
