@@ -43,7 +43,7 @@ sudo firewall-cmd --add-port=7777/udp --permanent && sudo firewall-cmd --reload 
 4. Behind carrier-grade NAT (some mobile / ISP lines) port forwarding is impossible: use a small VPS running the server, or
    a mesh VPN (Tailscale / ZeroTier) and join the VPN address as if it were a LAN.
 
-Playing well needs under about 80 ms ping. The game shows your ping on the HUD; the server prints a telemetry line every
+Playing well needs under about 80 ms ping. The server prints a telemetry line every
 minute with each player's ping and prediction corrections.
 
 ## When something is wrong
