@@ -801,7 +801,7 @@ impl Hud {
         let mut out = Vec::with_capacity(48);
         let low_hp = s.hp < 0.3;
         // Low HP: slow amber->magenta pulse on the chrome, never a full-screen flash.
-        let pulse = if low_hp { 0.75 + 0.25 * (s.time * 6.0).sin() } else { 1.0 };
+        let pulse = if low_hp || s.regen == Some(Regen::Healing) { 0.75 + 0.25 * (s.time * 6.0).sin() } else { 1.0 };
         let chrome = if low_hp { p.magenta } else { p.cyan };
         let chrome = if s.invulnerable { p.gold } else { chrome };
         let chrome = if s.dead { p.magenta } else { chrome };
