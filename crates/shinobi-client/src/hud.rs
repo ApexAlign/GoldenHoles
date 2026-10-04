@@ -360,6 +360,8 @@ pub struct HudState {
     pub my_headshots: u32,
     /// Master volume 0..=1 and mute, for the telemetry speaker glyph.
     pub audio: Option<(f32, bool)>,
+    /// Screen width / height for hand-built shapes (0 = 16:9). Set by the bridge.
+    pub aspect: f32,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
     /// Our own printed pieces on the radar (radar space, x right / y ahead, disc radius 1).
@@ -785,6 +787,7 @@ impl Hud {
     }
 
     pub fn build_with(s: &HudState, p: &Palette) -> Vec<Prim> {
+        AX.with(|a| a.set(if s.aspect > 0.1 { 1.0 / s.aspect } else { 0.5625 }));
         let mut out = Vec::with_capacity(48);
         let low_hp = s.hp < 0.3;
         // Low HP: slow amber->magenta pulse on the chrome, never a full-screen flash.
@@ -881,7 +884,7 @@ impl Hud {
             out.push(Prim::Ring { c: (cx, cy), r: 0.02 + 0.045 * (1.0 - f), color: kind_col.a(0.65 * f), fill: false, glow: 0.008 });
             if s.hit_head {
                 let r = 0.034 + 0.012 * (1.0 - f);
-                let pts = [(cx, cy - r), (cx + r * 0.5625, cy), (cx, cy + r), (cx - r * 0.5625, cy)];
+                let pts = [(cx, cy - r), (cx + r * ax(), cy), (cx, cy + r), (cx - r * ax(), cy)];
                 for k in 0..4 {
                     out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.bg.a(0.8 * punch), glow: 0.012 });
                     out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.gold.a(punch), glow: 0.008 });
@@ -923,9 +926,9 @@ impl Hud {
                 let w = 1.0 - u.abs() * 0.6;
                 // the centre tick reaches furthest: a clear arrowhead pointing at the attacker
                 let reach = r1 + 0.03 * (1.0 - u.abs());
-                let (a, b) = ((cx + sn * r0 * 0.5625, cy - cs * r0), (cx + sn * reach * 0.5625, cy - cs * reach));
+                let (a, b) = ((cx + sn * r0 * ax(), cy - cs * r0), (cx + sn * reach * ax(), cy - cs * reach));
                 // perpendicular offset (screen space, aspect-corrected) for a 3-stroke thick tick over a dark underlay
-                let (px, py) = (cs * 0.0022 * 0.5625, sn * 0.0022);
+                let (px, py) = (cs * 0.0022 * ax(), sn * 0.0022);
                 for (d, col, glow) in [(0.0, p.bg.a(0.6 * f), 0.0), (-1.0, p.magenta.a(f * w), 0.012), (0.0, p.magenta.a(f * w), 0.012), (1.0, p.magenta.a(f * w), 0.012)] {
                     out.push(Prim::Line { a: (a.0 + px * d, a.1 + py * d), b: (b.0 + px * d, b.1 + py * d), color: col, glow });
                 }
@@ -1128,7 +1131,7 @@ fn ally_tag(out: &mut Vec<Prim>, t: &AllyTag, my_team: u8, p: &Palette) {
     let a = near * if t.clamped { 0.55 } else { 1.0 };
     let (x, y) = t.pos;
     let r = 0.011;
-    let pts = [(x, y - r), (x + r * 0.5625, y), (x, y + r), (x - r * 0.5625, y)];
+    let pts = [(x, y - r), (x + r * ax(), y), (x, y + r), (x - r * ax(), y)];
     for k in 0..4 {
         out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: col.a(a), glow: 0.005 });
     }
@@ -1158,7 +1161,7 @@ fn corner_brackets(out: &mut Vec<Prim>, c: Rgba) {
     let (m, l) = (0.012, 0.035);
     for (sx, sy) in [(1.0f32, 1.0f32), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
         let (x, y) = (if sx > 0.0 { m } else { 1.0 - m }, if sy > 0.0 { m * 1.6 } else { 1.0 - m * 1.6 });
-        out.push(Prim::Line { a: (x, y), b: (x + sx * l * 0.5625, y), color: c, glow: 0.003 });
+        out.push(Prim::Line { a: (x, y), b: (x + sx * l * ax(), y), color: c, glow: 0.003 });
         out.push(Prim::Line { a: (x, y), b: (x, y + sy * l), color: c, glow: 0.003 });
     }
 }
@@ -1194,8 +1197,8 @@ fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
             out.push(Prim::Text { pos: (x, 0.047), text: label.into(), size: if card { 0.02 } else { 0.015 }, color: if label == "N" { p.orange } else { p.cyan }.a(a), align: Align::Center });
         }
     }
-    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 - 0.006 * 0.5625, 0.066), color: p.gold.a(0.9), glow: 0.003 });
-    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 + 0.006 * 0.5625, 0.066), color: p.gold.a(0.9), glow: 0.003 });
+    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 - 0.006 * ax(), 0.066), color: p.gold.a(0.9), glow: 0.003 });
+    out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 + 0.006 * ax(), 0.066), color: p.gold.a(0.9), glow: 0.003 });
 }
 
 /// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
@@ -1233,32 +1236,32 @@ fn radar_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     out.push(Prim::Ring { c, r, color: p.cyan.a(0.55), fill: false, glow: 0.004 });
     out.push(Prim::Ring { c, r: r * 0.5, color: p.cyan.a(0.22), fill: false, glow: 0.0 });
     out.push(Prim::Line { a: (c.0, c.1 - r), b: (c.0, c.1 + r), color: p.cyan.a(0.15), glow: 0.0 });
-    out.push(Prim::Line { a: (c.0 - r * ASPECT, c.1), b: (c.0 + r * ASPECT, c.1), color: p.cyan.a(0.15), glow: 0.0 });
+    out.push(Prim::Line { a: (c.0 - r * ax(), c.1), b: (c.0 + r * ax(), c.1), color: p.cyan.a(0.15), glow: 0.0 });
     // void edge (magenta) and our own pieces (small cyan squares) under the pings
-    let at = |x: f32, y: f32| (c.0 + x * r * ASPECT, c.1 - y * r);
+    let at = |x: f32, y: f32| (c.0 + x * r * ax(), c.1 - y * r);
     for (a, b) in &s.radar_edge {
         out.push(Prim::Line { a: at(a.0, a.1), b: at(b.0, b.1), color: p.magenta.a(0.75), glow: 0.004 });
     }
     for (x, y) in &s.radar_pickups {
         let (px, py) = at(*x, *y);
         let d = 0.0065;
-        let pts = [(px, py - d), (px + d * ASPECT, py), (px, py + d), (px - d * ASPECT, py)];
+        let pts = [(px, py - d), (px + d * ax(), py), (px, py + d), (px - d * ax(), py)];
         for k in 0..4 {
             out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.gold.a(0.9), glow: 0.003 });
         }
     }
     for (x, y) in &s.radar_pieces {
         let (px, py) = at(*x, *y);
-        out.push(Prim::Rect { r: Rect::new(px - 0.0025 * ASPECT, py - 0.0025, 0.005 * ASPECT, 0.005), color: p.cyan.a(0.9), glow: 0.002 });
+        out.push(Prim::Rect { r: Rect::new(px - 0.0025 * ax(), py - 0.0025, 0.005 * ax(), 0.005), color: p.cyan.a(0.9), glow: 0.002 });
     }
     // facing wedge
-    out.push(Prim::Line { a: c, b: (c.0 - 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
-    out.push(Prim::Line { a: c, b: (c.0 + 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
+    out.push(Prim::Line { a: c, b: (c.0 - 0.3 * r * ax(), c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
+    out.push(Prim::Line { a: c, b: (c.0 + 0.3 * r * ax(), c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
     out.push(Prim::Ring { c, r: 0.004, color: p.gold, fill: true, glow: 0.004 });
     for pg in pings {
         let (x, y) = (pg.pos.0.clamp(-1.0, 1.0), pg.pos.1.clamp(-1.0, 1.0));
         let (x, y) = if x * x + y * y > 1.0 { let n = (x * x + y * y).sqrt(); (x / n, y / n) } else { (x, y) };
-        out.push(Prim::Ring { c: (c.0 + x * r * ASPECT, c.1 - y * r), r: if pg.ally { 0.006 } else { 0.0075 }, color: pg.colour.a(0.95), fill: !pg.ally, glow: 0.006 });
+        out.push(Prim::Ring { c: (c.0 + x * r * ax(), c.1 - y * r), r: if pg.ally { 0.006 } else { 0.0075 }, color: pg.colour.a(0.95), fill: !pg.ally, glow: 0.006 });
     }
     // range label inside the ring, under the centre (keeps the left column clear below the disc)
     out.push(Prim::Text { pos: (c.0, c.1 + r * 0.62), text: format!("{:.0}M", crate::hud_bridge::RADAR_RANGE), size: 0.013, color: p.text.a(0.45), align: Align::Center });
@@ -1268,7 +1271,7 @@ fn radar_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 fn speaker(out: &mut Vec<Prim>, c: (f32, f32), vol: f32, muted: bool, p: &Palette) {
     let col = if muted { p.magenta } else { p.cyan }.a(0.9);
     let h = 0.011;
-    let pt = |x: f32, y: f32| (c.0 + x * h * ASPECT, c.1 + y * h);
+    let pt = |x: f32, y: f32| (c.0 + x * h * ax(), c.1 + y * h);
     for (a, b) in [((-1.0, -0.4), (-0.4, -0.4)), ((-0.4, -0.4), (0.3, -1.0)), ((0.3, -1.0), (0.3, 1.0)), ((0.3, 1.0), (-0.4, 0.4)), ((-0.4, 0.4), (-1.0, 0.4)), ((-1.0, 0.4), (-1.0, -0.4))] {
         out.push(Prim::Line { a: pt(a.0, a.1), b: pt(b.0, b.1), color: col, glow: 0.0 });
     }
@@ -1319,15 +1322,15 @@ fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             let (sn, cs) = b.sin_cos();
             let at = |r: f32, off: f32| {
                 let (s2, c2) = (b + off).sin_cos();
-                (0.5 + s2 * r * 0.5625, 0.5 - c2 * r)
+                (0.5 + s2 * r * ax(), 0.5 - c2 * r)
             };
-            let tip = (0.5 + sn * 0.175 * 0.5625, 0.5 - cs * 0.175);
+            let tip = (0.5 + sn * 0.175 * ax(), 0.5 - cs * 0.175);
             for off in [-0.22f32, 0.22] {
                 out.push(Prim::Line { a: tip, b: at(0.125, off), color: col.a(0.95), glow: 0.01 });
             }
-            out.push(Prim::Line { a: tip, b: (0.5 + sn * 0.095 * 0.5625, 0.5 - cs * 0.095), color: col.a(0.95), glow: 0.01 });
+            out.push(Prim::Line { a: tip, b: (0.5 + sn * 0.095 * ax(), 0.5 - cs * 0.095), color: col.a(0.95), glow: 0.01 });
             if let Some(d) = k.dist {
-                let lp = (0.5 + sn * 0.225 * 0.5625, 0.5 - cs * 0.225);
+                let lp = (0.5 + sn * 0.225 * ax(), 0.5 - cs * 0.225);
                 out.push(Prim::Text { pos: (lp.0, lp.1 + 0.008), text: format!("{d:.0}M"), size: 0.02, color: p.text.a(0.85), align: Align::Center });
             }
         }
@@ -1407,14 +1410,14 @@ fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
     let col = if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
     let l = 0.012;
     for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-        let (cx, cy) = (x + sx * half * ASPECT * 1.4, y + sy * half);
-        out.push(Prim::Line { a: (cx, cy), b: (cx - sx * l * ASPECT * 1.4, cy), color: col, glow: 0.005 });
+        let (cx, cy) = (x + sx * half * ax() * 1.4, y + sy * half);
+        out.push(Prim::Line { a: (cx, cy), b: (cx - sx * l * ax() * 1.4, cy), color: col, glow: 0.005 });
         out.push(Prim::Line { a: (cx, cy), b: (cx, cy - sy * l), color: col, glow: 0.005 });
     }
     out.push(Prim::Text { pos: (x, y - half - 0.012), text: t.name.clone(), size: 0.018, color: col, align: Align::Center });
     out.push(Prim::Text { pos: (x, y + half + 0.03), text: format!("{:.0}M", t.dist), size: 0.015, color: p.text.a(0.7), align: Align::Center });
     if let Some(hp) = t.hp {
-        let w = half * ASPECT * 2.8;
+        let w = half * ax() * 2.8;
         let r = Rect::new(x - w * 0.5, y + half + 0.036, w, 0.005);
         out.push(Prim::Rect { r, color: col.a(0.15), glow: 0.0 });
         out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * hp.clamp(0.0, 1.0), r.h), color: col.a(0.95), glow: 0.003 });
@@ -1518,7 +1521,9 @@ fn ffa_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         (Some(n), None) => format!("FIRST TO {n}"),
         _ => "LEADERBOARD".into(),
     };
-    out.push(Prim::Text { pos: (x1, y), text: head, size: 0.017, color: p.text.a(0.55), align: Align::Right });
+    // narrow screens (4:3, 16:10) give the right panel fewer pixels per normalized x: shrink its text so rows never collide
+    let fit = (1.0 / ax() / 1.7).min(1.0);
+    out.push(Prim::Text { pos: (x1, y), text: head, size: 0.017 * fit, color: p.text.a(0.55), align: Align::Right });
     let top = rows.iter().take(5).copied();
     let me = rows.iter().position(|r| r.local);
     let shown: Vec<(usize, &ScoreRow)> = top.enumerate().chain(me.filter(|i| *i >= 5).map(|i| (i, rows[i]))).collect();
@@ -1532,8 +1537,8 @@ fn ffa_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             out.push(Prim::Rect { r: Rect::new(x0 - 0.006, y - 0.021, x1 - x0 + 0.012, 0.026), color: col.a(0.16), glow: 0.003 });
         }
         let a = if r.alive { 1.0 } else { 0.5 };
-        out.push(Prim::Text { pos: (x0, y), text: format!("{} {}", rank + 1, r.name), size: 0.02, color: col.a(a), align: Align::Left });
-        out.push(Prim::Text { pos: (x1, y), text: r.kills.to_string(), size: 0.02, color: col.a(a), align: Align::Right });
+        out.push(Prim::Text { pos: (x0, y), text: format!("{} {}", rank + 1, r.name), size: 0.02 * fit, color: col.a(a), align: Align::Left });
+        out.push(Prim::Text { pos: (x1, y), text: r.kills.to_string(), size: 0.02 * fit, color: col.a(a), align: Align::Right });
     }
     // leading: you are first with at least one kill (a tie for first counts)
     let lead = rows.first().map_or(0, |r| r.kills);
@@ -1697,12 +1702,21 @@ impl Glyph {
     }
 }
 
-const ASPECT: f32 = 0.5625; // 9/16: x extents are scaled so glyphs stay round on a 16:9 screen
+// Horizontal extent factor (1 / screen aspect) for hand-built shapes, so circles and diamonds stay round on any screen.
+// Set at the start of each `Hud::build_with` from `HudState::aspect` (default 16:9 = 9/16); thread-local so parallel tests
+// and builds never see each other's value.
+thread_local! {
+    static AX: std::cell::Cell<f32> = const { std::cell::Cell::new(0.5625) };
+}
+
+fn ax() -> f32 {
+    AX.with(|a| a.get())
+}
 
 /// Line-drawn weapon icon centred on `c`, `h` = half-height in screen fractions. Lines only, so any backend
 /// that draws `Prim::Line` gets it.
 pub fn weapon_icon(out: &mut Vec<Prim>, c: (f32, f32), h: f32, g: Glyph, color: Rgba) {
-    let pt = |x: f32, y: f32| (c.0 + x * h * ASPECT, c.1 + y * h);
+    let pt = |x: f32, y: f32| (c.0 + x * h * ax(), c.1 + y * h);
     let mut line = |a: (f32, f32), b: (f32, f32)| out.push(Prim::Line { a: pt(a.0, a.1), b: pt(b.0, b.1), color, glow: 0.003 });
     match g {
         Glyph::Katana => {
@@ -1758,7 +1772,7 @@ fn cooldown_arc(out: &mut Vec<Prim>, c: (f32, f32), r: f32, ready: f32, glyph: G
     let col = if done { p.cyan } else { p.orange };
     let at = |i: usize| {
         let a = i as f32 / SEG as f32 * std::f32::consts::TAU;
-        (c.0 + a.sin() * r * ASPECT, c.1 - a.cos() * r)
+        (c.0 + a.sin() * r * ax(), c.1 - a.cos() * r)
     };
     let lit = (ready * SEG as f32).round() as usize;
     for i in 0..SEG {
@@ -2676,5 +2690,25 @@ mod tests {
         let bare = HudState { awards: vec![], my_headshots: 0, ..s.clone() };
         let t: Vec<String> = Hud::build_with(&bare, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect();
         assert!(!t.contains(&"AWARDS".to_string()) && !t.iter().any(|x| x.starts_with("YOUR HEADSHOTS")) && t.contains(&"NEXT MAP IN 8".to_string()));
+    }
+
+    #[test]
+    fn hand_built_shapes_follow_the_screen_aspect() {
+        let p = Palette::TRON;
+        // a radar ping at the rim sits exactly on the ring's drawn edge at any aspect (ring x radius = r / aspect)
+        for aspect in [4.0 / 3.0, 1.6, 16.0 / 9.0, 21.0 / 9.0] {
+            let s = HudState { hp: 1.0, aspect, heading: Some(0.0), radar: vec![RadarPing { pos: (1.0, 0.0), colour: Rgba::CYAN, ally: false }], ..Default::default() };
+            let prims = Hud::build_with(&s, &p);
+            let ring = prims.iter().find_map(|x| match x { Prim::Ring { c, r, fill: false, .. } if (*r - 0.09).abs() < 1e-6 => Some((*c, *r)), _ => None }).unwrap();
+            let ping = prims.iter().find_map(|x| match x { Prim::Ring { c, fill: true, r, .. } if (*r - 0.0075).abs() < 1e-6 => Some(*c), _ => None }).unwrap();
+            let edge_x = ring.0 .0 + ring.1 / aspect;
+            assert!((ping.0 - edge_x).abs() < 1e-4, "aspect {aspect}: ping x {} vs ring edge {edge_x}", ping.0);
+        }
+        // thread-local state is restored per build: a 16:9 build after a 4:3 one is unaffected
+        let a = Hud::build_with(&HudState { hp: 1.0, aspect: 4.0 / 3.0, ..Default::default() }, &p);
+        let b = Hud::build_with(&HudState { hp: 1.0, ..Default::default() }, &p);
+        let c = Hud::build_with(&HudState { hp: 1.0, ..Default::default() }, &p);
+        assert_eq!(b, c);
+        assert_ne!(a, b);
     }
 }

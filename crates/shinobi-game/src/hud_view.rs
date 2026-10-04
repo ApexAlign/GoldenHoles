@@ -378,7 +378,8 @@ fn mode_ui(
     };
     if out.radial_commit {
         // the hold replaced the instant tap-print (see play.rs): only the chosen piece prints, none on a cancel
-        if let Some(slot) = cursor_norm(&window).and_then(radial::pick) {
+        let aspect = window.as_ref().map_or(16.0 / 9.0, |w| w.width() / w.height().max(1.0));
+        if let Some(slot) = cursor_norm(&window).and_then(|c| radial::pick_with(c, aspect)) {
             let kind = match slot {
                 BuildSlot::Floor => shinobi_sim::blocks::PieceKind::Floor,
                 BuildSlot::Ramp => shinobi_sim::blocks::PieceKind::Ramp,
@@ -508,7 +509,7 @@ fn update(
         match mode.mode() {
             Mode::BuildRadial => {
                 let cur_slot = state.build.map_or(BuildSlot::Floor, |b| b.selected);
-                prims.extend(radial::draw(cur.and_then(radial::pick), cur_slot, &pal));
+                prims.extend(radial::draw_with(cur.and_then(|c| radial::pick_with(c, aspect)), cur_slot, &pal, aspect));
             }
             Mode::Console => prims.extend(console::draw(&console.0, t, &pal)),
             _ => {}

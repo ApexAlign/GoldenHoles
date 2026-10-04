@@ -7,13 +7,18 @@ use crate::hud::{Align, BuildSlot, Palette, Prim};
 const C: (f32, f32) = (0.5, 0.5);
 const R_OUT: f32 = 0.2;
 const R_DEAD: f32 = 0.03;
-const ASPECT: f32 = 0.5625;
 
 /// Piece under a normalized cursor position (y down), or `None` inside the dead zone. Three 120 degree sectors,
 /// angle measured clockwise from straight up: RAMP on top, WALL lower right, FLOOR lower left.
 pub fn pick(cursor: (f32, f32)) -> Option<BuildSlot> {
+    pick_with(cursor, 16.0 / 9.0)
+}
+
+/// `pick` for a screen of the given width / height.
+pub fn pick_with(cursor: (f32, f32), aspect: f32) -> Option<BuildSlot> {
+    let ax = 1.0 / aspect.max(0.1);
     // x is corrected to screen-height units so the dead zone is a circle
-    let dx = (cursor.0 - C.0) / ASPECT;
+    let dx = (cursor.0 - C.0) / ax;
     let dy = cursor.1 - C.1;
     if dx * dx + dy * dy < R_DEAD * R_DEAD {
         return None;
@@ -29,18 +34,24 @@ pub fn pick(cursor: (f32, f32)) -> Option<BuildSlot> {
 }
 
 /// Sector centre (screen position) and label for a slot.
-fn sector(slot: BuildSlot) -> ((f32, f32), &'static str, &'static str) {
+fn sector(slot: BuildSlot, ax: f32) -> ((f32, f32), &'static str, &'static str) {
     let (deg, label, key) = match slot {
         BuildSlot::Ramp => (0.0f32, "RAMP", "N N"),
         BuildSlot::Wall => (120.0, "WALL", "M"),
         BuildSlot::Floor => (240.0, "FLOOR", "N"),
     };
     let (s, c) = deg.to_radians().sin_cos();
-    ((C.0 + s * R_OUT * 0.64 * ASPECT, C.1 - c * R_OUT * 0.64), label, key)
+    ((C.0 + s * R_OUT * 0.64 * ax, C.1 - c * R_OUT * 0.64), label, key)
 }
 
 /// Draw the menu with `hover` highlighted and `current` (the selected piece) marked.
 pub fn draw(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette) -> Vec<Prim> {
+    draw_with(hover, current, p, 16.0 / 9.0)
+}
+
+/// `draw` for a screen of the given width / height.
+pub fn draw_with(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette, aspect: f32) -> Vec<Prim> {
+    let ax = 1.0 / aspect.max(0.1);
     let mut out = Vec::new();
     out.push(Prim::Rect { r: crate::hud::Rect::new(0.0, 0.0, 1.0, 1.0), color: p.bg.a(0.35), glow: 0.0 });
     out.push(Prim::Ring { c: C, r: R_OUT, color: p.cyan.a(0.8), fill: false, glow: 0.006 });
@@ -49,14 +60,14 @@ pub fn draw(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette) -> Vec<Pr
     for deg in [60.0f32, 180.0, 300.0] {
         let (s, c) = deg.to_radians().sin_cos();
         out.push(Prim::Line {
-            a: (C.0 + s * R_DEAD * ASPECT, C.1 - c * R_DEAD),
-            b: (C.0 + s * R_OUT * ASPECT, C.1 - c * R_OUT),
+            a: (C.0 + s * R_DEAD * ax, C.1 - c * R_DEAD),
+            b: (C.0 + s * R_OUT * ax, C.1 - c * R_OUT),
             color: p.cyan.a(0.5),
             glow: 0.0,
         });
     }
     for slot in [BuildSlot::Ramp, BuildSlot::Wall, BuildSlot::Floor] {
-        let ((cx, cy), label, key) = sector(slot);
+        let ((cx, cy), label, key) = sector(slot, ax);
         let on = hover == Some(slot);
         let col = if on { p.gold } else if slot == current { p.cyan } else { p.text };
         if on {
@@ -71,7 +82,7 @@ pub fn draw(hover: Option<BuildSlot>, current: BuildSlot, p: &Palette) -> Vec<Pr
             BuildSlot::Ramp => (0.0, 0.0),
         };
         if slot == BuildSlot::Ramp {
-            out.push(Prim::Line { a: (cx - 0.025 * ASPECT * 1.5, cy + 0.05), b: (cx + 0.025 * ASPECT * 1.5, cy + 0.027), color: col.a(0.85), glow: 0.004 });
+            out.push(Prim::Line { a: (cx - 0.025 * ax * 1.5, cy + 0.05), b: (cx + 0.025 * ax * 1.5, cy + 0.027), color: col.a(0.85), glow: 0.004 });
         } else {
             out.push(Prim::Rect { r: crate::hud::Rect::new(cx - w * 0.5, cy + 0.045 - h * 0.5, w, h), color: col.a(0.8), glow: 0.004 });
         }

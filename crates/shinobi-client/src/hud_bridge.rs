@@ -438,6 +438,7 @@ impl HudBridge {
             hs.my_headshots = self.stats.my_headshots;
         }
         hs.audio = self.audio;
+        hs.aspect = self.aspect;
         hs.ffa = teams.is_none();
         hs.kill_limit = if teams.is_none() { Some(kill_limit_to_show(self.kill_limit, net.frag_limit())) } else { None };
         hs.time_limit_secs = net.time_limit_secs();

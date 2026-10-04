@@ -14,8 +14,13 @@ fn score(id: u16, kills: u16, deaths: u16, local: bool) -> ScoreRow {
     ScoreRow { name: callsign(id), kills, deaths, ping_ms: 20 + id * 7, local, alive: id % 5 != 3, team: None, colour: Some(player_rgba(id)) }
 }
 
+thread_local! {
+    static ASPECT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
 fn base() -> HudState {
     HudState {
+        aspect: ASPECT.with(|a| a.get()),
         hp: 0.8,
         dash_ready: 1.0,
         shuriken_ready: 0.6,
@@ -43,7 +48,15 @@ fn kill(k: u16, v: u16, w: DamageKind, age: f32) -> KillEntry {
 
 /// `(name, draw list)` for each scenario.
 pub fn scenarios() -> Vec<(&'static str, Vec<Prim>)> {
-    scenarios_raw().into_iter().map(|(n, p)| (n, crate::hud::with_text_shadows(p, &Palette::TRON))).collect()
+    scenarios_at(0.0)
+}
+
+/// The same scenarios laid out for a screen of width / height `aspect` (0 = the 16:9 the goldens use).
+pub fn scenarios_at(aspect: f32) -> Vec<(&'static str, Vec<Prim>)> {
+    ASPECT.with(|a| a.set(aspect));
+    let v = scenarios_raw();
+    ASPECT.with(|a| a.set(0.0));
+    v.into_iter().map(|(n, p)| (n, crate::hud::with_text_shadows(p, &Palette::TRON))).collect()
 }
 
 fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
@@ -135,7 +148,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     out.push(("scoreboard", Hud::build_with(&board, &p)));
 
     let mut prims = Hud::build_with(&base(), &p);
-    prims.extend(radial::draw(Some(BuildSlot::Ramp), BuildSlot::Floor, &p));
+    prims.extend(radial::draw_with(Some(BuildSlot::Ramp), BuildSlot::Floor, &p, if ASPECT.with(|a| a.get()) > 0.1 { ASPECT.with(|a| a.get()) } else { 16.0 / 9.0 }));
     out.push(("radial", prims));
     out
 }
