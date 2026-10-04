@@ -29,6 +29,95 @@ impl Tier {
     }
 }
 
+impl Tier {
+    /// The next cheaper tier, if any.
+    pub fn lower(self) -> Option<Tier> {
+        match self {
+            Tier::High => Some(Tier::Medium),
+            Tier::Medium => Some(Tier::Low),
+            Tier::Low => None,
+        }
+    }
+
+    /// Starting tier for a GPU class: integrated GPUs start at Medium (they share memory bandwidth with the CPU and
+    /// cannot hold 60 fps at 1080p with full bloom + CRT), software rasterisers at Low.
+    pub fn for_device(kind: DeviceKind) -> Tier {
+        match kind {
+            DeviceKind::Discrete => Tier::High,
+            DeviceKind::Integrated | DeviceKind::Other => Tier::Medium,
+            DeviceKind::Software => Tier::Low,
+        }
+    }
+}
+
+/// GPU class, from the adapter's device type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceKind {
+    Discrete,
+    Integrated,
+    Software,
+    Other,
+}
+
+impl DeviceKind {
+    /// Parses wgpu's `DeviceType` debug name (`DiscreteGpu`, `IntegratedGpu`, `Cpu`, `VirtualGpu`, `Other`).
+    pub fn from_wgpu_name(name: &str) -> DeviceKind {
+        match name {
+            "DiscreteGpu" => DeviceKind::Discrete,
+            "IntegratedGpu" => DeviceKind::Integrated,
+            "Cpu" => DeviceKind::Software,
+            _ => DeviceKind::Other,
+        }
+    }
+}
+
+/// Watches frame times and says when to drop a tier: p95 frame time above `budget_ms` over a `window_s` window.
+/// After a drop it waits `cooldown_s` (the new tier needs time to settle, and the window restarts empty).
+#[derive(Clone, Debug)]
+pub struct FrameGovernor {
+    pub budget_ms: f32,
+    pub window_s: f32,
+    pub cooldown_s: f32,
+    samples: Vec<f32>,
+    span: f32,
+    cooldown: f32,
+}
+
+impl FrameGovernor {
+    pub fn new() -> Self {
+        Self { budget_ms: 16.6, window_s: 2.0, cooldown_s: 4.0, samples: Vec::new(), span: 0.0, cooldown: 0.0 }
+    }
+
+    /// Feed one frame (`dt_s` seconds). Returns the window's p95 (ms) when it is over budget at the end of a window.
+    pub fn push(&mut self, dt_s: f32) -> Option<f32> {
+        if self.cooldown > 0.0 {
+            self.cooldown -= dt_s;
+            return None;
+        }
+        self.samples.push(dt_s * 1000.0);
+        self.span += dt_s;
+        if self.span < self.window_s {
+            return None;
+        }
+        let mut v = std::mem::take(&mut self.samples);
+        self.span = 0.0;
+        v.sort_by(|a, b| a.total_cmp(b));
+        let p95 = v[((v.len() as f32 * 0.95) as usize).min(v.len() - 1)];
+        if p95 > self.budget_ms * 1.05 {
+            self.cooldown = self.cooldown_s;
+            Some(p95)
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for FrameGovernor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Quality {
     pub tier: Tier,
@@ -65,6 +154,61 @@ impl Default for Quality {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_class_picks_the_starting_tier() {
+        assert_eq!(Tier::for_device(DeviceKind::from_wgpu_name("DiscreteGpu")), Tier::High);
+        assert_eq!(Tier::for_device(DeviceKind::from_wgpu_name("IntegratedGpu")), Tier::Medium);
+        assert_eq!(Tier::for_device(DeviceKind::from_wgpu_name("Cpu")), Tier::Low);
+        assert_eq!(Tier::for_device(DeviceKind::from_wgpu_name("???")), Tier::Medium);
+    }
+
+    #[test]
+    fn tiers_step_down_to_low_and_stop() {
+        assert_eq!(Tier::High.lower(), Some(Tier::Medium));
+        assert_eq!(Tier::Medium.lower(), Some(Tier::Low));
+        assert_eq!(Tier::Low.lower(), None);
+    }
+
+    fn run(gov: &mut FrameGovernor, ms: f32, secs: f32) -> Vec<f32> {
+        let n = (secs * 1000.0 / ms) as usize;
+        (0..n).filter_map(|_| gov.push(ms / 1000.0)).collect()
+    }
+
+    #[test]
+    fn governor_ignores_a_steady_60_and_flags_a_slow_window() {
+        let mut g = FrameGovernor::new();
+        assert!(run(&mut g, 16.6, 6.0).is_empty(), "locked 60 is fine");
+        let v = run(&mut g, 25.0, 2.5);
+        assert_eq!(v.len(), 1);
+        assert!(v[0] > 20.0);
+    }
+
+    #[test]
+    fn governor_one_slow_frame_in_a_window_is_not_enough_but_many_are() {
+        let mut g = FrameGovernor::new();
+        let mut hits = 0;
+        for i in 0..130 {
+            // one 100 ms hitch among 16.6 ms frames: p95 stays in budget
+            hits += g.push(if i == 40 { 0.1 } else { 0.0166 }).is_some() as u32;
+        }
+        assert_eq!(hits, 0);
+        let mut g = FrameGovernor::new();
+        let mut hits = 0;
+        for i in 0..130 {
+            // every 10th frame is 60 ms: >5% of frames slow -> p95 over budget
+            hits += g.push(if i % 10 == 0 { 0.06 } else { 0.0166 }).is_some() as u32;
+        }
+        assert_eq!(hits, 1);
+    }
+
+    #[test]
+    fn governor_waits_out_a_cooldown_after_a_drop() {
+        let mut g = FrameGovernor::new();
+        assert_eq!(run(&mut g, 30.0, 2.2).len(), 1);
+        assert!(run(&mut g, 30.0, 3.0).is_empty(), "cooldown (4 s) swallows the next frames");
+        assert_eq!(run(&mut g, 30.0, 4.5).len(), 1, "then it measures again");
+    }
 
     #[test]
     fn tiers_get_progressively_cheaper() {
