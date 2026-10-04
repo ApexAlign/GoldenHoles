@@ -425,11 +425,20 @@ pub fn input(
 }
 
 /// OS window title follows the lock state ("click the window to play" until the mouse is grabbed).
-fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<Time<Real>>, mut fps: Local<(f32, u32, u32)>) {
+fn update_title(lock: Res<Lock>, window: Option<Single<&mut Window>>, time: Res<Time<Real>>, mut fps: Local<(f32, u32, u32)>, mut rep: Local<(f32, f32, u32)>) {
     let Some(mut w) = window else { return };
     // smoothed frame rate in the title (refreshed twice a second) so a slow machine is visible at a glance
     fps.0 += time.delta_secs();
     fps.1 += 1;
+    // every 3 s: one line on stderr with the real numbers (fps, worst frame, fixed steps per second, which should be 60)
+    rep.0 += time.delta_secs();
+    rep.1 = rep.1.max(time.delta_secs());
+    rep.2 += 1;
+    if rep.0 >= 3.0 {
+        let steps = crate::net::FIXED_STEPS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        eprintln!("PERF {:.0} fps | worst frame {:.1} ms | fixed steps/s {:.0} (want 60)", rep.2 as f32 / rep.0, rep.1 * 1000.0, steps as f32 / rep.0);
+        *rep = (0.0, 0.0, 0);
+    }
     if fps.0 >= 0.5 {
         fps.2 = (fps.1 as f32 / fps.0).round() as u32;
         fps.0 = 0.0;

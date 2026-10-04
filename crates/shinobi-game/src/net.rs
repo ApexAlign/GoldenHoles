@@ -52,6 +52,7 @@ impl Plugin for NetPlugin {
 
 /// Exactly one call per fixed run: `UdpGame` owns the tick clock (+1 per call).
 fn net_step(mut net: ResMut<Net>, mut input: ResMut<PendingInput>) {
+    FIXED_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let frame = InputFrame {
         stick: input.0.stick,
         look: std::mem::take(&mut input.0.look),
@@ -65,6 +66,9 @@ fn publish_view(mut net: ResMut<Net>, mut view: ResMut<ViewRes>, fixed: Res<Time
     // draw between sim ticks (the fixed step is 60 Hz, the display is not); offline shots stay on exact ticks
     view.0 = if sub.0 { net.0.view_frac(fixed.overstep_fraction() as f64) } else { net.0.view() };
 }
+
+/// Fixed steps run so far (frame-time report in `play::update_title`).
+pub static FIXED_STEPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Whether `publish_view` interpolates between fixed ticks.
 #[derive(Resource)]
