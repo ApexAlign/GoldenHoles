@@ -601,10 +601,10 @@ mod tests {
         };
         assert!((ratio(0.2) - ratio(0.7)).abs() < 1e-3, "{} {}", ratio(0.2), ratio(0.7));
         assert!(SettingRow::MouseSens.key_step() < SettingRow::Fov.key_step(), "sensitivity steps are fine");
-        // default 0.0022 rad/count at 800 DPI is about 9 cm per turn; the readout agrees and faster = smaller number
+        // default 0.0012 rad/count at 800 DPI is about 17 cm per turn; the readout agrees and faster = smaller number
         let d = Settings::default();
         let cm: f32 = setting_text(&d, SettingRow::MouseSens).parse().unwrap();
-        assert!((cm - 9.1).abs() < 0.2, "{cm}");
+        assert!((cm - 16.7).abs() < 0.3, "{cm}");
         let mut fast = d;
         fast.mouse_sens *= 2.0;
         assert!(setting_text(&fast, SettingRow::MouseSens).parse::<f32>().unwrap() < cm);
