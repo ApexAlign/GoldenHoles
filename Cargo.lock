@@ -487,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "shinobi-ai",
  "shinobi-bot",
+ "shinobi-client",
  "shinobi-proto",
  "shinobi-sim",
 ]
