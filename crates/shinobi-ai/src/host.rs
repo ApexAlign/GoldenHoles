@@ -24,7 +24,7 @@ use shinobi_sim::tick::{allied, Accumulator, FrameReport, Server};
 
 use crate::fsm::{Assignment, BotMem, Perception, ThinkCtx};
 use crate::nav::{find_perches, Perch};
-use crate::skill::{Archetype, BotSkill};
+use crate::skill::{Archetype, BotSkill, SkillParams};
 use crate::tickets::{AttackTickets, Request, TicketCfg};
 use crate::view::{Frustum, PlayerView, WorldView};
 
@@ -42,6 +42,13 @@ pub struct BotHostCfg {
     /// Pace of the fights, 1.0 = the skill's own numbers. Below 1 bots shoot less often and less accurately
     /// (fire gap / aggression, aim error / aggression): longer matches without touching the skill tiers.
     pub aggression: f32,
+    /// Warm-up for a new human: aggression starts at `warmup_aggression` when the first human is seen and ramps
+    /// linearly to `aggression` over `warmup_secs` (0 = off), so a fresh join is not met by full-pace fire.
+    pub warmup_secs: f32,
+    pub warmup_aggression: f32,
+    /// During the warm-up at most this many bots go after any one human (the rest fight each other); the cap
+    /// triples for the same time again, then lifts.
+    pub warmup_engagers: usize,
 }
 
 impl Default for BotHostCfg {
@@ -53,13 +60,28 @@ impl Default for BotHostCfg {
             target_stickiness: 0.75,
             human_quiet_secs: 15.0,
             rubber_band_bots: 2,
+            warmup_secs: 25.0,
+            warmup_aggression: 0.4,
+            warmup_engagers: 1,
             aggression: 0.8, // demo pace: a touch below the skill tiers so a 10-kill FFA match runs minutes, not seconds
         }
     }
 }
 
+/// Skill numbers at pace `a`: fire gap and katana wind-up / a, aim error / min(a, 1), slower movement below 1.
+fn scaled(mut p: SkillParams, a: f32) -> SkillParams {
+    p.fire_gap_ticks = ((p.fire_gap_ticks as f32) / a).round() as u32;
+    p.aim_error /= a.min(1.0);
+    p.strike_windup = ((p.strike_windup as f32) / a).round() as u32;
+    p.move_scale = (0.5 + 0.5 * a).min(1.0);
+    p
+}
+
 /// A* plans the whole host may run per tick (bots over budget wait a tick: no frame is ever a burst of searches).
 const PLAN_PER_TICK: u32 = 2;
+
+/// During the warm-up bots leave a human below this health fraction alone.
+const WARMUP_MERCY_HP: f32 = 0.35;
 
 /// Enemy this close with a clear line counts as "the human has action".
 const ACTION_RANGE: f32 = 35.0;
@@ -81,6 +103,8 @@ pub struct BotHost {
     human_action: Vec<(u16, u32)>,
     /// Bots currently sent to a quiet human: `(bot, human, since tick)`.
     summoned: Vec<(u16, u16, u32)>,
+    /// Tick the first human was seen (starts the aggression warm-up).
+    human_joined: Option<u32>,
 }
 
 /// Three consecutive tick durations summing to exactly 3/60 s.
@@ -99,6 +123,7 @@ impl BotHost {
             nav: None,
             human_action: Vec::new(),
             summoned: Vec::new(),
+            human_joined: None,
             sticky: Vec::new(),
         }
     }
@@ -112,13 +137,24 @@ impl BotHost {
         let spawn = server.pick_spawn(None);
         server.add_player(id, spawn);
         let pos = self.bots.binary_search_by_key(&id, |b| b.id).unwrap_or_else(|i| i);
-        let mut params = skill.params();
-        let a = self.cfg.aggression.clamp(0.2, 2.0);
-        params.fire_gap_ticks = ((params.fire_gap_ticks as f32) / a).round() as u32;
-        params.aim_error /= a.min(1.0);
-        params.move_scale = (0.5 + 0.5 * a).min(1.0);
-        self.bots.insert(pos, BotMem::new(id, archetype, params, self.cfg.seed));
+        let base = skill.params();
+        let mut mem = BotMem::new(id, archetype, scaled(base, self.aggression_at(server.tick)), self.cfg.seed);
+        mem.base_skill = base;
+        self.bots.insert(pos, mem);
         true
+    }
+
+    /// Effective aggression at `tick`: the configured pace, lowered during a new human's warm-up.
+    fn aggression_at(&self, tick: u32) -> f32 {
+        let full = self.cfg.aggression.clamp(0.2, 2.0);
+        match self.human_joined {
+            Some(t0) if self.cfg.warmup_secs > 0.0 => {
+                let k = (tick.saturating_sub(t0) as f32 / (self.cfg.warmup_secs * TICK_HZ as f32)).min(1.0);
+                let from = self.cfg.warmup_aggression.clamp(0.2, 2.0).min(full);
+                from + (full - from) * k
+            }
+            _ => full,
+        }
     }
 
     /// `add_bot` onto a given team.
@@ -359,12 +395,30 @@ impl BotHost {
         let ids: Vec<u16> = self.bots.iter().map(|b| b.id).collect();
         let world = WorldView::build(server, |id| ids.binary_search(&id).is_ok());
         let tick = world.tick;
+        if self.human_joined.is_none() && world.players.iter().any(|p| ids.binary_search(&p.id).is_err()) {
+            self.human_joined = Some(tick);
+        }
+        let a = self.aggression_at(tick);
+        for b in &mut self.bots {
+            b.skill = scaled(b.base_skill, a);
+        }
         self.rubber_band(&world, tick);
         let budget = std::cell::Cell::new(PLAN_PER_TICK);
 
         // ---- director: targets (every bot is its own faction: nearest / weakest living enemy, sticky), then ranks
         // per target and archetype. Teammates (team mode only) are never targets; FFA players have no team.
         let mut targets: Vec<Option<u16>> = Vec::with_capacity(self.bots.len());
+        // engager cap: `warmup_engagers` for the warm-up, three times that for as long again, then no cap
+        let since_join = self.human_joined.map_or(f32::MAX, |t0| tick.saturating_sub(t0) as f32 / TICK_HZ as f32);
+        let engager_cap = if self.cfg.warmup_secs <= 0.0 || since_join >= 2.0 * self.cfg.warmup_secs {
+            usize::MAX
+        } else if since_join < self.cfg.warmup_secs {
+            self.cfg.warmup_engagers
+        } else {
+            self.cfg.warmup_engagers * 3
+        };
+        let warming = engager_cap != usize::MAX;
+        let mut on_human: Vec<(u16, usize)> = Vec::new(); // (human, bots already assigned this tick)
         for b in &self.bots {
             let Some(me) = world.player(b.id).filter(|p| p.alive) else {
                 targets.push(None);
@@ -379,6 +433,19 @@ impl BotHost {
             }
             let skip = |id: u16| b.unreachable.iter().any(|(t, until)| *t == id && *until > tick);
             let mut pool: Vec<&PlayerView> = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team) && !skip(p.id)).collect();
+            if warming {
+                // a new human faces only a couple of bots at a time; the rest keep fighting each other
+                let full = |id: u16| on_human.iter().find(|h| h.0 == id).map_or(0, |h| h.1) >= engager_cap;
+                // ... and a badly hurt one is left alone (no healing in the arena yet: attrition would end the run)
+                let others: Vec<&PlayerView> = pool
+                    .iter()
+                    .copied()
+                    .filter(|p| ids.binary_search(&p.id).is_ok() || (!full(p.id) && p.hp_frac >= WARMUP_MERCY_HP))
+                    .collect();
+                if !others.is_empty() {
+                    pool = others;
+                }
+            }
             if pool.is_empty() {
                 // everybody is unreachable: fall back to the nearest anyway (the bot still faces and shoots them)
                 pool = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
@@ -396,6 +463,12 @@ impl BotHost {
                 (_, Some((_, ib))) => Some(ib),
                 _ => None,
             };
+            if let Some(t) = pick.filter(|t| ids.binary_search(t).is_err()) {
+                match on_human.iter_mut().find(|h| h.0 == t) {
+                    Some(h) => h.1 += 1,
+                    None => on_human.push((t, 1)),
+                }
+            }
             targets.push(pick);
         }
         self.sticky = self.bots.iter().zip(&targets).filter_map(|(b, t)| t.map(|t| (b.id, t))).collect();

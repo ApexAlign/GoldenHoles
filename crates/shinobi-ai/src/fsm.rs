@@ -174,6 +174,8 @@ pub struct BotMem {
     pub id: u16,
     pub archetype: Archetype,
     pub skill: SkillParams,
+    /// The tier's own numbers; `skill` is re-derived from these by the host as the pace changes.
+    pub base_skill: SkillParams,
     pub seed: u64,
     pub phase: Phase,
     pub phase_since: u32,
@@ -215,6 +217,7 @@ impl BotMem {
             id,
             archetype,
             skill,
+            base_skill: skill,
             seed,
             phase: Phase::Dead,
             phase_since: 0,

@@ -26,7 +26,7 @@ fn ffa() -> Option<(Server, Vec<[f32; 3]>)> {
 }
 
 /// A stationary human who shoots anything it can see and otherwise stands still (the worst case for "gets action").
-fn human_intent(s: &Server, yaw_now: f32, noise: f32) -> PlayerIntent {
+fn human_intent(s: &Server, yaw_now: f32, noise: f32, strafe: i8) -> PlayerIntent {
     let me = s.players.iter().find(|p| p.id == HUMAN).unwrap();
     let mp = me.pos(&s.world);
     let eye = [mp[0], mp[1] + 0.6, mp[2]];
@@ -44,7 +44,7 @@ fn human_intent(s: &Server, yaw_now: f32, noise: f32) -> PlayerIntent {
     let dyaw = (want - yaw_now + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
     let yaw = yaw_now + dyaw.clamp(-0.25, 0.25);
     let on = dyaw.abs() < 0.12 + noise; // a real player fires roughly on target, not perfectly
-    PlayerIntent { aim_yaw: q_yaw(yaw), aim_pitch: q_pitch(((q[1] - eye[1]) / (dx * dx + dz * dz).sqrt().max(0.1)).atan()), buttons: Buttons(if on { Buttons::FIRE } else { 0 }), ..Default::default() }
+    PlayerIntent { aim_yaw: q_yaw(yaw), aim_pitch: q_pitch(((q[1] - eye[1]) / (dx * dx + dz * dz).sqrt().max(0.1)).atan()), buttons: Buttons(if on { Buttons::FIRE } else { 0 }), move_x: strafe, ..Default::default() }
 }
 
 fn run(secs: u32, bots: u16, seed: u64, frag_limit: u16) -> Option<(u32, u32, u32, u32, u32)> {
@@ -68,7 +68,7 @@ fn run(secs: u32, bots: u16, seed: u64, frag_limit: u16) -> Option<(u32, u32, u3
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             noise = ((rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 0.12;
         }
-        let it = human_intent(&s, yaw, noise);
+        let it = human_intent(&s, yaw, noise, 0);
         push_human(&mut s, HUMAN, it);
         step(&mut h, &mut s);
         for e in &s.pvp_events {
@@ -111,4 +111,62 @@ fn match_length_and_participation() {
             end as f32 / 60.0
         );
     }
+}
+
+/// 7 bots fight for `lead_secs`, then a casual-aim human joins like a real client (`pick_spawn(None)`). Returns
+/// whether the human survived the first `secs` seconds after joining.
+fn human_survives(seed: u64, lead_secs: u32, secs: u32) -> Option<bool> {
+    let (mut s, _) = ffa()?;
+    s.match_state.cfg.frag_limit = 50;
+    let mut h = shinobi_ai::BotHost::new(shinobi_ai::BotHostCfg { seed, ..Default::default() });
+    h.rebuild_perches(&s);
+    for i in 0..7 {
+        assert!(h.add_bot(&mut s, 201 + i, if i % 3 == 0 { Archetype::Heavy } else { Archetype::Light }, BotSkill::Normal));
+    }
+    for _ in 0..lead_secs * 60 {
+        step(&mut h, &mut s);
+    }
+    let at = s.pick_spawn(None);
+    s.add_player(HUMAN, at);
+    let (mut hits_dealt, mut hits_taken) = (0, 0);
+    let (mut rng, mut noise) = (seed ^ 0x9E37_79B9, 0.0f32);
+    for t in 0..secs * 60 {
+        let yaw = s.players.iter().find(|p| p.id == HUMAN).map_or(0.0, |p| shinobi_proto::quant::dq_yaw(p.yaw));
+        if t % 8 == 0 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            noise = ((rng >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 0.12;
+        }
+        // a casual player keeps moving while fighting: strafe, switching direction every ~0.7 s
+        let strafe = if (t / 40 + seed as u32) % 2 == 0 { 90 } else { -90 };
+        let it = human_intent(&s, yaw, noise, strafe);
+        push_human(&mut s, HUMAN, it);
+        step(&mut h, &mut s);
+        for e in &s.pvp_events {
+            if matches!(e, PvpEvent::Hit { attacker, .. } if *attacker == HUMAN) { hits_dealt += 1; }
+            if matches!(e, PvpEvent::Hit { victim, .. } if *victim == HUMAN) { hits_taken += 1; }
+        }
+        if let Some(PvpEvent::Kill { kind, killer, .. }) = s.pvp_events.iter().find(|e| matches!(e, PvpEvent::Kill { victim, .. } if *victim == HUMAN)) {
+            if std::env::var("DEMO_DEBUG").is_ok() { println!("killer {killer} {kind:?} dealt {hits_dealt} taken {hits_taken}"); }
+            if std::env::var("DEMO_DEBUG").is_ok() {
+                let me = pos(&s, HUMAN);
+                let near = s.players.iter().filter(|p| p.id != HUMAN).map(|p| { let q = p.pos(&s.world); ((q[0]-me[0]).powi(2)+(q[2]-me[2]).powi(2)).sqrt() }).fold(f32::MAX, f32::min);
+                println!("seed {seed}: died at {:.1}s, spawn {at:?}, nearest enemy now {near:.1} m", t as f32 / 60.0);
+            }
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+#[test]
+fn a_joining_human_survives_the_first_30_seconds_in_most_seeds() {
+    let seeds = 1..=20u64;
+    let mut alive = 0;
+    for seed in seeds.clone() {
+        let Some(ok) = human_survives(seed, 10, 30) else { return };
+        alive += ok as u32;
+    }
+    let n = seeds.count() as u32;
+    println!("survived {alive}/{n}");
+    assert!(alive * 100 >= n * 80, "human survived only {alive}/{n} seeds");
 }
