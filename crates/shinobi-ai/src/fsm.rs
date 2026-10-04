@@ -184,6 +184,8 @@ pub struct BotMem {
     // timers (ticks)
     fire_ok: u32,
     slice_ok: u32,
+    /// Throwing pause: movement is nearly stopped until this tick.
+    pause_until: u32,
     /// Yaw offset (rad) of the dash being wound up: 0 = a clean read, else a deliberate whiff (`skill.slice_miss`).
     slice_off: f32,
     evade_ok: u32,
@@ -227,6 +229,7 @@ impl BotMem {
             stats: BotStats::default(),
             fire_ok: 0,
             slice_ok: 0,
+            pause_until: 0,
             slice_off: 0.0,
             evade_ok: 0,
             retreat_block: 0,
@@ -327,7 +330,8 @@ impl BotMem {
         }
         if tick >= self.strafe_until {
             self.strafe_sign = -self.strafe_sign;
-            self.strafe_until = tick + 40 + (rng.unit() * 50.0) as u32;
+            // readable movement: hold a strafe direction for 0.8-1.5 s
+            self.strafe_until = tick + 48 + (rng.unit() * 42.0) as u32;
         }
 
         // ---- 1. threat tracking: am I inside the human's view long enough to react?
@@ -377,7 +381,16 @@ impl BotMem {
         }
         self.was_wallrun = wr;
 
-        let (sx, sz) = stick_for(dir, mag * self.skill.move_scale, yaw);
+        // fighting pace ~80% of a full run, and a throw is made standing (nearly) still so shots read as aimed
+        let fighting = p.target.map_or(false, |t| t.los && t.dist < 40.0);
+        let mut pace = if fighting { 0.8 } else { 1.0 };
+        if buttons & Buttons::FIRE != 0 {
+            self.pause_until = tick + 9;
+        }
+        if tick < self.pause_until && !matches!(self.phase, Phase::Strike { .. } | Phase::Evade { .. }) && matches!(self.trav, Traverse::Free) {
+            pace *= 0.1;
+        }
+        let (sx, sz) = stick_for(dir, mag * self.skill.move_scale * pace, yaw);
         out.intent = PlayerIntent {
             tick,
             buttons: Buttons(buttons),
@@ -562,8 +575,12 @@ impl BotMem {
         if dir == Vector::zeros() {
             dir = away;
         }
+        // dash / roll are for dodging a thrown star; being looked at is answered by walking out of the view
+        let incoming = incoming_disc(ctx);
         let kind = if self.archetype == Archetype::Light && self.skill.use_walls && wall_side(world, me, dir).is_some() {
             EvadeKind::WallCling
+        } else if !incoming {
+            EvadeKind::Strafe
         } else if self.archetype == Archetype::Light && me.dash_ready {
             EvadeKind::Dash
         } else if me.grounded() {
@@ -932,3 +949,16 @@ pub fn describe(m: &BotMem) -> String {
 }
 
 
+
+/// An enemy star within 18 m flying at this bot (closing, roughly on a line through it).
+fn incoming_disc(ctx: &ThinkCtx) -> bool {
+    let me = ctx.me;
+    ctx.world.server.projectiles().into_iter().any(|(owner, d)| {
+        if owner == me.id {
+            return false;
+        }
+        let to = me.pos - vector![d.pos.x, d.pos.y, d.pos.z];
+        let dist = to.norm();
+        dist < 18.0 && dist > 0.5 && to.dot(&d.dir) / dist > 0.97
+    })
+}

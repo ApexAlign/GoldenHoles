@@ -50,7 +50,7 @@ impl Default for ShurikenCfg {
             max_bounces: 2,
             cooldown: 0.18,
             muzzle: 0.8,
-            radius: 0.35,
+            radius: 0.45, // generous: a star that grazes the body counts (hit reach = hitbox 0.3 + 0.45)
             max_life: 6.0,
             max_discs: 32,
             recoil_pitch_deg: 1.2,
