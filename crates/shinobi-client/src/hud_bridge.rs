@@ -307,7 +307,8 @@ impl HudBridge {
                 if on_screen.is_none() && d <= crate::hud::ENEMY_TICK_RANGE {
                     enemy_ticks.push(crate::hud::EnemyTick { bearing: bearing_to(me, yaw, smp.pos), dist: d });
                 }
-                if d <= crate::hud::ENEMY_TAG_RANGE {
+                // no tags through walls: the client game ray-checks eye -> chest against the level
+                if d <= crate::hud::ENEMY_TAG_RANGE && view.los_ids.contains(id) {
                     let head = [smp.pos[0], smp.pos[1] + 1.1, smp.pos[2]];
                     if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
                         if (0.08..=0.92).contains(&x) && (BROW_H + 0.05..=CHIN_TOP - 0.03).contains(&y) {
@@ -556,7 +557,10 @@ mod tests {
         }
         v.remotes.push((20, smp([0.0, 0.0, -40.0]))); // too far
         v.remotes.push((21, smp([0.0, 0.0, 6.0]))); // behind: tick, not tag
+        v.remotes.push((22, smp([1.0, 0.0, -7.0]))); // in range and on screen but behind a wall
+        v.los_ids = v.remotes.iter().map(|r| r.0).filter(|id| *id != 22).collect();
         let s = b.update(0.016, &v, &net(), false);
+        assert!(s.enemy_tags.iter().all(|t| t.name != callsign(22)), "walled-off enemy gets no tag");
         assert_eq!(s.enemy_tags.len(), 4, "{:?}", s.enemy_tags.iter().map(|t| t.dist).collect::<Vec<_>>());
         assert!(s.enemy_tags.windows(2).all(|w| w[0].dist <= w[1].dist), "nearest first");
         assert!(s.enemy_tags.iter().all(|t| t.hp.is_none()), "no hp until the network reports it");

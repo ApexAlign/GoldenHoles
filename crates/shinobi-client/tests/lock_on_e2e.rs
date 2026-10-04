@@ -57,6 +57,8 @@ struct Rig {
     pending: Vec<Vec<u8>>,
     edges: Vec<LockEdge>,
     last: Option<(LockPhase, f32, bool)>,
+    /// `RenderView.los_ids` of the latest view (HUD enemy tags need a clear line to the chest).
+    los: Vec<u16>,
 }
 
 impl Rig {
@@ -67,7 +69,7 @@ impl Rig {
         lv.apply_to_server(&mut srv);
         srv.add_player(1, [0.0, 0.81, 0.0]);
         srv.add_player(2, b_at);
-        Rig { game, srv, tick: 0, welcomed: false, pending: vec![], edges: vec![], last: None }
+        Rig { game, srv, tick: 0, welcomed: false, pending: vec![], edges: vec![], last: None, los: vec![] }
     }
 
     /// One client tick + one server tick, no latency.
@@ -92,6 +94,7 @@ impl Rig {
         let view = self.game.view(now);
         self.edges.extend(view.lock_edges.iter().copied());
         self.last = view.lock.map(|l| (l.phase, l.progress, l.locked));
+        self.los = view.los_ids.clone();
         self.srv.frame(Duration::from_nanos(16_666_667));
         if self.welcomed {
             self.pending.push(snapshot_datagram(&self.srv));
@@ -118,6 +121,7 @@ fn the_predictor_acquires_locks_and_breaks_behind_a_wall() {
     r.run(120, idle); // connect, predict, settle; the crosshair rests on B
     assert_eq!(r.last.map(|l| l.0), Some(LockPhase::Locked), "locked after resting on the target: {:?}", r.last);
     assert_eq!(r.last.unwrap().1, 1.0);
+    assert!(r.los.contains(&2), "open ground: B is in line of sight ({:?})", r.los);
     assert!(r.edges.contains(&LockEdge::Acquired) && r.edges.contains(&LockEdge::Locked), "{:?}", r.edges);
     let acq = r.edges.iter().position(|e| *e == LockEdge::Acquired).unwrap();
     let lck = r.edges.iter().position(|e| *e == LockEdge::Locked).unwrap();
@@ -141,10 +145,11 @@ fn a_wall_in_the_way_never_lets_a_lock_form() {
     lv.apply_to_server(&mut srv);
     srv.add_player(1, [0.0, 0.81, 0.0]);
     srv.add_player(2, [0.0, 0.81, -15.0]);
-    let mut r = Rig { game, srv, tick: 0, welcomed: false, pending: vec![], edges: vec![], last: None };
+    let mut r = Rig { game, srv, tick: 0, welcomed: false, pending: vec![], edges: vec![], last: None, los: vec![] };
     r.run(150, idle);
     assert!(r.game.predicting(), "prediction is running");
     assert!(r.edges.is_empty() && r.last.is_none(), "walled target is never acquired: {:?} {:?}", r.edges, r.last);
+    assert!(!r.los.contains(&2), "no line of sight through the wall, so no HUD tag: {:?}", r.los);
 }
 
 #[test]

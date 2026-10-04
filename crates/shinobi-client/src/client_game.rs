@@ -456,6 +456,8 @@ pub struct RenderView {
     pub correction_offset: [f32; 3],
     /// Other players, interpolated at the render tick.
     pub remotes: Vec<(EntityId, Sample)>,
+    /// Ids in `remotes` with an unobstructed line from the eye to the chest (cached ~100 ms): HUD tags hide behind walls.
+    pub los_ids: Vec<EntityId>,
     /// Reliable events (walls, obstacles) received since the previous view.
     pub events: Vec<NetEvent>,
     pub aim: Aim,
@@ -524,6 +526,8 @@ pub struct ClientGame {
     lock_edges: Vec<LockEdge>,
     touch: TouchController,
     pred: Option<Predicted>,
+    /// Remote players with a clear line from our eye to their chest (level colliders only), refreshed every ~100 ms.
+    los_cache: (f64, Vec<EntityId>),
     /// Intents sent before the predictor has an authoritative starting state; replayed once it has.
     pending: VecDeque<PlayerIntent>,
     pose: (CameraPose, WeaponPose),
@@ -565,6 +569,7 @@ impl ClientGame {
             lock_edges: Vec::new(),
             touch: TouchController::new(1280.0, 90.0),
             pred: None,
+            los_cache: (f64::NEG_INFINITY, Vec::new()),
             pending: VecDeque::new(),
             pose: (CameraPose::default(), WeaponPose::default()),
             pose_prev: (CameraPose::default(), WeaponPose::default()),
@@ -1063,6 +1068,31 @@ impl ClientGame {
             weapon = WeaponPose { pitch: l(pw.pitch, weapon.pitch), back: l(pw.back, weapon.back), y_dip: l(pw.y_dip, weapon.y_dip) };
         }
         let eye = local_pos.map_or([0.0; 3], |p| [p[0], p[1] + self.cfg.sim.eye_above_center + camera.y_offset, p[2]]);
+        // line of sight to each remote's chest, against level geometry only (not player capsules, not sensors)
+        if local_tick - self.los_cache.0 >= 6.0 || local_tick < self.los_cache.0 {
+            let ids = match &self.pred {
+                Some(p) => remotes
+                    .iter()
+                    .filter(|(_, smp)| {
+                        let chest = [smp.pos[0], smp.pos[1] + 0.9, smp.pos[2]];
+                        let d = [chest[0] - eye[0], chest[1] - eye[1], chest[2] - eye[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                        if len < 0.3 {
+                            return true;
+                        }
+                        let ray = Ray::new(Point::new(eye[0], eye[1], eye[2]), vector![d[0] / len, d[1] / len, d[2] / len]);
+                        let f = QueryFilter::default()
+                            .exclude_sensors()
+                            .groups(InteractionGroups::new(GROUP_MELEE, shinobi_sim::combat::solid_groups()));
+                        p.world.queries.cast_ray(&p.world.bodies, &p.world.colliders, &ray, len - 0.3, true, f).is_none()
+                    })
+                    .map(|(id, _)| *id)
+                    .collect(),
+                None => remotes.iter().map(|(id, _)| *id).collect(),
+            };
+            self.los_cache = (local_tick, ids);
+        }
+        let los_ids = self.los_cache.1.clone();
         RenderView {
             fx,
             feel: self.camera.feel,
@@ -1077,6 +1107,7 @@ impl ClientGame {
             eye,
             local_pos,
             correction_offset: off,
+            los_ids,
             remotes,
             events: self.net.take_events(),
             build_ghost,
