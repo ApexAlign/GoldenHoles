@@ -33,6 +33,8 @@ pub struct Settings {
     pub crt_warp: f32,
     /// Subtle vertical camera bob while running. Off by default; scaled by the FX intensity, zero in reduced motion.
     pub head_bob: bool,
+    /// HUD size multiplier (`HUD_SCALE` range). The shell multiplies it by 1.15 on windows 800 px tall or less.
+    pub hud_scale: f32,
 }
 
 pub const MOUSE_SENS: (f32, f32, f32) = (0.0002, 0.02, 0.0012); // (min, max, default)
@@ -50,6 +52,17 @@ pub fn cm_per_360(sens: f32) -> f32 {
 }
 pub const FX_INTENSITY: (f32, f32, f32) = (0.0, 1.0, 1.0);
 pub const CRT_WARP: (f32, f32, f32) = (0.0, 1.0, 1.0);
+pub const HUD_SCALE: (f32, f32, f32) = (0.8, 1.4, 1.0);
+
+/// Windows this tall (px) or shorter get the HUD enlarged by `SMALL_SCREEN_BOOST` on top of the setting.
+pub const SMALL_SCREEN_HEIGHT: f32 = 800.0;
+pub const SMALL_SCREEN_BOOST: f32 = 1.15;
+
+/// The HUD scale actually applied: the setting, boosted on small windows.
+pub fn effective_hud_scale(setting: f32, window_height_px: f32) -> f32 {
+    let s = if setting.is_finite() { setting.clamp(HUD_SCALE.0, HUD_SCALE.1) } else { HUD_SCALE.2 };
+    if window_height_px > 0.0 && window_height_px <= SMALL_SCREEN_HEIGHT { s * SMALL_SCREEN_BOOST } else { s }
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -65,6 +78,7 @@ impl Default for Settings {
             reduced_motion: false,
             crt_warp: CRT_WARP.2,
             head_bob: false,
+            hud_scale: HUD_SCALE.2,
         }
     }
 }
@@ -83,6 +97,7 @@ impl Settings {
         self.fov_deg = clamp(FOV, self.fov_deg);
         self.fx_intensity = clamp(FX_INTENSITY, self.fx_intensity);
         self.crt_warp = clamp(CRT_WARP, self.crt_warp);
+        self.hud_scale = clamp(HUD_SCALE, self.hud_scale);
         self
     }
 
@@ -99,9 +114,9 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let s = self.clamped();
         format!(
-            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\n",
+            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\nhud_scale={}\n",
             s.mouse_sens, s.aim_pad_sens, s.stick_radius_frac, s.stick_deadzone, s.fov_deg, s.invert_y, s.left_handed,
-            s.fx_intensity, s.reduced_motion, s.crt_warp, s.head_bob
+            s.fx_intensity, s.reduced_motion, s.crt_warp, s.head_bob, s.hud_scale
         )
     }
 
@@ -138,6 +153,7 @@ impl Settings {
                 "reduced_motion" => flag().map(|b| s.reduced_motion = b).is_some(),
                 "crt_warp" => num().map(|f| s.crt_warp = f).is_some(),
                 "head_bob" => flag().map(|b| s.head_bob = b).is_some(),
+                "hud_scale" => num().map(|f| s.hud_scale = f).is_some(),
                 _ => {
                     warn.push(format!("line {}: unknown key '{k}'", i + 1));
                     continue;
@@ -285,6 +301,7 @@ mod tests {
             reduced_motion: true,
             crt_warp: 0.65,
             head_bob: true,
+            hud_scale: 1.2,
         };
         let (back, warn) = Settings::from_text(&s.to_text());
         assert_eq!(back, s);
@@ -363,6 +380,7 @@ mod tests {
             reduced_motion: true,
             crt_warp: 0.65,
             head_bob: true,
+            hud_scale: 1.2,
             ..Default::default()
         }
     }

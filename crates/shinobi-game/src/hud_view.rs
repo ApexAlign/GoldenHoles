@@ -488,7 +488,11 @@ fn update(
     );
 
     ctl.screen = screen.clone();
-    let mut prims = Hud::build(&state);
+    let hud_scale = shinobi_client::settings::effective_hud_scale(
+        settings.0.hud_scale,
+        window.as_ref().map_or(1080.0, |w| w.height()),
+    );
+    let mut prims = shinobi_client::hud::with_hud_scale(Hud::build(&state), hud_scale);
     if let Some(t) = touch.as_ref().filter(|t| t.visible) {
         prims.extend(t.s.draw(state.dash_ready, state.shuriken_ready, &pal));
     }

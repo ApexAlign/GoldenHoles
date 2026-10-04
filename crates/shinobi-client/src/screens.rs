@@ -219,6 +219,7 @@ pub enum SettingRow {
     Fov,
     FxIntensity,
     CrtWarp,
+    HudScale,
     InvertY,
     ReducedMotion,
     HeadBob,
@@ -226,7 +227,7 @@ pub enum SettingRow {
 }
 
 impl SettingRow {
-    pub const ALL: [SettingRow; 11] = [
+    pub const ALL: [SettingRow; 12] = [
         Self::MouseSens,
         Self::AimPadSens,
         Self::StickRadius,
@@ -234,6 +235,7 @@ impl SettingRow {
         Self::Fov,
         Self::FxIntensity,
         Self::CrtWarp,
+        Self::HudScale,
         Self::InvertY,
         Self::ReducedMotion,
         Self::HeadBob,
@@ -252,6 +254,7 @@ impl SettingRow {
             Self::InvertY => "INVERT Y",
             Self::ReducedMotion => "REDUCED MOTION",
             Self::HeadBob => "HEAD BOB",
+            Self::HudScale => "HUD SCALE",
             Self::LeftHanded => "LEFT HANDED",
         }
     }
@@ -277,6 +280,7 @@ impl SettingRow {
             Self::Fov => cfg::FOV,
             Self::FxIntensity => cfg::FX_INTENSITY,
             Self::CrtWarp => cfg::CRT_WARP,
+            Self::HudScale => cfg::HUD_SCALE,
             _ => return None,
         })
     }
@@ -290,6 +294,7 @@ impl SettingRow {
             Self::Fov => s.fov_deg,
             Self::FxIntensity => s.fx_intensity,
             Self::CrtWarp => s.crt_warp,
+            Self::HudScale => s.hud_scale,
             _ => return None,
         })
     }
@@ -360,6 +365,7 @@ pub fn settings_apply(s: &mut Settings, row: SettingRow, frac: f32, click: bool)
             SettingRow::Fov => s.fov_deg = v,
             SettingRow::FxIntensity => s.fx_intensity = v,
             SettingRow::CrtWarp => s.crt_warp = v,
+            SettingRow::HudScale => s.hud_scale = v,
             _ => {}
         }
     } else if click {

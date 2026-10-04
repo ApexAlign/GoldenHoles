@@ -1046,6 +1046,43 @@ impl Hud {
     }
 }
 
+/// Global HUD scale: every prim grows/shrinks about its nearest screen edge (about the centre for prims near it),
+/// so corner panels stay in their corners and the crosshair stays put. Full-screen layers (vignette, scanlines,
+/// dim backdrops, grids) are left alone. `scale` 1.0 returns the list unchanged.
+pub fn with_hud_scale(prims: Vec<Prim>, scale: f32) -> Vec<Prim> {
+    if (scale - 1.0).abs() < 1e-3 {
+        return prims;
+    }
+    let anchor = |c: f32| if (c - 0.5).abs() < 0.12 { 0.5 } else if c < 0.5 { 0.0 } else { 1.0 };
+    let pt = |p: (f32, f32), a: (f32, f32)| (a.0 + (p.0 - a.0) * scale, a.1 + (p.1 - a.1) * scale);
+    prims
+        .into_iter()
+        .map(|pr| match pr {
+            Prim::Rect { r, color, glow } => {
+                if r.w * r.h > 0.4 || r.w > 0.9 || r.h > 0.9 {
+                    return Prim::Rect { r, color, glow };
+                }
+                let a = (anchor(r.x + r.w * 0.5), anchor(r.y + r.h * 0.5));
+                let o = pt((r.x, r.y), a);
+                Prim::Rect { r: Rect { x: o.0, y: o.1, w: r.w * scale, h: r.h * scale }, color, glow: glow * scale }
+            }
+            Prim::Line { a, b, color, glow } => {
+                let an = (anchor((a.0 + b.0) * 0.5), anchor((a.1 + b.1) * 0.5));
+                Prim::Line { a: pt(a, an), b: pt(b, an), color, glow: glow * scale }
+            }
+            Prim::Ring { c, r, color, fill, glow } => {
+                let an = (anchor(c.0), anchor(c.1));
+                Prim::Ring { c: pt(c, an), r: r * scale, color, fill, glow: glow * scale }
+            }
+            Prim::Text { pos, text, size, color, align } => {
+                let an = (anchor(pos.0), anchor(pos.1));
+                Prim::Text { pos: pt(pos, an), text, size: size * scale, color, align }
+            }
+            other => other,
+        })
+        .collect()
+}
+
 /// A dark offset copy under every readable text so it holds up on a bright scene (the HUD sits over the world, not
 /// a panel). Applied by the shell to the final draw list (not inside `Hud::build`, whose output tests count). Very small or faint text (glyph rain) is left alone.
 pub fn with_text_shadows(prims: Vec<Prim>, p: &Palette) -> Vec<Prim> {
@@ -1817,6 +1854,31 @@ pub fn bounds(p: &Prim) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hud_scale_one_is_identity_and_scaling_keeps_corners() {
+        let prims = vec![
+            Prim::Text { pos: (0.02, 0.95), text: "HP".into(), size: 0.03, color: Rgba(1.0, 1.0, 1.0, 1.0), align: Align::Left },
+            Prim::Text { pos: (0.98, 0.05), text: "R".into(), size: 0.03, color: Rgba(1.0, 1.0, 1.0, 1.0), align: Align::Right },
+            Prim::Ring { c: (0.5, 0.5), r: 0.02, color: Rgba(1.0, 1.0, 1.0, 1.0), fill: false, glow: 0.0 },
+            Prim::Rect { r: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, color: Rgba(0.0, 0.0, 0.0, 0.5), glow: 0.0 },
+        ];
+        assert_eq!(with_hud_scale(prims.clone(), 1.0), prims);
+        let out = with_hud_scale(prims, 1.4);
+        match &out[0] {
+            Prim::Text { pos, size, .. } => {
+                assert!((pos.0 - 0.02 * 1.4).abs() < 1e-5 && (pos.1 - (1.0 - 0.05 * 1.4)).abs() < 1e-5, "{pos:?}");
+                assert!((size - 0.042).abs() < 1e-5);
+            }
+            _ => unreachable!(),
+        }
+        match &out[1] {
+            Prim::Text { pos, .. } => assert!((pos.0 - (1.0 - 0.02 * 1.4)).abs() < 1e-5 && (pos.1 - 0.07).abs() < 1e-5),
+            _ => unreachable!(),
+        }
+        assert!(matches!(&out[2], Prim::Ring { c, r, .. } if *c == (0.5, 0.5) && (*r - 0.028).abs() < 1e-5));
+        assert_eq!(out[3], Prim::Rect { r: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, color: Rgba(0.0, 0.0, 0.0, 0.5), glow: 0.0 });
+    }
+
     use super::*;
 
     fn busy() -> HudState {
