@@ -18,6 +18,9 @@ bevy = { version = "=0.19.1", default-features = false, features = [
     "bevy_post_process", # bloom
 ] }
 
+# Ctrl+C / SIGTERM -> clean AppExit (see src/signal.rs)
+ctrlc = { version = "3.5", features = ["termination"] }
+
 # only to turn on winit's dlopen of libwayland (so no wayland dev headers are needed to build)
 winit = { version = "0.30", default-features = false, features = ["wayland-dlopen"], optional = true }
 

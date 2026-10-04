@@ -3780,6 +3780,7 @@ name = "shinobi-game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "ctrlc",
  "shinobi-client",
  "shinobi-proto",
  "shinobi-sim",

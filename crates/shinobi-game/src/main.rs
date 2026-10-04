@@ -9,6 +9,7 @@
 //!   shinobi-game --record out.mp4 [--secs 20] [--fps 30] [--demo] --server ADDR   offscreen 1280x720 clip via ffmpeg
 //!   shinobi-game --headless [--secs 5] [--server ADDR]  network-only smoke test (no window/GPU)
 
+mod signal;
 mod crt;
 mod demo;
 mod audio;
@@ -168,6 +169,7 @@ fn main() {
     if !off("sky") {
         app.add_plugins(sky::SkyPlugin);
     }
+    app.add_plugins(signal::SignalExitPlugin);
     app.add_plugins(play::PlayPlugin);
     if !off("vm") {
         app.add_plugins(vm::VmPlugin);
