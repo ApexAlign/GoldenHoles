@@ -18,6 +18,10 @@ const SNAP_S: f32 = 0.22;
 #[derive(Resource)]
 struct LockViz {
     dots: [Entity; 3],
+    /// Dark translucent discs behind the dots: contrast against pale bodies and bright walls.
+    halos: [Entity; 3],
+    edges: Entity,
+    edge_mesh: Handle<Mesh>,
     emitter: Entity,
     beams: Entity,
     beam_mesh: Handle<Mesh>,
@@ -50,12 +54,22 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
             .id()
     };
     let dots = [spawn(&mut commands), spawn(&mut commands), spawn(&mut commands)];
+    let halo_mat = mats.add(StandardMaterial { base_color: Color::srgba(0.0, 0.0, 0.03, 0.55), unlit: true, alpha_mode: AlphaMode::Blend, depth_bias: -100.0, ..default() });
+    let halos: [Entity; 3] = std::array::from_fn(|_| {
+        commands
+            .spawn((Mesh3d(sphere.clone()), MeshMaterial3d(halo_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
+            .id()
+    });
     let emitter = spawn(&mut commands);
     let beam_mesh = meshes.add(degenerate());
     let beams = commands
         .spawn((Mesh3d(beam_mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
         .id();
-    commands.insert_resource(LockViz { dots, emitter, beams, beam_mesh, mat, snap: 0.0 });
+    let edge_mesh = meshes.add(degenerate());
+    let edges = commands
+        .spawn((Mesh3d(edge_mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
+        .id();
+    commands.insert_resource(LockViz { dots, halos, edges, edge_mesh, emitter, beams, beam_mesh, mat, snap: 0.0 });
 }
 
 /// Triangle layout for one frame: (radius in metres on the chest, rotation angle, size multiplier).
@@ -100,7 +114,7 @@ fn update(
         viz.snap = SNAP_S;
     }
     let hide = |viz: &LockViz, tf: &mut Query<(&mut Transform, &mut Visibility)>| {
-        for e in viz.dots.iter().chain([&viz.emitter, &viz.beams]) {
+        for e in viz.dots.iter().chain(viz.halos.iter()).chain([&viz.emitter, &viz.beams, &viz.edges]) {
             if let Ok((_, mut v)) = tf.get_mut(*e) {
                 *v = Visibility::Hidden;
             }
@@ -112,19 +126,23 @@ fn update(
     };
 
     let eye = Vec3::from(view.0.eye);
+    // the triangle floats just in front of the chest surface (the aim point is the body centre: dots inside the torso
+    // would be hidden by the depth test)
     let pos = Vec3::from(lock.pos);
     let to_eye = (eye - pos).normalize_or(Vec3::Z);
+    let pos = pos + to_eye * 0.35;
     let right = to_eye.cross(Vec3::Y).normalize_or(Vec3::X);
     let up = right.cross(to_eye).normalize_or(Vec3::Y);
     let dist = eye.distance(pos);
     let (r, angle, mult) = layout(lock.phase, lock.progress, t, viz.snap);
-    // keep the triangle readable at range: its world size grows with distance (roughly constant on screen), but never
-    // below its close-up size
-    let k = (dist / 6.0).clamp(1.0, 5.0);
-    let size = 0.07 * k * mult;
+    // screen-constant size: layout metres are scaled so the locked triangle is ~15 px in radius and each dot ~6 px across
+    // at any range (1080p-ish: 270 px per metre at 1 m, / dist)
+    let d = dist.clamp(2.0, 80.0);
+    let k = 0.463 * d;
+    let size = 0.0222 * d * mult;
     let r = r * k;
     // HDR owner colour; brighter once locked
-    let g = if lock.phase == LockPhase::Locked { 9.0 } else { 5.0 };
+    let g = if lock.phase == LockPhase::Locked { 4.5 } else { 3.0 };
     let c = colour.0;
     if let Some(mut m) = mats.get_mut(&viz.mat) {
         m.base_color = Color::linear_rgb(c[0] * g, c[1] * g, c[2] * g);
@@ -137,6 +155,39 @@ fn update(
             *v = Visibility::Visible;
         }
     }
+    // dark halo just behind each dot (toward the target), 2.4x wider
+    for (e, d) in viz.halos.iter().zip(dots) {
+        if let Ok((mut t, mut v)) = tf.get_mut(*e) {
+            *t = Transform::from_translation(pos + d - to_eye * 0.02).with_scale(Vec3::splat((size * 2.2).max(0.001)));
+            *v = Visibility::Visible;
+        }
+    }
+
+    // faint triangle edges joining the dots (brighter once locked), camera-facing thin quads
+    {
+        let (mut pv, mut cv, mut iv) = (Vec::new(), Vec::new(), Vec::new());
+        let al = if lock.phase == LockPhase::Locked { 0.7 } else { 0.35 } * mult.min(1.0);
+        for i in 0..3 {
+            let (a, b) = (pos + dots[i], pos + dots[(i + 1) % 3]);
+            let side = (b - a).cross(to_eye).normalize_or(Vec3::Y) * (0.003 * d);
+            let base = pv.len() as u32;
+            for p in [a, b] {
+                pv.push((p + side).to_array());
+                pv.push((p - side).to_array());
+                cv.extend([[c[0] * 4.0, c[1] * 4.0, c[2] * 4.0, al]; 2]);
+            }
+            iv.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+        if let Some(mut m) = meshes.get_mut(&viz.edge_mesh) {
+            *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pv)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, cv)
+                .with_inserted_indices(Indices::U32(iv));
+        }
+        if let Ok((_, mut v)) = tf.get_mut(viz.edges) {
+            *v = if mult > 0.01 { Visibility::Visible } else { Visibility::Hidden };
+        }
+    }
 
     // shoulder emitter + beams only while fully locked
     let beams_on = lock.phase == LockPhase::Locked;
@@ -146,7 +197,7 @@ fn update(
         eye + side * 0.38 - Vec3::Y * 0.12 + fwd * 0.25
     };
     if let Ok((mut et, mut v)) = tf.get_mut(viz.emitter) {
-        *et = Transform::from_translation(shoulder).with_scale(Vec3::splat(0.035 * (1.0 + 0.25 * (t * 14.0).sin())));
+        *et = Transform::from_translation(shoulder).with_scale(Vec3::splat(0.012 * (1.0 + 0.25 * (t * 14.0).sin())));
         *v = if beams_on { Visibility::Visible } else { Visibility::Hidden };
     }
     if beams_on {
