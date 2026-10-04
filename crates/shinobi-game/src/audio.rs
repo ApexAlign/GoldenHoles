@@ -73,8 +73,8 @@ pub struct Frame {
     pub wall_running: bool,
     /// Health 0..=1 (None before the first extras block).
     pub hp: Option<f32>,
-    /// Hits we dealt: (damage, killed).
-    pub dealt: Vec<(u8, bool)>,
+    /// Hits we dealt: (damage, killed, headshot).
+    pub dealt: Vec<(u8, bool, bool)>,
     /// Damage amounts we took.
     pub taken: Vec<u8>,
     /// Discs in flight: (position, owner id).
@@ -105,7 +105,7 @@ impl Frame {
             dashing: f.dashing,
             wall_running: f.wall_running,
             hp: v.hp.map(|h| (h / 100.0).clamp(0.0, 1.0)),
-            dealt: v.hits.iter().filter(|h| !h.taken).map(|h| (h.amount, h.kill)).collect(),
+            dealt: v.hits.iter().filter(|h| !h.taken).map(|h| (h.amount, h.kill, h.head)).collect(),
             taken: v.hits.iter().filter(|h| h.taken).map(|h| h.amount).collect(),
             discs: v.discs.iter().enumerate().map(|(i, (p, _))| (*p, v.disc_owners.get(i).copied().unwrap_or(0))).collect(),
             blocks: v.blocks.iter().map(|b| (b.owner, b.cell)).collect(),
@@ -180,17 +180,21 @@ impl Cuer {
         }
         self.prev_dashing = f.dashing;
 
-        for (amount, kill) in &f.dealt {
+        for (amount, kill, head) in &f.dealt {
             cues.push(Cue::flat(
                 if *kill {
                     Sound::Kill
-                } else if *amount >= HEAVY_HIT {
+                } else if *amount >= HEAVY_HIT || *head {
                     Sound::HitHard
                 } else {
                     Sound::HitBody
                 },
                 1.0,
             ));
+            // a headshot kill also gets the sharp precision tick on top of the kill chime
+            if *head && *kill {
+                cues.push(Cue::flat(Sound::HitHard, 1.0));
+            }
         }
         for amount in &f.taken {
             cues.push(Cue::flat(Sound::Hurt, (0.5 + *amount as f32 / 100.0).min(1.0)));
@@ -379,8 +383,12 @@ mod tests {
     fn hits_pick_thud_tick_or_chime() {
         let mut c = Cuer::default();
         let mut f = frame();
-        f.dealt = vec![(20, false), (HEAVY_HIT, false), (30, true)];
-        assert_eq!(sounds(&c.update(&f).0), vec![Sound::HitBody, Sound::HitHard, Sound::Kill]);
+        f.dealt = vec![(20, false, false), (HEAVY_HIT, false, false), (30, true, false), (12, false, true), (20, true, true)];
+        assert_eq!(
+            sounds(&c.update(&f).0),
+            vec![Sound::HitBody, Sound::HitHard, Sound::Kill, Sound::HitHard, Sound::Kill, Sound::HitHard],
+            "a headshot hits hard; a headshot kill adds the tick on top of the chime"
+        );
     }
 
     #[test]

@@ -324,6 +324,8 @@ pub struct HudState {
     pub hit_kill: bool,
     /// Damage dealt by the last hit, whole points (0 = unknown): shown as a rising number.
     pub hit_amount: u8,
+    /// The last dealt hit was a headshot: crit marker, gold number.
+    pub hit_head: bool,
     /// Seconds since damage taken and its bearing: radians, 0 = ahead, +ve = clockwise.
     pub since_damage: Option<(f32, f32)>,
     /// Size of the last hit taken as a fraction of max HP (0 = unknown): widens the damage wedge.
@@ -346,6 +348,10 @@ pub struct HudState {
     pub audio: Option<(f32, bool)>,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
+    /// Our own printed pieces on the radar (radar space, x right / y ahead, disc radius 1).
+    pub radar_pieces: Vec<(f32, f32)>,
+    /// Void-edge segments on the radar (radar space, already clipped to the disc).
+    pub radar_edge: Vec<((f32, f32), (f32, f32))>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
     pub heading: Option<f32>,
     pub target: Option<TargetHud>,
@@ -472,6 +478,7 @@ pub struct HudFx {
     hit: Option<(f32, DamageKind)>,
     hit_kill: bool,
     hit_amount: u8,
+    hit_head: bool,
     hurt: Option<(f32, f32)>,
     hurt_frac: f32,
     banner: Option<Banner>,
@@ -561,9 +568,15 @@ impl HudFx {
 
     /// `on_hit` plus the damage dealt (shown as a number next to the reticle).
     pub fn on_hit_amount(&mut self, kind: DamageKind, killed: bool, amount: u8) {
+        self.on_hit_full(kind, killed, amount, false);
+    }
+
+    /// `on_hit_amount` plus whether it was a headshot.
+    pub fn on_hit_full(&mut self, kind: DamageKind, killed: bool, amount: u8, head: bool) {
         self.hit = Some((0.0, kind));
         self.hit_kill = killed;
         self.hit_amount = amount;
+        self.hit_head = head;
     }
 
     /// `bearing` from `bearing_to`: radians relative to view, 0 = ahead, +ve = clockwise (to the right).
@@ -583,6 +596,7 @@ impl HudFx {
         s.hit_kill = self.hit.is_some() && self.hit_kill;
         s.since_damage = self.hurt;
         s.hit_amount = if self.hit.is_some() { self.hit_amount } else { 0 };
+        s.hit_head = self.hit.is_some() && self.hit_head;
         s.damage_frac = if self.hurt.is_some() { self.hurt_frac } else { 0.0 };
         s.banner = self.banner.clone();
         s.toast = self.toast.clone();
@@ -838,7 +852,8 @@ impl Hud {
         if let Some(t) = s.since_hit.filter(|t| *t < HIT_MARK_TIME) {
             let f = 1.0 - t / HIT_MARK_TIME;
             let kind_col = s.hit_kind.map_or(p.gold, |k| p.for_damage(k));
-            let (arm, col) = if s.hit_kill { (0.045, p.gold) } else { (0.03, kind_col) };
+            // a headshot is gold like a kill, but its own shape: a diamond round the X and a HEAD tag over the number
+            let (arm, col) = if s.hit_kill { (0.045, p.gold) } else if s.hit_head { (0.036, p.gold) } else { (0.03, kind_col) };
             let d = 0.012 + 0.016 * (1.0 - f);
             let punch = f.sqrt();
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -848,6 +863,15 @@ impl Hud {
             }
             // every hit sends a ring out from the crosshair in the weapon's colour: motion reads even when the X is missed
             out.push(Prim::Ring { c: (cx, cy), r: 0.02 + 0.045 * (1.0 - f), color: kind_col.a(0.65 * f), fill: false, glow: 0.008 });
+            if s.hit_head {
+                let r = 0.034 + 0.012 * (1.0 - f);
+                let pts = [(cx, cy - r), (cx + r * 0.5625, cy), (cx, cy + r), (cx - r * 0.5625, cy)];
+                for k in 0..4 {
+                    out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.bg.a(0.8 * punch), glow: 0.012 });
+                    out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.gold.a(punch), glow: 0.008 });
+                }
+                out.push(Prim::Text { pos: (cx, cy - 0.12 - 0.03 * (1.0 - f)), text: "HEAD".into(), size: 0.018, color: p.gold.a(f), align: Align::Center });
+            }
             if s.hit_kill {
                 out.push(Prim::Ring { c: (cx, cy), r: 0.03 + 0.02 * (1.0 - f), color: p.gold.a(0.7 * f), fill: false, glow: 0.008 });
             } else if s.hit_kind == Some(DamageKind::Slash) {
@@ -860,7 +884,7 @@ impl Hud {
                 out.push(Prim::Text {
                     pos: (cx, cy - 0.05 - 0.03 * (1.0 - f)),
                     text: s.hit_amount.to_string(),
-                    size: if s.hit_kill { 0.038 } else { 0.03 },
+                    size: if s.hit_kill || s.hit_head { 0.038 } else { 0.03 },
                     color: col.a(f),
                     align: Align::Center,
                 });
@@ -967,7 +991,7 @@ impl Hud {
             }
         }
         if !s.radar.is_empty() || s.heading.is_some() {
-            radar_panel(&mut out, &s.radar, p);
+            radar_panel(&mut out, s, p);
         }
         if let Some(t) = &s.target {
             target_brackets(&mut out, t, p);
@@ -1187,12 +1211,22 @@ fn telemetry_panel(out: &mut Vec<Prim>, t: &Telemetry, wall_run: bool, audio: Op
 
 /// Radar disc at the bottom-left: own marker in the middle pointing up (ahead), blips for what the caller allows
 /// (enemies only when close or just fired: no wallhack; allies always).
-fn radar_panel(out: &mut Vec<Prim>, pings: &[RadarPing], p: &Palette) {
+fn radar_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
+    let pings = &s.radar[..];
     let (c, r) = ((0.09, 0.868), 0.09f32);
     out.push(Prim::Ring { c, r, color: p.cyan.a(0.55), fill: false, glow: 0.004 });
     out.push(Prim::Ring { c, r: r * 0.5, color: p.cyan.a(0.22), fill: false, glow: 0.0 });
     out.push(Prim::Line { a: (c.0, c.1 - r), b: (c.0, c.1 + r), color: p.cyan.a(0.15), glow: 0.0 });
     out.push(Prim::Line { a: (c.0 - r * ASPECT, c.1), b: (c.0 + r * ASPECT, c.1), color: p.cyan.a(0.15), glow: 0.0 });
+    // void edge (magenta) and our own pieces (small cyan squares) under the pings
+    let at = |x: f32, y: f32| (c.0 + x * r * ASPECT, c.1 - y * r);
+    for (a, b) in &s.radar_edge {
+        out.push(Prim::Line { a: at(a.0, a.1), b: at(b.0, b.1), color: p.magenta.a(0.75), glow: 0.004 });
+    }
+    for (x, y) in &s.radar_pieces {
+        let (px, py) = at(*x, *y);
+        out.push(Prim::Rect { r: Rect::new(px - 0.0025 * ASPECT, py - 0.0025, 0.005 * ASPECT, 0.005), color: p.cyan.a(0.9), glow: 0.002 });
+    }
     // facing wedge
     out.push(Prim::Line { a: c, b: (c.0 - 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
     out.push(Prim::Line { a: c, b: (c.0 + 0.3 * r * ASPECT, c.1 - 0.9 * r), color: p.cyan.a(0.3), glow: 0.0 });
@@ -2547,5 +2581,30 @@ mod tests {
         assert_eq!(head(Some(10), Some(360)), "FIRST TO 10 / 6:00");
         assert_eq!(head(Some(10), None), "FIRST TO 10");
         assert_eq!(head(None, Some(360)), "LEADERBOARD");
+    }
+
+    #[test]
+    fn headshot_marker_is_gold_with_a_diamond_and_a_head_tag() {
+        let p = Palette::TRON;
+        let base = HudState { hp: 1.0, since_hit: Some(0.05), hit_kind: Some(DamageKind::Shuriken), hit_amount: 18, ..Default::default() };
+        let gold_lines = |s: &HudState| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (p.gold.0, p.gold.1, p.gold.2))).count();
+        let head = HudState { hit_head: true, ..base.clone() };
+        assert!(gold_lines(&head) >= gold_lines(&base) + 8, "diamond (4) + gold X arms (4) over a cyan hit");
+        let texts = |s: &HudState| Hud::build_with(s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+        assert!(texts(&head).contains(&"HEAD".to_string()) && !texts(&base).contains(&"HEAD".to_string()));
+        // the number is gold and bigger on a headshot
+        let num = |s: &HudState| Hud::build_with(s, &p).into_iter().find_map(|x| match x { Prim::Text { text, size, color, .. } if text == "18" => Some((size, color)), _ => None }).unwrap();
+        let (hs, hc) = num(&head);
+        let (bs, _) = num(&base);
+        assert!(hs > bs && (hc.0, hc.1) == (p.gold.0, p.gold.1));
+        // HudFx carries the flag and clears it with the marker
+        let mut fx = HudFx::default();
+        fx.on_hit_full(DamageKind::Shuriken, false, 18, true);
+        let mut s = HudState::default();
+        fx.apply(&mut s);
+        assert!(s.hit_head);
+        fx.tick(HIT_MARK_TIME + 0.1);
+        fx.apply(&mut s);
+        assert!(!s.hit_head);
     }
 }

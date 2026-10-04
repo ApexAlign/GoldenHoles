@@ -61,7 +61,7 @@ pub struct LockInfo {
 
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
 pub const RADAR_RANGE: f32 = 90.0;
-pub const RADAR_ENEMY_RANGE: f32 = 45.0;
+pub const RADAR_ENEMY_RANGE: f32 = 25.0;
 /// Free-for-all kill limit when `HudBridge::kill_limit` is unset: the demo rule from `Balance::demo()`. The server
 /// does not send its limit yet, so a differently configured server shows this number wrongly.
 /// Kill limit to show: an explicit override, else the server's rules (`NetClient::frag_limit`), else the demo default.
@@ -83,6 +83,8 @@ pub struct HudBridge {
     pub colour_of: Option<fn(u16) -> crate::hud::Rgba>,
     /// Kills that end a free-for-all match (server limit, if known).
     pub kill_limit: Option<u16>,
+    /// Half extent of the map floor (`LevelDesc::floor_half`): the radar draws the void edge when it is in range.
+    pub map_half: Option<f32>,
     /// Build / grapple readouts, filled by the shell from the combat and movement state once those expose it.
     pub build: Option<crate::hud::BuildHud>,
     pub grapple: Option<crate::hud::GrappleHud>,
@@ -135,7 +137,7 @@ impl HudBridge {
                 let src = view.remotes.iter().find(|(id, _)| *id == h.other).map(|(_, s)| s.pos);
                 self.fx.on_hurt_amount(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)), h.amount);
             } else {
-                self.fx.on_hit_amount(damage_kind(h.kind), h.kill, h.amount);
+                self.fx.on_hit_full(damage_kind(h.kind), h.kill, h.amount, h.head);
             }
         }
 
@@ -268,6 +270,35 @@ impl HudBridge {
                 None => colour_of(*id),
             };
             hs.radar.push(RadarPing { pos, colour, ally });
+        }
+        // our own printed pieces, in radar space (view-relative, range = 1)
+        let to_radar = |x: f32, z: f32| {
+            let (dx, dz) = (x - me[0], z - me[2]);
+            ((dx * right[0] + dz * right[1]) / RADAR_RANGE, (dx * fwd[0] + dz * fwd[1]) / RADAR_RANGE)
+        };
+        for bl in view.blocks.iter().filter(|bl| bl.owner == local_id) {
+            let c = bl.piece.center(bl.cell, view.block_size, view.block_thickness);
+            let p = to_radar(c[0], c[2]);
+            if p.0 * p.0 + p.1 * p.1 <= 1.0 {
+                hs.radar_pieces.push(p);
+            }
+        }
+        // the void edge: the map boundary sampled along each side, kept where it falls inside the radar disc
+        if let Some(h) = self.map_half {
+            let corners = [(-h, -h), (h, -h), (h, h), (-h, h)];
+            for k in 0..4 {
+                let (a, bb) = (corners[k], corners[(k + 1) % 4]);
+                let mut prev: Option<(f32, f32)> = None;
+                for s in 0..=48 {
+                    let t = s as f32 / 48.0;
+                    let p = to_radar(a.0 + (bb.0 - a.0) * t, a.1 + (bb.1 - a.1) * t);
+                    let inside = p.0 * p.0 + p.1 * p.1 <= 1.0;
+                    if let (true, Some(q)) = (inside, prev) {
+                        hs.radar_edge.push((q, p));
+                    }
+                    prev = inside.then_some(p);
+                }
+            }
         }
         let lock = self.lock.or_else(|| view.lock.map(|l| LockInfo { target: l.target as u16, pos: l.pos, progress: l.progress, locked: l.locked }));
         if let Some(l) = lock {
@@ -721,5 +752,45 @@ mod tests {
         v.events = vec![NetEvent::Kill { killer: 0, victim: 0, kind: 200, tick: 2 }];
         b.update(0.016, &v, &net(), false);
         assert_eq!(b.last_death_pos, None);
+    }
+
+    #[test]
+    fn headshot_flag_reaches_the_hud_state() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.hits.push(HitMsg { other: 7, amount: 18, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: true });
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.hit_head && s.hit_amount == 18);
+        v.hits.clear();
+        v.hits.push(HitMsg { other: 7, amount: 12, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: false });
+        assert!(!b.update(0.016, &v, &net(), false).hit_head, "a body hit replaces the headshot marker");
+    }
+
+    #[test]
+    fn radar_shows_own_pieces_and_the_void_edge_but_not_others_pieces() {
+        use shinobi_sim::blocks::{BlockInfo, Piece};
+        let mut b = HudBridge::default();
+        b.map_half = Some(60.0);
+        let mut v = RenderView::default();
+        v.local_pos = Some([0.0, 1.0, 0.0]);
+        v.block_size = 4.0;
+        v.block_thickness = 0.4;
+        v.blocks = vec![
+            BlockInfo { owner: 0, cell: [0, 0, -3], piece: Piece::FLOOR, scale_q: 0 },
+            BlockInfo { owner: 9, cell: [1, 0, -3], piece: Piece::FLOOR, scale_q: 0 },
+        ];
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.radar_pieces.len(), 1, "only our own piece");
+        assert!(s.radar_pieces[0].1 > 0.0, "cell z -3 is ahead (north) of us");
+        // map edge 60 m away inside the 90 m radar: segments exist and all stay inside the disc
+        assert!(!s.radar_edge.is_empty());
+        for (p, q) in &s.radar_edge {
+            assert!(p.0 * p.0 + p.1 * p.1 <= 1.0001 && q.0 * q.0 + q.1 * q.1 <= 1.0001);
+        }
+        // no map extent known (or far from every edge): no edge drawn
+        b.map_half = None;
+        assert!(b.update(0.016, &v, &net(), false).radar_edge.is_empty());
+        b.map_half = Some(500.0);
+        assert!(b.update(0.016, &v, &net(), false).radar_edge.is_empty(), "edge beyond radar range");
     }
 }

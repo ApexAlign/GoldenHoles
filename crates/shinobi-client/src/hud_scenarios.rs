@@ -61,6 +61,8 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         since_damage: Some((0.25, 1.1)),
         damage_frac: 0.35,
         target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true }),
+        radar_pieces: vec![(0.1, 0.25), (0.15, 0.3), (-0.2, 0.1)],
+        radar_edge: (0..14).map(|i| ((0.9 - i as f32 * 0.02, -0.4 - i as f32 * 0.03), (0.88 - i as f32 * 0.02, -0.43 - i as f32 * 0.03))).collect(),
         radar: vec![
             RadarPing { pos: (0.3, 0.5), colour: player_rgba(1), ally: false },
             RadarPing { pos: (-0.5, 0.2), colour: player_rgba(3), ally: false },
@@ -102,8 +104,8 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         let s = HudState { since_damage: Some((0.15, bearing)), damage_frac: frac, ..quiet() };
         out.push((name, Hud::build_with(&s, &p)));
     }
-    for (name, kind, kill, amount) in [("hit_dealt_shuriken", DamageKind::Shuriken, false, 12u8), ("hit_dealt_slash", DamageKind::Slash, false, 60), ("hit_dealt_kill", DamageKind::Shuriken, true, 40)] {
-        let s = HudState { since_hit: Some(0.06), hit_kind: Some(kind), hit_kill: kill, hit_amount: amount, ..quiet() };
+    for (name, kind, kill, amount) in [("hit_dealt_shuriken", DamageKind::Shuriken, false, 12u8), ("hit_dealt_slash", DamageKind::Slash, false, 60), ("hit_dealt_kill", DamageKind::Shuriken, true, 40), ("hit_dealt_head", DamageKind::Shuriken, false, 18)] {
+        let s = HudState { since_hit: Some(0.06), hit_kind: Some(kind), hit_kill: kill, hit_amount: amount, hit_head: name == "hit_dealt_head", ..quiet() };
         out.push((name, Hud::build_with(&s, &p)));
     }
 

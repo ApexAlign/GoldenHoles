@@ -337,7 +337,9 @@ fn perf_tick(
 }
 
 /// Master volume / mute -> the telemetry speaker glyph (absent when the game runs without the audio plugin).
-fn sync_audio(audio: Option<Res<crate::audio::AudioSettings>>, mut ctl: ResMut<HudCtl>) {
+fn sync_audio(audio: Option<Res<crate::audio::AudioSettings>>, level: Option<Res<crate::net::LevelRes>>, mut ctl: ResMut<HudCtl>) {
+    // the void edge on the radar: the level's floor extent (static, so cheap to refresh)
+    ctl.bridge.map_half = level.and_then(|l| l.0.floor_half());
     ctl.bridge.audio = audio.map(|a| (a.volume, a.muted));
 }
 
