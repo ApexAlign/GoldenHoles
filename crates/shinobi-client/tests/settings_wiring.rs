@@ -79,9 +79,9 @@ fn base_fov_comes_from_settings() {
     assert_eq!(g.camera.cfg.base_fov, 105.0);
     // out-of-range values are clamped by the settings, not trusted
     g.apply_settings(&Settings { fov_deg: 400.0, ..Default::default() });
-    assert_eq!(g.camera.cfg.base_fov, 120.0);
-    let (p, _) = cam(&Settings { fov_deg: 75.0, ..Default::default() }).update(DT, CameraInput::default());
-    assert!((p.fov - 75.0).abs() < 0.5);
+    assert_eq!(g.camera.cfg.base_fov, 110.0, "FOV range is 80..110");
+    let (p, _) = cam(&Settings { fov_deg: 95.0, ..Default::default() }).update(DT, CameraInput::default());
+    assert!((p.fov - 95.0).abs() < 0.5);
 }
 
 #[test]
