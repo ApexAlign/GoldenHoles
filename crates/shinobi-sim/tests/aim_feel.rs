@@ -29,7 +29,7 @@ struct Outcome {
 /// `strafe`: target lateral speed m/s (direction flips every `flip` s); `bob`: vertical amplitude (wall-run / jump).
 fn run(dist: f32, strafe: f32, bob: f32, assist: bool, touch: bool, seed: u64) -> Outcome {
     let b = Balance::default();
-    let lock_cfg = LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs };
+    let lock_cfg = LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs, blend_secs: b.combat.lock_blend_secs };
     let cone = b.combat.shuriken.assist_cone_deg;
     let mut w = PhysicsWorld { bodies: RigidBodySet::new(), colliders: ColliderSet::new(), islands: IslandManager::new(), queries: QueryPipeline::new() };
     let body = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().translation(vector![0.0, 1.0, 0.0]).build());
@@ -66,7 +66,7 @@ fn run(dist: f32, strafe: f32, bob: f32, assist: bool, touch: bool, seed: u64) -
         let before = (yaw, pitch);
         let raw = (yaw + (dyaw * 0.3).clamp(-cap, cap) + jitter.0, pitch + (dpitch * 0.3).clamp(-cap, cap) + jitter.1);
 
-        let input = (assist && lock.holding()).then(|| AssistInput {
+        let input = (assist && lock.pull(&lock_cfg) > 0.0).then(|| AssistInput {
             eye,
             target: vector![lock.pos[0], lock.pos[1], lock.pos[2]],
             target_id: lock.target_id,

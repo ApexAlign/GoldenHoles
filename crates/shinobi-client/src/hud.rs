@@ -168,7 +168,7 @@ pub struct TeamScores {
 }
 
 /// A friendly name tag, already projected: normalized screen position (clamped into the central band when the
-/// ally is off-screen), metres away, and whether it is clamped. Allies only: enemies never get one.
+/// ally is off-screen), metres away, and whether it is clamped. Allies only (enemies get `EnemyTag`s instead).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AllyTag {
     pub pos: (f32, f32),
@@ -176,6 +176,22 @@ pub struct AllyTag {
     pub dist: f32,
     pub clamped: bool,
 }
+
+/// Name tag over a visible enemy within `ENEMY_TAG_RANGE`; `hp` (0..1) draws health ticks under the name once the
+/// network reports remote health (hidden while `None`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnemyTag {
+    pub pos: (f32, f32),
+    pub name: String,
+    pub dist: f32,
+    pub team: Option<u8>,
+    pub colour: Option<Rgba>,
+    pub hp: Option<f32>,
+}
+
+/// Enemy name tags show inside this many metres, and at most `ENEMY_TAG_MAX` at once (nearest first).
+pub const ENEMY_TAG_RANGE: f32 = 25.0;
+pub const ENEMY_TAG_MAX: usize = 4;
 
 /// Placeable piece slots: `N` prints floors / ramps, `M` prints walls (DESIGN.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -412,6 +428,7 @@ pub struct HudState {
     pub team_scores: Option<TeamScores>,
     pub ally_tags: Vec<AllyTag>,
     pub enemy_ticks: Vec<EnemyTick>,
+    pub enemy_tags: Vec<EnemyTag>,
     pub ping_ms: Option<u16>,
     pub killfeed: Vec<KillEntry>,
     /// Hold-to-show (Tab / touch button).
@@ -1038,6 +1055,9 @@ impl Hud {
             let b = (ex - sn * len * ax(), ey + cs * len);
             out.push(Prim::Line { a: (ex, ey), b, color: p.magenta.a(0.35 + 0.45 * near), glow: 0.006 });
         }
+        for t in &s.enemy_tags {
+            enemy_tag(&mut out, t, p);
+        }
         for t in &s.ally_tags {
             ally_tag(&mut out, t, s.team_scores.map_or(0, |x| x.mine), p);
         }
@@ -1233,6 +1253,26 @@ fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, time: f32, p: &Palette) {
 
 /// Ally marker: team-coloured diamond with the name above and distance below. Clamped tags (ally off screen or
 /// behind) are dimmer so a real on-screen position is never confused with an edge hint.
+/// Enemy name above the head, fading and shrinking with distance; optional 8-tick health strip under it.
+fn enemy_tag(out: &mut Vec<Prim>, t: &EnemyTag, p: &Palette) {
+    let col = t.team.map(|x| p.team(x)).or(t.colour).unwrap_or(p.magenta);
+    let near = (1.0 - t.dist / ENEMY_TAG_RANGE).clamp(0.0, 1.0);
+    let a = 0.45 + 0.5 * near;
+    let size = 0.016 + 0.006 * near;
+    let (x, y) = t.pos;
+    out.push(Prim::Text { pos: (x, y - 0.012), text: t.name.clone(), size, color: col.a(a), align: Align::Center });
+    if let Some(hp) = t.hp {
+        const N: usize = 8;
+        let (w, gap) = (0.0045 * 0.9, 0.0045);
+        let x0 = x - (N as f32 - 1.0) * gap * ax() * 0.5;
+        let lit = (hp.clamp(0.0, 1.0) * N as f32).ceil() as usize;
+        for k in 0..N {
+            let (cx, c) = (x0 + k as f32 * gap * ax(), if k < lit { col.a(a) } else { col.a(0.15 * a) });
+            out.push(Prim::Rect { r: Rect::new(cx - w * 0.5 * ax(), y - 0.004, w * ax(), 0.006), color: c, glow: 0.0 });
+        }
+    }
+}
+
 fn ally_tag(out: &mut Vec<Prim>, t: &AllyTag, my_team: u8, p: &Palette) {
     let col = p.team(my_team);
     let near = (1.0 - (t.dist - 15.0) / 60.0).clamp(0.45, 1.0);
@@ -1925,6 +1965,18 @@ pub fn bounds(p: &Prim) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enemy_tags_draw_names_and_health_ticks_only_with_hp() {
+        let pal = Palette::TRON;
+        let tag = |hp| EnemyTag { pos: (0.5, 0.4), name: "VOID WOLF".into(), dist: 10.0, team: None, colour: None, hp };
+        let rects = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Rect { r, .. } if r.h == 0.006)).count();
+        let has_name = |s: &HudState| Hud::build_with(s, &pal).iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "VOID WOLF"));
+        let none = HudState { enemy_tags: vec![tag(None)], ..Default::default() };
+        let some = HudState { enemy_tags: vec![tag(Some(0.5))], ..Default::default() };
+        assert!(has_name(&none) && has_name(&some));
+        assert_eq!(rects(&some) - rects(&none), 8, "eight health ticks");
+    }
+
     #[test]
     fn edge_point_lands_on_the_screen_edge_in_the_right_direction() {
         let (x, y) = edge_point(0.0, 16.0 / 9.0, 0.02);

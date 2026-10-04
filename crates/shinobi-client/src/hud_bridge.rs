@@ -284,6 +284,7 @@ impl HudBridge {
         }
         // enemies within range but off screen -> edge ticks (teams: the other team; free-for-all: everyone else)
         let mut enemy_ticks = Vec::new();
+        let mut enemy_tags: Vec<crate::hud::EnemyTag> = Vec::new();
         {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let (yaw, pitch) = view.look_angles();
@@ -305,6 +306,21 @@ impl HudBridge {
                 let d = ((chest[0] - view.eye[0]).powi(2) + (chest[1] - view.eye[1]).powi(2) + (chest[2] - view.eye[2]).powi(2)).sqrt();
                 if on_screen.is_none() && d <= crate::hud::ENEMY_TICK_RANGE {
                     enemy_ticks.push(crate::hud::EnemyTick { bearing: bearing_to(me, yaw, smp.pos), dist: d });
+                }
+                if d <= crate::hud::ENEMY_TAG_RANGE {
+                    let head = [smp.pos[0], smp.pos[1] + 1.1, smp.pos[2]];
+                    if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
+                        if (0.08..=0.92).contains(&x) && (BROW_H + 0.05..=CHIN_TOP - 0.03).contains(&y) {
+                            enemy_tags.push(crate::hud::EnemyTag {
+                                pos: (x, y),
+                                name: callsign(*id),
+                                dist,
+                                team: teams.as_ref().and_then(|t| t.team_of.get(id).copied()),
+                                colour: Some(colour_of(*id)),
+                                hp: None, // NetClient::remote_hp once the snapshot carries it
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -518,6 +534,9 @@ impl HudBridge {
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
         hs.enemy_ticks = enemy_ticks;
+        enemy_tags.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+        enemy_tags.truncate(crate::hud::ENEMY_TAG_MAX);
+        hs.enemy_tags = enemy_tags;
         hs.controls = view.controls.clone();
         hs
     }
@@ -525,6 +544,25 @@ impl HudBridge {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enemy_name_tags_for_visible_enemies_in_range_nearest_four() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.6, 0.0];
+        v.local_pos = Some([0.0, 0.0, 0.0]);
+        let smp = |p: [f32; 3]| crate::interp::Sample { pos: p, yaw: 0.0, extrapolated: false };
+        for (k, z) in [-5.0, -8.0, -11.0, -14.0, -17.0, -20.0].iter().enumerate() {
+            v.remotes.push((2 + k as u16, smp([(k as f32 - 2.5) * 0.5, 0.0, *z])));
+        }
+        v.remotes.push((20, smp([0.0, 0.0, -40.0]))); // too far
+        v.remotes.push((21, smp([0.0, 0.0, 6.0]))); // behind: tick, not tag
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.enemy_tags.len(), 4, "{:?}", s.enemy_tags.iter().map(|t| t.dist).collect::<Vec<_>>());
+        assert!(s.enemy_tags.windows(2).all(|w| w[0].dist <= w[1].dist), "nearest first");
+        assert!(s.enemy_tags.iter().all(|t| t.hp.is_none()), "no hp until the network reports it");
+        assert_eq!(s.enemy_ticks.len(), 1);
+    }
+
     #[test]
     fn enemy_ticks_only_for_close_offscreen_enemies() {
         let mut b = HudBridge::default();
@@ -848,7 +886,7 @@ mod tests {
         v.eye = [0.0, 1.5, 0.0];
         v.camera.fov = 90.0;
         assert!(b.update(0.016, &v, &net(), false).target.is_none());
-        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked });
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0; 3], blend: 1.0 });
         let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
         assert!(t.locked && t.name == callsign(5) && (t.dist - 20.0).abs() < 0.1);
         assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");

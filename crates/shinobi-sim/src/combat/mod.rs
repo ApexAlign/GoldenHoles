@@ -198,7 +198,7 @@ impl CombatSystem {
     /// Load tunables from a `Balance` (weapons + ultimate).
     pub fn apply_balance(&mut self, b: &crate::balance::Balance, ch: &crate::character::Cfg) {
         self.loadout.apply_balance(b, ch);
-        self.lock_cfg = aim_assist::LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs };
+        self.lock_cfg = aim_assist::LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs, blend_secs: b.combat.lock_blend_secs };
         self.assist_cone_deg = b.combat.shuriken.assist_cone_deg;
         self.assist_range = b.combat.shuriken.assist_range;
         self.powerups.ultimate = crate::combat::powerup::UltimateCfg {
@@ -246,7 +246,7 @@ impl CombatSystem {
         let held = self.lock.target.filter(|_| self.lock.holding());
         let found = aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &self.allies, ch.body, held);
         self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
-        let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.vel });
+        let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.target_vel });
         self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }

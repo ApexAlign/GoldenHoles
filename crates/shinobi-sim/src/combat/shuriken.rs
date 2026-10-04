@@ -34,6 +34,10 @@ pub struct ShurikenCfg {
     /// Fraction of the lead (target velocity x flight time) a locked throw aims ahead by (0 = off, 1 = full lead).
     pub assist_lead: f32,
     pub assist_range: f32,
+    /// A locked throw curves toward its target at up to this many rad/s until it bounces (0 = straight flight).
+    pub homing_turn: f32,
+    /// Fraction of its speed a disc keeps after each bounce (1 = no loss).
+    pub bounce_retention: f32,
     /// Damage a bounce does to a player-built piece it strikes (Balance `combat.shuriken.piece_damage`).
     pub piece_damage: f32,
     /// Collider groups this disc damages when it touches them.
@@ -58,6 +62,8 @@ impl Default for ShurikenCfg {
             assist_strength: 0.75,
             assist_lead: 1.0,
             assist_range: 60.0,
+            homing_turn: 2.0,
+            bounce_retention: 0.9,
             piece_damage: 12.0,
             targets: TARGETS,
             mask: projectile_groups(),
@@ -71,6 +77,10 @@ pub struct Disc {
     pub dir: Vector<Real>,
     pub bounces: u8,
     pub age: f32,
+    /// Multiplier on `cfg.speed` (bounces bleed speed, see `bounce_retention`).
+    pub speed_scale: f32,
+    /// Target hitbox a locked throw curves toward until its first bounce.
+    pub homing: Option<ColliderHandle>,
 }
 
 #[derive(Default)]
@@ -107,7 +117,8 @@ impl Weapon for ShurikenLauncher {
         }
         let dir = assisted_dir(&self.cfg, ctx);
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
-        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0 });
+        let homing = ctx.lock.filter(|h| h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing });
         ctx.events.push(CombatEvent::ShurikenThrown { pos, dir });
         ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
         true
@@ -225,7 +236,30 @@ pub fn advance_disc_skipping(
         events.push(CombatEvent::ShurikenGone { pos: d.pos });
         return DiscStep::Gone;
     }
-    let mut remaining = cfg.speed * dt;
+    // a locked throw curves toward its target (pursuit, turn rate capped), until it bounces or the target is behind it
+    if let (Some(h), 0) = (d.homing, d.bounces) {
+        match world.colliders.get(h) {
+            Some(c) if cfg.homing_turn > 0.0 => {
+                let to = c.position().translation.vector - d.pos.coords;
+                let dist = to.norm();
+                if dist > 1.0 {
+                    let want = to / dist;
+                    let ang = d.dir.dot(&want).clamp(-1.0, 1.0).acos();
+                    if ang > 1.0 {
+                        d.homing = None; // it flew past: stop chasing
+                    } else if ang > 1e-4 {
+                        let f = ((cfg.homing_turn * dt).min(ang)) / ang;
+                        let v = d.dir * (1.0 - f) + want * f;
+                        if v.norm() > 1e-4 {
+                            d.dir = v.normalize();
+                        }
+                    }
+                }
+            }
+            _ => d.homing = None,
+        }
+    }
+    let mut remaining = cfg.speed * d.speed_scale * dt;
     // a few reflections per tick cover tight corners without looping forever
     for _ in 0..4 {
         if remaining <= 1e-5 {
@@ -279,6 +313,8 @@ pub fn advance_disc_skipping(
             return DiscStep::Gone; // never feed NaN to the query pipeline
         }
         d.dir /= len;
+        d.speed_scale *= cfg.bounce_retention;
+        d.homing = None;
         d.pos += n * 1e-3; // step off the surface
         events.push(CombatEvent::ShurikenBounce { pos: d.pos, normal: n });
     }
