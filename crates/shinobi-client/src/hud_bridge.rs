@@ -59,6 +59,44 @@ pub struct LockInfo {
     pub locked: bool,
 }
 
+/// What the client has seen of the current match, for the end-of-match awards.
+#[derive(Clone, Debug, Default)]
+pub struct MatchStats {
+    /// Kills per `(killer, weapon)`.
+    kills: HashMap<(u16, u8), u32>,
+    /// Longest kill seen: `(killer, metres)`, measured only when killer and victim were both visible.
+    longest: Option<(u16, f32)>,
+    /// Headshots we landed.
+    pub my_headshots: u32,
+}
+
+fn weapon_index(k: shinobi_sim::combat::DamageKind) -> u8 {
+    use shinobi_sim::combat::DamageKind::*;
+    match k {
+        Shuriken => 0,
+        Slash => 1,
+        GridBeam => 2,
+    }
+}
+
+impl MatchStats {
+    /// Award lines for the results screen from what was seen: sharpshooter (most shuriken kills), blademaster (most
+    /// katana kills), longest kill. Headshots per player and pieces destroyed are not on the wire, so no such awards.
+    pub fn awards(&self, name: impl Fn(u16) -> String, colour: impl Fn(u16) -> crate::hud::Rgba) -> Vec<crate::hud::Award> {
+        let mut out = Vec::new();
+        for (idx, title) in [(0u8, "SHARPSHOOTER"), (1u8, "BLADEMASTER")] {
+            let best = self.kills.iter().filter(|((_, w), n)| *w == idx && **n > 0).max_by_key(|((id, _), n)| (**n, std::cmp::Reverse(*id)));
+            if let Some(((id, _), n)) = best {
+                out.push(crate::hud::Award { title, name: name(*id), colour: Some(colour(*id)), value: n.to_string() });
+            }
+        }
+        if let Some((id, m)) = self.longest {
+            out.push(crate::hud::Award { title: "LONGEST KILL", name: name(id), colour: Some(colour(id)), value: format!("{m:.0} M") });
+        }
+        out
+    }
+}
+
 /// Radar reach in metres; enemies show only inside `RADAR_ENEMY_RANGE` or for `RADAR_FIRE_SECS` after a throw.
 pub const RADAR_RANGE: f32 = 90.0;
 pub const RADAR_ENEMY_RANGE: f32 = 25.0;
@@ -85,6 +123,8 @@ pub struct HudBridge {
     pub kill_limit: Option<u16>,
     /// Half extent of the map floor (`LevelDesc::floor_half`): the radar draws the void edge when it is in range.
     pub map_half: Option<f32>,
+    /// Pickup points from the level file (static): shown on the radar while in range.
+    pub pickups: Vec<[f32; 3]>,
     /// Build / grapple readouts, filled by the shell from the combat and movement state once those expose it.
     pub build: Option<crate::hud::BuildHud>,
     pub grapple: Option<crate::hud::GrappleHud>,
@@ -96,6 +136,9 @@ pub struct HudBridge {
     last_death: Option<KilledBy>,
     /// World position of the killer when the kill landed.
     last_death_pos: Option<[f32; 3]>,
+    /// Match statistics from the kill events seen since the match began (reset after each intermission).
+    stats: MatchStats,
+    prev_phase: Option<u8>,
     /// Seconds we have been invulnerable (spawn protection) since last becoming so.
     invuln_t: f32,
     /// Master volume and mute from the audio settings, for the speaker glyph (the shell sets it each frame).
@@ -138,6 +181,9 @@ impl HudBridge {
                 self.fx.on_hurt_amount(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)), h.amount);
             } else {
                 self.fx.on_hit_full(damage_kind(h.kind), h.kill, h.amount, h.head);
+                if h.head {
+                    self.stats.my_headshots += 1;
+                }
             }
         }
 
@@ -154,6 +200,19 @@ impl HudBridge {
                     if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
                         k.killer_colour = (!k.void).then(|| colour_of(*killer));
                         k.victim_colour = Some(colour_of(*victim));
+                    }
+                }
+                if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
+                    if !k.void {
+                        *self.stats.kills.entry((*killer, weapon_index(k.weapon))).or_insert(0) += 1;
+                        // distance between killer and victim when both are in view this frame
+                        let pos_of = |id: u16| if id == local_id { view.local_pos } else { view.remotes.iter().find(|(r, _)| *r == id).map(|(_, s)| s.pos) };
+                        if let (Some(a), Some(c)) = (pos_of(*killer), pos_of(*victim)) {
+                            let d = ((a[0] - c[0]).powi(2) + (a[1] - c[1]).powi(2) + (a[2] - c[2]).powi(2)).sqrt();
+                            if self.stats.longest.map_or(true, |(_, best)| d > best) {
+                                self.stats.longest = Some((*killer, d));
+                            }
+                        }
                     }
                 }
                 if let shinobi_sim::events::NetEvent::Kill { victim, .. } = e {
@@ -276,6 +335,12 @@ impl HudBridge {
             let (dx, dz) = (x - me[0], z - me[2]);
             ((dx * right[0] + dz * right[1]) / RADAR_RANGE, (dx * fwd[0] + dz * fwd[1]) / RADAR_RANGE)
         };
+        for pk in &self.pickups {
+            let p = to_radar(pk[0], pk[2]);
+            if p.0 * p.0 + p.1 * p.1 <= 1.0 {
+                hs.radar_pickups.push(p);
+            }
+        }
         for bl in view.blocks.iter().filter(|bl| bl.owner == local_id) {
             let c = bl.piece.center(bl.cell, view.block_size, view.block_thickness);
             let p = to_radar(c[0], c[2]);
@@ -358,6 +423,19 @@ impl HudBridge {
                 local: id != 0 && id == local_id,
                 draw: id == 0,
             });
+        }
+        // match stats reset when the intermission ends; awards are shown only while it lasts
+        let phase = view.board.as_ref().map(|bd| bd.phase);
+        if self.prev_phase == Some(PHASE_INTERMISSION) && phase.is_some() && phase != Some(PHASE_INTERMISSION) {
+            self.stats = MatchStats::default();
+        }
+        self.prev_phase = phase.or(self.prev_phase);
+        if phase == Some(PHASE_INTERMISSION) {
+            hs.awards = self.stats.awards(callsign, |id| match &teams {
+                Some(t) => crate::hud::Palette::TRON.team(t.team_of.get(&id).copied().unwrap_or(0)),
+                None => colour_of(id),
+            });
+            hs.my_headshots = self.stats.my_headshots;
         }
         hs.audio = self.audio;
         hs.ffa = teams.is_none();
@@ -792,5 +870,43 @@ mod tests {
         assert!(b.update(0.016, &v, &net(), false).radar_edge.is_empty());
         b.map_half = Some(500.0);
         assert!(b.update(0.016, &v, &net(), false).radar_edge.is_empty(), "edge beyond radar range");
+    }
+
+    #[test]
+    fn awards_pickups_and_headshots_come_from_the_match_data() {
+        use shinobi_proto::gameplay::{KIND_SHURIKEN, KIND_SLASH};
+        use shinobi_sim::events::NetEvent;
+        let mut b = HudBridge::default();
+        b.pickups = vec![[0.0, 1.0, -30.0], [500.0, 1.0, 0.0]];
+        let mut v = RenderView::default();
+        v.local_pos = Some([0.0, 1.0, 0.0]);
+        let smp = |x: f32, z: f32| crate::interp::Sample { pos: [x, 0.5, z], yaw: 0.0, extrapolated: false };
+        v.remotes = vec![(7, smp(0.0, -50.0)), (8, smp(10.0, 0.0))];
+        v.events = vec![
+            NetEvent::Kill { killer: 7, victim: 8, kind: KIND_SHURIKEN, tick: 1 },
+            NetEvent::Kill { killer: 7, victim: 8, kind: KIND_SHURIKEN, tick: 2 },
+            NetEvent::Kill { killer: 8, victim: 7, kind: KIND_SLASH, tick: 3 },
+        ];
+        v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] });
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.radar_pickups.len(), 1, "only the pickup inside radar range");
+        assert!(s.awards.is_empty(), "awards appear only at intermission");
+        // intermission: awards from the events
+        v.events.clear();
+        v.hits.clear();
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] });
+        let s = b.update(0.016, &v, &net(), false);
+        let by = |t: &str| s.awards.iter().find(|a| a.title == t).cloned();
+        assert_eq!(by("SHARPSHOOTER").map(|a| (a.name, a.value)), Some((callsign(7), "2".to_string())));
+        assert_eq!(by("BLADEMASTER").map(|a| (a.name, a.value)), Some((callsign(8), "1".to_string())));
+        assert_eq!(by("LONGEST KILL").map(|a| a.name), Some(callsign(7)), "7 shot 8 from ~51 m");
+        assert_eq!(s.my_headshots, 1);
+        // next match: stats reset
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 1, winner: 0, rows: vec![] });
+        b.update(0.016, &v, &net(), false);
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 1, winner: 0, rows: vec![] });
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.awards.is_empty() && s.my_headshots == 0, "a fresh match starts from zero");
     }
 }

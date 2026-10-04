@@ -61,6 +61,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         since_damage: Some((0.25, 1.1)),
         damage_frac: 0.35,
         target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true }),
+        radar_pickups: vec![(-0.35, 0.3), (0.45, -0.2)],
         radar_pieces: vec![(0.1, 0.25), (0.15, 0.3), (-0.2, 0.1)],
         radar_edge: (0..14).map(|i| ((0.9 - i as f32 * 0.02, -0.4 - i as f32 * 0.03), (0.88 - i as f32 * 0.02, -0.43 - i as f32 * 0.03))).collect(),
         radar: vec![
@@ -90,6 +91,12 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         show_scoreboard: true,
         match_clock: Some((shinobi_sim::match_state::PhaseKind::Intermission, Some(6))),
         winner: Some(Winner { name: callsign(1), colour: Some(player_rgba(1)), local: false, draw: false }),
+        awards: vec![
+            crate::hud::Award { title: "SHARPSHOOTER", name: callsign(1), colour: Some(player_rgba(1)), value: "6".into() },
+            crate::hud::Award { title: "BLADEMASTER", name: callsign(3), colour: Some(player_rgba(3)), value: "4".into() },
+            crate::hud::Award { title: "LONGEST KILL", name: callsign(2), colour: Some(player_rgba(2)), value: "52 M".into() },
+        ],
+        my_headshots: 3,
         audio: Some((0.7, true)),
         ..base()
     };

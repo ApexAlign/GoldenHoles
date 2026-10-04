@@ -53,6 +53,9 @@ fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
         }
         Some(p) => {
             let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("level {}: {e}", p.display()));
+            if let Ok(f) = shinobi_sim::level::parse_level_file(&text) {
+                hud_view::set_level_pickups(f.pickups.iter().map(|p| p.pos).collect());
+            }
             let l = shinobi_sim::level::LevelDesc::from_text(&text).unwrap_or_else(|e| panic!("level {}: {e}", p.display()));
             eprintln!("level: {} ({} boxes, {} spawns)", p.display(), l.boxes.len(), l.spawns.len());
             l

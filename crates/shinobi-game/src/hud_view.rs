@@ -336,10 +336,23 @@ fn perf_tick(
     ctl.perf.record(time.delta_secs(), steps, (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt());
 }
 
+/// Pickup points of the loaded level file (the client's `LevelDesc` is geometry only): set once at start-up by
+/// `main::load_level`, read by `sync_audio` into the bridge for the radar.
+static LEVEL_PICKUPS: std::sync::OnceLock<Vec<[f32; 3]>> = std::sync::OnceLock::new();
+
+pub fn set_level_pickups(p: Vec<[f32; 3]>) {
+    let _ = LEVEL_PICKUPS.set(p);
+}
+
 /// Master volume / mute -> the telemetry speaker glyph (absent when the game runs without the audio plugin).
 fn sync_audio(audio: Option<Res<crate::audio::AudioSettings>>, level: Option<Res<crate::net::LevelRes>>, mut ctl: ResMut<HudCtl>) {
     // the void edge on the radar: the level's floor extent (static, so cheap to refresh)
     ctl.bridge.map_half = level.and_then(|l| l.0.floor_half());
+    if ctl.bridge.pickups.is_empty() {
+        if let Some(p) = LEVEL_PICKUPS.get() {
+            ctl.bridge.pickups = p.clone();
+        }
+    }
     ctl.bridge.audio = audio.map(|a| (a.volume, a.muted));
 }
 

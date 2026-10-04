@@ -299,6 +299,16 @@ pub struct Winner {
     pub draw: bool,
 }
 
+/// One end-of-match award line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Award {
+    pub title: &'static str,
+    pub name: String,
+    pub colour: Option<Rgba>,
+    /// Pre-formatted value ("7", "41 M").
+    pub value: String,
+}
+
 /// Respawn delay shown as the countdown bar's full length (follows the sim's `RESPAWN_TICKS`).
 pub const RESPAWN_SECS: f32 = shinobi_sim::pvp::RESPAWN_TICKS as f32 / 60.0;
 /// Spawn protection length for the shield indicator (docs/DEMO.md: 1.5 s).
@@ -344,12 +354,18 @@ pub struct HudState {
     pub shield: Option<f32>,
     /// End-of-match result (intermission screen).
     pub winner: Option<Winner>,
+    /// End-of-match awards derived from the match's kill events (what the client saw).
+    pub awards: Vec<Award>,
+    /// Headshots we landed this match.
+    pub my_headshots: u32,
     /// Master volume 0..=1 and mute, for the telemetry speaker glyph.
     pub audio: Option<(f32, bool)>,
     pub telemetry: Option<Telemetry>,
     pub radar: Vec<RadarPing>,
     /// Our own printed pieces on the radar (radar space, x right / y ahead, disc radius 1).
     pub radar_pieces: Vec<(f32, f32)>,
+    /// Pickup points inside radar range (radar space).
+    pub radar_pickups: Vec<(f32, f32)>,
     /// Void-edge segments on the radar (radar space, already clipped to the disc).
     pub radar_edge: Vec<((f32, f32), (f32, f32))>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
@@ -923,7 +939,7 @@ impl Hud {
                 (PhaseKind::Live, None) => ("LIVE".into(), p.cyan),
                 (PhaseKind::Warmup, Some(t)) => (format!("WARMUP {t}"), p.orange),
                 (PhaseKind::Warmup, None) => ("WAITING FOR PLAYERS".into(), p.orange),
-                (PhaseKind::Intermission, Some(t)) => (format!("NEXT MATCH {t}"), p.magenta),
+                (PhaseKind::Intermission, Some(t)) => (format!("NEXT MAP {t}"), p.magenta),
                 (PhaseKind::Intermission, None) => ("INTERMISSION".into(), p.magenta),
             };
             out.push(Prim::Text { pos: (SIDE_CLEAR + 0.01, 0.045), text, size: 0.026, color: col.a(0.9), align: Align::Left });
@@ -1223,6 +1239,14 @@ fn radar_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     for (a, b) in &s.radar_edge {
         out.push(Prim::Line { a: at(a.0, a.1), b: at(b.0, b.1), color: p.magenta.a(0.75), glow: 0.004 });
     }
+    for (x, y) in &s.radar_pickups {
+        let (px, py) = at(*x, *y);
+        let d = 0.0065;
+        let pts = [(px, py - d), (px + d * ASPECT, py), (px, py + d), (px - d * ASPECT, py)];
+        for k in 0..4 {
+            out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.gold.a(0.9), glow: 0.003 });
+        }
+    }
     for (x, y) in &s.radar_pieces {
         let (px, py) = at(*x, *y);
         out.push(Prim::Rect { r: Rect::new(px - 0.0025 * ASPECT, py - 0.0025, 0.005 * ASPECT, 0.005), color: p.cyan.a(0.9), glow: 0.002 });
@@ -1317,10 +1341,10 @@ fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     }
 }
 
-/// End-of-match results: winner, top 5 (rank, callsign, kills, deaths) in player colours, NEXT MATCH countdown.
+/// End-of-match results: winner, top 3 with K/D, awards, our headshots, NEXT MAP countdown.
 fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
-    let r = Rect::new(0.3, 0.14, 0.4, 0.62);
-    out.push(Prim::Rect { r, color: p.bg.a(0.85), glow: 0.0 });
+    let r = Rect::new(0.28, 0.09, 0.44, 0.76);
+    out.push(Prim::Rect { r, color: p.bg.a(0.88), glow: 0.0 });
     out.push(Prim::Grid { r, cell: 0.04, color: p.grid.a(0.3) });
     let (x1, y1) = (r.x + r.w, r.y + r.h);
     for (a, b) in [((r.x, r.y), (x1, r.y)), ((x1, r.y), (x1, y1)), ((x1, y1), (r.x, y1)), ((r.x, y1), (r.x, r.y))] {
@@ -1328,17 +1352,18 @@ fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     }
     out.push(Prim::Text { pos: (0.5, r.y + 0.06), text: "MATCH OVER".into(), size: 0.05, color: p.cyan.a(0.95), align: Align::Center });
     match &s.winner {
-        Some(w) if w.draw => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "DRAW".into(), size: 0.034, color: p.gold.a(0.95), align: Align::Center }),
-        Some(w) if w.local => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "YOU WIN".into(), size: 0.04, color: p.gold.a(1.0), align: Align::Center }),
-        Some(w) => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: format!("WINNER {}", w.name), size: 0.034, color: w.colour.unwrap_or(p.gold).a(1.0), align: Align::Center }),
+        Some(w) if w.draw => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "DRAW".into(), size: 0.036, color: p.gold.a(0.95), align: Align::Center }),
+        Some(w) if w.local => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: "YOU WIN".into(), size: 0.042, color: p.gold.a(1.0), align: Align::Center }),
+        Some(w) => out.push(Prim::Text { pos: (0.5, r.y + 0.115), text: format!("WINNER {}", w.name), size: 0.036, color: w.colour.unwrap_or(p.gold).a(1.0), align: Align::Center }),
         None => {}
     }
+    // top 3 with K/D
     let mut rows: Vec<&ScoreRow> = s.scoreboard.iter().collect();
     rows.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
-    rows.truncate(5);
-    let cols = [(r.x + 0.04, Align::Left), (r.x + 0.075, Align::Left), (r.x + 0.3, Align::Right), (r.x + 0.36, Align::Right)];
+    rows.truncate(3);
+    let cols = [(r.x + 0.035, Align::Left), (r.x + 0.07, Align::Left), (r.x + 0.265, Align::Right), (r.x + 0.32, Align::Right), (r.x + 0.40, Align::Right)];
     let hy = r.y + 0.18;
-    for (&(x, al), t) in cols.iter().zip(["#", "PLAYER", "K", "D"]) {
+    for (&(x, al), t) in cols.iter().zip(["#", "PLAYER", "K", "D", "K/D"]) {
         out.push(Prim::Text { pos: (x, hy), text: t.into(), size: 0.02, color: p.orange.a(0.9), align: al });
     }
     for (i, row) in rows.iter().enumerate() {
@@ -1347,12 +1372,29 @@ fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         if row.local {
             out.push(Prim::Rect { r: Rect::new(r.x + 0.01, y - 0.032, r.w - 0.02, 0.04), color: p.gold.a(0.13), glow: 0.004 });
         }
-        for (&(x, al), t) in cols.iter().zip([(i + 1).to_string(), row.name.clone(), row.kills.to_string(), row.deaths.to_string()]) {
+        let ratio = if row.deaths == 0 { row.kills as f32 } else { row.kills as f32 / row.deaths as f32 };
+        let cells = [(i + 1).to_string(), row.name.clone(), row.kills.to_string(), row.deaths.to_string(), format!("{ratio:.2}")];
+        for (&(x, al), t) in cols.iter().zip(cells) {
             out.push(Prim::Text { pos: (x, y), text: t, size: 0.028, color: col.a(1.0), align: al });
         }
     }
+    // awards (only those the match data supports) and our own headshots
+    let ay = hy + 0.05 * 4.0 + 0.02;
+    if !s.awards.is_empty() {
+        out.push(Prim::Text { pos: (0.5, ay), text: "AWARDS".into(), size: 0.022, color: p.orange.a(0.9), align: Align::Center });
+        out.push(Prim::Line { a: (r.x + 0.03, ay + 0.012), b: (x1 - 0.03, ay + 0.012), color: p.cyan.a(0.3), glow: 0.0 });
+    }
+    for (i, a) in s.awards.iter().take(4).enumerate() {
+        let y = ay + 0.05 + 0.042 * i as f32;
+        out.push(Prim::Text { pos: (r.x + 0.035, y), text: a.title.into(), size: 0.02, color: p.gold.a(0.95), align: Align::Left });
+        out.push(Prim::Text { pos: (r.x + 0.2, y), text: a.name.clone(), size: 0.024, color: a.colour.unwrap_or(p.text).a(1.0), align: Align::Left });
+        out.push(Prim::Text { pos: (x1 - 0.035, y), text: a.value.clone(), size: 0.024, color: p.text.a(0.95), align: Align::Right });
+    }
+    if s.my_headshots > 0 {
+        out.push(Prim::Text { pos: (0.5, y1 - 0.095), text: format!("YOUR HEADSHOTS {}", s.my_headshots), size: 0.022, color: p.gold.a(0.9), align: Align::Center });
+    }
     if let Some((_, Some(secs))) = s.match_clock {
-        out.push(Prim::Text { pos: (0.5, y1 - 0.045), text: format!("NEXT MATCH IN {secs}"), size: 0.034, color: p.orange.a(0.95), align: Align::Center });
+        out.push(Prim::Text { pos: (0.5, y1 - 0.04), text: format!("NEXT MAP IN {secs}"), size: 0.034, color: p.orange.a(0.95), align: Align::Center });
     }
 }
 
@@ -2069,7 +2111,7 @@ mod tests {
             (Some((PhaseKind::Live, Some(125))), "2:05"),
             (Some((PhaseKind::Warmup, Some(7))), "WARMUP 0:07"),
             (Some((PhaseKind::Warmup, None)), "WAITING FOR PLAYERS"),
-            (Some((PhaseKind::Intermission, Some(9))), "NEXT MATCH 0:09"),
+            (Some((PhaseKind::Intermission, Some(9))), "NEXT MAP 0:09"),
         ] {
             s.match_clock = clock;
             assert!(t(&Hud::build(&s), want), "{want}");
@@ -2219,7 +2261,7 @@ mod tests {
         s2.match_clock = Some((PhaseKind::Intermission, Some(9)));
         s2.match_map = None;
         let r2 = Hud::build(&s2);
-        assert!(t(&r2, "MATCH OVER") && t(&r2, "NEXT MATCH IN 9"), "intermission shows the results screen");
+        assert!(t(&r2, "MATCH OVER") && t(&r2, "NEXT MAP IN 9"), "intermission shows the results screen");
     }
 
     #[test]
@@ -2558,8 +2600,8 @@ mod tests {
             ..Default::default()
         };
         let t = texts(&res);
-        assert!(t.contains(&"MATCH OVER".to_string()) && t.contains(&format!("WINNER {}", callsign(1))) && t.contains(&"NEXT MATCH IN 8".to_string()));
-        assert!(t.contains(&callsign(5)) && !t.contains(&callsign(6)), "top five only");
+        assert!(t.contains(&"MATCH OVER".to_string()) && t.contains(&format!("WINNER {}", callsign(1))) && t.contains(&"NEXT MAP IN 8".to_string()));
+        assert!(t.contains(&callsign(3)) && !t.contains(&callsign(4)), "top three only (K/D column)");
         assert!(texts(&HudState { winner: Some(Winner { name: "x".into(), colour: None, local: true, draw: false }), ..res.clone() }).contains(&"YOU WIN".to_string()));
         assert!(texts(&HudState { winner: Some(Winner { name: String::new(), colour: None, local: false, draw: true }), ..res.clone() }).contains(&"DRAW".to_string()));
         // warmup states
@@ -2606,5 +2648,33 @@ mod tests {
         fx.tick(HIT_MARK_TIME + 0.1);
         fx.apply(&mut s);
         assert!(!s.hit_head);
+    }
+
+    #[test]
+    fn results_screen_shows_top_three_with_kd_awards_headshots_and_next_map() {
+        let p = Palette::TRON;
+        let row = |n: u16, k, d| ScoreRow { name: callsign(n), kills: k, deaths: d, ping_ms: 10, local: false, alive: true, team: None, colour: None };
+        let s = HudState {
+            hp: 1.0,
+            show_scoreboard: true,
+            match_clock: Some((PhaseKind::Intermission, Some(8))),
+            winner: Some(Winner { name: callsign(1), colour: None, local: false, draw: false }),
+            scoreboard: vec![row(1, 10, 4), row(2, 7, 7), row(3, 5, 0), row(4, 2, 9)],
+            awards: vec![
+                Award { title: "SHARPSHOOTER", name: callsign(1), colour: None, value: "6".into() },
+                Award { title: "LONGEST KILL", name: callsign(3), colour: None, value: "52 M".into() },
+            ],
+            my_headshots: 3,
+            ..Default::default()
+        };
+        let t: Vec<String> = Hud::build_with(&s, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect();
+        for want in ["K/D", "2.50", "1.00", "5.00", "AWARDS", "SHARPSHOOTER", "LONGEST KILL", "52 M", "YOUR HEADSHOTS 3", "NEXT MAP IN 8"] {
+            assert!(t.contains(&want.to_string()), "{want}: {t:?}");
+        }
+        assert!(!t.contains(&callsign(4)), "top three only");
+        // no awards, no headshots: those lines are absent, the rest stays
+        let bare = HudState { awards: vec![], my_headshots: 0, ..s.clone() };
+        let t: Vec<String> = Hud::build_with(&bare, &p).iter().filter_map(|x| if let Prim::Text { text, .. } = x { Some(text.clone()) } else { None }).collect();
+        assert!(!t.contains(&"AWARDS".to_string()) && !t.iter().any(|x| x.starts_with("YOUR HEADSHOTS")) && t.contains(&"NEXT MAP IN 8".to_string()));
     }
 }
