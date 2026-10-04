@@ -347,6 +347,8 @@ pub struct HudState {
     pub boot: Option<f32>,
     /// Kills that end a free-for-all match, when the server has a limit.
     pub kill_limit: Option<u16>,
+    /// Match time limit in seconds from the server's rules (`None` until received).
+    pub time_limit_secs: Option<u16>,
     pub team_scores: Option<TeamScores>,
     pub ally_tags: Vec<AllyTag>,
     pub ping_ms: Option<u16>,
@@ -1399,9 +1401,10 @@ fn ffa_panel(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     // right slim panel (lower half of the margin): wide enough for a callsign, rank and kills
     let (x0, x1) = (1.0 - SIDE_CLEAR + 0.02, 0.98);
     let mut y = 0.575;
-    let head = match s.kill_limit {
-        Some(n) => format!("FIRST TO {n}"),
-        None => "LEADERBOARD".into(),
+    let head = match (s.kill_limit, s.time_limit_secs) {
+        (Some(n), Some(t)) => format!("FIRST TO {n} / {}:{:02}", t / 60, t % 60),
+        (Some(n), None) => format!("FIRST TO {n}"),
+        _ => "LEADERBOARD".into(),
     };
     out.push(Prim::Text { pos: (x1, y), text: head, size: 0.017, color: p.text.a(0.55), align: Align::Right });
     let top = rows.iter().take(5).copied();
@@ -2496,5 +2499,17 @@ mod tests {
         // speaker glyph in the telemetry header
         let spk = |a| texts(&HudState { hp: 1.0, telemetry: Some(Telemetry { speed: 1.0, altitude: 1.0, rope: None }), audio: Some(a), ..Default::default() });
         assert!(spk((0.7, false)).contains(&"70".to_string()) && spk((0.7, true)).contains(&"MUTE".to_string()));
+    }
+
+    #[test]
+    fn leaderboard_header_shows_the_kill_and_time_limits() {
+        let p = Palette::TRON;
+        let head = |limit, secs| {
+            let s = HudState { hp: 1.0, ffa: true, kill_limit: limit, time_limit_secs: secs, ..Default::default() };
+            Hud::build_with(&s, &p).into_iter().find_map(|x| match x { Prim::Text { text, .. } if text.starts_with("FIRST") || text == "LEADERBOARD" => Some(text), _ => None }).unwrap()
+        };
+        assert_eq!(head(Some(10), Some(360)), "FIRST TO 10 / 6:00");
+        assert_eq!(head(Some(10), None), "FIRST TO 10");
+        assert_eq!(head(None, Some(360)), "LEADERBOARD");
     }
 }

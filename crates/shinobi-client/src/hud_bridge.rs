@@ -46,7 +46,7 @@ impl TeamInfo {
             }
         }
         let team_of = ids.into_iter().filter_map(|id| net.team_of(id).filter(|t| *t < shinobi_sim::team::TEAM_COUNT).map(|t| (id, t))).collect();
-        Some(Self { my_team, scores: net.team_scores(), score_limit: TEAM_SCORE_LIMIT, result: net.team_result(), team_of })
+        Some(Self { my_team, scores: net.team_scores(), score_limit: net.team_frag_limit().unwrap_or(TEAM_SCORE_LIMIT), result: net.team_result(), team_of })
     }
 }
 
@@ -64,6 +64,11 @@ pub const RADAR_RANGE: f32 = 90.0;
 pub const RADAR_ENEMY_RANGE: f32 = 45.0;
 /// Free-for-all kill limit when `HudBridge::kill_limit` is unset: the demo rule from `Balance::demo()`. The server
 /// does not send its limit yet, so a differently configured server shows this number wrongly.
+/// Kill limit to show: an explicit override, else the server's rules (`NetClient::frag_limit`), else the demo default.
+pub fn kill_limit_to_show(override_limit: Option<u16>, from_server: Option<u16>) -> u16 {
+    override_limit.or(from_server).unwrap_or_else(ffa_kill_limit)
+}
+
 pub fn ffa_kill_limit() -> u16 {
     shinobi_sim::balance::Balance::demo().matches.frag_limit.min(u16::MAX as u32) as u16
 }
@@ -314,7 +319,8 @@ impl HudBridge {
         }
         hs.audio = self.audio;
         hs.ffa = teams.is_none();
-        hs.kill_limit = if teams.is_none() { self.kill_limit.or(Some(ffa_kill_limit())) } else { None };
+        hs.kill_limit = if teams.is_none() { Some(kill_limit_to_show(self.kill_limit, net.frag_limit())) } else { None };
+        hs.time_limit_secs = net.time_limit_secs();
         // build readout from the predicted ghost (an explicit `build` overrides it)
         hs.build = self.build.or_else(|| {
             let g = view.build_ghost?;
@@ -678,5 +684,16 @@ mod tests {
         assert_eq!(s.hit_amount, 0, "no number until the server confirms the damage");
         v.fx.slash_hit = Some(PredictedSlashHit { point: [0.0; 3], killed: true });
         assert!(b.update(0.016, &v, &net(), false).hit_kill, "predicted kill shows the kill marker");
+    }
+
+    #[test]
+    fn kill_limit_prefers_override_then_server_rules_then_the_demo_default() {
+        assert_eq!(kill_limit_to_show(Some(3), Some(7)), 3);
+        assert_eq!(kill_limit_to_show(None, Some(7)), 7);
+        assert_eq!(kill_limit_to_show(None, None), ffa_kill_limit());
+        // no rules received yet (default client): the default shows, no time limit
+        let mut b = HudBridge::default();
+        let s = b.update(0.016, &RenderView::default(), &net(), false);
+        assert_eq!((s.kill_limit, s.time_limit_secs), (Some(ffa_kill_limit()), None));
     }
 }
