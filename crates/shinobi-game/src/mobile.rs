@@ -5,7 +5,7 @@
 //! draw afterwards at native resolution, so the vector HUD stays sharp.
 
 use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{RenderTarget, ScalingMode};
+use bevy::camera::{RenderTarget, ScalingMode, Viewport};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::touch::{TouchInput, TouchPhase};
 use bevy::prelude::*;
@@ -106,6 +106,11 @@ pub struct DynScale {
     pub dr: DynRes,
     pub forced: Option<f32>,
     scene: Handle<Image>,
+    /// Presenter material: its `uv_transform` crops the scene image to the rendered sub-rect.
+    mat: Handle<StandardMaterial>,
+    /// Allocated size of the scene image (the native window size; only changes when the window is resized).
+    alloc: (u32, u32),
+    /// Rendered size inside it (native * scale): the world camera's viewport.
     cur: (u32, u32),
 }
 
@@ -126,9 +131,10 @@ pub fn spawn_present(
     forced: Option<f32>,
 ) {
     let layer = RenderLayers::layer(PRESENT_LAYER);
+    let mat = mats.add(StandardMaterial { base_color_texture: Some(scene.clone()), unlit: true, ..default() });
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial3d(mats.add(StandardMaterial { base_color_texture: Some(scene.clone()), unlit: true, ..default() })),
+        MeshMaterial3d(mat.clone()),
         Transform::from_xyz(0.5, 0.5, 0.0),
         layer.clone(),
     ));
@@ -153,10 +159,13 @@ pub fn spawn_present(
     if let Some(f) = forced {
         dr.force_scale(f);
     }
-    commands.insert_resource(DynScale { dr, forced, scene, cur: native });
+    commands.insert_resource(DynScale { dr, forced, scene, mat, alloc: native, cur: native });
 }
 
-/// Frame-time -> scale -> scene image size. Native size follows the window (or the shot request).
+/// Frame-time -> scale -> rendered sub-rect. The scene image stays allocated at the native window size; changing the
+/// scale only moves the world camera's viewport and the presenter's UV crop, so there is no render-target
+/// reallocation per scale step (resizing the image on consecutive frames left the scene black, and a texture
+/// reallocation is exactly the kind of hitch dynamic resolution is meant to avoid).
 pub fn update_scale(
     time: Res<Time>,
     view: Res<ViewRes>,
@@ -164,6 +173,8 @@ pub fn update_scale(
     shot: Option<Res<ShotRequest>>,
     ds: Option<ResMut<DynScale>>,
     mut images: ResMut<Assets<Image>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut cam: Query<&mut Camera, With<crate::play::PlayerCam>>,
 ) {
     let Some(mut ds) = ds else { return };
     let native = match (&window, &shot) {
@@ -178,12 +189,26 @@ pub fn update_scale(
             ds.dr.update(time.delta_secs() * 1000.0, load);
         }
     }
-    let size = ds.dr.scene_size(native);
-    if size != ds.cur {
+    // window resized: reallocate the scene image (rare)
+    if native != ds.alloc && native.0 > 0 && native.1 > 0 {
         if let Some(mut img) = images.get_mut(&ds.scene) {
-            img.resize(Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 });
-            ds.cur = size;
+            img.resize(Extent3d { width: native.0, height: native.1, depth_or_array_layers: 1 });
+            ds.alloc = native;
+            ds.cur = (0, 0); // force the viewport / crop below to refresh
         }
+    }
+    let size = ds.dr.scene_size(ds.alloc);
+    if size != ds.cur {
+        if std::env::var("SHINOBI_DEBUG_SCALE").is_ok() {
+            eprintln!("SCALE {:?} -> {:?} (alloc {:?}, scale {:.2})", ds.cur, size, ds.alloc, ds.dr.scale());
+        }
+        if let Ok(mut c) = cam.single_mut() {
+            c.viewport = Some(Viewport { physical_position: UVec2::ZERO, physical_size: UVec2::new(size.0, size.1), ..default() });
+        }
+        if let Some(mut m) = mats.get_mut(&ds.mat) {
+            m.uv_transform = bevy::math::Affine2::from_scale(Vec2::new(size.0 as f32 / ds.alloc.0 as f32, size.1 as f32 / ds.alloc.1 as f32));
+        }
+        ds.cur = size;
     }
 }
 
