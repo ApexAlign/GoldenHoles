@@ -275,6 +275,12 @@ pub fn ffa_colour(id: u16) -> Rgba {
 /// Who eliminated the local player (death overlay).
 #[derive(Clone, Debug, PartialEq)]
 pub struct KilledBy {
+    /// Where the killer was when they got us, relative to the view: radians, 0 ahead, + clockwise; and metres. Set by
+    /// the bridge each frame from the stored kill position (`None` for void deaths / unknown).
+    pub bearing: Option<f32>,
+    pub dist: Option<f32>,
+    /// Our kills and deaths so far.
+    pub kd: Option<(u16, u16)>,
     /// Empty for an environmental death.
     pub name: String,
     pub colour: Option<Rgba>,
@@ -293,8 +299,8 @@ pub struct Winner {
     pub draw: bool,
 }
 
-/// Respawn delay shown as the countdown bar's full length (docs/DEMO.md: 3 s).
-pub const RESPAWN_SECS: f32 = 3.0;
+/// Respawn delay shown as the countdown bar's full length (follows the sim's `RESPAWN_TICKS`).
+pub const RESPAWN_SECS: f32 = shinobi_sim::pvp::RESPAWN_TICKS as f32 / 60.0;
 /// Spawn protection length for the shield indicator (docs/DEMO.md: 1.5 s).
 pub const SPAWN_SHIELD_SECS: f32 = 1.5;
 
@@ -1223,27 +1229,57 @@ fn speaker(out: &mut Vec<Prim>, c: (f32, f32), vol: f32, muted: bool, p: &Palett
     out.push(Prim::Text { pos: (c.0 + 0.032, c.1 + 0.006), text: if muted { "MUTE".into() } else { format!("{:.0}", vol * 100.0) }, size: 0.014, color: col, align: Align::Left });
 }
 
+/// Weapon name for the death screen.
+pub fn weapon_name(k: DamageKind) -> &'static str {
+    match k {
+        DamageKind::Shuriken => "SHURIKEN",
+        DamageKind::Slash => "KATANA",
+        DamageKind::GridBeam => "GRID BEAM",
+    }
+}
+
 /// Death overlay: ELIMINATED, who did it (with their weapon icon), the respawn countdown and its bar. All in the
 /// band above / below the crosshair, which stays empty.
 fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     out.push(Prim::Vignette { start: 0.3, max_a: 0.4, tint: p.magenta.a(1.0) });
-    out.push(Prim::Text { pos: (0.5, 0.25), text: "ELIMINATED".into(), size: 0.06, color: p.magenta.a(0.95), align: Align::Center });
+    out.push(Prim::Text { pos: (0.5, 0.14), text: "ELIMINATED".into(), size: 0.06, color: p.magenta.a(0.95), align: Align::Center });
     if let Some(k) = &s.killed_by {
         let (label, col, glyph) = if k.void {
             ("THE VOID CLAIMED YOU".to_string(), p.magenta, Glyph::Void)
         } else {
-            (format!("BY {}", k.name), k.colour.unwrap_or(p.text), Glyph::of(k.weapon))
+            (format!("BY {} - {}", k.name, weapon_name(k.weapon)), k.colour.unwrap_or(p.text), Glyph::of(k.weapon))
         };
         let est = label.chars().count() as f32 * 0.032 * 0.52; // rough drawn width of the label
-        out.push(Prim::Text { pos: (0.5 + 0.015, 0.31), text: label, size: 0.032, color: col.a(1.0), align: Align::Center });
-        weapon_icon(out, (0.5 + 0.015 - est * 0.5 - 0.022, 0.31 - 0.011), 0.013, glyph, p.for_damage(k.weapon).a(0.95));
+        out.push(Prim::Text { pos: (0.5 + 0.015, 0.20), text: label, size: 0.032, color: col.a(1.0), align: Align::Center });
+        weapon_icon(out, (0.5 + 0.015 - est * 0.5 - 0.022, 0.20 - 0.011), 0.013, glyph, p.for_damage(k.weapon).a(0.95));
+        if let Some((kills, deaths)) = k.kd {
+            let ratio = if deaths == 0 { kills as f32 } else { kills as f32 / deaths as f32 };
+            out.push(Prim::Text { pos: (0.5, 0.245), text: format!("K {kills}  D {deaths}  K/D {ratio:.2}"), size: 0.022, color: p.text.a(0.85), align: Align::Center });
+        }
+        // arrow toward where the killer stood: a chevron on a ring around the (empty) centre, tip outward
+        if let (Some(b), false) = (k.bearing, k.void) {
+            let (sn, cs) = b.sin_cos();
+            let at = |r: f32, off: f32| {
+                let (s2, c2) = (b + off).sin_cos();
+                (0.5 + s2 * r * 0.5625, 0.5 - c2 * r)
+            };
+            let tip = (0.5 + sn * 0.175 * 0.5625, 0.5 - cs * 0.175);
+            for off in [-0.22f32, 0.22] {
+                out.push(Prim::Line { a: tip, b: at(0.125, off), color: col.a(0.95), glow: 0.01 });
+            }
+            out.push(Prim::Line { a: tip, b: (0.5 + sn * 0.095 * 0.5625, 0.5 - cs * 0.095), color: col.a(0.95), glow: 0.01 });
+            if let Some(d) = k.dist {
+                let lp = (0.5 + sn * 0.225 * 0.5625, 0.5 - cs * 0.225);
+                out.push(Prim::Text { pos: (lp.0, lp.1 + 0.008), text: format!("{d:.0}M"), size: 0.02, color: p.text.a(0.85), align: Align::Center });
+            }
+        }
     }
     if let Some(t) = s.respawn_in_s {
         let t = t.max(0.0);
-        out.push(Prim::Text { pos: (0.5, 0.64), text: format!("RESPAWN IN {t:.1}"), size: 0.04, color: p.orange.a(0.95), align: Align::Center });
+        out.push(Prim::Text { pos: (0.5, 0.78), text: format!("RESPAWN IN {t:.1}"), size: 0.04, color: p.orange.a(0.95), align: Align::Center });
         let (w, f) = (0.24, (1.0 - t / RESPAWN_SECS).clamp(0.0, 1.0));
-        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.655, w, 0.008), color: p.orange.a(0.16), glow: 0.0 });
-        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.655, w * f, 0.008), color: p.orange.a(0.95), glow: 0.006 });
+        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.795, w, 0.008), color: p.orange.a(0.16), glow: 0.0 });
+        out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.795, w * f, 0.008), color: p.orange.a(0.95), glow: 0.006 });
     }
 }
 
@@ -2459,12 +2495,12 @@ mod tests {
         let dead = HudState {
             dead: true,
             respawn_in_s: Some(1.5),
-            killed_by: Some(KilledBy { name: callsign(4), colour: Some(Rgba::CYAN), weapon: DamageKind::Shuriken, void: false }),
+            killed_by: Some(KilledBy { name: callsign(4), colour: Some(Rgba::CYAN), weapon: DamageKind::Shuriken, void: false, bearing: Some(1.2), dist: Some(23.0), kd: Some((5, 2)) }),
             ..Default::default()
         };
         let t = texts(&dead);
-        assert!(t.contains(&"ELIMINATED".to_string()) && t.contains(&format!("BY {}", callsign(4))) && t.contains(&"RESPAWN IN 1.5".to_string()));
-        let void = HudState { killed_by: Some(KilledBy { name: String::new(), colour: None, weapon: DamageKind::Slash, void: true }), ..dead.clone() };
+        assert!(t.contains(&"ELIMINATED".to_string()) && t.contains(&format!("BY {} - SHURIKEN", callsign(4))) && t.contains(&"K 5  D 2  K/D 2.50".to_string()) && t.contains(&"23M".to_string()) && t.contains(&"RESPAWN IN 1.5".to_string()));
+        let void = HudState { killed_by: Some(KilledBy { name: String::new(), colour: None, weapon: DamageKind::Slash, void: true, bearing: None, dist: None, kd: None }), ..dead.clone() };
         assert!(texts(&void).contains(&"THE VOID CLAIMED YOU".to_string()));
         // the crosshair band stays clear even in the death overlay
         for pr in Hud::build_with(&dead, &p) {

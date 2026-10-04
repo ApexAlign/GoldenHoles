@@ -562,6 +562,11 @@ impl ClientGame {
 
     // ---- input (any rate) ----
 
+    /// F1: show / hide the controls strip (all rows, full strength) regardless of the 30 s fade.
+    pub fn toggle_controls(&mut self) {
+        self.controls.toggle_pin();
+    }
+
     pub fn button_event(&mut self, e: ButtonEvent) {
         if e.down {
             match e.action {

@@ -71,7 +71,7 @@ mod tests {
         match w.update(1.0, &net, false, "x") {
             Screen::Kicked { reason, retry_in_s } => {
                 assert_eq!(reason, "CHEAT DETECTION");
-                assert!((retry_in_s - 9.0).abs() < 1e-4, "{retry_in_s}");
+                assert!((retry_in_s - (crate::screens::RECONNECT_WAIT_S - 1.0)).abs() < 1e-4, "{retry_in_s}");
             }
             other => panic!("{other:?}"),
         }

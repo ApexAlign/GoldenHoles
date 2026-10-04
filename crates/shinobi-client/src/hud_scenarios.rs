@@ -50,7 +50,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let p = Palette::TRON;
     let mut out = Vec::new();
 
-    let spawn = HudState { boot: Some(1.1), hp: 1.0, ..base() };
+    let spawn = HudState { boot: Some(1.1), hp: 1.0, controls: crate::controls_card::ControlsCard::default().rows(), ..base() };
     out.push(("spawn", Hud::build_with(&spawn, &p)));
 
     let fight = HudState {
@@ -78,7 +78,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         dead: true,
         hp: 0.0,
         respawn_in_s: Some(1.8),
-        killed_by: Some(KilledBy { name: callsign(1), colour: Some(player_rgba(1)), weapon: DamageKind::Shuriken, void: false }),
+        killed_by: Some(KilledBy { name: callsign(1), colour: Some(player_rgba(1)), weapon: DamageKind::Shuriken, void: false, bearing: Some(-0.9), dist: Some(31.0), kd: Some((7, 4)) }),
         audio: Some((0.7, false)),
         ..base()
     };
