@@ -372,7 +372,8 @@ pub fn input(
     if mode_out.flags.allow_look {
         // Mouse look turns the aim on every rendered frame, not only on the 60 Hz sim tick: the camera used to step at
         // 60 Hz (judder on faster displays or uneven frames). The next intent still carries the current aim.
-        if motion.delta != Vec2::ZERO {
+        // a window grab / focus change can deliver one huge bogus delta (cursor warp on some compositors): drop it
+        if motion.delta != Vec2::ZERO && motion.delta.abs().max_element() < 1500.0 {
             let g = &mut net.0.game;
             g.settings.look(&mut g.aim, motion.delta.x, motion.delta.y, false);
             view.0.aim = g.aim;
