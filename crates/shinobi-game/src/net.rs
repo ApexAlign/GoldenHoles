@@ -74,7 +74,7 @@ fn publish_view(mut net: ResMut<Net>, mut view: ResMut<ViewRes>, fixed: Res<Time
         let sim_now = net.0.local_tick() + fixed.overstep_fraction() as f64;
         let t = clock.0.advance(real.delta_secs_f64() * 60.0, sim_now);
         clock.1 = clock.0.lag(sim_now) as f32;
-        net.0.view_at(t)
+        net.0.view_at(t, sim_now)
     } else {
         net.0.view()
     };
