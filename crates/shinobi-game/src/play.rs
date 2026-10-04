@@ -39,6 +39,10 @@ struct RemoteEnt {
     colour: Option<u32>,
     /// Distance beacon: a faint light column above the player so far-away players still read.
     beacon: Entity,
+    /// Soft additive glow ellipsoid around the body (depth-tested: only visible when the player is in view).
+    aura: Entity,
+    /// Spinning gem above the head within `GEM_MAX_DIST`: marks "a player is here" at mid range.
+    gem: Entity,
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
@@ -46,13 +50,25 @@ const VOID_Y: f32 = -20.0;
 
 /// Body materials per quantised player colour (and the additive beacon variant).
 #[derive(Resource, Default)]
-struct BodyMats(std::collections::HashMap<u32, Handle<StandardMaterial>>, std::collections::HashMap<u32, Handle<StandardMaterial>>);
+struct BodyMats(
+    std::collections::HashMap<u32, Handle<StandardMaterial>>,
+    std::collections::HashMap<u32, Handle<StandardMaterial>>,
+    std::collections::HashMap<u32, Handle<StandardMaterial>>,
+);
+
+/// Head gem range (m).
+const GEM_MAX_DIST: f32 = 40.0;
+
+/// Aura width multiplier: grows with distance so the glow stays a few pixels wider than the body at 30-60 m.
+pub fn aura_scale(dist: f32) -> f32 {
+    1.0 + (dist / 25.0).min(3.0)
+}
 
 /// Beacons appear beyond this distance (m); width grows with distance so the column stays about the same on screen.
 const BEACON_MIN_DIST: f32 = 18.0;
 
 pub fn beacon_width(dist: f32) -> f32 {
-    0.05 + 0.004 * dist
+    0.06 + 0.006 * dist
 }
 
 #[derive(Resource, Default)]
@@ -89,6 +105,7 @@ pub struct ShotImage(pub Handle<Image>);
 #[derive(Resource)]
 struct Look {
     cube: Handle<Mesh>,
+    sphere: Handle<Mesh>,
     hostile: Handle<StandardMaterial>,
 }
 
@@ -198,6 +215,7 @@ pub fn setup(
     };
     commands.insert_resource(Look {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        sphere: meshes.add(Sphere::new(0.5)),
         hostile: mats.add(unlit(pal.magenta)),
     });
 
@@ -556,7 +574,13 @@ fn sync_remotes(
             let beacon = commands
                 .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
-            RemoteEnt { root, parts, colour: None, beacon }
+            let aura = commands
+                .spawn((Mesh3d(look.sphere.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(root)))
+                .id();
+            let gem = commands
+                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
+                .id();
+            RemoteEnt { root, parts, colour: None, beacon, aura, gem }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
@@ -575,13 +599,23 @@ fn sync_remotes(
             }
             let bm = body_mats.1.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
-                    base_color: Color::linear_rgb(hue[0] * 2.0, hue[1] * 2.0, hue[2] * 2.0),
+                    base_color: Color::linear_rgb(hue[0] * 3.2, hue[1] * 3.2, hue[2] * 3.2),
                     unlit: true,
                     alpha_mode: AlphaMode::Add,
                     ..default()
                 })
             });
             commands.entity(ent.beacon).insert(MeshMaterial3d(bm.clone()));
+            commands.entity(ent.gem).insert(MeshMaterial3d(bm.clone()));
+            let am = body_mats.2.entry(k).or_insert_with(|| {
+                mats.add(StandardMaterial {
+                    base_color: Color::linear_rgb(hue[0] * 0.7, hue[1] * 0.7, hue[2] * 0.7),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Add,
+                    ..default()
+                })
+            });
+            commands.entity(ent.aura).insert(MeshMaterial3d(am.clone()));
         }
         // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
@@ -589,6 +623,21 @@ fn sync_remotes(
             let w = beacon_width(dist);
             bt.translation = Vec3::new(0.0, 4.2, 0.0);
             bt.scale = Vec3::new(w, 6.5, w);
+        }
+        // aura: soft glow ellipsoid hugging the body, wider with distance
+        if let Ok(mut at) = tf.get_mut(ent.aura) {
+            let w = 0.95 * aura_scale(dist);
+            at.translation = Vec3::ZERO;
+            at.scale = Vec3::new(w, 1.95 * (1.0 + (aura_scale(dist) - 1.0) * 0.35), w);
+        }
+        // head gem: a spinning diamond above the head at mid range
+        if let Ok(mut gt) = tf.get_mut(ent.gem) {
+            gt.translation = Vec3::new(0.0, 1.25 + 0.05 * (t * 3.0).sin(), 0.0);
+            gt.rotation = Quat::from_euler(EulerRot::YXZ, t * 2.4, 0.6, 0.78);
+            gt.scale = Vec3::splat(0.14 + 0.004 * dist);
+        }
+        if let Ok(mut gv) = vis.get_mut(ent.gem) {
+            gv.set_if_neq(if dist > 3.0 && dist < GEM_MAX_DIST { Visibility::Inherited } else { Visibility::Hidden });
         }
         if let Ok(mut bv) = vis.get_mut(ent.beacon) {
             bv.set_if_neq(if dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
@@ -720,6 +769,13 @@ mod district_tests {
 #[cfg(test)]
 mod beacon_tests {
     use super::*;
+
+    #[test]
+    fn aura_grows_with_distance_but_is_bounded() {
+        assert!(aura_scale(50.0) > aura_scale(10.0));
+        assert_eq!(aura_scale(0.0), 1.0);
+        assert!(aura_scale(500.0) <= 4.0);
+    }
 
     #[test]
     fn beacon_widens_with_distance() {
