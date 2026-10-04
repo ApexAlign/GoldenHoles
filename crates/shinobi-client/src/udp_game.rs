@@ -17,6 +17,7 @@ pub struct UdpGame {
     server: SocketAddr,
     pub game: ClientGame,
     local_tick: f64,
+    t0: std::time::Instant,
     pub stats: SessionStats,
 }
 
@@ -25,11 +26,17 @@ impl UdpGame {
         let bind: SocketAddr = if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }.parse().unwrap();
         let sock = UdpSocket::bind(bind)?;
         sock.set_nonblocking(true)?;
-        Ok(Self { sock, server, game: ClientGame::new(level, cfg), local_tick: 0.0, stats: SessionStats::default() })
+        Ok(Self { sock, server, game: ClientGame::new(level, cfg), local_tick: 0.0, t0: std::time::Instant::now(), stats: SessionStats::default() })
     }
 
     pub fn local_tick(&self) -> f64 {
         self.local_tick
+    }
+
+    /// Real time since the session started, in 60 Hz ticks: the server clock estimate follows this, not the step count.
+    fn sync_wall(&mut self, local: f64) {
+        let wall = self.t0.elapsed().as_secs_f64() * shinobi_proto::TICK_HZ as f64;
+        self.game.net.sync_wall(local, wall);
     }
 
     pub fn connected(&self) -> bool {
@@ -48,6 +55,7 @@ impl UdpGame {
     /// One clock for datagrams and intents: `local_tick` advances by exactly 1.0 per call.
     pub fn fixed_step(&mut self, frame: &InputFrame) {
         self.local_tick += 1.0;
+        self.sync_wall(self.local_tick);
         self.drain_rx();
         // owner-only state from the newest snapshot feeds reconciliation
         if let Some(u) = self.game.net.take_own_state() {
@@ -67,6 +75,7 @@ impl UdpGame {
     }
 
     pub fn view(&mut self) -> RenderView {
+        self.sync_wall(self.local_tick);
         self.game.view(self.local_tick)
     }
 
@@ -78,6 +87,7 @@ impl UdpGame {
     }
 
     pub fn view_frac(&mut self, frac: f64) -> RenderView {
+        self.sync_wall(self.local_tick + frac.clamp(0.0, 1.0));
         self.game.view(self.local_tick + frac.clamp(0.0, 1.0))
     }
 
@@ -130,6 +140,8 @@ mod tests {
         srv.set_read_timeout(Some(Duration::from_millis(30))).unwrap();
         while srv.recv_from(&mut buf).is_ok() {}
         for _ in 0..10 {
+            // paced like the real 60 Hz loop: a burst of steps with no wall time between them is held, not stamped ahead
+            std::thread::sleep(Duration::from_millis(16));
             c.fixed_step(&InputFrame { stick: (0.0, 1.0), ..Default::default() });
         }
         std::thread::sleep(Duration::from_millis(15));

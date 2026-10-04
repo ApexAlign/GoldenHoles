@@ -80,7 +80,7 @@ struct Res {
     final_lead: Option<u32>,
 }
 
-fn run(p: Profile, one_way: usize, seconds: u32, seed_moves: bool) -> Res {
+fn run(p: Profile, one_way: usize, seconds: u32, seed_moves: bool, wall_sync: bool) -> Res {
     let lv = level();
     let mut game = ClientGame::new(lv.clone(), ClientGameCfg::default());
     let mut srv = Server::new(Cfg::default());
@@ -106,6 +106,9 @@ fn run(p: Profile, one_way: usize, seconds: u32, seed_moves: bool) -> Res {
                     break;
                 }
                 let (_, d) = down.pop_front().unwrap();
+                if wall_sync {
+                    game.net.sync_wall(local_tick, next_frame);
+                }
                 let _ = game.on_datagram(&d, local_tick);
             }
             if let Some(u) = game.net.take_own_state() {
@@ -126,6 +129,9 @@ fn run(p: Profile, one_way: usize, seconds: u32, seed_moves: bool) -> Res {
             while acc >= 1.0 {
                 acc -= 1.0;
                 local_tick += 1.0;
+                if wall_sync {
+                    game.net.sync_wall(local_tick, next_frame);
+                }
                 let mut f = InputFrame::default();
                 if seed_moves {
                     f.stick = (1.0, 0.0);
@@ -200,7 +206,7 @@ fn honest_slow_or_hitching_clients_are_never_struck() {
     let mut bad = Vec::new();
     for (name, p) in PROFILES {
         for one_way in [0usize, 2] {
-            let r = run(p, one_way, 40, true);
+            let r = run(p, one_way, 40, true, true);
             eprintln!("{name} ow={one_way}: {r:?}");
             if r.kicked || r.strikes > 0 || r.rejected_future > 0 {
                 bad.push(format!("{name} ow={one_way}: {r:?}"));

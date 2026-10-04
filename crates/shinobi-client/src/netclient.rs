@@ -50,6 +50,9 @@ const CEILING_WINDOW: usize = 30;
 /// Blocks ignored after a change: samples already in flight still describe the old lead (about one RTT).
 const SETTLE_BLOCKS: u32 = 12;
 
+/// Steps may stamp this far past `want` (clock jitter) before `pace_tick` holds them.
+const HOLD_SLACK_TICKS: i64 = 2;
+
 const MS_PER_TICK: f64 = 1000.0 / TICK_HZ as f64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +112,9 @@ pub struct NetClient {
     lead_slew: i32,
     /// The last `pace_tick` repeated the previous stamp (the lead just shrank): the shell must not simulate it.
     stamp_held: bool,
+    /// `wall - local` in ticks (see `sync_wall`); 0 when the shell never syncs a wall clock.
+    skew: f64,
+    wall_synced: bool,
     /// `(packet seq, local tick at send)` of recent datagrams, to turn the server's echo into a round-trip time.
     sent: VecDeque<(u16, f64)>,
     /// Smoothed round-trip time in ms (`ping_ms`).
@@ -156,6 +162,8 @@ impl Default for NetClient {
             lead_settle: 0,
             lead_slew: 0,
             stamp_held: false,
+            skew: 0.0,
+            wall_synced: false,
             sent: VecDeque::new(),
             ping: None,
             corrections: 0,
@@ -241,7 +249,7 @@ impl NetClient {
         // Welcome is re-sent if the first was lost; ignore repeats so the clock anchor isn't reset.
         if self.state == ConnState::Connecting {
             self.state = ConnState::Connected { player_id: w.player_id };
-            self.anchor = Some((w.server_tick, local_tick));
+            self.anchor = Some((w.server_tick, self.clk(local_tick)));
         }
         Ok(())
     }
@@ -327,9 +335,9 @@ impl NetClient {
             }
         }
         if self.anchor.map_or(true, |(t, _)| snap.tick >= t) {
-            self.anchor = Some((snap.tick, local_tick));
+            self.anchor = Some((snap.tick, self.clk(local_tick)));
         }
-        self.interp.push(snap, local_tick);
+        self.interp.push(snap, self.clk(local_tick));
         Ok(())
     }
 
@@ -355,7 +363,29 @@ impl NetClient {
 
     /// Best guess of the server's current tick.
     pub fn server_tick_estimate(&self, local_tick: f64) -> Option<f64> {
-        self.anchor.map(|(t, at)| t as f64 + (local_tick - at))
+        self.anchor.map(|(t, at)| t as f64 + (self.clk(local_tick) - at))
+    }
+
+    fn clk(&self, local_tick: f64) -> f64 {
+        local_tick + self.skew
+    }
+
+    /// Tell the client what time it really is: `wall_ticks` = wall-clock seconds * 60. The fixed-step `local_tick` only
+    /// advances when a step runs, so after a frame hitch a catch-up burst of N steps moves it N ticks while no time
+    /// passed, and the intent stamps ran N ticks ahead of the server clock (dropped as "future"). With the wall
+    /// clock the estimate follows real time, and `pace_tick` holds (skips) steps that would stamp ahead of it.
+    /// Call before every `on_datagram` / `pace_tick` / view with the current `local_tick`; shells that never call it
+    /// keep the old behaviour (virtual time in tests).
+    pub fn sync_wall(&mut self, local_tick: f64, wall_ticks: f64) {
+        let skew = wall_ticks - local_tick;
+        if !self.wall_synced {
+            // first sync: nothing is anchored yet or the anchor is in local units; re-express it in wall units
+            if let Some((t, at)) = self.anchor {
+                self.anchor = Some((t, at + skew));
+            }
+            self.wall_synced = true;
+        }
+        self.skew = skew;
     }
 
     /// Tick to stamp on the intent produced now. The server only executes an intent on its exact tick and drops
@@ -377,6 +407,15 @@ impl NetClient {
         let lead = *self.lead.get_or_insert(lead_ticks.clamp(LEAD_MIN, LEAD_MAX));
         let want = self.input_tick(local_tick, lead)?;
         self.stamp_held = false;
+        // a burst of catch-up steps after a hitch must not run the stamps ahead of real time: hold them
+        if self.wall_synced && self.lead_slew == 0 {
+            if let Some(c) = self.cursor {
+                if c as i64 + 1 > want as i64 + HOLD_SLACK_TICKS {
+                    self.stamp_held = true;
+                    return Some(c);
+                }
+            }
+        }
         let next = match self.cursor {
             // a pending lead change moves the stamp now: skip ahead (grow) or hold one stamp (shrink)
             Some(c) if self.lead_slew > 0 => {
