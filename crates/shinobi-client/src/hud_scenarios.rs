@@ -90,6 +90,15 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     };
     out.push(("fight_lock", Hud::build_with(&fight, &p)));
 
+    // hit from behind-left while two enemies lurk off screen
+    let flank = HudState {
+        since_damage: Some((0.2, -2.4)),
+        damage_frac: 0.3,
+        enemy_ticks: vec![crate::hud::EnemyTick { bearing: 1.9, dist: 12.0 }, crate::hud::EnemyTick { bearing: -0.4 - 1.0, dist: 33.0 }],
+        ..base()
+    };
+    out.push(("flank", Hud::build_with(&flank, &p)));
+
     let dead = HudState {
         dead: true,
         hp: 0.0,

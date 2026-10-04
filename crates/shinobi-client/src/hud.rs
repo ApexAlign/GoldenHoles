@@ -323,6 +323,26 @@ pub enum Regen {
     Healing,
 }
 
+/// An enemy within `ENEMY_TICK_RANGE` that is not on screen: drawn as a small tick at the screen edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnemyTick {
+    /// View-relative bearing (`bearing_to`): 0 ahead, +ve to the right.
+    pub bearing: f32,
+    pub dist: f32,
+}
+
+/// Off-screen enemy ticks show for enemies this close (metres).
+pub const ENEMY_TICK_RANGE: f32 = 40.0;
+
+/// Where a view-relative bearing meets the screen edge (normalized coords); `inset` in screen-height fractions.
+pub fn edge_point(bearing: f32, aspect: f32, inset: f32) -> (f32, f32) {
+    let aspect = aspect.max(0.1);
+    let (sn, cs) = bearing.sin_cos();
+    let (hx, hy) = (0.5 * aspect - inset, 0.5 - inset);
+    let t = (hx / sn.abs().max(1e-4)).min(hy / cs.abs().max(1e-4));
+    (0.5 + sn * t / aspect, 0.5 - cs * t)
+}
+
 /// Plain data the HUD draws from. Fill it once per frame from the latest snapshot / server events plus
 /// the local `HudFx`; `Hud` never reaches into sim or net state itself.
 #[derive(Clone, Debug, Default)]
@@ -391,6 +411,7 @@ pub struct HudState {
     pub time_limit_secs: Option<u16>,
     pub team_scores: Option<TeamScores>,
     pub ally_tags: Vec<AllyTag>,
+    pub enemy_ticks: Vec<EnemyTick>,
     pub ping_ms: Option<u16>,
     pub killfeed: Vec<KillEntry>,
     /// Hold-to-show (Tab / touch button).
@@ -474,7 +495,9 @@ impl HudState {
 }
 
 pub const HIT_MARK_TIME: f32 = 0.3;
-pub const DAMAGE_TIME: f32 = 0.9;
+pub const DAMAGE_TIME: f32 = 1.2;
+/// Hits from further round than this (radians) also get an edge chevron: the attacker is off screen.
+pub const EDGE_ARROW_MIN_BEARING: f32 = 0.9;
 pub const KILLFEED_TIME: f32 = 5.0;
 pub const KILLFEED_MAX: usize = 5;
 
@@ -960,6 +983,20 @@ impl Hud {
             }
         }
 
+        // off-screen attacker: a bold red chevron on the screen edge itself, pointing inward at the source
+        if let Some((t, bearing)) = s.since_damage.filter(|(t, b)| *t < DAMAGE_TIME && b.abs() > EDGE_ARROW_MIN_BEARING) {
+            let f = 1.0 - t / DAMAGE_TIME;
+            let (ex, ey) = edge_point(bearing, 1.0 / ax(), 0.05);
+            let (sn, cs) = bearing.sin_cos();
+            // inward unit vector in height units; chevron wings trail back toward the edge
+            let (ix, iy) = (-sn, cs);
+            let tip = (ex, ey);
+            for (wx, wy) in [(cs, sn), (-cs, -sn)] {
+                let b = (tip.0 + (ix * -0.04 + wx * 0.032) * ax(), tip.1 + (iy * -0.04 + wy * 0.032));
+                out.push(Prim::Line { a: tip, b, color: p.magenta.a(f), glow: 0.014 });
+            }
+        }
+
         if let Some((phase, secs)) = s.match_clock {
             let time = secs.map(|t| format!("{}:{:02}", t / 60, t % 60));
             let (text, col) = match (phase, time) {
@@ -991,6 +1028,15 @@ impl Hud {
         }
         if let Some(ts) = s.team_scores {
             team_bar(&mut out, &ts, s.time, p);
+        }
+        // off-screen enemies in range: faint edge ticks, brighter and longer the closer they are
+        for e in &s.enemy_ticks {
+            let near = (1.0 - e.dist / ENEMY_TICK_RANGE).clamp(0.0, 1.0);
+            let (ex, ey) = edge_point(e.bearing, 1.0 / ax(), 0.02);
+            let (sn, cs) = e.bearing.sin_cos();
+            let len = 0.018 + 0.022 * near;
+            let b = (ex - sn * len * ax(), ey + cs * len);
+            out.push(Prim::Line { a: (ex, ey), b, color: p.magenta.a(0.35 + 0.45 * near), glow: 0.006 });
         }
         for t in &s.ally_tags {
             ally_tag(&mut out, t, s.team_scores.map_or(0, |x| x.mine), p);
@@ -1880,6 +1926,30 @@ pub fn bounds(p: &Prim) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn edge_point_lands_on_the_screen_edge_in_the_right_direction() {
+        let (x, y) = edge_point(0.0, 16.0 / 9.0, 0.02);
+        assert!((x - 0.5).abs() < 1e-4 && (y - 0.02).abs() < 1e-4, "ahead = top centre: {x},{y}");
+        let (x, y) = edge_point(std::f32::consts::FRAC_PI_2, 16.0 / 9.0, 0.02);
+        assert!(x > 0.97 && (y - 0.5).abs() < 1e-3, "right: {x},{y}");
+        let (x, y) = edge_point(std::f32::consts::PI, 1.0, 0.02);
+        assert!((x - 0.5).abs() < 1e-3 && y > 0.97, "behind = bottom: {x},{y}");
+    }
+
+    #[test]
+    fn offscreen_attacker_gets_an_edge_chevron_and_enemy_ticks_draw_at_the_edge() {
+        let pal = Palette::TRON;
+        let lines = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Line { glow, .. } if *glow == 0.014)).count();
+        let hit = |b: f32, t: f32| HudState { since_damage: Some((t, b)), ..Default::default() };
+        let ahead = lines(&hit(0.2, 0.1));
+        let behind = lines(&hit(3.0, 0.1));
+        assert_eq!(behind, ahead + 2, "off-screen source adds a two-stroke chevron");
+        assert_eq!(lines(&hit(3.0, DAMAGE_TIME + 0.01)), 0, "gone after DAMAGE_TIME");
+        let ticks = |n: usize| HudState { enemy_ticks: vec![EnemyTick { bearing: -2.0, dist: 10.0 }; n], ..Default::default() };
+        let count = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Line { glow, .. } if *glow == 0.006)).count();
+        assert_eq!(count(&ticks(2)) - count(&ticks(0)), 2);
+    }
+
+    #[test]
     fn regen_indicator_shows_only_while_hurt_and_labels_healing() {
         let pal = Palette::TRON;
         let texts = |r: Option<Regen>| {
@@ -1944,7 +2014,7 @@ mod tests {
     }
 
     /// What may sit in the side columns: hairline rails, the bezel ticks at the clear-zone edge, the corner
-    /// brackets, and the slim lower-half panels (telemetry, radar) inside the screen margin. Never the upper
+    /// brackets, edge locators (off-screen attacker / enemy ticks), and the slim lower-half panels (telemetry, radar) inside the screen margin. Never the upper
     /// half or anything near the centre cross.
     fn side_ok(b: Rect) -> bool {
         let rail = b.w <= RAIL_W + 1e-4;
@@ -1953,7 +2023,9 @@ mod tests {
         let left = b.x >= 0.015 && b.x + b.w <= SIDE_CLEAR - 0.015;
         let right = b.x >= 1.0 - SIDE_CLEAR + 0.015 && b.x + b.w <= 0.985;
         let panel = (left || right) && b.y >= 0.55 && b.y + b.h <= 0.97;
-        rail || tick || corner || panel
+        // enemy / attacker locators: tiny marks hugging the very edge of the screen
+        let locator = (b.x + b.w <= 0.06 || b.x >= 0.94) && b.w <= 0.08 && b.h <= 0.08;
+        rail || tick || corner || panel || locator
     }
 
     #[test]

@@ -282,6 +282,32 @@ impl HudBridge {
                 }
             }
         }
+        // enemies within range but off screen -> edge ticks (teams: the other team; free-for-all: everyone else)
+        let mut enemy_ticks = Vec::new();
+        {
+            let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
+            let (yaw, pitch) = view.look_angles();
+            let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
+            for (id, smp) in &view.remotes {
+                if *id == local_id {
+                    continue;
+                }
+                if let Some(t) = &teams {
+                    if t.team_of.get(id).copied().map(|x| x != 0) == Some(t.my_team != 0) {
+                        continue;
+                    }
+                }
+                if view.board.as_ref().and_then(|b| b.rows.iter().find(|r| r.id as u16 == *id)).map_or(false, |r| !r.alive) {
+                    continue;
+                }
+                let chest = [smp.pos[0], smp.pos[1] + 0.9, smp.pos[2]];
+                let on_screen = project(view.eye, yaw, pitch, fov, aspect, chest).filter(|(x, y, _)| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y));
+                let d = ((chest[0] - view.eye[0]).powi(2) + (chest[1] - view.eye[1]).powi(2) + (chest[2] - view.eye[2]).powi(2)).sqrt();
+                if on_screen.is_none() && d <= crate::hud::ENEMY_TICK_RANGE {
+                    enemy_ticks.push(crate::hud::EnemyTick { bearing: bearing_to(me, yaw, smp.pos), dist: d });
+                }
+            }
+        }
         let stats = LocalStats {
             hp: view.hp.map_or(1.0, |h| h / MAX_HP),
             dash_ready: if f.dash_ready { 1.0 } else { 1.0 - f.slice_cooldown },
@@ -491,6 +517,7 @@ impl HudBridge {
         }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
+        hs.enemy_ticks = enemy_ticks;
         hs.controls = view.controls.clone();
         hs
     }
@@ -498,6 +525,21 @@ impl HudBridge {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enemy_ticks_only_for_close_offscreen_enemies() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.6, 0.0];
+        v.local_pos = Some([0.0, 0.0, 0.0]);
+        let smp = |p: [f32; 3]| crate::interp::Sample { pos: p, yaw: 0.0, extrapolated: false };
+        v.remotes.push((2, smp([0.0, 0.0, -10.0]))); // ahead: on screen
+        v.remotes.push((3, smp([0.0, 0.0, 10.0]))); // behind, close
+        v.remotes.push((4, smp([0.0, 0.0, 80.0]))); // behind, far
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.enemy_ticks.len(), 1, "{:?}", s.enemy_ticks);
+        assert!(s.enemy_ticks[0].bearing.abs() > 2.9 && s.enemy_ticks[0].dist < 12.0);
+    }
+
     use super::*;
     use shinobi_proto::gameplay::{Board, BoardRow, HitMsg, KIND_SLASH};
     use shinobi_sim::combat::DamageKind;
