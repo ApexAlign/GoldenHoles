@@ -37,7 +37,7 @@ impl KatanaCfg {
         Self {
             damage: 120.0,
             blade_len: 1.6,
-            half_width: 1.3,
+            half_width: 1.0,
             half_height: 1.0,
             // Matching the dash cooldown keeps every slice paired with a lunge.
             cooldown: ch.dash_cd,

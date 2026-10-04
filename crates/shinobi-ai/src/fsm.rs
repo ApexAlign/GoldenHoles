@@ -184,6 +184,8 @@ pub struct BotMem {
     // timers (ticks)
     fire_ok: u32,
     slice_ok: u32,
+    /// Yaw offset (rad) of the dash being wound up: 0 = a clean read, else a deliberate whiff (`skill.slice_miss`).
+    slice_off: f32,
     evade_ok: u32,
     retreat_block: u32,
     strafe_sign: f32,
@@ -225,6 +227,7 @@ impl BotMem {
             stats: BotStats::default(),
             fire_ok: 0,
             slice_ok: 0,
+            slice_off: 0.0,
             evade_ok: 0,
             retreat_block: 0,
             strafe_sign: if id % 2 == 0 { 1.0 } else { -1.0 },
@@ -463,6 +466,8 @@ impl BotMem {
         if t.dist <= STRIKE_RANGE && t.los && !t.view.spawn_protected && self.strike_ready(ctx) {
             if !t.needs_ticket() || ctx.has_ticket {
                 self.stats.strikes += 1;
+                // a bad read is decided up front so the aim has the whole wind-up to slew onto the wrong spot
+                self.slice_off = if rng.chance(self.skill.slice_miss) { 1.2 * rng.signed().signum() } else { 0.0 };
                 self.set_phase(Phase::Strike { stage: StrikeStage::WindUp }, tick);
                 return;
             }
@@ -907,7 +912,7 @@ impl BotMem {
             // strikes lock on cleanly: the lunge goes where the aim points
             (Some(t), Phase::Strike { .. }) => {
                 let d = flat(t.view.pos - me.pos);
-                (yaw_of(d), 0.0)
+                (yaw_of(d) + self.slice_off, 0.0)
             }
             (Some(t), _) => self.aim_angles(ctx, &t),
             (None, _) => {
