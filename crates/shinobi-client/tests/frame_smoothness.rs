@@ -306,3 +306,28 @@ fn display_clock_removes_frame_delta_noise_from_the_motion_without_adding_much_l
         assert!(s_own.1 < 0.2 && s_rem.1 < 0.2, "{kind}: smoothed p99 {s_own:?} {s_rem:?}");
     }
 }
+
+#[test]
+fn camera_pose_glides_between_ticks_instead_of_stepping_at_60_hz() {
+    // Run (head bob on) and draw at 144 Hz: the bob / roll / FOV channels must change a little EVERY frame, not in 60 Hz lumps.
+    let mut rig = Rig::new();
+    let mut pacer = Pacer { acc: 0.0 };
+    let strafe = InputFrame { stick: (0.0, 1.0), ..Default::default() };
+    let (mut stepped, mut smooth) = (vec![], vec![]);
+    for i in 0..600 {
+        for _ in 0..pacer.advance(1.0 / 144.0) {
+            rig.step(&strafe, 0.0);
+        }
+        if i > 240 {
+            stepped.push(rig.game.view(rig.tick).eye[1] as f64);
+            smooth.push(rig.game.view(rig.tick + pacer.overstep()).eye[1] as f64);
+        }
+    }
+    // fraction of frames where the eye height does not move at all while the bob is clearly moving
+    let flat = |v: &[f64]| v.windows(2).filter(|w| (w[1] - w[0]).abs() < 1e-7).count() as f64 / v.len() as f64;
+    let swing = smooth.iter().cloned().fold(f64::MIN, f64::max) - smooth.iter().cloned().fold(f64::MAX, f64::min);
+    eprintln!("eye-y: stepped flat frames {:.2}, interpolated flat frames {:.2}, swing {swing:.4} m", flat(&stepped), flat(&smooth));
+    assert!(swing > 1e-3, "head bob should move the eye while running");
+    assert!(flat(&smooth) < 0.1, "interpolated pose must not hold still between ticks");
+    assert!(flat(&stepped) > 0.3, "sanity: tick-stepped pose does hold between ticks");
+}

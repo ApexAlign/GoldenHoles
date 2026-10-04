@@ -12,3 +12,4 @@ shinobi-ai = { path = "../shinobi-ai" }
 
 [dev-dependencies]
 shinobi-bot = { path = "../shinobi-bot" }
+shinobi-client.workspace = true

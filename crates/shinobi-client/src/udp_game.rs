@@ -29,6 +29,19 @@ impl UdpGame {
         Ok(Self { sock, server, game: ClientGame::new(level, cfg), local_tick: 0.0, t0: std::time::Instant::now(), stats: SessionStats::default() })
     }
 
+    /// Drop this session and start a fresh one against the same server: new socket (so a new peer address and a new
+    /// HELLO / cookie exchange), new `ClientGame` (prediction, interpolation and kick state all reset). Used by the
+    /// shell's "press Enter to reconnect" after a kick or a lost connection.
+    pub fn reconnect(&mut self, level: LevelDesc, cfg: ClientGameCfg) -> io::Result<()> {
+        *self = UdpGame::new(self.server, level, cfg)?;
+        Ok(())
+    }
+
+    /// Send arbitrary bytes to the server from this session's socket (tests: provoke a flood kick).
+    pub fn send_raw(&self, bytes: &[u8]) -> io::Result<usize> {
+        self.sock.send_to(bytes, self.server)
+    }
+
     pub fn local_tick(&self) -> f64 {
         self.local_tick
     }
@@ -154,5 +167,34 @@ mod tests {
         assert_eq!(ticks.len(), 10);
         assert!(ticks.windows(2).all(|w| w[1] == w[0] + 1), "consecutive: {ticks:?}");
         assert!(ticks[0] >= 500, "stamped at/after the server clock: {ticks:?}");
+    }
+
+    #[test]
+    fn reconnect_after_a_kick_rejoins_from_a_new_address_with_a_clean_session() {
+        let srv = UdpSocket::bind("127.0.0.1:0").unwrap();
+        srv.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut c = UdpGame::new(srv.local_addr().unwrap(), LevelDesc::standard(), ClientGameCfg::default()).unwrap();
+        c.fixed_step(&InputFrame::default());
+        let mut buf = [0u8; 2048];
+        let (_, first) = srv.recv_from(&mut buf).unwrap();
+        let to: SocketAddr = format!("127.0.0.1:{}", first.port()).parse().unwrap();
+        srv.send_to(&Welcome { player_id: 3, server_tick: 100 }.encode(), to).unwrap();
+        srv.send_to(&shinobi_proto::datagram::encode_kick(shinobi_proto::datagram::KickReason::Flood), to).unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+        c.fixed_step(&InputFrame::default());
+        assert!(c.game.net.kicked().is_some(), "kicked");
+
+        c.reconnect(LevelDesc::standard(), ClientGameCfg::default()).unwrap();
+        assert!(c.game.net.kicked().is_none() && !c.connected(), "clean session");
+        c.fixed_step(&InputFrame::default());
+        let (n, second) = srv.recv_from(&mut buf).unwrap();
+        assert_ne!(second.port(), first.port(), "a new socket, a new peer address");
+        assert_eq!(&buf[..n], &c.game.net.hello());
+        let to2: SocketAddr = format!("127.0.0.1:{}", second.port()).parse().unwrap();
+        srv.send_to(&Welcome { player_id: 9, server_tick: 900 }.encode(), to2).unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+        c.fixed_step(&InputFrame::default());
+        assert_eq!(c.own_id(), Some(9));
+        assert!(c.view().connected);
     }
 }

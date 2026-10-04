@@ -513,6 +513,10 @@ pub struct ClientGame {
     /// Intents sent before the predictor has an authoritative starting state; replayed once it has.
     pending: VecDeque<PlayerIntent>,
     pose: (CameraPose, WeaponPose),
+    /// The pose of the tick before, and the tick time the current one belongs to (`local_tick + 1`): `view` blends the
+    /// two so roll / bob / FOV / hit-shake glide between 60 Hz ticks instead of stepping.
+    pose_prev: (CameraPose, WeaponPose),
+    pose_t: f64,
     /// Edge FX accumulated across sim ticks since the last `view()` (replays never add to it).
     fx_edges: LocalFx,
     throw_cd_left: f32,
@@ -547,6 +551,8 @@ impl ClientGame {
             pred: None,
             pending: VecDeque::new(),
             pose: (CameraPose::default(), WeaponPose::default()),
+            pose_prev: (CameraPose::default(), WeaponPose::default()),
+            pose_t: f64::NEG_INFINITY,
             fx_edges: LocalFx::default(),
             throw_cd_left: 0.0,
             prev_flags: MoveFlags::default(),
@@ -906,6 +912,7 @@ impl ClientGame {
                 let mut cam_in = CameraInput::from_character(&p.ch, &self.aim);
                 cam_in.landed_speed = landed_speed;
                 cam_in.dash_ended = dash_ended;
+                self.pose_prev = self.pose;
                 self.pose = self.camera.update_aim(TICK_DT, cam_in, &self.aim);
             }
             None => {
@@ -913,9 +920,11 @@ impl ClientGame {
                 while self.pending.len() > 128 {
                     self.pending.pop_front();
                 }
+                self.pose_prev = self.pose;
                 self.pose = self.camera.update_aim(TICK_DT, CameraInput::default(), &self.aim);
             }
         }
+        self.pose_t = local_tick + 1.0;
         self.net.set_corrections(self.corrections);
         self.net.next_packet(intent, local_tick)
     }
@@ -945,7 +954,10 @@ impl ClientGame {
                 }
             }
         }
-        let off = self.reconciler.visual_offset;
+        // the offset decays once per tick; continue the decay between ticks so a correction glides out
+        let since = ((local_tick - (self.pose_t - 1.0)) as f32).clamp(0.0, 1.0);
+        let k = if self.pose_t.is_finite() { (-self.reconciler.decay_per_sec * TICK_DT * since).exp() } else { 1.0 };
+        let off = self.reconciler.visual_offset.map(|v| v * k);
         let local_pos = match &self.pred {
             Some(p) => {
                 let q = p.sample(local_tick);
@@ -996,7 +1008,18 @@ impl ClientGame {
                 phase: l.phase,
             })
         });
-        let (camera, weapon) = self.pose;
+        // yaw / pitch stay the live aim; the rest of the pose is blended from the previous tick's to this one's
+        let a = ((local_tick - (self.pose_t - 1.0)) as f32).clamp(0.0, 1.0);
+        let (mut camera, mut weapon) = self.pose;
+        if self.pose_t.is_finite() {
+            let (pc, pw) = self.pose_prev;
+            let l = |x: f32, y: f32| x + (y - x) * a;
+            camera.roll = l(pc.roll, camera.roll);
+            camera.y_offset = l(pc.y_offset, camera.y_offset);
+            camera.offset = [l(pc.offset[0], camera.offset[0]), l(pc.offset[1], camera.offset[1])];
+            camera.fov = l(pc.fov, camera.fov);
+            weapon = WeaponPose { pitch: l(pw.pitch, weapon.pitch), back: l(pw.back, weapon.back), y_dip: l(pw.y_dip, weapon.y_dip) };
+        }
         let eye = local_pos.map_or([0.0; 3], |p| [p[0], p[1] + self.cfg.sim.eye_above_center + camera.y_offset, p[2]]);
         RenderView {
             fx,
