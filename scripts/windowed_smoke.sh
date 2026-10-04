@@ -6,6 +6,7 @@
 #   scripts/windowed_smoke.sh                 ~60 s on levels/ffa.lvl with 7 bots
 #   SECS=30 BOTS=3 LEVEL=levels/arena.lvl scripts/windowed_smoke.sh
 #   SKIP_BUILD=1 scripts/windowed_smoke.sh    reuse the binaries already built
+#   RELEASE=1 scripts/windowed_smoke.sh       the optimised game (what play.sh runs; PERF lines are meaningful, still software GPU)
 #
 # One-time setup (apt):
 #   apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools xvfb x11-utils xdotool imagemagick libxkbcommon-x11-0 libxcb-xkb1
@@ -19,9 +20,9 @@ for c in xvfb-run xdotool import; do command -v "$c" >/dev/null || { echo "missi
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   echo ">> building server (release) and game (dev profile) ..."
   cargo build --release -p shinobi-server -q || exit 1
-  (cd crates/shinobi-game && cargo build -q) || exit 1
+  (cd crates/shinobi-game && if [ "${RELEASE:-0}" = "1" ]; then cargo build --release -q; else cargo build -q; fi) || exit 1
 fi
-SERVER=target/release/shinobi-server; GAME=crates/shinobi-game/target/debug/shinobi-game
+SERVER=target/release/shinobi-server; GAME=crates/shinobi-game/target/$([ "${RELEASE:-0}" = "1" ] && echo release || echo debug)/shinobi-game
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}" WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
 echo ">> server on 127.0.0.1:$PORT level=$LEVEL bots=$BOTS -> $OUT/server.log"
 "$SERVER" "127.0.0.1:$PORT" --level "$LEVEL" --bots "$BOTS" > "$OUT/server.log" 2>&1 &
@@ -58,7 +59,9 @@ xvfb-run -a -s "-screen 0 ${W}x${H}x24" bash -c '
   hold a 1; hold d 1; hold s 1
   END=$((SECS - 30)); [ $END -gt 0 ] && sleep $END
   shot 13-late; key Escape; sleep 0.6; shot 14-esc-pause
-  kill $GP 2>/dev/null; wait $GP 2>/dev/null
+  kill -INT $GP 2>/dev/null; for i in 1 2 3 4 5 6 7 8; do kill -0 $GP 2>/dev/null || break; sleep 0.5; done
+  kill -0 $GP 2>/dev/null && { echo "game ignored SIGINT, killing"; kill $GP; }
+  wait $GP 2>/dev/null; echo "game exit code: $?" | tee -a "$OUT/driver.log"
 ' 2>&1 | tee -a "$OUT/driver.log"
 
 echo ">> scanning logs"
