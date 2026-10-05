@@ -14,6 +14,8 @@ HOST_ARG="${1:-}"; PORT="${2:-7777}"; LEVEL="${3:-${LEVEL:-levels/ffa.lvl}}"
 OFFLINE_ARG=(); [ "${OFFLINE:-0}" = "1" ] && OFFLINE_ARG=(--offline)
 echo ">> building the game (release) ..."
 (cd crates/shinobi-game && cargo build --release "${OFFLINE_ARG[@]}" -j "${JOBS:-8}" -q)
+# no vsync by default: vsync runs ~11 fps on NVIDIA + Wayland hybrid laptops (SHINOBI_PRESENT=auto restores it)
+export SHINOBI_PRESENT="${SHINOBI_PRESENT:-immediate}"
 mkdir -p playtest
 LOG="playtest/game-$(date +%Y%m%d-%H%M%S).log"
 echo ">> joining $HOST_ARG:$PORT  level $LEVEL   (log: $LOG)"

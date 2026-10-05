@@ -51,6 +51,8 @@ echo ">> building game ($PROFILE; first time takes several minutes) ..."
 (cd crates/shinobi-game && cargo build "${REL[@]}" --offline -j "$JOBS" -q)
 # Hybrid-GPU laptops: the default adapter is the low-power iGPU. Prefer the discrete one (SHINOBI_GPU=igpu|auto overrides).
 export SHINOBI_GPU="${SHINOBI_GPU:-dgpu}"
+# AutoVsync runs at ~11 fps on NVIDIA + Wayland hybrid laptops (verified); no-vsync is full speed. SHINOBI_PRESENT=auto restores vsync.
+export SHINOBI_PRESENT="${SHINOBI_PRESENT:-immediate}"
 mkdir -p playtest
 LOG="playtest/game-$(date +%Y%m%d-%H%M%S).log"
 
