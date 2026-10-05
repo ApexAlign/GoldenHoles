@@ -25,6 +25,22 @@ pub struct Cfg {
     pub jump_speed: f32,
     pub double_jump_speed: f32,
     pub peak_window: f32,
+    /// Gravity multiplier while rising with jump held (hold-to-extend: a held jump goes higher and floats).
+    pub rise_hold_mult: f32,
+    /// Gravity multiplier while rising with jump released (a tap is a short hop).
+    pub rise_cut_mult: f32,
+    /// Gravity multiplier while falling with jump held (a gentle glide-down; release to drop at full gravity).
+    pub fall_glide_mult: f32,
+    /// Horizontal speed (m/s) a ground jump adds along the current heading (forward carry: jumps cover ground).
+    pub jump_carry: f32,
+    /// A double jump redirects the horizontal momentum to the stick and adds this much speed.
+    pub double_jump_carry: f32,
+    /// Jump carries never push horizontal speed past this (a slide-jump may already be faster and keeps its speed).
+    pub air_speed_cap: f32,
+    /// Airborne momentum decay (m/s^2) toward run speed (when faster) or toward rest (no stick): jumps keep their carry.
+    pub air_drag: f32,
+    /// Fraction of the wall-run speed kept along the wall when jumping off it.
+    pub wall_jump_keep: f32,
     pub coyote: f32,
     pub jump_buffer: f32,
     pub dash_speed: f32,
@@ -87,44 +103,71 @@ pub struct Cfg {
     pub grapple_brake: f32,
 }
 
+impl Cfg {
+    /// Apex height (m) of a ground jump: `hold` = jump held through the rise, else a tap (short hop).
+    pub fn jump_apex(&self, hold: bool) -> f32 {
+        let g = self.gravity * if hold { self.rise_hold_mult } else { self.rise_cut_mult };
+        self.jump_speed * self.jump_speed / (2.0 * g)
+    }
+
+    /// Extra height (m) a double jump adds at the apex, jump held / tapped.
+    pub fn double_jump_gain(&self, hold: bool) -> f32 {
+        let g = self.gravity * if hold { self.rise_hold_mult } else { self.rise_cut_mult };
+        self.double_jump_speed * self.double_jump_speed / (2.0 * g)
+    }
+
+    /// Highest ledge (m above the feet) a held single + double jump reaches, with `margin` m to spare (bot planning).
+    pub fn max_hop_rise(&self, margin: f32) -> f32 {
+        self.jump_apex(true) + self.double_jump_gain(true) - margin
+    }
+}
+
 impl Default for Cfg {
     fn default() -> Self {
         Self {
             half_height: 0.5,
             radius: 0.3,
-            run_speed: 6.5,
-            ground_accel: 54.0,
-            ground_decel: 85.0,
-            air_accel: 22.0,
-            gravity: 28.0,
-            terminal: 40.0,
+            run_speed: 5.4,
+            ground_accel: 45.0,
+            ground_decel: 72.0,
+            air_accel: 18.0,
+            gravity: 20.0,
+            terminal: 32.0,
             ground_stick: -2.0,
-            jump_speed: 9.5,
-            double_jump_speed: 8.5,
-            peak_window: 2.5,
-            coyote: 0.1,
-            jump_buffer: 0.12,
-            dash_speed: 18.0,
+            jump_speed: 8.8,
+            double_jump_speed: 7.2,
+            peak_window: 3.0,
+            rise_hold_mult: 0.8,
+            rise_cut_mult: 1.5,
+            fall_glide_mult: 0.6,
+            jump_carry: 3.0,
+            double_jump_carry: 2.0,
+            air_speed_cap: 9.5,
+            air_drag: 2.0,
+            wall_jump_keep: 1.0,
+            coyote: 0.14,
+            jump_buffer: 0.15,
+            dash_speed: 15.5,
             dash_time: 0.3,
             dash_cd: 1.2,
-            roll_speed: 9.0,
+            roll_speed: 7.5,
             roll_time: 0.35,
             wall_probe: 0.35,
-            wall_min_speed: 4.0,
-            wall_speed: 8.0,
+            wall_min_speed: 3.5,
+            wall_speed: 7.0,
             wall_stick: 1.5,
-            wall_max_time: 1.8,
-            wall_jump_push: 9.0,
+            wall_max_time: 2.2,
+            wall_jump_push: 7.5,
             snap_dist: 0.25,
             slope_limit: 45f32.to_radians(),
             trail_spacing: 0.4,
             trail_life: 4.0,
             trail_height: 1.6,
             trail_thick: 0.15,
-            slide_start_speed: 5.0,
-            slide_boost: 9.0,
-            slide_friction: 12.0,
-            slide_min_speed: 3.5,
+            slide_start_speed: 4.4,
+            slide_boost: 7.6,
+            slide_friction: 10.0,
+            slide_min_speed: 3.0,
             slide_max_time: 1.2,
             slide_cd: 0.5,
             kcc_offset: 0.01,
@@ -132,7 +175,7 @@ impl Default for Cfg {
             slide_eye_drop: 0.35,
             grapple_range: 40.0,
             grapple_min_len: 2.5,
-            grapple_speed: 20.0,
+            grapple_speed: 18.0,
             grapple_accel: 80.0,
             grapple_cd: 0.5,
             grapple_arrive: 2.0,
@@ -141,7 +184,7 @@ impl Default for Cfg {
             grapple_lift: 3.0,
             grapple_steer: 0.35,
             grapple_miss_cd: 0.15,
-            grapple_max_speed: 22.0,
+            grapple_max_speed: 20.0,
             grapple_ease_in: 0.25,
             grapple_arrive_speed: 10.0,
             grapple_soft_dist: 6.0,
@@ -512,7 +555,7 @@ impl CharacterSystem {
             if self.jump_buf > 0.0 {
                 // wall jump
                 self.vel = normal * cfg.wall_jump_push
-                    + tangent * cfg.wall_speed * 0.6
+                    + tangent * cfg.wall_speed * cfg.wall_jump_keep
                     + up * cfg.jump_speed;
                 self.jump_buf = 0.0;
                 self.wall_cd = 0.3;
@@ -575,7 +618,18 @@ impl CharacterSystem {
                 } else {
                     cfg.air_accel * dt
                 };
-                let step = if self.grapple.is_some() {
+                let airborne_free = !grounded_state && self.grapple.is_none();
+                let speed_now = h.norm();
+                let step = if airborne_free && (speed_now > cfg.run_speed || dir_in.norm_squared() == 0.0) {
+                    // momentum: a jump keeps its speed. Faster than a run (or no stick): only a slow drag; the stick
+                    // steers sideways and can brake, but never adds forward speed past the carry
+                    let hd = if speed_now > 1e-4 { h / speed_now } else { Vector::zeros() };
+                    let floor_speed = if dir_in.norm_squared() == 0.0 { 0.0 } else { cfg.run_speed };
+                    let drag = (cfg.air_drag * dt).min((speed_now - floor_speed).max(0.0));
+                    let mut st = dir_in * (cfg.air_accel * dt);
+                    st -= hd * st.dot(&hd).max(0.0);
+                    st - hd * drag
+                } else if self.grapple.is_some() {
                     // on the rope the stick only nudges; it never brakes the swing or the reel, and once the player is
                     // faster than a run it can only steer (sideways), never add speed (no runaway on the rope)
                     let mut st = dir_in * (cfg.air_accel * dt * cfg.grapple_steer);
@@ -599,6 +653,7 @@ impl CharacterSystem {
             if self.jump_buf > 0.0 {
                 if self.coyote > 0.0 {
                     self.vel.y = cfg.jump_speed;
+                    self.carry_horizontal(&cfg, dir_in, false, cfg.jump_carry);
                     self.coyote = 0.0;
                     self.jump_buf = 0.0;
                     jumped = true;
@@ -607,6 +662,8 @@ impl CharacterSystem {
                     && self.vel.y.abs() <= cfg.peak_window
                 {
                     self.vel.y = cfg.double_jump_speed;
+                    // redirect: the momentum turns to where the stick points, and gets a push
+                    self.carry_horizontal(&cfg, dir_in, true, cfg.double_jump_carry);
                     self.double_used = true;
                     self.double_jumped = true;
                     self.jump_buf = 0.0;
@@ -620,7 +677,17 @@ impl CharacterSystem {
             if grounded_state && !jumped {
                 self.vel.y = cfg.ground_stick;
             } else {
-                self.vel.y = (self.vel.y - cfg.gravity * dt).max(-cfg.terminal);
+                // variable jump: hold to rise higher and glide down, release to hop short / fall at full weight
+                let g = if self.grapple.is_some() {
+                    cfg.gravity
+                } else if self.vel.y > 0.0 {
+                    cfg.gravity * if input.jump_held { cfg.rise_hold_mult } else { cfg.rise_cut_mult }
+                } else if input.jump_held {
+                    cfg.gravity * cfg.fall_glide_mult
+                } else {
+                    cfg.gravity
+                };
+                self.vel.y = (self.vel.y - g * dt).max(-cfg.terminal);
             }
 
             // wall-run entry: airborne + jump held + lateral rays
@@ -947,6 +1014,26 @@ impl CharacterSystem {
     }
 
     /// Three flat rays per side; all must hit a near-vertical, coplanar wall.
+    /// Jump carry: add `carry` m/s of horizontal speed along the current heading (or, `redirect`, along `hint`, the
+    /// stick, which also turns the momentum), never past `air_speed_cap` (a faster entry speed is kept as it is).
+    fn carry_horizontal(&mut self, cfg: &Cfg, hint: Vector<Real>, redirect: bool, carry: f32) {
+        let h = flat(self.vel);
+        let speed = h.norm();
+        let dir = if redirect && hint.norm_squared() > 0.0 {
+            hint
+        } else if speed > 0.5 {
+            h / speed
+        } else if hint.norm_squared() > 0.0 {
+            hint
+        } else {
+            return;
+        };
+        let base = if redirect { speed.max(cfg.run_speed) } else { speed };
+        let new = if base >= cfg.air_speed_cap { base } else { (base + carry).min(cfg.air_speed_cap) };
+        self.vel.x = dir.x * new;
+        self.vel.z = dir.z * new;
+    }
+
     fn probe_wall(
         &self,
         w: &PhysicsWorld,
@@ -1183,7 +1270,8 @@ mod tests {
             tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
         }
         assert!(flat(ch.vel).norm() == 0.0, "no residual velocity");
-        assert!((*w.bodies[ch.body].translation() - p).norm() < 1e-3, "and no drift");
+        // horizontal only: the capsule may re-seat a few mm vertically (kcc skin) after a stop
+        assert!(flat(*w.bodies[ch.body].translation() - p).norm() < 1e-3, "and no drift");
     }
 
     #[test]
@@ -1234,11 +1322,12 @@ mod tests {
 
     #[test]
     fn jump_height_and_double_jump_gain() {
+        // a tap is a short hop, a held jump rises higher and floats (variable jump), the double jump adds height
         let (h1, t1) = jump_peak(false);
-        assert!((1.4..1.75).contains(&h1), "single jump peak {h1} m");
-        assert!((0.28..0.42).contains(&t1), "time to apex {t1} s");
+        assert!((1.1..1.5).contains(&h1), "tap jump peak {h1} m");
+        assert!((0.24..0.40).contains(&t1), "time to apex {t1} s");
         let (h2, _) = jump_peak(true);
-        assert!(h2 > h1 + 1.0, "double jump at the apex must add real height: {h1} -> {h2}");
+        assert!(h2 > h1 + 0.6, "double jump at the apex must add real height: {h1} -> {h2}");
     }
 
     #[test]
@@ -2047,5 +2136,181 @@ mod tests {
         let y = w.bodies[ch.body].translation().y;
         assert!((y - 0.81).abs() < 0.05, "standing on the floor, y = {y}");
         assert!(ch.vel.iter().all(|v| v.is_finite()));
+    }
+
+    // ---------- jump feel numbers (apex / air time / reach), see docs/movement.md ----------
+
+    /// (apex height m, air time s, horizontal reach m) of a run-in jump with the stick held forward.
+    /// `hold`: jump held through the rise; `double`: double jump at the apex.
+    fn run_jump(cfg: Cfg, hold: bool, double: bool) -> (f32, f32, f32) {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player_cfg(&mut w, [0.0, 0.81, 0.0], cfg);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let fwd = vector![0.0, 0.0, -1.0];
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, ..Default::default() }, &mut now);
+        }
+        let (z0, y0) = (w.bodies[ch.body].translation().z, w.bodies[ch.body].translation().y);
+        let (mut peak, mut air, mut dbl, mut prev_vy) = (0.0f32, 0u32, false, 0.0f32);
+        for i in 0..400 {
+            let at_apex = double && !dbl && i > 2 && ch.vel.y <= 0.5 && prev_vy > ch.vel.y;
+            dbl |= at_apex;
+            prev_vy = ch.vel.y;
+            let held = hold && (ch.vel.y > 0.0 || i == 0 || dbl);
+            let input = PlayerInput { move_dir: fwd, jump_pressed: i == 0 || at_apex, jump_held: held, ..Default::default() };
+            tick(&mut ch, &mut w, &input, &mut now);
+            peak = peak.max(w.bodies[ch.body].translation().y - y0);
+            if i > 2 && ch.state == MoveState::Grounded {
+                break;
+            }
+            air += 1;
+        }
+        (peak, air as f32 * DT, z0 - w.bodies[ch.body].translation().z)
+    }
+
+    /// Horizontal speed of a body (m/s).
+    fn hspeed(ch: &CharacterSystem) -> f32 {
+        flat(ch.vel).norm()
+    }
+
+    #[test]
+    fn run_speed_is_about_a_sixth_slower_than_the_old_6_5() {
+        let cfg = Cfg::default();
+        assert!((5.2..5.7).contains(&cfg.run_speed), "run {}", cfg.run_speed);
+        assert!(cfg.dash_speed < 16.5 && cfg.roll_speed < 8.0 && cfg.slide_boost < 8.0 && cfg.wall_speed < 7.5);
+    }
+
+    #[test]
+    fn variable_jump_tap_hops_hold_floats_and_a_double_jump_crosses_a_gap() {
+        let cfg = Cfg::default();
+        let (tap_h, tap_t, tap_d) = run_jump(cfg, false, false);
+        let (hold_h, hold_t, hold_d) = run_jump(cfg, true, false);
+        let (dbl_h, dbl_t, dbl_d) = run_jump(cfg, true, true);
+        eprintln!("FEEL tap {tap_h:.2} m {tap_t:.2} s {tap_d:.1} m | hold {hold_h:.2} m {hold_t:.2} s {hold_d:.1} m | hold+double {dbl_h:.2} m {dbl_t:.2} s {dbl_d:.1} m");
+        assert!((1.0..1.5).contains(&tap_h), "tap hop {tap_h}");
+        assert!((2.1..2.8).contains(&hold_h), "held jump {hold_h}");
+        assert!((0.9..1.3).contains(&hold_t), "a held jump floats about a second: {hold_t}");
+        assert!(hold_d >= 7.0, "a held run-in jump covers {hold_d} m");
+        assert!((3.5..4.5).contains(&dbl_h), "double jump apex {dbl_h}");
+        assert!(dbl_d >= 13.0, "jump + double jump crosses {dbl_d} m with two inputs");
+        // the arc is a glide, not a moon jump: a double jump stays under ~2 s
+        assert!(dbl_t < 2.2, "air time {dbl_t}");
+        // cfg helpers agree with the simulation (bots plan with them)
+        assert!((cfg.jump_apex(true) - hold_h).abs() < 0.15 && (cfg.jump_apex(false) - tap_h).abs() < 0.2);
+    }
+
+    #[test]
+    fn a_jump_keeps_its_forward_carry_in_the_air_and_never_exceeds_the_cap() {
+        let cfg = Cfg::default();
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player_cfg(&mut w, [0.0, 0.81, 0.0], cfg);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let fwd = vector![0.0, 0.0, -1.0];
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, ..Default::default() }, &mut now);
+        }
+        tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, jump_pressed: true, jump_held: true, ..Default::default() }, &mut now);
+        let mut peak_speed = 0.0f32;
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, jump_held: true, ..Default::default() }, &mut now);
+            peak_speed = peak_speed.max(hspeed(&ch));
+        }
+        assert!(hspeed(&ch) > cfg.run_speed + 1.5, "carry survives 0.33 s of flight: {}", hspeed(&ch));
+        assert!(peak_speed <= cfg.air_speed_cap + 1e-3, "cap {peak_speed}");
+        // letting go of the stick in the air does not stop you dead
+        for _ in 0..15 {
+            tick(&mut ch, &mut w, &PlayerInput { jump_held: true, ..Default::default() }, &mut now);
+        }
+        assert!(hspeed(&ch) > 3.0, "momentum carries with no stick: {}", hspeed(&ch));
+    }
+
+    #[test]
+    fn double_jump_redirects_momentum_to_the_stick() {
+        let cfg = Cfg::default();
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player_cfg(&mut w, [0.0, 0.81, 0.0], cfg);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let fwd = vector![0.0, 0.0, -1.0];
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, ..Default::default() }, &mut now);
+        }
+        tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, jump_pressed: true, jump_held: true, ..Default::default() }, &mut now);
+        let right = vector![1.0, 0.0, 0.0];
+        let mut done = false;
+        for _ in 0..120 {
+            let at_apex = !done && ch.vel.y.abs() < 1.5 && ch.vel.y < 1.0;
+            done |= at_apex;
+            tick(&mut ch, &mut w, &PlayerInput { move_dir: right, jump_pressed: at_apex, jump_held: true, ..Default::default() }, &mut now);
+            if at_apex {
+                assert!(ch.double_jumped);
+                assert!(ch.vel.x > 0.8 * hspeed(&ch), "momentum turned to the stick: {:?}", ch.vel);
+                assert!(hspeed(&ch) >= cfg.run_speed, "and keeps at least a run: {}", hspeed(&ch));
+                break;
+            }
+        }
+        assert!(done, "double jump fired");
+    }
+
+    #[test]
+    fn wall_run_exit_keeps_the_run_speed_along_the_wall() {
+        let cfg = Cfg::default();
+        let (mut w, mut ch) = wall_scene(); // wall on +x, runner heads -z
+        ch.vel = vector![0.0, 0.0, -cfg.run_speed - 1.0];
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], wall_cling: true, jump_held: true, ..Default::default() };
+        let mut now = 0.0;
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        assert!(matches!(ch.state, MoveState::WallRun { .. }));
+        tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, jump_held: true, ..run }, &mut now);
+        assert!(!matches!(ch.state, MoveState::WallRun { .. }) && ch.vel.y > 0.0);
+        assert!(-ch.vel.z >= cfg.wall_speed * 0.95, "wall-jump keeps the run along the wall: {:?}", ch.vel);
+        assert!(ch.vel.x < -cfg.wall_jump_push * 0.9, "and kicks off the wall: {:?}", ch.vel);
+    }
+
+    #[test]
+    fn grapple_release_launches_instead_of_braking() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now);
+        assert!(ch.grapple.is_some());
+        let idle = PlayerInput::default();
+        let mut best = 0.0f32;
+        while ch.grapple.is_some() {
+            tick(&mut ch, &mut w, &idle, &mut now);
+            best = best.max(ch.vel.norm());
+            assert!(now < 8.0, "rope never ended");
+        }
+        let h_release = hspeed(&ch);
+        for _ in 0..24 {
+            tick(&mut ch, &mut w, &idle, &mut now);
+        }
+        eprintln!("FEEL grapple: peak {best:.1} m/s, h at release {h_release:.1}, 0.4 s later h {:.1} v {:.1}", hspeed(&ch), ch.vel.y);
+        assert!(best <= Cfg::default().grapple_max_speed + 0.5, "rope speed {best}");
+        assert!(hspeed(&ch) >= 0.7 * h_release, "horizontal momentum is not braked away: {h_release} -> {}", hspeed(&ch));
+    }
+
+    #[test]
+    fn falling_glides_only_while_jump_is_held_and_free_fall_keeps_its_weight() {
+        let cfg = Cfg::default();
+        let fall = |held: bool| {
+            let mut w = world();
+            boxc(&mut w, [0.0, -50.0, 0.0], [100.0, 0.5, 100.0]);
+            let mut ch = player_cfg(&mut w, [0.0, 20.0, 0.0], cfg);
+            let mut now = 0.0;
+            for _ in 0..60 {
+                tick(&mut ch, &mut w, &PlayerInput { jump_held: held, ..Default::default() }, &mut now);
+            }
+            -ch.vel.y
+        };
+        let (free, glide) = (fall(false), fall(true));
+        assert!(glide < free * 0.8, "holding jump glides down: {glide} vs {free}");
+        assert!(free <= cfg.terminal + 1e-3 && free > 12.0, "a free fall still has weight: {free}");
     }
 }

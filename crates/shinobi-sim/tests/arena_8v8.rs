@@ -403,7 +403,7 @@ fn every_lane_sustains_a_wall_run_for_its_length() {
             }
             let travelled = (pos(&w, &ch).z + dir * 12.0).abs();
             assert!(ticks >= 85, "{label} dir {dir}: wall-run only held {ticks}/90 ticks");
-            assert!(travelled >= 11.5, "{label} dir {dir}: ran only {travelled:.1} m");
+            assert!(travelled >= 10.0, "{label} dir {dir}: ran only {travelled:.1} m");
         }
     }
 }

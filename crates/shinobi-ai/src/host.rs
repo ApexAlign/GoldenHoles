@@ -231,7 +231,7 @@ impl BotHost {
 
     /// Call after loading a level: finds boxes the Light bots can hop onto.
     pub fn rebuild_perches(&mut self, server: &Server) {
-        self.perches = find_perches(server, 1.0, 2.5);
+        self.perches = find_perches(server, 1.0, server.cfg().max_hop_rise(0.3)); // tallest box a held jump + double jump reaches
         self.perches_built = true;
         self.nav = Some(build_nav(server));
     }

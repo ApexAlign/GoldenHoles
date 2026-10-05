@@ -734,6 +734,7 @@ impl BotMem {
                     self.trav = Traverse::Hop { kind, since, dir: hdir, start, double_sent };
                 }
                 *buttons &= !(Buttons::DASH | Buttons::ROLL | Buttons::WALL_CLING | Buttons::SLICE);
+                *buttons |= Buttons::JUMP_HELD; // hold: the jump rises higher and glides down (the reach below assumes it)
                 return (hdir, 1.0);
             }
         }
@@ -743,10 +744,10 @@ impl BotMem {
             if let Some(pr) = self.perch.and_then(|i| ctx.perches.get(i)) {
                 let feet = me.pos.y - cfg.half_height - cfg.radius;
                 let rise = pr.top_center.y - feet;
-                if pr.edge_dist(me.pos) <= 2.2 && !pr.contains_xz(me.pos, 0.0) && (0.4..2.55).contains(&rise) {
+                if pr.edge_dist(me.pos) <= 2.2 && !pr.contains_xz(me.pos, 0.0) && (0.4..cfg.max_hop_rise(0.3)).contains(&rise) {
                     let hdir = unit_or_zero(flat(pr.top_center - me.pos));
                     self.stats.ledge_hops += 1;
-                    *buttons |= Buttons::JUMP_PRESSED;
+                    *buttons |= Buttons::JUMP_PRESSED | Buttons::JUMP_HELD;
                     self.trav = Traverse::Hop {
                         kind: HopKind::Ledge { top: pr.top_center.y },
                         since: tick,

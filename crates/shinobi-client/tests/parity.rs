@@ -171,7 +171,7 @@ fn run_with(ticks: u32, tweak_server_level: bool, drop_tick: Option<u32>) -> Run
     let cfg = Cfg::default();
     let mut srv = server(cfg);
     if tweak_server_level {
-        srv.add_static_box([0.0, 1.0, -12.0], [5.0, 1.0, 0.5]); // obstacle only the server knows about
+        srv.add_static_box([0.0, 2.0, -8.0], [5.0, 2.0, 0.5]); // obstacle only the server knows about (4 m tall: a jump cannot clear it)
     }
     let mut cli = Predictor::new(cfg);
     let mut r = Run {
