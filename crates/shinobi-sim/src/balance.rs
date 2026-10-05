@@ -162,7 +162,7 @@ pub struct AssistBalance {
 
 impl Default for AssistBalance {
     fn default() -> Self {
-        Self { friction: 0.35, magnet: 0.6, centre: 1.5, touch_mult: 1.6 }
+        Self { friction: 0.2, magnet: 0.9, centre: 4.0, touch_mult: 1.6 }
     }
 }
 
@@ -178,7 +178,7 @@ pub struct FeedbackBalance {
 
 impl Default for FeedbackBalance {
     fn default() -> Self {
-        Self { hitstop_slash_ms: 60.0, hitstop_kill_ms: 80.0 }
+        Self { hitstop_slash_ms: 25.0, hitstop_kill_ms: 40.0 }
     }
 }
 
@@ -329,10 +329,10 @@ impl Default for Balance {
                 ultimate_max_radius: 120.0,
                 ultimate_damage: 9999.0,
                 pickup_charge_secs: 20.0,
-                lock_secs: 0.35,
-                lock_pull_min: 0.25,
-                lock_break_secs: 0.25,
-                lock_blend_secs: 0.15,
+                lock_secs: 0.15,
+                lock_pull_min: 0.6,
+                lock_break_secs: 0.2,
+                lock_blend_secs: 0.06,
             },
             blocks: BlockBalance::default(),
             feedback: FeedbackBalance::default(),

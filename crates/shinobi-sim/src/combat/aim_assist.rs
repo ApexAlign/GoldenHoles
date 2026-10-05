@@ -31,9 +31,9 @@ pub struct Target {
 
 /// Narrowest the cone is allowed to get, in metres at the target: close targets are covered by a wider angle so a
 /// strafing enemy at 4-8 m does not slip out of a 6 degree cone every half second.
-pub const CONE_MIN_WIDTH: f32 = 1.5;
+pub const CONE_MIN_WIDTH: f32 = 2.5;
 /// A target we already hold stays selected out to this multiple of the cone (hysteresis against jitter and movers).
-pub const HOLD_CONE_MULT: f32 = 1.8;
+pub const HOLD_CONE_MULT: f32 = 1.6;
 
 /// Closest-to-the-crosshair enemy within `cone_deg` and `range`, with line of sight from `eye`. `ignore` = own
 /// hitbox and teammates; `own_body` = the owner's body (parent of its colliders). Deterministic: ties keep the
@@ -128,7 +128,7 @@ pub struct LockCfg {
 
 impl Default for LockCfg {
     fn default() -> Self {
-        Self { lock_secs: 0.35, pull_min: 0.25, break_secs: 0.25, blend_secs: 0.15 }
+        Self { lock_secs: 0.15, pull_min: 0.6, break_secs: 0.2, blend_secs: 0.06 }
     }
 }
 
@@ -225,7 +225,7 @@ impl LockState {
                     let moved = (t.centre.coords - Vector::new(self.pos[0], self.pos[1], self.pos[2])) / dt;
                     // clamp (a rewind or respawn jump is not motion) and smooth (tick-to-tick positions are quantised)
                     let moved = if moved.norm() > MAX_LEAD_SPEED { moved * (MAX_LEAD_SPEED / moved.norm()) } else { moved };
-                    self.target_vel = self.target_vel * 0.6 + moved * 0.4;
+                    self.target_vel = self.target_vel * 0.45 + moved * 0.55;
                 } else {
                     self.target_vel = Vector::zeros();
                 }
@@ -326,9 +326,17 @@ pub struct AssistInput {
 /// Look assist: console-shooter friction (the crosshair slows near a target) and magnetism (it follows the target's
 /// lateral motion while you are on it). Pure and deterministic: the result is what the client sends in its intent,
 /// so the server needs nothing extra. Keeps the previous target angles to measure the target's angular velocity.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct AimAssist {
     prev: Option<(u128, f32, f32)>,
+    /// 0..=1 grip of the assist: drops at once when the player looks away from the target, recovers over ~0.15 s.
+    grip: f32,
+}
+
+impl Default for AimAssist {
+    fn default() -> Self {
+        Self { prev: None, grip: 1.0 }
+    }
 }
 
 impl AimAssist {
@@ -337,6 +345,7 @@ impl AimAssist {
     pub fn apply(&mut self, cfg: &AssistCfg, input: Option<&AssistInput>, before: (f32, f32), after: (f32, f32)) -> (f32, f32) {
         let Some(i) = input else {
             self.prev = None;
+            self.grip = 1.0;
             return after;
         };
         let (ty, tp) = angles_of(i.target - i.eye);
@@ -350,7 +359,19 @@ impl AimAssist {
         let (dy, dp) = (wrap(ty - after.0), tp - after.1);
         let off = (dy * after.1.cos()).hypot(dp);
         let fall = (1.0 - off / cone).clamp(0.0, 1.0);
-        let k = i.pull * fall * if i.touch { cfg.touch_mult } else { 1.0 };
+        // break-away: a deliberate look AWAY from the target releases friction, magnetism and centring at once, so the
+        // assist never fights the player (the old pull dragged a flick back toward the target and felt sticky)
+        let ud = (wrap(after.0 - before.0), after.1 - before.1);
+        let to = (wrap(ty - before.0), tp - before.1);
+        let (un, tn) = (ud.0.hypot(ud.1), to.0.hypot(to.1));
+        let away = if tn > 1e-4 {
+            let cos = (ud.0 * to.0 + ud.1 * to.1) / (un.max(1e-6) * tn);
+            ((un - 0.003) / 0.008).clamp(0.0, 1.0) * (-2.5 * cos).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.grip = (1.0 - away).min((self.grip + 6.0 * i.dt).min(1.0));
+        let k = i.pull * fall * self.grip * if i.touch { cfg.touch_mult } else { 1.0 };
         if k <= 0.0 {
             return after;
         }
@@ -410,7 +431,7 @@ mod tests {
         let mut w = world();
         let body = own_body(&mut w);
         let near_axis = enemy(&mut w, vector![0.5, 1.0, -10.0], 1); // ~2.9 deg off
-        let wider = enemy(&mut w, vector![1.6, 1.0, -10.0], 2); // ~9.1 deg off, outside a 5 deg cone (and the 8.5 deg min-width cone at 10 m)
+        let wider = enemy(&mut w, vector![3.2, 1.0, -10.0], 2); // ~17.7 deg off, outside a 5 deg cone (and the 14 deg min-width cone at 10 m)
         w.colliders.insert(ColliderBuilder::cuboid(0.6, 3.0, 0.1).translation(vector![-0.75, 1.0, -5.0]).collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL)).build());
         let walled = enemy(&mut w, vector![-3.0, 1.0, -20.0], 3); // behind that wall
         w.queries.update(&w.colliders);
@@ -418,7 +439,7 @@ mod tests {
         let t = best_target(&w, EYE, FWD, 5.0, 40.0, &[], body).expect("an enemy in the cone");
         assert_eq!((t.collider, t.id), (near_axis, 1));
         assert!(best_target(&w, EYE, FWD, 5.0, 40.0, &[near_axis], body).is_none(), "an ally (ignored) is never selected; the next is outside the cone");
-        let wide = best_target(&w, EYE, FWD, 10.0, 40.0, &[near_axis], body).expect("wider cone");
+        let wide = best_target(&w, EYE, FWD, 20.0, 40.0, &[near_axis], body).expect("wider cone");
         assert_eq!(wide.collider, wider);
         let towards_wall = vector![-3.0, 0.0, -20.0].normalize();
         assert!(best_target(&w, EYE, towards_wall, 5.0, 40.0, &[near_axis, wider], body).is_none(), "line of sight to {walled:?} is walled off");
