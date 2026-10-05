@@ -5,7 +5,7 @@
 #   BOTS=3 ./demo.sh       fewer / more AI opponents (BOTS=0 for none)
 #   TEAM_SIZE=8 ./demo.sh  8v8 Cyan vs Orange team deathmatch, bots fill empty slots (opt-in; instead of BOTS)
 #   ./demo.sh --server-only   just run the server (connect the game yourself)
-# Quit: close the window; the server is stopped automatically.
+# Quit: close the window or press Ctrl-C; the server is stopped automatically. Game log: playtest/game-<time>.log
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -40,13 +40,19 @@ fi
 echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-} ${TEAM_ARGS[*]:-}"
 SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" "${TEAM_ARGS[@]}" &
 SRV=$!
-trap 'kill $SRV 2>/dev/null || true' EXIT
+trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM
 sleep 1
 
 if [ "${1:-}" = "--server-only" ]; then wait $SRV; exit 0; fi
 
-echo ">> building game (first time takes several minutes) ..."
-(cd crates/shinobi-game && cargo build --offline -j "$JOBS" -q)
+# Release by default: the debug build runs at ~10 fps. DEBUG=1 ./demo.sh for a debug build.
+if [ "${DEBUG:-0}" = "1" ]; then PROFILE=debug; REL=(); else PROFILE=release; REL=(--release); fi
+echo ">> building game ($PROFILE; first time takes several minutes) ..."
+(cd crates/shinobi-game && cargo build "${REL[@]}" --offline -j "$JOBS" -q)
+# Hybrid-GPU laptops: the default adapter is the low-power iGPU. Prefer the discrete one (SHINOBI_GPU=igpu|auto overrides).
+export SHINOBI_GPU="${SHINOBI_GPU:-dgpu}"
+mkdir -p playtest
+LOG="playtest/game-$(date +%Y%m%d-%H%M%S).log"
 
 cat <<'EOF'
 
@@ -65,4 +71,7 @@ cat <<'EOF'
   BLOCKS: the server and the wire support player-built blocks, but the game window has no build key yet.
 
 EOF
-exec crates/shinobi-game/target/debug/shinobi-game --server "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}"
+# no `exec`: the shell must stay alive so the trap stops the server when the window closes
+echo ">> game log (GPU line + PERF frame times): $LOG"
+crates/shinobi-game/target/$PROFILE/shinobi-game --server "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" 2> >(tee "$LOG" >&2) || true
+grep -E "GPU|PERF" "$LOG" | tail -n 3 | sed 's/^/>> /' || true
