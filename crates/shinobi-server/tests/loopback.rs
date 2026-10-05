@@ -285,7 +285,7 @@ fn handshake_snapshots_and_position_follows_intents() {
     let newest = runner.snaps.last().unwrap().tick;
     assert!(acked <= newest + 1 && newest.saturating_sub(acked) < 30, "acked {acked} vs snapshot {newest}");
     // health is exact for the owner and the scoreboard flows (2 players, warmup)
-    assert_eq!(runner.hp_x10, Some(1000));
+    assert_eq!(runner.hp_x10, Some((shinobi_sim::balance::Balance::demo().player.max_hp * 10.0) as u16)); // full health in the server's demo preset
     let board = runner.board.as_ref().expect("board arrived");
     assert!(board.rows.iter().any(|r| r.id as u16 == runner.id) && board.rows.len() == 2, "{board:?}");
     // snapshots after the first are deltas against acked baselines and still decode (checked in pump via expect)

@@ -454,13 +454,14 @@ impl Balance {
     ///   10 frags or 6 minutes, 8 s intermission (docs/DEMO.md).
     pub fn demo() -> Self {
         let mut b = Balance::default();
-        b.combat.katana.damage = 60.0;
+        b.combat.katana.damage = 66.0; // two slashes still kill (2 x 66 >= 130 hp)
+        b.player.max_hp = 130.0; // a bit more room to react: dying in under 2 s felt unfair
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
         b.combat.shuriken.speed = 70.0;
-        b.combat.shuriken.damage = 18.0; // 6 body hits (4 headshots) at ~5.9/s: ~0.9 s to kill, was 1.7 s
-        b.combat.shuriken.cooldown = 0.17;
+        b.combat.shuriken.damage = 12.0; // 9 body hits at 4.5/s: ~1.85 s to kill; kills come from aim assist / hit reach / small map, not from fast melting (18 dmg at 5.9/s was far too deadly)
+        b.combat.shuriken.cooldown = 0.20;
         b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
         // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
@@ -468,8 +469,8 @@ impl Balance {
         b.combat.katana.half_width = 1.2;
         // hazards must not feel like unfair deaths: a light-wall is a 3-touch kill (34 each), an obstacle needs
         // two hits (60), contact re-arms only after 1 s (one pass = one hit), your own trail never hurts you
-        b.hazards.wall_damage = 34.0;
-        b.hazards.obstacle_damage = 60.0;
+        b.hazards.wall_damage = 44.0;
+        b.hazards.obstacle_damage = 66.0;
         b.hazards.rearm_ticks = 60;
         b.hazards.owner_immune = true;
         b.matches.warmup_ticks = 3 * crate::match_state::TICK_HZ;
@@ -891,11 +892,11 @@ mod tests {
         assert!(d.combat.katana.damage * 2.0 >= d.player.max_hp && d.combat.katana.damage < d.player.max_hp, "katana is a 2-hit kill");
         let dps = d.combat.shuriken.damage / d.combat.shuriken.cooldown;
         let ttk = d.player.max_hp / dps;
-        // the 88 m arena wants kills easy to get: ~0.9 s of clean fire (was 1.4-2.5 s for the 224 m map), still not a blink
-        assert!((0.8..1.5).contains(&ttk), "a clean body-shot stream takes 0.8-1.5 s to kill ({dps} dps, {ttk:.2} s)");
+        // kills come from aim help and the small map, not melting: ~1.9 s of clean fire, still not a blink
+        assert!((1.5..2.4).contains(&ttk), "a clean body-shot stream takes 1.5-2.4 s to kill ({dps} dps, {ttk:.2} s)");
         assert!(ttk / d.combat.headshot_mult > 0.55, "headshots speed it up without making it instant");
         assert!(d.combat.shuriken.speed >= 60.0, "fast stars");
-        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 180));
+        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (130.0, 180));
         // hazards: not instant kills, one pass = one hit, own trail harmless
         let h = &d.hazards;
         assert!(h.wall_damage * 3.0 >= d.player.max_hp && h.wall_damage * 2.0 < d.player.max_hp, "walls: 3 touches kill");
