@@ -411,7 +411,7 @@ fn wall_run_lasts_long_enough_to_use_the_corridor_and_hop_across() {
         now += DT;
     }
     let run_len = z0 - pos(&w, &ch).z;
-    assert!(run_len > 12.0 && pos(&w, &ch).z > -29.5, "ran {run_len} m, ended at z {}", pos(&w, &ch).z);
+    assert!(run_len > 10.5 && pos(&w, &ch).z > -29.5, "ran {run_len} m, ended at z {}", pos(&w, &ch).z);
     let _ = start_z;
 }
 

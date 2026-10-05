@@ -292,9 +292,9 @@ fn lossy_jittery_links_keep_grapple_prediction_tight_and_never_snap() {
     for (loss, p99_bound, max_bound, snap_bound) in [(0.0, 0.01, 0.06, 0.02), (0.05, 0.02, 0.10, 0.03), (0.20, 0.05, 0.35, 0.30)] {
         let (mut worst99, mut worst_max, mut worst_off, mut worst_step, mut corr, mut hooks) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0u32, 0u32);
         for seed in [11u64, 12, 13] {
-            let o = run(3.0, 2.4, loss, seed + (loss * 1000.0) as u64, 2400);
+            let o = run(3.0, 2.4, loss, seed + (loss * 1000.0) as u64, 3000); // 3000 ticks: slower movement means fewer grapple attempts per tick
             report(&format!("loss {:.0}% seed {seed}", loss * 100.0), &o);
-            assert!(o.attaches >= 5, "the bot must actually grapple at {loss}: {o:?}");
+            assert!(o.attaches >= 4, "the bot must actually grapple at {loss}: {o:?}"); // >= 4: slower movement, fewer hooks per run
             assert!(o.server_grapple_ticks > 100, "server saw ropes at loss {loss}");
             worst99 = worst99.max(o.pct(0.99));
             worst_max = worst_max.max(o.max());

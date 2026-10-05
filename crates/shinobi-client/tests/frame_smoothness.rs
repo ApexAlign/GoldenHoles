@@ -19,7 +19,12 @@ use shinobi_proto::snapshot::{encode_delta, EntityState, MoveKind, Snapshot};
 use shinobi_proto::TICK_DT;
 
 /// Run speed the scripted players move at (the sim default).
-const RUN: f64 = 6.5;
+const RUN: f64 = 5.4;
+
+#[test]
+fn run_constant_matches_the_sim_default() {
+    assert!((RUN - Cfg::default().run_speed as f64).abs() < 1e-6, "update RUN to the sim's run speed");
+}
 use shinobi_sim::character::{Cfg, MoveState};
 use shinobi_sim::events::EventOutbox;
 use shinobi_sim::level::{LevelBox, LevelDesc};
