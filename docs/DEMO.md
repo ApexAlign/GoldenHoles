@@ -5,7 +5,7 @@ discs, slice with a katana, and print floors/walls out of the grid that others c
 
 ## Locked decisions (change only via Engine)
 - Mode: FREE-FOR-ALL. Demo default: 1 human + 5 bots on the 88 m `levels/ffa_small.lvl` (`BOTS=5 ./demo.sh`). Up to 16 players. Match: first to 10 kills
-  or 6 minutes, 3 s respawn, 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
+  or 6 minutes, 2.5 s respawn (a death animation fills it: flash, collapse camera, the body bursts into fragments), 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
 - Map: `levels/ffa.lvl`, fixed (no shrinking, no void-start in the demo). Default `levels/ffa.lvl` = 224 m across (HALF=112). `levels/ffa_xl.lvl` = 336 m across (HALF=168) is optional; measured
   density favours the 224 m map (18.7 vs 8.7 kills/min with 16 players, Network). Layered: ground, mid towers, sky layer. Void edges + kill
   plane. 24+ spread spawn pads, no mutual sightlines.

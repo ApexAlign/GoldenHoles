@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use shinobi_client::client_game::{Action, ButtonEvent, ClientGame, ClientGameCfg, InputFrame, OwnAck};
+use shinobi_client::client_game::{Action, ButtonEvent, ClientGame, ClientGameCfg, DeathView, InputFrame, OwnAck};
 use shinobi_proto::bits::BitWriter;
 use shinobi_proto::datagram::{frame_snapshot_v3, is_hello, Welcome};
 use shinobi_proto::gameplay::OwnExtras;
@@ -60,6 +60,8 @@ struct Rig {
     srv_pos: std::collections::HashMap<u32, [f32; 3]>,
     view_blocks: Vec<(u16, [i32; 3])>,
     phase_from: u32,
+    /// Every view drawn while dead: the death sequence as the shell sees it (`DeathView`, camera eye, aim).
+    death_views: Vec<(DeathView, [f32; 3], f32)>,
 }
 
 impl Rig {
@@ -101,6 +103,7 @@ impl Rig {
             srv_pos: Default::default(),
             view_blocks: vec![],
             phase_from: 60,
+            death_views: vec![],
         }
     }
 
@@ -143,6 +146,9 @@ impl Rig {
         }
         let view = self.game.view(now);
         self.saw_rope |= view.rope.is_some();
+        if let Some(d) = view.death {
+            self.death_views.push((d, view.eye, view.aim.yaw));
+        }
         self.view_blocks = view.blocks.iter().map(|b| (b.owner, b.cell)).collect();
         self.srv.frame(Duration::from_nanos(16_666_667));
         self.pvp.extend(self.srv.pvp_events.iter().copied());
@@ -328,8 +334,31 @@ fn the_whole_loop_stays_in_sync() {
     r.teleport(1, [0.5, -80.0, 0.5]);
     r.idle(10);
     assert!(!r.me().vitals.alive(), "fell out of the world");
-    r.idle(60 * 8);
+    // ---- 6b. the death sequence: the player keeps mashing every control, none of it may reach the game
+    let (yaw_at_death, kills_before) = (r.game.aim.yaw, r.me().vitals.kills);
+    let mash = InputFrame {
+        stick: (1.0, 1.0),
+        look: (300.0, 80.0),
+        buttons: vec![ButtonEvent { action: Action::Fire, down: true }, ButtonEvent { action: Action::Slice, down: true }],
+    };
+    for _ in 0..60 * 8 {
+        if r.me().vitals.alive() {
+            break;
+        }
+        r.step(mash.clone());
+    }
     assert!(r.me().vitals.alive() && r.me().vitals.deaths > alive_before, "respawned");
+    let dv = &r.death_views;
+    assert!(dv.len() > 60, "a death sequence was drawn for the whole wait ({} frames)", dv.len());
+    assert_eq!(dv.iter().filter(|(d, ..)| d.fresh).count(), 1, "the one-shot burst fires exactly once, on the first frame");
+    assert!(dv[0].0.fresh && dv[0].0.t < 0.2, "and it is the first frame: {:?}", dv[0].0);
+    assert!(dv.windows(2).all(|w| w[1].0.t >= w[0].0.t), "the death clock only runs forward");
+    let last = dv.last().unwrap();
+    assert!(last.0.t > 2.0 && last.0.t <= last.0.total + 0.5, "the sequence runs the whole respawn wait: {:?}", last.0);
+    assert!(last.1[1] < last.0.pos[1], "the eye has collapsed below where the head was: eye {:?} body {:?}", last.1, last.0.pos);
+    assert!((r.game.aim.yaw - yaw_at_death).abs() < 1e-3, "look input is dead while dead: {} -> {}", yaw_at_death, r.game.aim.yaw);
+    assert!((last.2 - dv[0].2).abs() > 0.2, "the kill-cam turned the view on its own");
+    assert_eq!(r.me().vitals.kills, kills_before, "mashing fire and slash while dead killed nobody");
     r.idle(120);
     let (p, s) = (r.game.predicted_pos().unwrap(), r.me().pos(&r.srv.world));
     let err = ((p[0] - s[0]).powi(2) + (p[1] - s[1]).powi(2) + (p[2] - s[2]).powi(2)).sqrt();

@@ -446,6 +446,10 @@ pub struct HudState {
     pub toast: Option<(String, f32)>,
     /// Seconds until respawn while dead.
     pub respawn_in_s: Option<f32>,
+    /// Death sequence clock: seconds since we died, and the respawn delay (bar length). `None` = not on a live clock
+    /// (the overlay draws its settled look).
+    pub death_t: Option<f32>,
+    pub respawn_total: f32,
     /// Undecodable datagrams arrived since the caller's baseline; ping readout turns magenta with "!".
     pub net_warn: bool,
     pub time: f32,
@@ -1132,7 +1136,9 @@ impl Hud {
                 _ => {}
             }
         }
-        out.extend(crate::controls_card::prims(&s.controls, p));
+        if !s.dead {
+            out.extend(crate::controls_card::prims(&s.controls, p)); // not over the respawn countdown
+        }
         out
     }
 }
@@ -1450,8 +1456,22 @@ pub fn weapon_name(k: DamageKind) -> &'static str {
 /// Death overlay: ELIMINATED, who did it (with their weapon icon), the respawn countdown and its bar. All in the
 /// band above / below the crosshair, which stays empty.
 fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
-    out.push(Prim::Vignette { start: 0.3, max_a: 0.4, tint: p.magenta.a(1.0) });
-    out.push(Prim::Text { pos: (0.5, 0.14), text: "ELIMINATED".into(), size: 0.06, color: p.magenta.a(0.95), align: Align::Center });
+    // the death sequence clock; a state without one (scenarios, tests) draws the settled look
+    let t = s.death_t.unwrap_or(9.0);
+    let sm = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    // white-hot flash on the frame of death, then the world washes out to cold grey under a red vignette
+    if t < 0.16 {
+        out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(1.0, 0.95, 0.95, 0.8 * (1.0 - t / 0.16)), glow: 0.0 });
+    }
+    out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(0.30, 0.31, 0.36, 0.5 * sm(t / 0.9)), glow: 0.0 });
+    out.push(Prim::Vignette { start: 0.15, max_a: 0.4 + 0.5 * sm(t / 0.7), tint: Rgba(1.0, 0.06, 0.12, 1.0) });
+    out.push(Prim::Scanlines { count: 120, scroll: (t * 0.35).fract(), a: 0.05 + 0.12 * sm(t / 0.8) });
+    // ELIMINATED slams in large and settles
+    let slam = 1.0 + 0.9 * (1.0 - sm(t / 0.22));
+    out.push(Prim::Text { pos: (0.5, 0.14), text: "ELIMINATED".into(), size: 0.06 * slam, color: p.magenta.a(0.95 * sm(t / 0.08 + 0.2)), align: Align::Center });
     if let Some(k) = &s.killed_by {
         let (label, col, glyph) = if k.void {
             ("THE VOID CLAIMED YOU".to_string(), p.magenta, Glyph::Void)
@@ -1486,7 +1506,8 @@ fn death_overlay(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     if let Some(t) = s.respawn_in_s {
         let t = t.max(0.0);
         out.push(Prim::Text { pos: (0.5, 0.78), text: format!("RESPAWN IN {t:.1}"), size: 0.04, color: p.orange.a(0.95), align: Align::Center });
-        let (w, f) = (0.24, (1.0 - t / RESPAWN_SECS).clamp(0.0, 1.0));
+        let total = if s.respawn_total > 0.0 { s.respawn_total } else { RESPAWN_SECS };
+        let (w, f) = (0.24, (1.0 - t / total).clamp(0.0, 1.0));
         out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.795, w, 0.008), color: p.orange.a(0.16), glow: 0.0 });
         out.push(Prim::Rect { r: Rect::new(0.5 - w * 0.5, 0.795, w * f, 0.008), color: p.orange.a(0.95), glow: 0.006 });
     }
@@ -2820,7 +2841,9 @@ mod tests {
         for pr in Hud::build_with(&dead, &p) {
             if let Some(b) = bounds(&pr) {
                 let near = b.x < 0.56 && b.x + b.w > 0.44 && b.y < 0.54 && b.y + b.h > 0.46;
-                assert!(!near || matches!(pr, Prim::Line { .. } | Prim::Ring { .. }), "death overlay over the cross: {b:?}");
+                // the full-screen wash (flash / desaturation tint) and scanlines are screen effects, not HUD furniture
+                let wash = matches!(pr, Prim::Rect { r, .. } if r.w >= 1.0 && r.h >= 1.0) || matches!(pr, Prim::Scanlines { .. });
+                assert!(!near || wash || matches!(pr, Prim::Line { .. } | Prim::Ring { .. }), "death overlay over the cross: {b:?}");
             }
         }
         // spawn shield shows while alive, never while dead
