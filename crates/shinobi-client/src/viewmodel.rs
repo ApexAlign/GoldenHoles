@@ -43,8 +43,8 @@ impl Default for ViewCfg {
             swing_secs: 0.16,
             recover_secs: 0.12,
             trail_secs: 0.18,
-            fov_kick_deg: 10.0,
-            fov_kick_secs: 0.3,
+            fov_kick_deg: 5.0,
+            fov_kick_secs: 0.2,
         }
     }
 }

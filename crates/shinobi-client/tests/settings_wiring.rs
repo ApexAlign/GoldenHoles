@@ -45,7 +45,7 @@ fn wall_run_tilt_scales_with_fx_intensity_and_vanishes_in_reduced_motion() {
     let full = settle(&mut cam(&Settings::default()), 60, wall).0;
     let half = settle(&mut cam(&Settings { fx_intensity: 0.5, ..Default::default() }), 60, wall).0;
     let rm = settle(&mut cam(&Settings { reduced_motion: true, ..Default::default() }), 60, wall).0;
-    assert!((full + 15f32.to_radians()).abs() < 0.01, "full-strength tilt is 15 degrees: {full}");
+    assert!((full + 8f32.to_radians()).abs() < 0.01, "full-strength tilt is 8 degrees: {full}");
     assert!((half - full * 0.5).abs() < 0.005, "half intensity, half tilt: {half} vs {full}");
     assert_eq!(rm, 0.0, "reduced motion: no roll");
 }
@@ -67,7 +67,7 @@ fn double_jump_thrust_and_fov_punch_scale_and_reduced_motion_removes_them() {
     let (y1, f1) = peak(&Settings::default());
     let (yh, fh) = peak(&Settings { fx_intensity: 0.5, ..Default::default() });
     let (yr, fr) = peak(&Settings { reduced_motion: true, ..Default::default() });
-    assert!(y1 > 0.03 && f1 > 3.0, "full strength: thrust {y1} m, FOV punch {f1} deg");
+    assert!(y1 > 0.015 && f1 > 1.2, "full strength: thrust {y1} m, FOV punch {f1} deg");
     assert!((yh / y1 - 0.5).abs() < 0.05 && (fh / f1 - 0.5).abs() < 0.1, "half: {yh}/{y1}, {fh}/{f1}");
     assert!(yr.abs() < 1e-6 && fr.abs() < 1e-3, "reduced motion: thrust {yr}, punch {fr}");
 }

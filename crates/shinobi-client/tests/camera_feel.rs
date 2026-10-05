@@ -40,8 +40,8 @@ fn hard_landing_dips_the_eye_and_narrows_fov_in_proportion_then_settles() {
     assert!(y_soft.abs() < 1e-6 && f_soft.abs() < 1e-3, "below the threshold nothing happens: {y_soft}, {f_soft}");
     let ((y_mid, f_mid), _) = after(&mut cam(&Settings::default()), landing(12.0));
     let ((y_hard, f_hard), (y_end, f_end)) = after(&mut cam(&Settings::default()), landing(18.0));
-    assert!(y_mid < -0.03 && y_hard < y_mid, "dip grows with fall speed: {y_mid} then {y_hard}");
-    assert!(f_mid < -0.5 && f_hard < f_mid, "FOV narrows with fall speed: {f_mid} then {f_hard}");
+    assert!(y_mid < -0.006 && y_hard < y_mid, "dip grows with fall speed: {y_mid} then {y_hard}");
+    assert!(f_mid < -0.2 && f_hard < f_mid, "FOV narrows with fall speed: {f_mid} then {f_hard}");
     assert!(y_hard > -0.4, "a dip, not a crash: {y_hard}");
     assert!(y_end.abs() < 0.002 && f_end.abs() < 0.2, "settles back: {y_end}, {f_end}");
     // faster than full strength does not keep growing
@@ -52,7 +52,7 @@ fn hard_landing_dips_the_eye_and_narrows_fov_in_proportion_then_settles() {
 #[test]
 fn dash_end_undershoots_fov_and_settles() {
     let ((_, f), (_, f_end)) = after(&mut cam(&Settings::default()), CameraInput { dash_ended: true, ..Default::default() });
-    assert!(f < -1.5 && f > -3.5, "undershoot {f}");
+    assert!(f < -0.6 && f > -2.0, "undershoot {f}");
     assert!(f_end.abs() < 0.2, "settled {f_end}");
 }
 
@@ -64,8 +64,8 @@ fn slide_lowers_the_eye_and_leans_into_the_slide_then_recovers() {
     for _ in 0..60 {
         p = c.update(DT, slide).0;
     }
-    assert!((p.y_offset + 0.35).abs() < 0.01, "eye lowered by the slide drop: {}", p.y_offset);
-    assert!((p.roll - 4f32.to_radians()).abs() < 0.005, "leans right when sliding right: {}", p.roll);
+    assert!((p.y_offset + 0.3).abs() < 0.01, "eye lowered by the slide drop: {}", p.y_offset);
+    assert!((p.roll - 2f32.to_radians()).abs() < 0.005, "leans right when sliding right: {}", p.roll);
     let left = {
         let mut c = cam(&Settings::default());
         let s = CameraInput { sliding: Some(-1.0), ..Default::default() };
@@ -75,7 +75,7 @@ fn slide_lowers_the_eye_and_leans_into_the_slide_then_recovers() {
         }
         p.roll
     };
-    assert!((left + 4f32.to_radians()).abs() < 0.005, "and left when sliding left: {left}");
+    assert!((left + 2f32.to_radians()).abs() < 0.005, "and left when sliding left: {left}");
     for _ in 0..90 {
         p = c.update(DT, CameraInput::default()).0;
     }
@@ -85,7 +85,7 @@ fn slide_lowers_the_eye_and_leans_into_the_slide_then_recovers() {
     for _ in 0..60 {
         p = c.update(DT, CameraInput { sliding: Some(0.0), ..Default::default() }).0;
     }
-    assert!(p.roll.abs() < 1e-4 && p.y_offset < -0.3);
+    assert!(p.roll.abs() < 1e-4 && p.y_offset < -0.28);
 }
 
 #[test]

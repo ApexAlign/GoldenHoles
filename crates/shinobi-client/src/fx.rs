@@ -33,13 +33,13 @@ impl Default for FxCfg {
     fn default() -> Self {
         Self {
             shake_decay: 14.0,
-            shake_amp_deg: 0.8,
+            shake_amp_deg: 0.3,
             shake_hz: 32.0,
             vignette_decay: 6.0,
-            dash_fov_add: 18.0,
-            dash_fov_in: 18.0,
-            dash_fov_out: 7.0,
-            warp_max: 0.35,
+            dash_fov_add: 10.0,
+            dash_fov_in: 22.0,
+            dash_fov_out: 10.0,
+            warp_max: 0.15,
             slash_dur: 0.28,
             grid_pulse_hz: 1.25,
         }
@@ -448,9 +448,9 @@ mod tests {
     fn dash_widens_fov_fast_then_returns_slow() {
         let mut fx = FxState::new(FxCfg::default());
         let o = step(&mut fx, 15, FxInput { dash_active: true, ..Default::default() }); // 0.25 s
-        assert!(o.fov_add_deg > 14.0 && o.fov_warp > 0.25, "{o:?}");
+        assert!(o.fov_add_deg > 8.0 && o.fov_warp > 0.1, "{o:?}");
         let o1 = step(&mut fx, 6, FxInput::default());
-        assert!(o1.fov_add_deg > 5.0, "should still be wide after 0.1 s");
+        assert!(o1.fov_add_deg > 2.5, "should still be wide after 0.1 s");
         let o2 = step(&mut fx, 120, FxInput::default());
         assert!(o2.fov_add_deg < 0.05 && o2.fov_warp < 0.01);
     }

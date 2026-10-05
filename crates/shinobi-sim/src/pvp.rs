@@ -804,6 +804,7 @@ mod tests {
         let mut b = sim.s.balance.clone();
         b.combat.shuriken.assist_strength = 0.0;
         b.combat.shuriken.assist_lead = 0.0;
+        b.combat.shuriken.assist_cone_deg = 0.0; // no lock either: the katana magnet would bend the live slice onto the mover
         sim.s.set_balance(b).unwrap();
         let run = PlayerIntent { move_x: 127, ..IDLE };
         for t in 0..90 {

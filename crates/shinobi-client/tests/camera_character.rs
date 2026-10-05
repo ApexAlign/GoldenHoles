@@ -56,22 +56,22 @@ fn wall_run_roll(wall_x: f32, dir: [f32; 3], yaw: f32) -> f32 {
 }
 
 #[test]
-fn wall_on_right_tilts_left_15_deg() {
+fn wall_on_right_tilts_left_8_deg() {
     let roll = wall_run_roll(1.0 + 0.5, [0.0, 0.0, -1.0], 0.0); // facing -Z, wall at +X = right
-    assert!((roll + 15f32.to_radians()).abs() < 0.01, "roll {roll}");
+    assert!((roll + 8f32.to_radians()).abs() < 0.01, "roll {roll}");
 }
 
 #[test]
-fn wall_on_left_tilts_right_15_deg() {
+fn wall_on_left_tilts_right_8_deg() {
     let roll = wall_run_roll(-1.0 - 0.5, [0.0, 0.0, -1.0], 0.0); // wall at -X = left
-    assert!((roll - 15f32.to_radians()).abs() < 0.01, "roll {roll}");
+    assert!((roll - 8f32.to_radians()).abs() < 0.01, "roll {roll}");
 }
 
 #[test]
 fn tilt_follows_the_view_not_the_world() {
     // same wall at +X, but running and looking toward +Z: the wall is now on the player's LEFT
     let roll = wall_run_roll(1.0 + 0.5, [0.0, 0.0, 1.0], PI);
-    assert!((roll - 15f32.to_radians()).abs() < 0.01, "roll {roll}");
+    assert!((roll - 8f32.to_radians()).abs() < 0.01, "roll {roll}");
 }
 
 #[test]
@@ -113,5 +113,5 @@ fn double_jump_thrusts_camera_on_the_exact_tick() {
         tick(&mut ch, &mut w, &idle, &mut now);
         peak = peak.max(cam.frame(DT, &ch, &aim).0.y_offset);
     }
-    assert!(peak > 0.03, "camera thrust peak {peak}");
+    assert!(peak > 0.015, "camera thrust peak {peak}");
 }

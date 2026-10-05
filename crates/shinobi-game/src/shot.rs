@@ -151,7 +151,8 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     },
                     eased: progress * progress * (3.0 - 2.0 * progress),
                     t_since_phase: since,
-                    target_vel: [0.0; 3],
+                    // a strafing target, so the review frame shows the lead marker
+                    target_vel: if name == "locked" { [6.0, 0.0, 0.0] } else { [0.0; 3] },
                     blend: progress,
                 });
             }

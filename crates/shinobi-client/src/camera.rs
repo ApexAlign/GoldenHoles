@@ -76,26 +76,26 @@ pub struct FpsCameraCfg {
 impl Default for FpsCameraCfg {
     fn default() -> Self {
         Self {
-            wall_roll: 15f32.to_radians(),
-            roll_smooth: 0.09,
+            wall_roll: 8f32.to_radians(),
+            roll_smooth: 0.07,
             base_fov: 90.0,
-            wall_fov_add: 6.0,
-            fov_smooth: 0.12,
-            thrust_impulse: 3.6,
-            thrust_fov_punch: 7.0,
-            spring_k: 220.0,
-            spring_zeta: 0.55,
+            wall_fov_add: 3.0,
+            fov_smooth: 0.09,
+            thrust_impulse: 1.8,
+            thrust_fov_punch: 3.0,
+            spring_k: 260.0,
+            spring_zeta: 0.8,
             recoil_recover: 0.18,
             recoil_reset: 0.045,
             reset_window: 0.2,
             weapon_dip: 0.05,
             landing_min_speed: 6.0,
             landing_full_speed: 18.0,
-            landing_dip: 2.4,
-            landing_fov_settle: 3.0,
-            dash_end_fov_settle: 2.5,
-            slide_drop: 0.35,
-            slide_roll: 4f32.to_radians(),
+            landing_dip: 1.2,
+            landing_fov_settle: 1.2,
+            dash_end_fov_settle: 1.0,
+            slide_drop: 0.3,
+            slide_roll: 2f32.to_radians(),
             slide_smooth: 0.08,
             bob_amp: 0.0,
             bob_hz: 2.2,
@@ -247,7 +247,7 @@ impl FpsCamera {
         if k <= 0.0 {
             return;
         }
-        let (kick, roll, fov) = if killed { (0.07, 0.07, 5.0) } else { (0.035, 0.035, 2.5) };
+        let (kick, roll, fov) = if killed { (0.03, 0.03, 2.0) } else { (0.015, 0.015, 1.0) };
         let incoming = kick * k;
         if self.hit.active && self.hit.kick >= incoming {
             return;
@@ -377,12 +377,12 @@ mod tests {
     }
 
     #[test]
-    fn wall_run_tilts_15_away_from_wall_and_recovers() {
+    fn wall_run_tilts_8_away_from_wall_and_recovers() {
         let mut cam = FpsCamera::new(FpsCameraCfg::default());
         let (p, _) = run(&mut cam, 0.6, CameraInput { wall_side: Some(1.0), ..Default::default() });
-        assert!((p.roll + 15f32.to_radians()).abs() < 0.01, "roll {}", p.roll);
+        assert!((p.roll + 8f32.to_radians()).abs() < 0.01, "roll {}", p.roll);
         let (p, _) = run(&mut cam, 0.6, CameraInput { wall_side: Some(-1.0), ..Default::default() });
-        assert!((p.roll - 15f32.to_radians()).abs() < 0.01);
+        assert!((p.roll - 8f32.to_radians()).abs() < 0.01);
         let (p, _) = run(&mut cam, 0.8, CameraInput::default());
         assert!(p.roll.abs() < 0.005);
     }
@@ -394,7 +394,7 @@ mod tests {
         assert!(p.y_offset > 0.0 || cam.y_v > 0.0);
         let mut peak = 0.0f32;
         for _ in 0..30 { peak = peak.max(cam.update(DT, CameraInput::default()).0.y_offset); }
-        assert!(peak > 0.03, "peak {peak}");
+        assert!(peak > 0.015, "peak {peak}");
         let (p, _) = run(&mut cam, 1.5, CameraInput::default());
         assert!(p.y_offset.abs() < 0.002);
         assert!((p.fov - 90.0).abs() < 0.2);
@@ -457,7 +457,7 @@ mod tests {
             assert_eq!((p.yaw, p.pitch), (aim.yaw, aim.pitch), "the hit must not move the crosshair");
             last = p;
         }
-        assert!(peak > 0.02 && peak < 0.1, "peak kick {peak} m");
+        assert!(peak > 0.008 && peak < 0.05, "peak kick {peak} m");
         assert!(last.offset == [0.0, 0.0] && last.roll.abs() < 1e-4, "back to rest after 0.5 s: {last:?}");
     }
 
