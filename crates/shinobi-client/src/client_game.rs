@@ -22,7 +22,7 @@ use shinobi_proto::datagram::KickReason;
 use shinobi_proto::gameplay::{Board, HitMsg};
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{dq_pitch, dq_yaw};
-use shinobi_proto::quant::dq_vel;
+use shinobi_proto::quant::{dq_pos, dq_vel};
 use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
 use shinobi_proto::TICK_DT;
 use shinobi_sim::balance::FeedbackBalance;
@@ -429,6 +429,20 @@ pub struct BuildGhost {
     pub ready: bool,
 }
 
+/// The local player is dead and waiting to respawn (set from the server's dead flag until it clears).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeathView {
+    /// Seconds since the death was seen.
+    pub t: f32,
+    /// Respawn delay from the server's `MatchRules`, seconds (a default until the join catch-up arrives).
+    pub total: f32,
+    /// Where the body fell (centre): the shell bursts it into fragments here.
+    pub pos: [f32; 3],
+    pub killer: Option<EntityId>,
+    /// True only on the first view after dying: the shell spawns the one-shot effects.
+    pub fresh: bool,
+}
+
 /// What the shell draws. `Default` so shells and tests can use `..Default::default()` and new fields never break them.
 #[derive(Clone, Debug, Default)]
 pub struct RenderView {
@@ -473,6 +487,8 @@ pub struct RenderView {
     pub district: Option<shinobi_sim::level::District>,
     /// Placement preview for the block under the crosshair (None before prediction starts or while dead).
     pub build_ghost: Option<BuildGhost>,
+    /// Set while we are dead: camera, controls and HUD switch to the death sequence.
+    pub death: Option<DeathView>,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
     pub lock: Option<LockOn>,
     /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
@@ -541,6 +557,20 @@ pub struct ClientGame {
     prev_flags: MoveFlags,
     /// Number of corrections applied (replays), for stats / debug overlay.
     pub corrections: u32,
+    /// The local death in progress (see `death_cam`).
+    death: Option<Death>,
+    /// Newest kill against us seen before the death state existed: (killer, local tick).
+    last_kill: Option<(EntityId, f64)>,
+}
+
+/// Captured when the dead flag first arrives.
+struct Death {
+    t0: f64,
+    pos: [f32; 3],
+    yaw0: f32,
+    pitch0: f32,
+    killer: Option<EntityId>,
+    fresh: bool,
 }
 
 impl ClientGame {
@@ -578,6 +608,8 @@ impl ClientGame {
             throw_cd_left: 0.0,
             prev_flags: MoveFlags::default(),
             corrections: 0,
+            death: None,
+            last_kill: None,
         }
     }
 
@@ -771,6 +803,38 @@ impl ClientGame {
 
     /// Exactly once per fixed sim tick. Returns the datagram to send (HELLO while connecting, then one intent
     /// packet per tick), or `None` (kicked, or waiting for the server clock).
+    /// Is the local player dead? From the newest snapshot's dead flag (the same source the HUD uses).
+    fn own_dead(&self) -> bool {
+        use shinobi_proto::snapshot::FLAG_DEAD;
+        self.net
+            .player_id()
+            .zip(self.net.interp.newest_tick())
+            .and_then(|(id, t)| self.net.interp.get(t)?.get(id).copied())
+            .map_or(false, |e| e.flags & FLAG_DEAD != 0)
+    }
+
+    /// Start / end the death sequence from the dead flag; true while dead.
+    fn update_death(&mut self, local_tick: f64) -> bool {
+        let dead = self.own_dead();
+        match (dead, self.death.is_some()) {
+            (true, false) => {
+                let own = self.net.player_id().zip(self.net.interp.newest_tick()).and_then(|(id, t)| self.net.interp.get(t)?.get(id).map(|e| e.pos));
+                let pos = match &self.pred {
+                    Some(p) => {
+                        let o = self.reconciler.visual_offset;
+                        Some([p.pos[0] + o[0], p.pos[1] + o[1], p.pos[2] + o[2]])
+                    }
+                    None => own.map(|q| [dq_pos(q[0]), dq_pos(q[1]), dq_pos(q[2])]),
+                };
+                let killer = self.last_kill.take().filter(|(_, t)| local_tick - *t < 120.0).map(|(id, _)| id);
+                self.death = pos.map(|pos| Death { t0: local_tick, pos, yaw0: self.aim.yaw, pitch0: self.aim.pitch, killer, fresh: true });
+            }
+            (false, true) => self.death = None,
+            _ => {}
+        }
+        dead
+    }
+
     pub fn sim_tick(&mut self, frame: &InputFrame, local_tick: f64) -> Option<Vec<u8>> {
         for e in &frame.buttons {
             self.button_event(*e);
@@ -806,9 +870,15 @@ impl ClientGame {
                 self.controls.mark(Use::Move);
             }
         }
+        // dead: the server ignores us and the body is gone, so nothing we press may move, fire or aim anything
+        let dead = self.update_death(local_tick);
+        if dead {
+            self.aim.yaw = aim_before.0;
+            self.aim.pitch = aim_before.1;
+        }
         // look assist: slow the look and follow the target's motion while one is locked. It edits the aim BEFORE the
         // intent is built, so the server sees exactly the aim the player (and the predictor) used.
-        let assist_in = self.pred.as_ref().filter(|p| p.combat.lock.pull(&p.combat.lock_cfg) > 0.0).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
+        let assist_in = self.pred.as_ref().filter(|p| !dead && p.combat.lock.pull(&p.combat.lock_cfg) > 0.0).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
             eye: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
             target: { let t = p.combat.lock.pos_now(); vector![t[0], t[1], t[2]] },
             target_id: p.combat.lock.target_id,
@@ -820,9 +890,10 @@ impl ClientGame {
         let (ay, ap) = self.look_assist.apply(&self.cfg.assist, assist_in.as_ref(), aim_before, (self.aim.yaw, self.aim.pitch));
         self.aim.yaw = ay;
         self.aim.pitch = ap;
-        let mut intent = build_intent(tick, stick, &self.aim, self.latch.sample());
-        intent.zip = std::mem::take(&mut self.zip_edge);
-        let press = self.build_edge.take();
+        let held = self.latch.sample();
+        let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
+        intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
+        let press = self.build_edge.take().filter(|_| !dead);
         intent.build = press.is_some();
         intent.build_wall = press == Some(PieceKind::Wall);
         intent.build_ramp = press == Some(PieceKind::Ramp);
@@ -1093,6 +1164,39 @@ impl ClientGame {
             self.los_cache = (local_tick, ids);
         }
         let los_ids = self.los_cache.1.clone();
+        let events = self.net.take_events();
+        // who killed us (for the kill-cam): the Kill event can land before or after the dead flag
+        if let Some(me) = own_id {
+            for e in &events {
+                if let NetEvent::Kill { killer, victim, .. } = e {
+                    if *victim == me && *killer != 0 {
+                        match &mut self.death {
+                            Some(d) if d.killer.is_none() => d.killer = Some(*killer),
+                            Some(_) => {}
+                            None => self.last_kill = Some((*killer, local_tick)),
+                        }
+                    }
+                }
+            }
+        }
+        let (mut aim, mut eye, mut camera, mut weapon) = (self.aim, eye, camera, weapon);
+        let death = self.death.as_mut().map(|d| {
+            let t = ((local_tick - d.t0) / shinobi_proto::TICK_HZ as f64).max(0.0) as f32;
+            let killer_pos = d.killer.and_then(|k| remotes.iter().find(|(id, _)| *id == k).map(|(_, s)| s.pos));
+            let side = if d.killer.unwrap_or(0) % 2 == 0 { 1.0 } else { -1.0 };
+            let pose = crate::death_cam::death_pose(t, d.pos, d.yaw0, d.pitch0, killer_pos, self.cfg.sim.eye_above_center, side);
+            aim.yaw = pose.yaw;
+            aim.pitch = pose.pitch;
+            eye = pose.eye;
+            camera.roll = pose.roll;
+            camera.y_offset = 0.0;
+            camera.offset = pose.shake;
+            camera.fov = if camera.fov > 1.0 { camera.fov } else { 90.0 } + pose.fov_add;
+            weapon = WeaponPose { pitch: weapon.pitch, back: weapon.back, y_dip: 1.2 }; // the hands drop out of frame
+            let fresh = std::mem::take(&mut d.fresh);
+            DeathView { t, total: self.net.respawn_secs().unwrap_or(2.5), pos: d.pos, killer: d.killer, fresh }
+        });
+        let dead = death.is_some();
         RenderView {
             fx,
             feel: self.camera.feel,
@@ -1109,17 +1213,18 @@ impl ClientGame {
             correction_offset: off,
             los_ids,
             remotes,
-            events: self.net.take_events(),
-            build_ghost,
-            lock,
+            events,
+            death,
+            build_ghost: build_ghost.filter(|_| !dead),
+            lock: lock.filter(|_| !dead),
             lock_edges: std::mem::take(&mut self.lock_edges),
             blocks,
             block_size: BlockCfg::default().size,
             block_thickness: BlockCfg::default().thickness,
-            aim: self.aim,
+            aim,
             discs,
             disc_owners,
-            rope: self.pred.as_ref().and_then(|p| p.ch.grapple).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
+            rope: self.pred.as_ref().and_then(|p| p.ch.grapple).filter(|_| !dead).map(|g| (eye, [g.anchor.x, g.anchor.y, g.anchor.z])),
             controls: self.controls.rows(),
             district: local_pos.map(|p| self.level.district_at(p[0], p[2])),
         }

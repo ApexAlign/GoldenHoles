@@ -68,7 +68,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
     .add_plugins(crt::CrtPlugin)
     .add_plugins(sky::SkyPlugin)
     .add_plugins(PlayPlugin)
-    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin))
+    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin))
     .add_plugins(hud_view::HudPlugin)
     .insert_resource(ShotRequest { width: dims.0, height: dims.1 });
     app
@@ -194,6 +194,23 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.fx.hit_stop = 0.06;
                 }
             }
+            // `death:T`: we die at frame 100 (the snapshot flags us dead, see `offline_world`); the shot is taken T s in. Runs
+            // the real camera function (`death_cam`) and fills `RenderView::death` the way `ClientGame::view` would.
+            "death" => {
+                if frame >= 100 {
+                    let t = (frame - 100) as f32 / 60.0;
+                    let pos = [bx, by, bz];
+                    let killer = v.remotes.iter().find(|(id, _)| *id == 4).map(|(_, s)| s.pos);
+                    let pose = shinobi_client::death_cam::death_pose(t, pos, v.aim.yaw, v.aim.pitch, killer, 0.7, 1.0);
+                    v.aim.yaw = pose.yaw;
+                    v.aim.pitch = pose.pitch;
+                    v.eye = pose.eye;
+                    v.camera.roll = pose.roll;
+                    v.camera.offset = pose.shake;
+                    v.weapon.y_dip = 1.2;
+                    v.death = Some(shinobi_client::client_game::DeathView { t, total: 2.5, pos, killer: Some(4), fresh: frame == 100 });
+                }
+            }
             // speed lines: `dashfx` (full), `grapplefx`
             "dashfx" => v.fx.dashing = true,
             "grapplefx" => v.fx.grappling = true,
@@ -254,13 +271,17 @@ fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
     let [bx, by, bz] = base.0;
     // others are placed relative to our spawn so every level gets the same composition
     let at = |dx: f32, dy: f32, dz: f32| [bx + dx, by + dy, bz + dz];
+    // SHOT_FX=death (we die) / rdeath (player 4 dies) at tick 100
+    let fx = std::env::var("SHOT_FX").unwrap_or_default();
+    let has = |n: &str| fx.split(',').any(|i| i.split(':').next() == Some(n));
+    let dead = |on: bool| if on && t >= 100.0 { shinobi_proto::snapshot::FLAG_DEAD } else { 0 };
     let snap = Snapshot {
         tick: t as u32,
         entities: vec![
-            (1, ent(at(0.0, 0.0, 0.0), [0.0; 3], MoveKind::Grounded)),
+            (1, EntityState { flags: dead(has("death")), ..ent(at(0.0, 0.0, 0.0), [0.0; 3], MoveKind::Grounded) }),
             (2, ent(at(4.0, 0.0, -3.0 - 9.0 * sec), [0.0, 0.0, -9.0], MoveKind::Grounded)),
             (3, ent(at(-3.5, 0.0, -6.0 - 14.0 * sec.min(1.2)), [0.0, 0.0, -14.0], MoveKind::Evading)),
-            (4, ent(at(8.0, 1.6 + 1.2 * (sec * 3.0).sin(), -14.0), [0.0; 3], MoveKind::Airborne)),
+            (4, EntityState { flags: dead(has("rdeath")), ..ent(at(8.0, 1.6 + 1.2 * (sec * 3.0).sin(), -14.0), [0.0; 3], MoveKind::Airborne) }),
         ],
     };
     net.0.game.net.interp.push(snap, t);

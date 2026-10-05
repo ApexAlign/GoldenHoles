@@ -142,6 +142,7 @@ impl Replicator {
             frag_limit: ms.cfg.frag_limit,
             team_frag_limit: ms.team_frag_limit,
             time_limit_secs: (ms.cfg.time_limit_ticks / shinobi_proto::TICK_HZ).min(u16::MAX as u32) as u16,
+            respawn_ticks: server.balance.player.respawn_ticks.min(u16::MAX as u32) as u16,
         });
         // every live block (sorted by cell: deterministic); the byte-budgeted outbox drains it over a few datagrams
         for b in server.blocks.pieces() {
@@ -1134,6 +1135,7 @@ mod tests {
             frag_limit: cfg.frag_limit,
             team_frag_limit: s.match_state.team_frag_limit,
             time_limit_secs: (cfg.time_limit_ticks / shinobi_proto::TICK_HZ) as u16,
+            respawn_ticks: s.balance.player.respawn_ticks as u16,
         };
         assert!(got.contains(&want), "{got:?}");
     }

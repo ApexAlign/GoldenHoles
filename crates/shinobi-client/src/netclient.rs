@@ -81,8 +81,8 @@ pub struct NetClient {
     blocks: HashMap<[i32; 3], (u16, Piece, u8)>,
     /// The server's build rules (`NetEvent::BlockRules`), once received.
     block_rules: Option<BlockRules>,
-    /// Match rules from `NetEvent::MatchRules`: (frag limit, team frag limit, time limit s).
-    match_rules: Option<(u16, u16, u16)>,
+    /// Match rules from `NetEvent::MatchRules`: (frag limit, team frag limit, time limit s, respawn delay ticks).
+    match_rules: Option<(u16, u16, u16, u16)>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
@@ -292,8 +292,8 @@ impl NetClient {
                     }
                 }
                 NetEvent::BlockRules(r) => self.block_rules = Some(r),
-                NetEvent::MatchRules { frag_limit, team_frag_limit, time_limit_secs } => {
-                    self.match_rules = Some((frag_limit, team_frag_limit, time_limit_secs));
+                NetEvent::MatchRules { frag_limit, team_frag_limit, time_limit_secs, respawn_ticks } => {
+                    self.match_rules = Some((frag_limit, team_frag_limit, time_limit_secs, respawn_ticks));
                 }
                 NetEvent::BlockRemoved { cell } | NetEvent::BlockDerez { cell } => {
                     self.blocks.remove(&cell);
@@ -539,6 +539,11 @@ impl NetClient {
     /// Match time limit in seconds (None until the join catch-up arrives).
     pub fn time_limit_secs(&self) -> Option<u16> {
         self.match_rules.map(|r| r.2)
+    }
+
+    /// Respawn delay in seconds (None until the join catch-up arrives).
+    pub fn respawn_secs(&self) -> Option<f32> {
+        self.match_rules.map(|r| r.3 as f32 / TICK_HZ as f32)
     }
 
     /// Build rules from the server (None until the join catch-up arrives).
@@ -971,11 +976,12 @@ mod tests {
         welcome(&mut c, 1, 0);
         assert_eq!((c.frag_limit(), c.team_frag_limit(), c.time_limit_secs()), (None, None, None));
         let mut ob = EventOutbox::default();
-        ob.push(NetEvent::MatchRules { frag_limit: 7, team_frag_limit: 40, time_limit_secs: 240 });
+        ob.push(NetEvent::MatchRules { frag_limit: 7, team_frag_limit: 40, time_limit_secs: 240, respawn_ticks: 150 });
         let mut w = BitWriter::new();
         ob.write_pending(&mut w, 480);
         c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
         assert_eq!((c.frag_limit(), c.team_frag_limit(), c.time_limit_secs()), (Some(7), Some(40), Some(240)));
+        assert_eq!(c.respawn_secs(), Some(2.5));
     }
 
     #[test]

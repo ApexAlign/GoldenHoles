@@ -481,6 +481,12 @@ impl HudBridge {
             }
         }
         hs.boot = self.boot;
+        // the live death clock (flash, wash-out, slam) and the countdown that fills the server's respawn delay
+        if let (true, Some(d)) = (hs.dead, view.death) {
+            hs.death_t = Some(d.t);
+            hs.respawn_total = d.total;
+            hs.respawn_in_s = Some((d.total - d.t).max(0.0));
+        }
         // death overlay, spawn shield, match result, audio glyph
         hs.killed_by = if hs.dead { self.last_death.clone() } else { None };
         if let Some(k) = hs.killed_by.as_mut() {

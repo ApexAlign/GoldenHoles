@@ -448,12 +448,13 @@ impl Balance {
     ///   ~1.7 s; level crosshair (head height) is a 1.5x headshot, ~1.1 s;
     /// * light-walls 34 per touch (3 to kill), obstacles 60 (2 to kill), 1 s re-arm so one pass is one hit, and
     ///   your own trail never hurts you (it still blocks you);
-    /// * hp 100, respawn 3 s, 1.5 s spawn protection (3 s on first join);
+    /// * hp 100, respawn 2.5 s, 1.5 s spawn protection (3 s on first join);
     /// * the match starts 3 s after the first player (min_players 1, so one human plus bots works), first to
     ///   10 frags or 6 minutes, 8 s intermission (docs/DEMO.md).
     pub fn demo() -> Self {
         let mut b = Balance::default();
         b.combat.katana.damage = 60.0;
+        b.player.respawn_ticks = 150; // 2.5 s: the death animation fills ~1.6 s of it, then the countdown
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
@@ -889,7 +890,7 @@ mod tests {
         assert!((1.4..2.5).contains(&ttk), "a clean body-shot stream takes 1.4-2.5 s to kill ({dps} dps, {ttk:.2} s)");
         assert!(ttk / d.combat.headshot_mult > 0.9, "headshots speed it up without making it instant");
         assert!(d.combat.shuriken.speed >= 60.0, "fast stars");
-        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 180));
+        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 150), "2.5 s: the death animation fills it");
         // hazards: not instant kills, one pass = one hit, own trail harmless
         let h = &d.hazards;
         assert!(h.wall_damage * 3.0 >= d.player.max_hp && h.wall_damage * 2.0 < d.player.max_hp, "walls: 3 touches kill");

@@ -141,7 +141,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v13, for client authors)
+## Network events (protocol v14, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
@@ -153,7 +153,7 @@ flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`
 | `RopeAttach { tick, player, anchor }` / `RopeRelease` | a player's wrist grapple hooked (anchor in 1/512 m) / let go, also on death or leaving | `rope_anchor(id)` |
 | `BlockPlaced { owner, cell, kind, axis, scale_q }` / `BlockRemoved { cell }` / `BlockDerez { cell }` | player-built piece appeared / vanished / was destroyed and should de-rez (cell = grid cell; kind 0 floor 1 wall 2 ramp; axis = wall normal 0 X 1 Z, or the direction a ramp rises toward 0 +X 1 +Z 2 -X 3 -Z; scale_q in 1/16ths; geometry via `Blocks::slab`) | `blocks()` / `block_pieces()` |
 | `BlockDamaged { cell, hp_q }` | a piece is hurt but standing: remaining health in 1/255ths (255 untouched), at most one per cell per frame, replayed to late joiners; client `block_hp_q(cell)` | `block_hp_q()` |
-| `MatchRules { frag_limit, team_frag_limit, time_limit_secs }` | match limits, sent to every joiner; client `frag_limit()` / `team_frag_limit()` / `time_limit_secs()` (all `Option`, `None` until catch-up) | `frag_limit()` |
+| `MatchRules { frag_limit, team_frag_limit, time_limit_secs, respawn_ticks }` | match limits + respawn delay, sent to every joiner; client `frag_limit()` / `team_frag_limit()` / `time_limit_secs()` / `respawn_secs()` (all `Option`, `None` until catch-up) | `frag_limit()` |
 | `BlockRefused { why }` | your build press failed: 0 occupied, 1 body in the way, 2 cooldown (builder only) | via `take_events()` |
 
 Shurikens are snapshot entities with ids `PROJECTILE_ID_BASE` (0x4000) and up: `yaw` = owner id, `flags` = bounce

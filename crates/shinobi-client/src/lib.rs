@@ -18,6 +18,7 @@ pub mod hud_geom;
 pub mod overlay;
 pub mod pointer_lock;
 pub mod controls_card;
+pub mod death_cam;
 pub mod display_clock;
 pub mod gamepad;
 pub mod hud;
