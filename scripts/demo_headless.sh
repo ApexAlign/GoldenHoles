@@ -5,7 +5,7 @@
 #   LAG=50:40:5 scripts/demo_headless.sh     the scripted clients connect THROUGH shinobi-lagproxy: 50 ms one way, +-40 ms
 #                                            jitter, 5% loss each way (LAG_DELAY / LAG_JITTER / LAG_LOSS / LAG_BW_KBPS also work);
 #                                            runs 70 s so the 60 s telemetry report (ping, late / rejected input) is printed
-#   LEVEL=levels/arena.lvl scripts/demo_headless.sh   (default: levels/ffa.lvl when it exists, else levels/arena.lvl)
+#   LEVEL=levels/arena.lvl scripts/demo_headless.sh   (default: levels/ffa_small.lvl when it exists, else levels/arena.lvl)
 # Prints the server's stats lines + kill feed and the bots' table. Exit status is non-zero if any scripted client
 # was kicked, failed to connect, or saw undecodable datagrams, if nobody fights, or if a stats window after warmup has
 # hz outside 60 +-1%, step_max >= 8 ms or overruns > 0 (SKIP_PERF=1 turns the performance guard into a note).
@@ -15,7 +15,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 if [ -n "${LAG:-}" ]; then IFS=: read -r LAG_DELAY LAG_JITTER LAG_LOSS <<< "$LAG"; SECS="${SECS:-70}"; fi
 LAG_DELAY="${LAG_DELAY:-}"; LAG_JITTER="${LAG_JITTER:-0}"; LAG_LOSS="${LAG_LOSS:-0}"; LAG_BW_KBPS="${LAG_BW_KBPS:-0}"
 SECS="${SECS:-60}"; AI="${AI:-7}"; CLIENTS="${CLIENTS:-4}"; JOBS="${JOBS:-8}"
-if [ -z "${LEVEL:-}" ]; then if [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi; fi
+if [ -z "${LEVEL:-}" ]; then if [ -f levels/ffa_small.lvl ]; then LEVEL=levels/ffa_small.lvl; else LEVEL=levels/arena.lvl; fi; fi
 PORT=$((20000 + RANDOM % 20000)); TMP="$(mktemp -d)"
 PROXY=""
 trap 'kill $SRV $PROXY 2>/dev/null || true; rm -rf "$TMP"' EXIT

@@ -64,6 +64,11 @@ fn check(level: &str) {
 }
 
 #[test]
+fn no_bot_stays_stuck_on_ffa_small() {
+    check("ffa_small.lvl");
+}
+
+#[test]
 fn no_bot_stays_stuck_on_ffa() {
     check("ffa.lvl");
 }

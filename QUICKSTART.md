@@ -19,16 +19,16 @@ cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777
 cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 --secs 120
 ```
 
-One-liner for a local free-for-all against 7 bots: `./demo.sh` (builds, starts the server, opens the window;
+One-liner for a local free-for-all against 5 bots: `./demo.sh` (builds, starts the server, opens the window;
 `BOTS=3 ./demo.sh` for fewer opponents).
 No window available? `scripts/demo_headless.sh` runs server + AI + scripted clients for 60 s and prints a health report.
-Playtesting? `scripts/play.sh` (builds, starts a free-for-all with 7 bots, records telemetry) and `docs/PLAYTEST.md`.
+Playtesting? `scripts/play.sh` (builds, starts a free-for-all with 5 bots, records telemetry) and `docs/PLAYTEST.md`.
 Before pushing code: `scripts/check.sh` (workspace tests + `cargo check` of the Bevy game crate; `--fast` skips the game crate).
 
 ## Windows / macOS / Linux without bash (plain cargo, two terminals)
 
 The `.sh` scripts need bash; everything they do is plain cargo. Use the repo root as the working directory (the server and
-the game find `levels/ffa.lvl` themselves; both MUST load the same level, so do not pass `--level` to only one of them).
+the game find `levels/ffa_small.lvl` themselves; both MUST load the same level, so do not pass `--level` to only one of them).
 
 **Once:** install Rust from https://rustup.rs. Windows: also the "Desktop development with C++" build tools (MSVC) and
 Git for Windows. macOS: `xcode-select --install`. Linux: a Vulkan driver (`mesa-vulkan-drivers`) and `libxkbcommon-x11-0`.
@@ -37,7 +37,7 @@ The first game build compiles hundreds of crates (about 10 minutes); later build
 **Windows PowerShell** (two windows, both in the repo folder):
 
 ```powershell
-# window 1: server (free-for-all, 7 bots). Allow it through the Windows firewall if asked (private networks).
+# window 1: server (free-for-all, 5 bots). Allow it through the Windows firewall if asked (private networks).
 cargo run --release -p shinobi-server -- --bots 7
 
 # window 2: game

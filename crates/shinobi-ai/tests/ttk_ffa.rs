@@ -19,7 +19,7 @@ fn level_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("FFA_LEVEL") {
         return std::path::PathBuf::from(p);
     }
-    let ffa = root.join("ffa.lvl");
+    let ffa = root.join("ffa_small.lvl");
     if ffa.exists() { ffa } else { root.join("arena.lvl") }
 }
 
