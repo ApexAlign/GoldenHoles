@@ -36,6 +36,8 @@ pub struct PlayerCam;
 struct RemoteEnt {
     root: Entity,
     parts: [Entity; PARTS],
+    /// Black back-face hulls, one per body part: a dark rim that separates the bright body from any background.
+    outlines: [Entity; PARTS],
     colour: Option<u32>,
     /// Distance beacon: a faint light column above the player so far-away players still read.
     beacon: Entity,
@@ -56,8 +58,34 @@ struct BodyMats(
     std::collections::HashMap<u32, Handle<StandardMaterial>>,
 );
 
+/// Visibility tuning for remote players (see `body_colour`, `outline_grow`, `size_boost`). One place, so the death /
+/// dissolve effect can drive the same material and scale paths.
+///
+/// The body is a hot core (player colour lifted toward white) rather than the pure hue: a cyan player against the cyan
+/// grid floor is invisible by colour alone, but a bright core inside a black rim always reads by luminance.
+pub const CORE_WHITE: f32 = 0.2;
+/// HDR gain of the core (bloom threshold is ~1; this blooms a little without washing out).
+pub const CORE_GAIN: f32 = 1.8;
+
+/// Linear HDR body colour for a player hue (unit scale).
+pub fn body_colour(hue: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| (hue[i] + (1.0 - hue[i]) * CORE_WHITE) * CORE_GAIN)
+}
+
+/// Outline half-thickness added to every part half-extent (m): ~3 px at any distance on a 540 px frame.
+pub fn outline_grow(dist: f32) -> f32 {
+    0.05 + 0.009 * dist
+}
+
+/// Width multiplier for the body parts: beyond ~12 m a player gets thin on screen, so the body is fattened (up to
+/// 3x wide, a third of that tall) to stay a readable silhouette.
+pub fn size_boost(dist: f32) -> (f32, f32) {
+    let w = (dist / 12.0).clamp(1.0, 3.0);
+    (w, 1.0 + (w - 1.0) * 0.33)
+}
+
 /// Head gem range (m).
-const GEM_MAX_DIST: f32 = 40.0;
+const GEM_MAX_DIST: f32 = 110.0;
 
 /// Aura width multiplier: grows with distance so the glow stays a few pixels wider than the body at 30-60 m.
 pub fn aura_scale(dist: f32) -> f32 {
@@ -68,7 +96,12 @@ pub fn aura_scale(dist: f32) -> f32 {
 const BEACON_MIN_DIST: f32 = 18.0;
 
 pub fn beacon_width(dist: f32) -> f32 {
-    0.06 + 0.006 * dist
+    0.08 + 0.012 * dist
+}
+
+/// Head-gem edge length (m): about 4-5 px on screen from 10 m out to the gem's max range.
+pub fn gem_size(dist: f32) -> f32 {
+    0.14 + 0.016 * dist
 }
 
 #[derive(Resource, Default)]
@@ -107,6 +140,8 @@ struct Look {
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
     hostile: Handle<StandardMaterial>,
+    /// Opaque black, front faces culled: drawn on slightly larger copies of the body parts as a rim.
+    outline: Handle<StandardMaterial>,
 }
 
 pub struct PlayPlugin;
@@ -217,6 +252,12 @@ pub fn setup(
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         sphere: meshes.add(Sphere::new(0.5)),
         hostile: mats.add(unlit(pal.magenta)),
+        outline: mats.add(StandardMaterial {
+            base_color: Color::BLACK,
+            unlit: true,
+            cull_mode: Some(bevy::render::render_resource::Face::Front),
+            ..default()
+        }),
     });
 
     // camera: LUT-free tonemapping (tonemapping_luts feature is not enabled), 90 deg vertical FOV, bloom
@@ -571,6 +612,11 @@ fn sync_remotes(
                     ))
                     .id()
             });
+            let outlines = std::array::from_fn(|_| {
+                commands
+                    .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.outline.clone()), Transform::default(), ChildOf(root)))
+                    .id()
+            });
             let beacon = commands
                 .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
@@ -580,7 +626,7 @@ fn sync_remotes(
             let gem = commands
                 .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
-            RemoteEnt { root, parts, colour: None, beacon, aura, gem }
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
@@ -589,7 +635,10 @@ fn sync_remotes(
             ent.colour = Some(k);
             let m = body_mats.0.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
-                    base_color: Color::linear_rgb(hue[0] * 1.3, hue[1] * 1.3, hue[2] * 1.3),
+                    base_color: {
+                        let c = body_colour(hue);
+                        Color::linear_rgb(c[0], c[1], c[2])
+                    },
                     unlit: true,
                     ..default()
                 })
@@ -599,7 +648,7 @@ fn sync_remotes(
             }
             let bm = body_mats.1.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
-                    base_color: Color::linear_rgb(hue[0] * 3.2, hue[1] * 3.2, hue[2] * 3.2),
+                    base_color: Color::linear_rgb(hue[0] * 4.0, hue[1] * 4.0, hue[2] * 4.0),
                     unlit: true,
                     alpha_mode: AlphaMode::Add,
                     ..default()
@@ -609,7 +658,7 @@ fn sync_remotes(
             commands.entity(ent.gem).insert(MeshMaterial3d(bm.clone()));
             let am = body_mats.2.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
-                    base_color: Color::linear_rgb(hue[0] * 0.7, hue[1] * 0.7, hue[2] * 0.7),
+                    base_color: Color::linear_rgb(hue[0] * 0.38, hue[1] * 0.38, hue[2] * 0.38),
                     unlit: true,
                     alpha_mode: AlphaMode::Add,
                     ..default()
@@ -626,15 +675,16 @@ fn sync_remotes(
         }
         // aura: soft glow ellipsoid hugging the body, wider with distance
         if let Ok(mut at) = tf.get_mut(ent.aura) {
-            let w = 0.95 * aura_scale(dist);
+            // hugging the body (a rim of colour, not a ghost blob over it); the black outline and bright core carry the read
+            let w = 0.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.6);
             at.translation = Vec3::ZERO;
-            at.scale = Vec3::new(w, 1.95 * (1.0 + (aura_scale(dist) - 1.0) * 0.35), w);
+            at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25), w);
         }
         // head gem: a spinning diamond above the head at mid range
         if let Ok(mut gt) = tf.get_mut(ent.gem) {
-            gt.translation = Vec3::new(0.0, 1.25 + 0.05 * (t * 3.0).sin(), 0.0);
+            gt.translation = Vec3::new(0.0, 1.25 + 0.012 * dist + 0.05 * (t * 3.0).sin(), 0.0);
             gt.rotation = Quat::from_euler(EulerRot::YXZ, t * 2.4, 0.6, 0.78);
-            gt.scale = Vec3::splat(0.14 + 0.004 * dist);
+            gt.scale = Vec3::splat(gem_size(dist));
         }
         if let Ok(mut gv) = vis.get_mut(ent.gem) {
             gv.set_if_neq(if dist > 3.0 && dist < GEM_MAX_DIST { Visibility::Inherited } else { Visibility::Hidden });
@@ -647,11 +697,19 @@ fn sync_remotes(
             r.translation = Vec3::from(d.pos);
             r.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_z(d.roll);
         }
-        for (e, p) in ent.parts.iter().zip(d.parts.iter()) {
+        let (bw, bh) = size_boost(dist);
+        let grow = outline_grow(dist);
+        for ((e, o), p) in ent.parts.iter().zip(ent.outlines.iter()).zip(d.parts.iter()) {
+            let half = Vec3::new(p.half[0] * bw, p.half[1] * bh, p.half[2] * bw);
             if let Ok(mut pt) = tf.get_mut(*e) {
                 pt.translation = Vec3::from(p.offset);
                 pt.rotation = Quat::from_rotation_x(p.pitch);
-                pt.scale = Vec3::from(p.half) * 2.0;
+                pt.scale = half * 2.0;
+            }
+            if let Ok(mut ot) = tf.get_mut(*o) {
+                ot.translation = Vec3::from(p.offset);
+                ot.rotation = Quat::from_rotation_x(p.pitch);
+                ot.scale = (half + Vec3::splat(grow)) * 2.0;
             }
         }
     }
@@ -775,6 +833,35 @@ mod beacon_tests {
         assert!(aura_scale(50.0) > aura_scale(10.0));
         assert_eq!(aura_scale(0.0), 1.0);
         assert!(aura_scale(500.0) <= 4.0);
+    }
+
+    #[test]
+    fn core_is_bright_and_never_darker_than_the_hue() {
+        for hue in [[0.0, 1.0, 1.0], [1.0, 0.1, 0.8], [0.2, 0.2, 1.0]] {
+            let c = body_colour(hue);
+            for i in 0..3 {
+                assert!(c[i] >= hue[i], "core lifts toward white");
+            }
+            // luminance floor independent of hue (cyan on a cyan floor must still read)
+            assert!(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] > 0.55, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn far_players_are_fattened_and_rimmed_within_bounds() {
+        assert_eq!(size_boost(5.0), (1.0, 1.0));
+        let (w, h) = size_boost(60.0);
+        assert!(w > 2.0 && w <= 3.0 && h < w);
+        assert!(outline_grow(60.0) > outline_grow(5.0));
+    }
+
+    #[test]
+    fn far_markers_keep_a_screen_size() {
+        // px per metre at 540 px / 90 deg = 270 / dist: marker width in px stays >= 3 out to the gem's range
+        for d in [20.0f32, 60.0, 110.0] {
+            assert!(gem_size(d) * 270.0 / d >= 3.0, "gem at {d} m");
+            assert!(beacon_width(d) * 270.0 / d >= 3.0, "beacon at {d} m");
+        }
     }
 
     #[test]
