@@ -366,8 +366,13 @@ fn both_bases_the_centre_and_the_shelves_are_walkable_from_every_spawn() {
     for p in &m.file.pickups {
         let h = p.pos[1] - 1.0;
         let on_foot = is_reached(&g, &seen, p.pos[0], p.pos[2], h, 0.15);
-        let pillar_top = h > 6.0;
-        assert_eq!(on_foot, !pillar_top, "pickup {:?}: grapple-only pickups are exactly the pillar tops", p.pos);
+        // the taller jump (held jump + double jump ~5 m) reaches the lowest pillar-top pickups from a tower: only the
+        // really high ones (> 8 m) are grapple-only now
+        if h <= 6.0 {
+            assert!(on_foot, "pickup {:?} must be reachable on foot", p.pos);
+        } else if h > 8.0 {
+            assert!(!on_foot, "pickup {:?}: grapple-only pickups are the high pillar tops", p.pos);
+        }
     }
 }
 

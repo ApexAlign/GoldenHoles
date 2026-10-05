@@ -365,3 +365,39 @@ fn the_whole_loop_stays_in_sync() {
     assert!(err < 0.6, "prediction is back on the server's position after the respawn (err {err:.2} m)");
     assert!(r.game.predicting());
 }
+
+/// Peak height (m above the standing start) of one jump driven through the real input path: the key goes down in one
+/// frame, stays down for `hold_ticks` sim ticks (0 = down and up inside one frame), then goes up. The server's own
+/// body is measured, so this covers the client latch -> intent -> server -> physics chain.
+fn jump_apex(hold_ticks: u32) -> f32 {
+    let mut r = Rig::new();
+    r.idle(60);
+    let y0 = r.me().pos(&r.srv.world)[1];
+    let mut apex = 0.0f32;
+    let down = |d| InputFrame { buttons: vec![ButtonEvent { action: Action::Jump, down: d }], ..Default::default() };
+    if hold_ticks == 0 {
+        r.press(Action::Jump);
+    } else {
+        r.step(down(true));
+        for _ in 1..hold_ticks {
+            r.step(InputFrame::default());
+        }
+        r.step(down(false));
+    }
+    for _ in 0..120 {
+        r.idle(1);
+        apex = apex.max(r.me().pos(&r.srv.world)[1] - y0);
+    }
+    apex
+}
+
+#[test]
+fn a_held_jump_is_clearly_different_from_a_tap_through_the_real_input_path() {
+    let flick = jump_apex(0); // down and up inside one frame
+    let press = jump_apex(6); // a normal keypress: ~100 ms
+    let held = jump_apex(45); // holding Space through the rise
+    eprintln!("jump apex through ClientGame <-> Server: flick {flick:.2} m, 100 ms press {press:.2} m, held {held:.2} m");
+    assert!(held > press * 1.25, "holding Space must visibly out-jump a normal press ({held:.2} vs {press:.2} m)");
+    assert!(press > flick * 1.1, "and a press out-jumps a flick ({press:.2} vs {flick:.2} m)");
+    assert!(press >= 2.0, "even an ordinary press is a real jump now ({press:.2} m; the old tuning gave ~1.5 m)");
+}
