@@ -34,11 +34,11 @@ pub struct LevelDesc {
 }
 
 /// Where the shipped free-for-all map lives relative to the repo / install root (the demo's default level).
-pub const DEFAULT_LEVEL: &str = "levels/ffa.lvl";
+pub const DEFAULT_LEVEL: &str = "levels/ffa_small.lvl";
 /// Fallback when `DEFAULT_LEVEL` is not installed.
 pub const FALLBACK_LEVEL: &str = "levels/arena.lvl";
 
-/// The default level file when one exists: `levels/ffa.lvl` (else `levels/arena.lvl`) from the working directory, then upward from the
+/// The default level file when one exists: `levels/ffa_small.lvl` (else `levels/arena.lvl`; the big `levels/ffa.lvl` stays selectable with `--level`) from the working directory, then upward from the
 /// executable (so `target/release/shinobi-server` finds the repo's `levels/` however it was launched). Server and
 /// game must use this same rule, or the client predicts against a different world than the server runs.
 /// `None` means "use `LevelDesc::standard()`".

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# One command to playtest: builds the server and the game, starts a free-for-all (you + 7 bots) on levels/ffa.lvl,
+# One command to playtest: builds the server and the game, starts a free-for-all (you + 5 bots) on levels/ffa_small.lvl,
 # opens the game window, prints the controls, and records playtest telemetry for tuning.
 #
-#   scripts/play.sh                  you + 7 bots on levels/ffa.lvl
+#   scripts/play.sh                  you + 5 bots on levels/ffa_small.lvl
 #   BOTS=3 scripts/play.sh           fewer opponents        BOT_SKILL=hard scripts/play.sh   (easy | normal | hard)
 #   LEVEL=levels/ffa_xl.lvl scripts/play.sh                 the other map (server and game must load the same level)
 #   scripts/play.sh --server-only    just run the server (connect the game yourself, see docs/PLAYTEST.md)
@@ -22,8 +22,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
-PORT="${PORT:-7777}"; BOTS="${BOTS:-7}"; BOT_SKILL="${BOT_SKILL:-normal}"; JOBS="${JOBS:-8}"
-LEVEL="${LEVEL:-levels/ffa.lvl}"
+PORT="${PORT:-7777}"; BOTS="${BOTS:-5}"; BOT_SKILL="${BOT_SKILL:-normal}"; JOBS="${JOBS:-8}"
+LEVEL="${LEVEL:-levels/ffa_small.lvl}"
 [ -f "$LEVEL" ] || { echo "level $LEVEL not found (run from the repo; try LEVEL=levels/arena.lvl)"; exit 1; }
 OFFLINE_ARG=(); [ "${OFFLINE:-0}" = "1" ] && OFFLINE_ARG=(--offline)
 STAMP="$(date +%Y%m%d-%H%M%S)"

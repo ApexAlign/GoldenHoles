@@ -444,8 +444,9 @@ impl Balance {
     ///
     /// * katana is a 2-hit kill (60) instead of a one-hit; its lunge+blade reach stays ~5 m (derived from the
     ///   character dash), so closing distance is still rewarded without being a guaranteed kill;
-    /// * shuriken: 70 m/s (a flat, fast star), 12 damage at 5/s = 60 dps, so a clean body-shot stream kills in
-    ///   ~1.7 s; level crosshair (head height) is a 1.5x headshot, ~1.1 s;
+    /// * shuriken: 70 m/s (a flat, fast star), 18 damage at ~5.9/s = ~106 dps, so a clean body-shot stream kills in
+    ///   ~0.9 s; level crosshair (head height) is a 1.5x headshot, ~0.6 s; 0.6 m hit radius (generous graze);
+    /// * katana blade 2.0 m long, 1.2 m half-width (a rough swing still connects);
     /// * light-walls 34 per touch (3 to kill), obstacles 60 (2 to kill), 1 s re-arm so one pass is one hit, and
     ///   your own trail never hurts you (it still blocks you);
     /// * hp 100, respawn 3 s, 1.5 s spawn protection (3 s on first join);
@@ -458,9 +459,13 @@ impl Balance {
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
         b.combat.shuriken.speed = 70.0;
-        b.combat.shuriken.damage = 12.0;
-        b.combat.shuriken.cooldown = 0.20;
+        b.combat.shuriken.damage = 18.0; // 6 body hits (4 headshots) at ~5.9/s: ~0.9 s to kill, was 1.7 s
+        b.combat.shuriken.cooldown = 0.17;
+        b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
+        // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
+        b.combat.katana.blade_len = 2.0;
+        b.combat.katana.half_width = 1.2;
         // hazards must not feel like unfair deaths: a light-wall is a 3-touch kill (34 each), an obstacle needs
         // two hits (60), contact re-arms only after 1 s (one pass = one hit), your own trail never hurts you
         b.hazards.wall_damage = 34.0;
@@ -886,8 +891,9 @@ mod tests {
         assert!(d.combat.katana.damage * 2.0 >= d.player.max_hp && d.combat.katana.damage < d.player.max_hp, "katana is a 2-hit kill");
         let dps = d.combat.shuriken.damage / d.combat.shuriken.cooldown;
         let ttk = d.player.max_hp / dps;
-        assert!((1.4..2.5).contains(&ttk), "a clean body-shot stream takes 1.4-2.5 s to kill ({dps} dps, {ttk:.2} s)");
-        assert!(ttk / d.combat.headshot_mult > 0.9, "headshots speed it up without making it instant");
+        // the 88 m arena wants kills easy to get: ~0.9 s of clean fire (was 1.4-2.5 s for the 224 m map), still not a blink
+        assert!((0.8..1.5).contains(&ttk), "a clean body-shot stream takes 0.8-1.5 s to kill ({dps} dps, {ttk:.2} s)");
+        assert!(ttk / d.combat.headshot_mult > 0.55, "headshots speed it up without making it instant");
         assert!(d.combat.shuriken.speed >= 60.0, "fast stars");
         assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 180));
         // hazards: not instant kills, one pass = one hit, own trail harmless

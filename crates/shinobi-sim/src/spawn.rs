@@ -78,8 +78,11 @@ pub fn choose_among(world: &PhysicsWorld, spawns: &[[f32; 3]], allowed: &[usize]
 
     let nearest = |i: usize| enemies.iter().map(|e| dist(*e, spawns[i])).fold(f32::INFINITY, f32::min);
     // a spawn at least FAR_DIST from every enemy beats a closer one, so a join/respawn never lands mid-fight
-    let far: Vec<usize> = pool.iter().copied().filter(|&i| nearest(i) >= FAR_DIST).collect();
-    if !far.is_empty() {
+    let far_dist = far_dist(spawns);
+    let far: Vec<usize> = pool.iter().copied().filter(|&i| nearest(i) >= far_dist).collect();
+    // (on a small map the scaled preference only applies while it leaves a rotation pool: a thin "far" set would put
+    // every respawn on the same two corners)
+    if !far.is_empty() && (far_dist >= FAR_DIST || far.len() >= MIN_POOL) {
         pool = far;
     }
     let best = pool.iter().map(|&i| nearest(i)).fold(0.0f32, f32::max);
@@ -132,8 +135,20 @@ fn least_recent(candidates: Vec<usize>, history: u32) -> Option<usize> {
 pub const NEAR_BEST: f32 = 0.7;
 /// Rotation needs at least this many candidates to avoid back-to-back repeats.
 pub const MIN_POOL: usize = 3;
-/// Preferred minimum distance (m) from every enemy for a spawn, when the map has one.
+/// Preferred minimum distance (m) from every enemy for a spawn, when the map has one (the cap; see `far_dist`).
 const FAR_DIST: f32 = 60.0;
+/// Floor for the scaled preference: never land on top of an enemy, even on a tiny map.
+const FAR_DIST_MIN: f32 = 20.0;
+/// Share of the map's widest spawn-to-spawn distance that counts as "far".
+const FAR_SHARE: f32 = 0.35;
+
+/// The preferred distance from every enemy, scaled to the map: `FAR_SHARE` of the widest spawn-to-spawn distance,
+/// within `FAR_DIST_MIN..=FAR_DIST`. Big maps (ffa 224 m) keep the 60 m rule; on the 88 m arena it is ~26 m, so a
+/// respawn lands one fight away from the action, not across the map.
+pub fn far_dist(spawns: &[[f32; 3]]) -> f32 {
+    let spread = spawns.iter().flat_map(|a| spawns.iter().map(move |b| dist(*a, *b))).fold(0.0f32, f32::max);
+    (spread * FAR_SHARE).clamp(FAR_DIST_MIN, FAR_DIST)
+}
 /// Spawns padding the pool below `MIN_POOL` must be at least this far (metres) from every enemy.
 pub const SAFE_DIST: f32 = 15.0;
 

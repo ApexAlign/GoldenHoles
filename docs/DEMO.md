@@ -4,7 +4,7 @@ Pitch: a Tron grid FFA arena shooter where you run on walls, grapple, lock on wi
 discs, slice with a katana, and print floors/walls out of the grid that others can de-rez.
 
 ## Locked decisions (change only via Engine)
-- Mode: FREE-FOR-ALL. Demo default: 1 human + 7 bots (`BOTS=7 ./demo.sh`). Up to 16 players. Match: first to 10 kills
+- Mode: FREE-FOR-ALL. Demo default: 1 human + 5 bots on the 88 m `levels/ffa_small.lvl` (`BOTS=5 ./demo.sh`). Up to 16 players. Match: first to 10 kills
   or 6 minutes, 3 s respawn, 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
 - Map: `levels/ffa.lvl`, fixed (no shrinking, no void-start in the demo). Default `levels/ffa.lvl` = 224 m across (HALF=112). `levels/ffa_xl.lvl` = 336 m across (HALF=168) is optional; measured
   density favours the 224 m map (18.7 vs 8.7 kills/min with 16 players, Network). Layered: ground, mid towers, sky layer. Void edges + kill
@@ -25,7 +25,7 @@ IN: everything above. OUT (post-demo): teams polish, void-start map, capture/hol
 After freeze only: bugs, polish of IN items, tests. No new systems without Engine approval.
 
 ## Demo-ready checklist (Engine runs it; each owner reports status)
-1. `scripts/check.sh` green on golden-shinobi-main (workspace tests + game compile). 2. `BOTS=7 ./demo.sh` boots into the FFA
+1. `scripts/check.sh` green on golden-shinobi-main (workspace tests + game compile). 2. `BOTS=5 ./demo.sh` boots into the FFA
 map, bots fight, a match ends, the next starts. 3. Controls work: WASD, jump, dash/roll/slide, wall-run, E grapple,
 N/M build, LMB katana, RMB shuriken. 4. Lock-on triangle shows and assists. 5. Hit/kill/damage feedback on every
 weapon, HUD panels live. 6. Grapple + build stay in sync at 5% loss (e2e tests). 7. Release soak at 16 players: p99

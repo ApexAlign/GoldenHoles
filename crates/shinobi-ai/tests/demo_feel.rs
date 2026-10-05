@@ -1,4 +1,4 @@
-//! Demo feel: 1 human + 7 bots on `levels/ffa.lvl`. The human must always have action (bots rubber-band to a quiet
+//! Demo feel: 1 human + bots on `levels/ffa_small.lvl` (`DEMO_LEVEL=ffa.lvl` for the big map). The human must always have action (bots rubber-band to a quiet
 //! human), and a 10-kill FFA match with a participating human should end in minutes, not never.
 //! The regression test runs in `cargo test`; the harness prints match length / participation:
 //!   cargo test --release -p shinobi-ai --test demo_feel -- --ignored --nocapture
@@ -15,9 +15,10 @@ use shinobi_sim::tick::Server;
 const HUMAN: u16 = 1;
 
 fn ffa() -> Option<(Server, Vec<[f32; 3]>)> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../levels/ffa.lvl");
+    let level = std::env::var("DEMO_LEVEL").unwrap_or_else(|_| "ffa_small.lvl".into());
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels").join(&level);
     let text = std::fs::read_to_string(path).ok()?;
-    let f = parse_level_file(&text).expect("ffa.lvl parses");
+    let f = parse_level_file(&text).unwrap_or_else(|e| panic!("{level}: {e}"));
     let mut s = Server::new(shinobi_sim::character::Cfg::default());
     f.level.apply_to_server(&mut s);
     s.set_spawns(f.level.spawns.clone());

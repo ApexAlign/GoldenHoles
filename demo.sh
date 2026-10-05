@@ -10,13 +10,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"
-BOTS="${BOTS:-7}"   # free-for-all: you + 7 bots = 8 players
+BOTS="${BOTS:-5}"   # free-for-all on the 88 m arena: you + 5 bots = 6 players
 TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs.
-# TEAM_SIZE (8v8) defaults to the 8v8 map; free-for-all defaults to the FFA map (levels/ffa.lvl, 224 m).
+# TEAM_SIZE (8v8) defaults to the 8v8 map; free-for-all defaults to the FFA map (levels/ffa_small.lvl, 88 m; LEVEL=levels/ffa.lvl for the big 224 m map).
 if [ -z "${LEVEL:-}" ]; then
-  if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; elif [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi
+  if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; elif [ -f levels/ffa_small.lvl ]; then LEVEL=levels/ffa_small.lvl; elif [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi
 fi
 LEVEL_ARGS=()
 [ -f "$LEVEL" ] && LEVEL_ARGS=(--level "$LEVEL")

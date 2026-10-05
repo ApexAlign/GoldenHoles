@@ -29,7 +29,7 @@ fn server_for(map: &str, balance: Balance) -> Server {
 fn ffa_bots_on_each_map() {
     let secs: u32 = std::env::var("FFA_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
     let bots: usize = std::env::var("FFA_BOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(12);
-    let maps = std::env::var("FFA_MAPS").unwrap_or_else(|_| "ffa.lvl,ffa_xl.lvl".into());
+    let maps = std::env::var("FFA_MAPS").unwrap_or_else(|_| "ffa_small.lvl,ffa.lvl,ffa_xl.lvl".into());
     for map in maps.split(',') {
         let mut s = server_for(map, Balance::demo());
         let mut h = host(21);
