@@ -187,11 +187,17 @@ pub struct EnemyTag {
     pub team: Option<u8>,
     pub colour: Option<Rgba>,
     pub hp: Option<f32>,
+    /// 0..=1 closeness to the crosshair (1 on it, 0 outside `CANDIDATE_CONE_DEG`): the marker grows and brightens
+    /// as an enemy becomes a lock candidate; the name and health only appear once it is near the crosshair.
+    pub heat: f32,
 }
 
 /// Enemy name tags show inside this many metres, and at most `ENEMY_TAG_MAX` at once (nearest first).
 pub const ENEMY_TAG_RANGE: f32 = 25.0;
-pub const ENEMY_TAG_MAX: usize = 4;
+pub const ENEMY_TAG_MAX: usize = 6;
+/// Candidate chevrons mark visible enemies out to this range, and glow as they near the crosshair within this cone.
+pub const MARKER_RANGE: f32 = 70.0;
+pub const CANDIDATE_CONE_DEG: f32 = 24.0;
 
 /// Placeable piece slots: `N` prints floors / ramps, `M` prints walls (DESIGN.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,6 +264,12 @@ pub struct TargetHud {
     /// 0..=1 acquire progress; brackets close in as it fills.
     pub progress: f32,
     pub locked: bool,
+    /// Seconds since the lock phase changed (acquired / locked / broke): the brackets snap and flare on this.
+    pub since: f32,
+    /// The lock just lost its target: brackets fling outward and fade (progress decays 1 -> 0).
+    pub breaking: bool,
+    /// Where a star thrown now should arrive (the target's aim point carried along its velocity), normalized screen.
+    pub lead: Option<(f32, f32)>,
 }
 
 /// Stable two-word callsign for a player id ("NEON FOX"): 144 distinct names, so the HUD has something readable
@@ -1256,11 +1268,28 @@ fn team_bar(out: &mut Vec<Prim>, ts: &TeamScores, time: f32, p: &Palette) {
 /// Enemy name above the head, fading and shrinking with distance; optional 8-tick health strip under it.
 fn enemy_tag(out: &mut Vec<Prim>, t: &EnemyTag, p: &Palette) {
     let col = t.team.map(|x| p.team(x)).or(t.colour).unwrap_or(p.magenta);
-    let near = (1.0 - t.dist / ENEMY_TAG_RANGE).clamp(0.0, 1.0);
-    let a = 0.45 + 0.5 * near;
-    let size = 0.016 + 0.006 * near;
+    let heat = t.heat.clamp(0.0, 1.0);
+    let heat = heat * heat * (3.0 - 2.0 * heat); // smoothstep: eases in, no popping at the cone edge
     let (x, y) = t.pos;
-    out.push(Prim::Text { pos: (x, y - 0.012), text: t.name.clone(), size, color: col.a(a), align: Align::Center });
+    // candidate chevron: a small downward triangle over the head. Far from the crosshair it is a dim speck; as the
+    // enemy nears the crosshair it grows, brightens and gets a glow, the pre-lock cue (the 3D lock triangle follows).
+    let range_fade = (1.0 - (t.dist - 20.0) / (MARKER_RANGE - 20.0)).clamp(0.35, 1.0);
+    let r = (0.007 + 0.011 * heat) * (0.75 + 0.25 * range_fade);
+    let ca = (0.28 + 0.72 * heat) * range_fade;
+    let cy = y - 0.02 - 0.012 * heat;
+    let pts = [(x - r * ax() * 1.15, cy - r), (x + r * ax() * 1.15, cy - r), (x, cy + r)];
+    let glow = if heat > 0.3 { 0.004 + 0.004 * heat } else { 0.0 };
+    for k in 0..3 {
+        out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 3], color: col.a(ca), glow });
+    }
+    // name and health only for the enemies near the crosshair and close enough to read: no clutter
+    if heat < 0.2 || t.dist > ENEMY_TAG_RANGE {
+        return;
+    }
+    let near = (1.0 - t.dist / ENEMY_TAG_RANGE).clamp(0.0, 1.0);
+    let a = (0.45 + 0.5 * near) * heat.min(1.0).max(0.4);
+    let size = 0.016 + 0.006 * near;
+    out.push(Prim::Text { pos: (x, cy - r - 0.008), text: t.name.clone(), size, color: col.a(a), align: Align::Center });
     if let Some(hp) = t.hp {
         const N: usize = 8;
         let (w, gap) = (0.0045 * 0.9, 0.0045);
@@ -1554,9 +1583,34 @@ fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
     let (x, y) = t.pos;
     let prog = t.progress.clamp(0.0, 1.0);
-    let half = if t.locked { 0.032 } else { 0.032 + 0.05 * (1.0 - prog) };
+    if t.breaking {
+        // lock lost: the corners fling outward and fade, tinted away from the target colour
+        let u = 1.0 - prog;
+        let half = 0.032 + 0.07 * u;
+        let col = p.magenta.a(0.75 * prog);
+        for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let (cx, cy) = (x + sx * half * ax() * 1.4, y + sy * half);
+            out.push(Prim::Line { a: (cx, cy), b: (cx - sx * 0.012 * ax() * 1.4, cy), color: col, glow: 0.004 });
+            out.push(Prim::Line { a: (cx, cy), b: (cx, cy - sy * 0.012), color: col, glow: 0.004 });
+        }
+        return;
+    }
+    // snap: the brackets slam in past the lock size and settle in ~0.12 s; acquiring closes in with ease-out
+    let snap = if t.locked { (1.0 - t.since / 0.12).clamp(0.0, 1.0) } else { 0.0 };
+    let ease = 1.0 - (1.0 - prog).powi(2);
+    let half = if t.locked { 0.032 + 0.02 * snap * snap - 0.006 * snap } else { 0.032 + 0.05 * (1.0 - ease) };
     let col = if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
-    let l = 0.012;
+    let l = 0.012 + 0.006 * snap;
+    // lead marker: where a star thrown now arrives, with a faint line from the target to it
+    if let (Some((lx, ly)), true) = (t.lead, prog > 0.4) {
+        let r = 0.007;
+        let a = if t.locked { 0.95 } else { 0.5 };
+        let pts = [(lx, ly - r), (lx + r * ax(), ly), (lx, ly + r), (lx - r * ax(), ly)];
+        for k in 0..4 {
+            out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 4], color: p.gold.a(a), glow: 0.004 });
+        }
+        out.push(Prim::Line { a: (x, y), b: (lx, ly), color: p.gold.a(0.25 * a), glow: 0.0 });
+    }
     for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         let (cx, cy) = (x + sx * half * ax() * 1.4, y + sy * half);
         out.push(Prim::Line { a: (cx, cy), b: (cx - sx * l * ax() * 1.4, cy), color: col, glow: 0.005 });
@@ -1968,7 +2022,7 @@ mod tests {
     #[test]
     fn enemy_tags_draw_names_and_health_ticks_only_with_hp() {
         let pal = Palette::TRON;
-        let tag = |hp| EnemyTag { pos: (0.5, 0.4), name: "VOID WOLF".into(), dist: 10.0, team: None, colour: None, hp };
+        let tag = |hp| EnemyTag { pos: (0.5, 0.4), name: "VOID WOLF".into(), dist: 10.0, team: None, colour: None, hp, heat: 1.0 };
         let rects = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Rect { r, .. } if r.h == 0.006)).count();
         let has_name = |s: &HudState| Hud::build_with(s, &pal).iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "VOID WOLF"));
         let none = HudState { enemy_tags: vec![tag(None)], ..Default::default() };
@@ -2059,7 +2113,7 @@ mod tests {
             telemetry: Some(Telemetry { speed: 14.2, altitude: 3.1, rope: Some(8.0) }),
             radar: vec![RadarPing { pos: (0.4, 0.5), colour: Rgba::MAGENTA, ally: false }, RadarPing { pos: (-1.4, 0.2), colour: Rgba::CYAN, ally: true }],
             heading: Some(0.7),
-            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false }),
+            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false, since: 0.1, breaking: false, lead: None }),
             boot: Some(1.0),
             ..Default::default()
         }

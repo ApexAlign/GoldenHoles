@@ -108,6 +108,21 @@ pub fn kill_limit_to_show(override_limit: Option<u16>, from_server: Option<u16>)
 }
 
 /// Seconds out of the fight before health regeneration starts (`Balance::player.regen_delay_s`).
+/// Flat shuriken speed (m/s) the lead marker assumes: the demo balance (`combat.shuriken.speed`).
+const SHURIKEN_SPEED: f32 = 70.0;
+
+/// 0..=1 closeness of `p` to the crosshair: 1 dead centre, 0 at `CANDIDATE_CONE_DEG` or beyond (or behind us).
+fn crosshair_heat(eye: [f32; 3], yaw: f32, pitch: f32, p: [f32; 3]) -> f32 {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let fwd = [-sy * cp, sp, -cy * cp];
+    let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3);
+    let cos = (d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2]) / len;
+    let ang = cos.clamp(-1.0, 1.0).acos().to_degrees();
+    (1.0 - ang / crate::hud::CANDIDATE_CONE_DEG).clamp(0.0, 1.0)
+}
+
 /// Rate (1/s) the lock brackets chase the target: matches the 3D lock dots' `smooth_toward`.
 pub const LOCK_SMOOTH_RATE: f32 = 28.0;
 
@@ -315,7 +330,7 @@ impl HudBridge {
                 }
                 // no tags through walls: the client game ray-checks eye -> chest against the level
                 // the lock target already wears the lock label: no second name over it
-                if d <= crate::hud::ENEMY_TAG_RANGE && view.los_ids.contains(id) && Some(*id) != locked_id {
+                if d <= crate::hud::MARKER_RANGE && view.los_ids.contains(id) && Some(*id) != locked_id {
                     let head = [smp.pos[0], smp.pos[1] + 1.1, smp.pos[2]];
                     if let Some((x, y, dist)) = project(view.eye, yaw, pitch, fov, aspect, head) {
                         if (0.08..=0.92).contains(&x) && (BROW_H + 0.05..=CHIN_TOP - 0.03).contains(&y) {
@@ -326,6 +341,7 @@ impl HudBridge {
                                 team: teams.as_ref().and_then(|t| t.team_of.get(id).copied()),
                                 colour: Some(colour_of(*id)),
                                 hp: None, // NetClient::remote_hp once the snapshot carries it
+                                heat: crosshair_heat(view.eye, yaw, pitch, chest),
                             });
                         }
                     }
@@ -459,7 +475,14 @@ impl HudBridge {
                 };
                 // keep the brackets in the central band, away from the side columns
                 let pos = (x.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), y.clamp(BROW_H + 0.15, CHIN_TOP - 0.1));
-                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp,  dist, progress: l.progress, locked: l.locked });
+                // where a star thrown now arrives: the aim point carried along the target's velocity for the flight time
+                let flight = dist / SHURIKEN_SPEED;
+                let lead = (vel[0] * vel[0] + vel[2] * vel[2] > 1.0)
+                    .then(|| project(view.eye, yaw, pitch, fov, aspect, std::array::from_fn(|i| sm[i] + vel[i] * flight)))
+                    .flatten()
+                    .map(|(lx, ly, _)| (lx.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), ly.clamp(BROW_H + 0.15, CHIN_TOP - 0.1)));
+                let (since, breaking) = view.lock.map_or((1.0, false), |lk| (lk.t_since_phase, lk.phase == shinobi_sim::combat::aim_assist::LockPhase::Break));
+                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp, dist, progress: l.progress, locked: l.locked, since, breaking, lead });
             }
         }
         if lock.is_none() {
@@ -604,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn enemy_name_tags_for_visible_enemies_in_range_nearest_four() {
+    fn enemy_markers_for_visible_enemies_in_range_nearest_six_with_crosshair_heat() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
         v.eye = [0.0, 1.6, 0.0];
@@ -613,13 +636,19 @@ mod tests {
         for (k, z) in [-5.0, -8.0, -11.0, -14.0, -17.0, -20.0].iter().enumerate() {
             v.remotes.push((2 + k as u16, smp([(k as f32 - 2.5) * 0.5, 0.0, *z])));
         }
-        v.remotes.push((20, smp([0.0, 0.0, -40.0]))); // too far
+        v.remotes.push((20, smp([0.0, 0.0, -90.0]))); // beyond the marker range
         v.remotes.push((21, smp([0.0, 0.0, 6.0]))); // behind: tick, not tag
         v.remotes.push((22, smp([1.0, 0.0, -7.0]))); // in range and on screen but behind a wall
         v.los_ids = v.remotes.iter().map(|r| r.0).filter(|id| *id != 22).collect();
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.enemy_tags.iter().all(|t| t.name != callsign(22)), "walled-off enemy gets no tag");
-        assert_eq!(s.enemy_tags.len(), 4, "{:?}", s.enemy_tags.iter().map(|t| t.dist).collect::<Vec<_>>());
+        assert_eq!(s.enemy_tags.len(), 6, "{:?}", s.enemy_tags.iter().map(|t| t.dist).collect::<Vec<_>>());
+        assert!(s.enemy_tags.iter().all(|t| t.name != callsign(20)), "out of range gets no marker");
+        let heats: Vec<f32> = s.enemy_tags.iter().map(|t| t.heat).collect();
+        assert!(heats.iter().all(|h| (0.0..=1.0).contains(h)) && heats.iter().cloned().fold(0.0, f32::max) > 0.8, "enemies near the crosshair run hot: {heats:?}");
+        assert_eq!(crosshair_heat([0.0; 3], 0.0, 0.0, [0.0, 0.0, -10.0]), 1.0);
+        assert_eq!(crosshair_heat([0.0; 3], 0.0, 0.0, [10.0, 0.0, 0.0]), 0.0, "90 degrees off is cold");
+        assert_eq!(crosshair_heat([0.0; 3], 0.0, 0.0, [0.0, 0.0, 10.0]), 0.0, "behind is cold");
         assert!(s.enemy_tags.windows(2).all(|w| w[0].dist <= w[1].dist), "nearest first");
         assert!(s.enemy_tags.iter().all(|t| t.hp.is_none()), "no hp until the network reports it");
         assert_eq!(s.enemy_ticks.len(), 1);

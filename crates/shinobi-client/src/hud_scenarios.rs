@@ -73,7 +73,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         hit_amount: 34,
         since_damage: Some((0.25, 1.1)),
         damage_frac: 0.35,
-        target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true }),
+        target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: Some((0.62, 0.41)) }),
         radar_pickups: vec![(-0.35, 0.3), (0.45, -0.2)],
         radar_pieces: vec![(0.1, 0.25), (0.15, 0.3), (-0.2, 0.1)],
         radar_edge: (0..14).map(|i| ((0.9 - i as f32 * 0.02, -0.4 - i as f32 * 0.03), (0.88 - i as f32 * 0.02, -0.43 - i as f32 * 0.03))).collect(),
@@ -95,8 +95,8 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         since_damage: Some((0.2, -2.4)),
         damage_frac: 0.3,
         enemy_tags: vec![
-            crate::hud::EnemyTag { pos: (0.42, 0.45), name: callsign(2), dist: 8.0, team: None, colour: Some(player_rgba(2)), hp: None },
-            crate::hud::EnemyTag { pos: (0.64, 0.5), name: callsign(3), dist: 21.0, team: None, colour: Some(player_rgba(3)), hp: Some(0.6) },
+            crate::hud::EnemyTag { pos: (0.42, 0.45), name: callsign(2), dist: 8.0, team: None, colour: Some(player_rgba(2)), hp: None, heat: 0.9 },
+            crate::hud::EnemyTag { pos: (0.64, 0.5), name: callsign(3), dist: 21.0, team: None, colour: Some(player_rgba(3)), hp: Some(0.6), heat: 0.3 },
         ],
         enemy_ticks: vec![crate::hud::EnemyTick { bearing: 1.9, dist: 12.0 }, crate::hud::EnemyTick { bearing: -0.4 - 1.0, dist: 33.0 }],
         ..base()
