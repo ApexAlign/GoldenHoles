@@ -36,6 +36,12 @@ use shinobi_sim::rapier3d::prelude::*;
 
 /// Katana lunge + blade reach is ~6.6 m; start a little inside it.
 pub const STRIKE_RANGE: f32 = 6.0;
+/// Bots hook a visible target between these distances now and then (per-tick chance), then swing when close: a
+/// hook-strike. The katana reach while hooked / wall-running is `balance.combat.katana.{hook,wall}_reach` + the speed bonus.
+const HOOK_MIN: f32 = 16.0;
+const HOOK_MAX: f32 = 90.0;
+const HOOK_CHANCE: f32 = 0.012;
+const HOOK_COOLDOWN_TICKS: u32 = 420;
 /// Bots ask for a ticket this far out so it is ready when they arrive.
 pub const REQUEST_RANGE: f32 = 13.0;
 const SHURIKEN_RANGE: f32 = 34.0;
@@ -184,6 +190,8 @@ pub struct BotMem {
     // timers (ticks)
     fire_ok: u32,
     slice_ok: u32,
+    /// Next tick this bot may try a long hook at its target (hook-strike opportunism, `HOOK_*`).
+    hook_ok: u32,
     /// Throwing pause: movement is nearly stopped until this tick.
     pause_until: u32,
     /// Yaw offset (rad) of the dash being wound up: 0 = a clean read, else a deliberate whiff (`skill.slice_miss`).
@@ -229,6 +237,7 @@ impl BotMem {
             stats: BotStats::default(),
             fire_ok: 0,
             slice_ok: 0,
+            hook_ok: 0,
             pause_until: 0,
             slice_off: 0.0,
             evade_ok: 0,
@@ -374,6 +383,23 @@ impl BotMem {
         // ---- 6. aim
         let (yaw, pitch) = self.aim(ctx, p, dir);
 
+        // ---- 7. long hook at a visible target now and then (normal / hard bots; the strike follows in select_phase)
+        let mut zip = false;
+        if let Some(t) = p.target {
+            if self.skill.use_walls
+                && me.hook_ready
+                && t.los
+                && !t.view.spawn_protected
+                && (HOOK_MIN..=HOOK_MAX).contains(&t.dist)
+                && tick >= self.hook_ok
+                && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
+                && rng.chance(HOOK_CHANCE)
+            {
+                zip = true;
+                self.hook_ok = tick + HOOK_COOLDOWN_TICKS;
+            }
+        }
+
         // wall-run bookkeeping (stats only)
         let wr = matches!(me.state, shinobi_sim::character::MoveState::WallRun { .. });
         if wr && !self.was_wallrun {
@@ -400,7 +426,7 @@ impl BotMem {
             aim_pitch: q_pitch(pitch),
             ultimate: false,
             build: false, build_wall: false, build_ramp: false,
-            zip: false,
+            zip,
         };
         // leaving Strike hands the ticket back
         if released {
@@ -453,6 +479,19 @@ impl BotMem {
             }
             Phase::Evade { until, .. } if tick < until => return,
             _ => {}
+        }
+
+        // ---- hook-strike / wall slash: hooked or wall-running, swing as soon as the target is inside the longer reach
+        let on_wall = matches!(me.state, shinobi_sim::character::MoveState::WallRun { .. });
+        if (me.hooked || on_wall) && t.los && !t.view.spawn_protected && tick >= self.slice_ok {
+            let kb = &ctx.world.server.balance.combat.katana;
+            let reach = STRIKE_RANGE + if me.hooked { kb.hook_reach } else { kb.wall_reach } * 0.7 + me.flat_speed() * 0.12;
+            if t.dist <= reach {
+                self.stats.strikes += 1;
+                self.slice_off = 0.0;
+                self.set_phase(Phase::Strike { stage: StrikeStage::Slice }, tick);
+                return;
+            }
         }
 
         // ---- retreat (hysteresis: enter below 26 m, leave beyond 32 m or after 4 s; one threshold dithers in place)

@@ -130,3 +130,53 @@ fn players_on_different_faces_do_not_clash() {
     s.frame(FRAME);
     assert!(s.players[0].clash.is_none() && s.players[1].clash.is_none());
 }
+
+/// Hook-strike: a swing while hooked reaches further and hits harder than a plain slash at the same range.
+#[test]
+fn hook_strike_reaches_further_and_hits_harder_than_a_plain_slash() {
+    use shinobi_sim::character::GrappleState;
+    let b = balance();
+    let run = |hooked: bool, gap: f32| -> f32 {
+        let mut s = Server::new(Cfg::default());
+        s.set_balance(b.clone()).unwrap();
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.add_static_box([0.0, 10.0, 40.0], [20.0, 10.0, 1.0]); // an anchor wall behind the victim
+        s.add_player(1, [0.0, 0.81, 0.0]);
+        s.add_player(2, [0.0, 0.81, 30.0]);
+        for _ in 0..400 {
+            s.frame(FRAME);
+        }
+        for p in s.players.iter_mut() {
+            p.vitals.invuln_until_tick = 0;
+        }
+        // hit boxes are lag-compensated from history: let the teleport settle in it before swinging
+        put(&mut s, 1, [0.0, 0.81, 0.0]);
+        put(&mut s, 2, [0.0, 0.81, gap]);
+        for _ in 0..4 {
+            send(&mut s, 1, PlayerIntent::default());
+            send(&mut s, 2, PlayerIntent::default());
+            s.frame(FRAME);
+        }
+        s.players[0].ch.vel = vector![0.0, 0.0, 14.0]; // closing on the target
+        if hooked {
+            s.players[0].ch.grapple = Some(GrappleState { anchor: vector![0.0, 10.0, 39.0], len: 38.0, time: 1.0 });
+        }
+        let before = hp(&s, 2);
+        let mut slash = PlayerIntent { buttons: Buttons(Buttons::SLICE), aim_yaw: q_yaw(std::f32::consts::PI), ..Default::default() };
+        slash.tick = s.tick;
+        send(&mut s, 1, slash);
+        send(&mut s, 2, PlayerIntent::default());
+        s.frame(FRAME);
+        s.frame(FRAME);
+        before - hp(&s, 2)
+    };
+    let (plain_near, hook_far, plain_far) = (run(false, 2.5), run(true, 7.0), run(false, 7.0));
+    eprintln!(
+        "hook-strike: plain slash at 2.5 m deals {plain_near:.1}; at 7 m a plain slash deals {plain_far:.1}, a hook-strike deals {hook_far:.1} (katana {} x hook {})",
+        b.combat.katana.damage, b.combat.katana.hook_damage_mult
+    );
+    assert!((plain_near - b.combat.katana.damage).abs() < 0.5, "plain slash damage {plain_near}");
+    assert_eq!(plain_far, 0.0, "7 m is out of a plain slash's reach");
+    assert!((hook_far - b.combat.katana.damage * b.combat.katana.hook_damage_mult).abs() < 0.5, "hook-strike damage {hook_far}");
+}
+

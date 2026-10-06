@@ -75,7 +75,9 @@ pub fn cable(hand: Vec3, anchor: Vec3, tension: f32, t: f32) -> Vec<(Vec3, f32)>
         .map(|i| {
             let u = i as f32 / SEGS as f32;
             let p = hand.lerp(anchor, u) - Vec3::Y * (4.0 * u * (1.0 - u) * sag);
-            let packets = (u * len * 0.5 - t * 4.0).fract().abs(); // packet every 2 m, moving anchor-ward
+            // a packet every 2 m on short ropes, every len/18 on long ones (a 300 m hook is 18 packets, not 150 aliased ones)
+            let spacing = (len / 18.0).max(2.0);
+            let packets = (u * len / spacing - t * (4.0 * (len / 40.0).max(1.0)) / spacing).fract().abs(); // moving anchor-ward
             let pulse = (1.0 - packets * 4.0).max(0.0);
             (p, pulse)
         })
