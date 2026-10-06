@@ -50,6 +50,9 @@ impl TeamInfo {
     }
 }
 
+/// Distance (m) inside which the lock triangle says SLASH: blade reach plus the dash lunge of the demo katana.
+pub const MELEE_CUE_RANGE: f32 = 5.5;
+
 /// Lock-on state as combat publishes it (`LockOn { target, pos, progress, locked }`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LockInfo {
@@ -203,12 +206,21 @@ impl HudBridge {
         for h in &view.hits {
             if h.taken && h.other == 0 {
                 // environmental damage (obstacle / void): nobody to point at, so no direction arrow
+            } else if h.taken && h.amount == 0 && !h.kill {
+                // a zero-damage hit on us is a parry: our shield took it (the attacker is staggered)
+                self.fx.on_guard(0);
+            } else if !h.taken && h.amount == 0 && !h.kill {
+                // our own cut did nothing: we were parried
+                self.fx.on_guard(1);
             } else if h.taken {
                 // bearing to the attacker if we can see them, else straight ahead
                 let src = view.remotes.iter().find(|(id, _)| *id == h.other).map(|(_, s)| s.pos);
                 self.fx.on_hurt_amount(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)), h.amount);
             } else {
                 self.fx.on_hit_full(damage_kind(h.kind), h.kill, h.amount, h.head);
+                if h.bonus {
+                    self.fx.on_guard(2);
+                }
                 if h.head {
                     self.stats.my_headshots += 1;
                 }
@@ -455,7 +467,9 @@ impl HudBridge {
             let aspect = if self.aspect > 0.0 { self.aspect } else { 16.0 / 9.0 };
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             // target health from the replicated snapshot flags (31 steps), when the target is in the newest snapshot
-            let target_hp = net.interp.newest_tick().and_then(|t| net.interp.get(t)).and_then(|s| s.get(l.target)).map(|e| shinobi_proto::snapshot::hp_frac(e.flags));
+            let target_ent = net.interp.newest_tick().and_then(|t| net.interp.get(t)).and_then(|s| s.get(l.target));
+            let target_hp = target_ent.map(|e| shinobi_proto::snapshot::hp_frac(e.flags));
+            let target_open = target_ent.map_or(false, |e| e.fx & shinobi_proto::snapshot::FX_OPEN != 0);
             // exp smoothing (rate 28, frame-rate independent) with the target's velocity as feed-forward, as the 3D lock
             // dots do; a new target starts on itself (no sweep across the map)
             let vel = view.lock.map_or([0.0; 3], |lk| lk.target_vel);
@@ -482,7 +496,9 @@ impl HudBridge {
                     .flatten()
                     .map(|(lx, ly, _)| (lx.clamp(SIDE_CLEAR + 0.06, 1.0 - SIDE_CLEAR - 0.06), ly.clamp(BROW_H + 0.15, CHIN_TOP - 0.1)));
                 let (since, breaking) = view.lock.map_or((1.0, false), |lk| (lk.t_since_phase, lk.phase == shinobi_sim::combat::aim_assist::LockPhase::Break));
-                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp, dist, progress: l.progress, locked: l.locked, since, breaking, lead });
+                // melee cue: the target is inside cutting reach (blade + lunge) and the lock holds, or its strike window is open
+                let strike = if breaking { 0 } else if target_open && dist <= MELEE_CUE_RANGE * 1.6 { 2 } else if l.locked && dist <= MELEE_CUE_RANGE { 1 } else { 0 };
+                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp, dist, progress: l.progress, locked: l.locked, since, breaking, lead, strike });
             }
         }
         if lock.is_none() {
@@ -550,6 +566,8 @@ impl HudBridge {
             });
             hs.my_headshots = self.stats.my_headshots;
         }
+        hs.guarding = view.blocking;
+        hs.guard_flash = self.fx.guard_flash();
         hs.audio = self.audio;
         hs.aspect = self.aspect;
         hs.ffa = teams.is_none();

@@ -45,6 +45,8 @@ struct RemoteEnt {
     aura: Entity,
     /// Spinning gem above the head within `GEM_MAX_DIST`: marks "a player is here" at mid range.
     gem: Entity,
+    /// The block shield: a glowing panel in front of the body while `FX_BLOCK` is set.
+    shield: Entity,
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
@@ -628,7 +630,10 @@ fn sync_remotes(
             let gem = commands
                 .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem }
+            let shield = commands
+                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
+                .id();
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
@@ -667,6 +672,7 @@ fn sync_remotes(
                 })
             });
             commands.entity(ent.aura).insert(MeshMaterial3d(am.clone()));
+            commands.entity(ent.shield).insert(MeshMaterial3d(am.clone()));
         }
         // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
@@ -681,6 +687,15 @@ fn sync_remotes(
             let w = 0.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.6);
             at.translation = Vec3::ZERO;
             at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25), w);
+        }
+        // block shield: a glowing panel held out in front (local -Z is the facing), shown while the player guards
+        if let Ok(mut sh) = tf.get_mut(ent.shield) {
+            let flicker = 1.0 + 0.04 * (t * 17.0).sin();
+            sh.translation = Vec3::new(0.0, 0.1, -0.7);
+            sh.scale = Vec3::new(1.5 * flicker, 1.9, 0.05);
+        }
+        if let Ok(mut sv) = vis.get_mut(ent.shield) {
+            sv.set_if_neq(if st.fx & shinobi_proto::snapshot::FX_BLOCK != 0 { Visibility::Inherited } else { Visibility::Hidden });
         }
         // head gem: a spinning diamond above the head at mid range
         if let Ok(mut gt) = tf.get_mut(ent.gem) {

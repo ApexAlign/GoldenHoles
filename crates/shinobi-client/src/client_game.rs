@@ -492,6 +492,8 @@ pub struct RenderView {
     pub build_ghost: Option<BuildGhost>,
     /// Set while we are dead: camera, controls and HUD switch to the death sequence.
     pub death: Option<DeathView>,
+    /// The shield is up (the block key is held and we are alive): the HUD draws the guard ring.
+    pub blocking: bool,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
     pub lock: Option<LockOn>,
     /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
@@ -1218,6 +1220,7 @@ impl ClientGame {
         });
         let dead = death.is_some();
         RenderView {
+            blocking: self.blocking,
             fx,
             feel: self.camera.feel,
             connect_failed: self.net.connect_failed(local_tick),
