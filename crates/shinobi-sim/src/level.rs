@@ -33,6 +33,12 @@ pub struct LevelDesc {
     pub spawns: Vec<[f32; 3]>,
 }
 
+/// A level of floating structures over the void (no floor, nothing reaching down near y = 0): the renderer draws no
+/// ground for it and bots plan on its roofs. True when there are boxes and the lowest face is more than 4 m up.
+pub fn is_floating(l: &LevelDesc) -> bool {
+    !l.boxes.is_empty() && l.boxes.iter().all(|b| b.center[1] - b.half[1] > 4.0)
+}
+
 /// Where the shipped free-for-all map lives relative to the repo / install root (the demo's default level).
 pub const DEFAULT_LEVEL: &str = "levels/ffa_small.lvl";
 /// Fallback when `DEFAULT_LEVEL` is not installed.

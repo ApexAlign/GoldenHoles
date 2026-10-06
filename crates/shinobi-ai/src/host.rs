@@ -540,12 +540,20 @@ impl BotHost {
 fn build_nav(server: &Server) -> crate::nav::NavGrid {
     use shinobi_sim::combat::GROUP_WORLD;
     let mut half = 20.0f32;
+    let (mut top, mut has_floor) = (0.0f32, false);
     for (_, c) in server.world.colliders.iter() {
         if c.is_sensor() || !c.collision_groups().memberships.intersects(GROUP_WORLD) {
             continue;
         }
         let a = c.compute_aabb();
         half = half.max(a.maxs.x.abs()).max(a.mins.x.abs()).max(a.maxs.z.abs()).max(a.mins.z.abs());
+        top = top.max(a.maxs.y);
+        // a floor slab: top face at y = 0 and wide
+        has_floor |= a.maxs.y.abs() < 0.1 && (a.maxs.x - a.mins.x).max(a.maxs.z - a.mins.z) >= 20.0;
+    }
+    if !has_floor && top > 8.0 {
+        // floating buildings over the void: plan on the roof decks, bridges and ledges (and guard their edges)
+        return crate::nav::NavGrid::build_sky(server, (half + 2.0).min(200.0), 1.0, top);
     }
     crate::nav::NavGrid::build(server, half.min(200.0), 1.0)
 }

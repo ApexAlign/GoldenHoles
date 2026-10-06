@@ -162,6 +162,8 @@ pub struct BotStats {
     pub ticketless_waits: u32,
     /// Times the wedge detector backed the bot out of geometry.
     pub unsticks: u32,
+    /// Times the void-edge guard stopped or bent a move, dash or lunge (vertical maps only).
+    pub edge_stops: u32,
 }
 
 #[derive(Default)]
@@ -373,6 +375,13 @@ impl BotMem {
 
         // ---- 6. aim
         let (yaw, pitch) = self.aim(ctx, p, dir);
+
+        // ---- 6b. void-edge guard (vertical maps: stepping, dashing or lunging off a deck is death)
+        if let Some(nav) = ctx.nav.filter(|n| n.is_sky()) {
+            let (d3, m3) = self.edge_guard(nav, ctx, dir, mag, yaw, &mut buttons);
+            dir = d3;
+            mag = m3;
+        }
 
         // wall-run bookkeeping (stats only)
         let wr = matches!(me.state, shinobi_sim::character::MoveState::WallRun { .. });
@@ -711,6 +720,42 @@ impl BotMem {
         } else if me.flat_speed() >= world.cfg.wall_min_speed {
             *buttons |= Buttons::WALL_CLING;
         }
+    }
+
+    // ------------------------------------------------------------------ void-edge guard
+
+    /// Vertical maps only (`NavGrid::is_sky`). While grounded: no dash, roll, katana lunge or jump that would carry the
+    /// bot off the deck (the lunge reach is checked along the aim and the move direction), and a walk toward an edge
+    /// (reach grows with speed: a runner needs room to stop) bends to the nearest safe heading, or stops. Airborne bots
+    /// keep whatever the rest of the brain decided (they cannot be steered back anyway).
+    fn edge_guard(&mut self, nav: &crate::nav::NavGrid, ctx: &ThinkCtx, dir: V3, mag: f32, yaw: f32, buttons: &mut u8) -> (V3, f32) {
+        let me = ctx.me;
+        if !me.grounded() {
+            return (dir, mag);
+        }
+        let cfg = ctx.world.cfg;
+        let feet = me.pos.y - cfg.half_height - cfg.radius;
+        let aim_dir = dir_from_yaw(yaw);
+        let leaping = *buttons & (Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED) != 0;
+        if leaping && (nav.edge_ahead(me.pos, aim_dir, 8.0, feet) || (mag > 0.05 && nav.edge_ahead(me.pos, dir, 8.0, feet))) {
+            *buttons &= !(Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED | Buttons::JUMP_HELD);
+            self.stats.edge_stops += 1;
+        }
+        if mag < 0.05 {
+            return (dir, mag);
+        }
+        let reach = 1.8 + 0.3 * me.flat_speed();
+        if !nav.edge_ahead(me.pos, dir, reach, feet) {
+            return (dir, mag);
+        }
+        self.stats.edge_stops += 1;
+        for k in [0.5f32, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3] {
+            let alt = rotate_y(dir, k);
+            if !nav.edge_ahead(me.pos, alt, reach, feet) {
+                return (alt, mag * 0.8);
+            }
+        }
+        (dir, 0.0)
     }
 
     // ------------------------------------------------------------------ traversal (hops + steering)

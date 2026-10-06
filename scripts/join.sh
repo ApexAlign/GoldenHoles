@@ -8,6 +8,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+# MAP=sky|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
 HOST_ARG="${1:-}"; PORT="${2:-7777}"; LEVEL="${3:-${LEVEL:-levels/ffa_small.lvl}}"
 [ -n "$HOST_ARG" ] || { echo "usage: scripts/join.sh <server-ip> [port] [level]"; exit 1; }
 [ -f "$LEVEL" ] || { echo "level $LEVEL not found (run from the repo)"; exit 1; }
