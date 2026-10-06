@@ -122,6 +122,8 @@ pub struct NavGrid {
     void: Vec<bool>,
     /// Built for a vertical, ground-less map (`build_sky`): the guard `edge_ahead` is meaningful.
     sky: bool,
+    /// Largest height difference between neighbouring cells that is simply walked (steps, curbs, stair risers).
+    autostep: f32,
 }
 
 /// `(searches, nodes expanded)` on this thread since the previous call; resets the counters.
@@ -175,8 +177,9 @@ thread_local! {
 
 /// Largest ground-height difference between neighbouring cells a walking bot crosses on a smooth ramp.
 const NAV_STEP: f32 = 0.9;
-/// A height difference the character steps over without a ramp (its autostep is 0.35 m).
-const NAV_AUTOSTEP: f32 = 0.3;
+/// A height difference the character steps over without a ramp: the controller's autostep (`Cfg::step_height`, 0.55 m)
+/// less a margin. Used when the grid is built; `NavGrid::autostep` carries the value.
+const NAV_AUTOSTEP_MARGIN: f32 = 0.05;
 /// How far the ground at the edge midpoint may sit from the average of the two cells and still count as a ramp.
 const NAV_RAMP_TOL: f32 = 0.12;
 /// Highest ground a path may use: tiers a bot can walk onto, not roofs only reachable by hopping.
@@ -243,7 +246,7 @@ impl NavGrid {
                 }
             }
         }
-        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n], void, sky };
+        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n], void, sky, autostep: cfg.step_height - NAV_AUTOSTEP_MARGIN };
         for iz in 0..n as i32 {
             for ix in 0..n as i32 {
                 if grid.ground(ix, iz).is_none() {
@@ -343,7 +346,7 @@ impl NavGrid {
     /// slope (the ground at the shared edge's midpoint lies between the two, not at one cell's level).
     fn edge_ok(&self, a: (i32, i32), b: (i32, i32), ya: f32, yb: f32) -> bool {
         let d = (ya - yb).abs();
-        if d <= NAV_AUTOSTEP {
+        if d <= self.autostep {
             return true;
         }
         if d > NAV_STEP {
