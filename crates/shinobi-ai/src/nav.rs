@@ -118,6 +118,10 @@ pub struct NavGrid {
     adj: Vec<u8>,
     /// Per cell: walkable with a blocked cell on one of its four sides (path cost penalty).
     hug: Vec<bool>,
+    /// Per cell: nothing solid below the scan height at all (open void, as opposed to a wall or a tight spot).
+    void: Vec<bool>,
+    /// Built for a vertical, ground-less map (`build_sky`): the guard `edge_ahead` is meaningful.
+    sky: bool,
 }
 
 /// `(searches, nodes expanded)` on this thread since the previous call; resets the counters.
@@ -181,6 +185,16 @@ const NAV_MAX_Y: f32 = 4.0;
 impl NavGrid {
     /// Scan the level inside `[-half, half]` in x and z at `cell` metres.
     pub fn build(server: &Server, half: f32, cell: f32) -> NavGrid {
+        Self::build_to(server, half, cell, NAV_MAX_Y, false)
+    }
+
+    /// A vertical map with no ground (floating buildings): the surface of a cell is the highest solid top under
+    /// `max_y` (a roof, a bridge, a ledge), open void is remembered per cell, and `edge_ahead` works.
+    pub fn build_sky(server: &Server, half: f32, cell: f32, max_y: f32) -> NavGrid {
+        Self::build_to(server, half, cell, max_y, true)
+    }
+
+    fn build_to(server: &Server, half: f32, cell: f32, max_y: f32, sky: bool) -> NavGrid {
         let n = ((half * 2.0) / cell).ceil() as usize;
         let (x0, z0) = (-half, -half);
         let cfg = *server.cfg();
@@ -191,11 +205,14 @@ impl NavGrid {
         let solids = QueryFilter::default().exclude_sensors().groups(InteractionGroups::new(Group::ALL, GROUP_WORLD));
         let body = Capsule::new_y(cfg.half_height, cfg.radius * 0.9);
         let mut y = vec![f32::NAN; n * n];
+        let mut void = vec![false; n * n];
         let (mut ye, mut ys) = (vec![f32::NAN; n * n], vec![f32::NAN; n * n]);
+        // a ground-less map has nothing to hit for a long way down; a floor map stops within 25 m of the scan height
+        let reach = if sky { max_y + 60.0 } else { NAV_MAX_Y + 25.0 };
         let ground = |x: f32, z: f32| -> f32 {
-            let ray = Ray::new(Point::new(x, NAV_MAX_Y + 1.0, z), vector![0.0, -1.0, 0.0]);
-            match queries.cast_ray(&world.bodies, &world.colliders, &ray, NAV_MAX_Y + 25.0, true, solids) {
-                Some((_, toi)) if NAV_MAX_Y + 1.0 - toi <= NAV_MAX_Y => NAV_MAX_Y + 1.0 - toi,
+            let ray = Ray::new(Point::new(x, max_y + 1.0, z), vector![0.0, -1.0, 0.0]);
+            match queries.cast_ray(&world.bodies, &world.colliders, &ray, reach, true, solids) {
+                Some((_, toi)) if max_y + 1.0 - toi <= max_y => max_y + 1.0 - toi,
                 _ => f32::NAN,
             }
         };
@@ -203,10 +220,13 @@ impl NavGrid {
             for ix in 0..n {
                 let (cx, cz) = (x0 + (ix as f32 + 0.5) * cell, z0 + (iz as f32 + 0.5) * cell);
                 // ground: highest solid top below y = NAV_MAX_Y + 1 (so towers' undersides do not count as floor)
-                let ray = Ray::new(Point::new(cx, NAV_MAX_Y + 1.0, cz), vector![0.0, -1.0, 0.0]);
-                let Some((_, toi)) = queries.cast_ray(&world.bodies, &world.colliders, &ray, NAV_MAX_Y + 25.0, true, solids) else { continue };
-                let gy = NAV_MAX_Y + 1.0 - toi;
-                if gy > NAV_MAX_Y {
+                let ray = Ray::new(Point::new(cx, max_y + 1.0, cz), vector![0.0, -1.0, 0.0]);
+                let Some((_, toi)) = queries.cast_ray(&world.bodies, &world.colliders, &ray, reach, true, solids) else {
+                    void[iz * n + ix] = true;
+                    continue;
+                };
+                let gy = max_y + 1.0 - toi;
+                if gy > max_y {
                     continue;
                 }
                 // a capsule standing there must not overlap any solid
@@ -223,7 +243,7 @@ impl NavGrid {
                 }
             }
         }
-        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n] };
+        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n], void, sky };
         for iz in 0..n as i32 {
             for ix in 0..n as i32 {
                 if grid.ground(ix, iz).is_none() {
@@ -245,6 +265,37 @@ impl NavGrid {
 
     pub fn walkable_count(&self) -> usize {
         self.y.iter().filter(|v| !v.is_nan()).count()
+    }
+
+    /// Built by `build_sky`: a roof-and-bridge map where stepping off a deck is death.
+    pub fn is_sky(&self) -> bool {
+        self.sky
+    }
+
+    /// Would walking from `from` along `dir` (horizontal, any length) within `reach` metres leave the deck: open void
+    /// under a sample point, a surface more than 2 m below `feet_y`, or the edge of the scanned area? Samples every
+    /// half cell from 0.4 m out. Walls and tight spots are not edges (the whiskers handle those).
+    pub fn edge_ahead(&self, from: V3, dir: V3, reach: f32, feet_y: f32) -> bool {
+        let d = unit_or_zero(flat(dir));
+        if d == Vector::zeros() {
+            return false;
+        }
+        let step = (self.cell * 0.5).max(0.25);
+        let mut t = 0.4;
+        while t <= reach {
+            let (x, z) = (from.x + d.x * t, from.z + d.z * t);
+            let (cx, cz) = self.cell_of(x, z);
+            match self.idx(cx, cz) {
+                None => return true,
+                Some(i) => {
+                    if self.void[i] || (!self.y[i].is_nan() && self.y[i] < feet_y - 2.0) {
+                        return true;
+                    }
+                }
+            }
+            t += step;
+        }
+        false
     }
 
     fn idx(&self, ix: i32, iz: i32) -> Option<usize> {
