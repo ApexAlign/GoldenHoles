@@ -1008,8 +1008,9 @@ impl Hud {
                 out.push(Prim::Text {
                     pos: (cx, cy - 0.05 - 0.03 * (1.0 - f)),
                     text: s.hit_amount.to_string(),
-                    size: if s.hit_kill || s.hit_head { 0.038 } else { 0.03 },
-                    color: col.a(f),
+                    // a boosted cut (strike window, momentum, streak: well over the base 20) is bigger and gold
+                    size: if s.hit_kill || s.hit_head { 0.038 } else if s.hit_amount >= BIG_HIT { 0.044 } else { 0.03 },
+                    color: if s.hit_amount >= BIG_HIT { p.gold.a(f) } else { col.a(f) },
                     align: Align::Center,
                 });
             }
@@ -1634,6 +1635,9 @@ fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 
 /// Brackets around the lock target: they close in as lock progress rises, then snap tight and go solid.
 /// Name + distance above, a health bar below.
+/// Damage at which the hit number is drawn big and gold (the base cut is 20).
+const BIG_HIT: u8 = 27;
+
 /// Seconds the guard / strike flash text stays up.
 pub const GUARD_FLASH_TIME: f32 = 0.7;
 
