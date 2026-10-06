@@ -94,7 +94,8 @@ fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3], eye: Vec3) -> (Vec<[f3
             let base = pos.len() as u32;
             for (p, pulse) in [pts[k], pts[k + 1]] {
                 // width follows distance from the eye (about constant on screen); a fixed world width balloons near the hand
-                let w = (0.006 + 0.0022 * p.distance(eye)).min(0.12) * (1.0 + 0.8 * pulse);
+                // (clamp is 3 m: the old 0.12 m cap made a rope beyond ~55 m shrink to a sub-pixel line on screen)
+                let w = (0.006 + 0.0022 * p.distance(eye)).min(3.0) * (1.0 + 0.8 * pulse);
                 let g = (1.4 + 2.2 * pulse) * fade;
                 let c = [tc[0] * g + 0.4 * pulse, tc[1] * g + 0.4 * pulse, tc[2] * g + 0.4 * pulse, fade];
                 pos.push((p + axis * w).to_array());

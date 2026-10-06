@@ -628,6 +628,11 @@ impl ClientGame {
     // ---- input (any rate) ----
 
     /// F1: show / hide the controls strip (all rows, full strength) regardless of the 30 s fade.
+    /// Offline review shots: pretend the shield is up (the sim tick that normally sets it does not run there).
+    pub fn force_blocking(&mut self, on: bool) {
+        self.blocking = on;
+    }
+
     pub fn toggle_controls(&mut self) {
         self.controls.toggle_pin();
     }
@@ -642,6 +647,7 @@ impl ClientGame {
                 Action::BuildFloor | Action::BuildWall => self.controls.mark(Use::Build),
                 Action::Slice => self.controls.mark(Use::Katana),
                 Action::Fire => self.controls.mark(Use::Shuriken),
+                Action::Block => self.controls.mark(Use::Block),
                 _ => {}
             }
         }

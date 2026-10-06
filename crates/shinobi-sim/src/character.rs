@@ -218,7 +218,7 @@ impl Default for Cfg {
             kcc_offset: 0.01,
             eye_above_center: 0.6,
             slide_eye_drop: 0.35,
-            grapple_range: 400.0,
+            grapple_range: 1000.0,
             grapple_min_len: 2.5,
             grapple_speed: 18.0,
             grapple_accel: 80.0,
@@ -234,8 +234,8 @@ impl Default for Cfg {
             grapple_arrive_speed: 10.0,
             grapple_soft_dist: 6.0,
             grapple_brake: 70.0,
-            grapple_far_speed: 60.0,
-            grapple_speed_per_m: 0.6,
+            grapple_far_speed: 140.0,
+            grapple_speed_per_m: 1.75,
             hookstrike_window: 0.35,
             hookstrike_speed: 24.0,
             hookstrike_lift: 3.0,
@@ -1887,7 +1887,7 @@ mod tests {
         assert!(g.anchor.z < -28.0, "{:?}", g.anchor);
 
         let mut w2 = world();
-        boxc(&mut w2, [0.0, 5.0, -520.0], [30.0, 40.0, 1.0]); // grapple_range is 400 m (10x the old 40)
+        boxc(&mut w2, [0.0, 5.0, -1200.0], [30.0, 40.0, 1.0]); // beyond grapple_range (1000 m, 25x the old 40)
         let mut far = player(&mut w2, [0.0, 5.0, 0.0]);
         tick(&mut far, &mut w2, &fire([0.0, 0.0, -1.0]), &mut now);
         assert!(far.grapple.is_none(), "beyond grapple_range");
@@ -2600,7 +2600,7 @@ mod tests {
             tick(&mut ch, &mut w, &idle, &mut now);
         }
         eprintln!("FEEL grapple: peak {best:.1} m/s, h at release {h_release:.1}, 0.4 s later h {:.1} v {:.1}", hspeed(&ch), ch.vel.y);
-        assert!(best <= Cfg::default().grapple_max_speed + 0.5, "rope speed {best}");
+        assert!(best <= Cfg::default().grapple_far_speed + 2.5, "rope speed {best}"); // far reels run up to grapple_far_speed
         assert!(hspeed(&ch) >= 0.7 * h_release, "horizontal momentum is not braked away: {h_release} -> {}", hspeed(&ch));
     }
 

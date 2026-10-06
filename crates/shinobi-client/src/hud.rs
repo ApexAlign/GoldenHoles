@@ -438,6 +438,9 @@ pub struct HudState {
     pub target: Option<TargetHud>,
     /// The shield is up: draw the guard ring around the crosshair.
     pub guarding: bool,
+    /// Guard energy SPENT 0..=1 (0 = full, the default; client estimate of the server's: grows while held, shrinks when
+    /// down, a blocked hit costs 20 %).
+    pub guard_spent: f32,
     /// Guard feedback: (kind, age seconds). 0 parried (you blocked it just in time), 1 your cut was parried (staggered),
     /// 2 you hit inside a strike window (bonus damage).
     pub guard_flash: Option<(u8, f32)>,
@@ -1645,6 +1648,15 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             out.push(Prim::Line { a: (cx + r * a0.cos() * ax(), cy + r * a0.sin()), b: (cx + r * a1.cos() * ax(), cy + r * a1.sin()), color: p.cyan.a(0.9), glow: 0.006 });
         }
         out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center });
+    }
+    // guard-energy bar under the crosshair while the shield is up or recharging
+    if (s.guarding || s.guard_spent > 0.005) && !s.dead {
+        let e = (1.0 - s.guard_spent).clamp(0.0, 1.0);
+        let (w, h, y) = (0.12, 0.007, cy + 0.108);
+        let r = Rect::new(cx - w * 0.5, y, w, h);
+        let col = if e < 0.25 { p.magenta } else { p.cyan };
+        out.push(Prim::Rect { r, color: col.a(0.18), glow: 0.0 });
+        out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * e, r.h), color: col.a(if s.guarding { 0.95 } else { 0.55 }), glow: 0.004 });
     }
     if let Some((kind, t)) = s.guard_flash {
         let u = (t / GUARD_FLASH_TIME).clamp(0.0, 1.0);

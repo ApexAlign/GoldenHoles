@@ -108,11 +108,18 @@ pub struct Vm {
     recoil: f32,
     /// Smoothed speed-line intensity 0..1 (dash / grapple / fast running).
     streak: f32,
+    /// Block pose blend 0..1 (blade raised across the screen, shield up) and the shield flash (absorbed hit / parry).
+    guard: f32,
+    guard_flash: f32,
 }
 
 #[derive(Resource)]
 pub struct VmEnts {
     blade: Entity,
+    /// First-person shield: a big additive panel with a bright frame, in front of the camera while blocking.
+    shield: Entity,
+    shield_mat: Handle<StandardMaterial>,
+    frame_mat: Handle<StandardMaterial>,
     ribbons_mesh: Handle<Mesh>,
     ribbons: Entity,
     /// Speed lines (dash / grapple / fast running), on the viewmodel layer.
@@ -128,7 +135,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0 })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, guard: 0.0, guard_flash: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup));
     }
 }
@@ -235,11 +242,25 @@ fn spawn(
             Mesh3d(meshes.add(star_mesh())),
             MeshMaterial3d(star),
             Transform::from_translation(Vec3::from(ShurikenViewModel::REST)),
-            layer,
+            layer.clone(),
         ))
         .id();
 
-    commands.insert_resource(VmEnts { blade, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
+    // first-person shield: translucent panel + four hot frame bars, parented to one root that sits across the screen
+    let shield_mat = mats.add(StandardMaterial { base_color: Color::linear_rgb(0.0, 0.5, 0.6), unlit: true, alpha_mode: AlphaMode::Add, double_sided: true, cull_mode: None, ..default() });
+    let frame_mat = mats.add(unlit(pal.cyan, 3.5));
+    let shield = commands.spawn((Transform::default(), Visibility::Hidden, layer.clone())).id();
+    for (mat, p, sc) in [
+        (shield_mat.clone(), Vec3::ZERO, Vec3::new(1.0, 0.7, 0.004)),
+        (frame_mat.clone(), Vec3::new(0.0, 0.35, 0.0), Vec3::new(1.0, 0.012, 0.01)),
+        (frame_mat.clone(), Vec3::new(0.0, -0.35, 0.0), Vec3::new(1.0, 0.012, 0.01)),
+        (frame_mat.clone(), Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.012, 0.7, 0.01)),
+        (frame_mat.clone(), Vec3::new(-0.5, 0.0, 0.0), Vec3::new(0.012, 0.7, 0.01)),
+    ] {
+        commands.spawn((Mesh3d(cube.clone()), MeshMaterial3d(mat), Transform::from_translation(p).with_scale(sc), ChildOf(shield), layer.clone()));
+    }
+
+    commands.insert_resource(VmEnts { blade, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
 }
 
 pub fn update(
@@ -305,6 +326,35 @@ pub fn update(
         }
     }
 
+    // block: the blade swings up across the screen, a big shield panel rises in front of it, every absorbed hit flashes it
+    // and a parry flashes it much bigger. SHOT_FX=guard forces the pose for offline review frames.
+    let blocking = view.0.blocking;
+    vm.guard += ((blocking as u32 as f32) - vm.guard) * (1.0 - (-16.0 * dt).exp());
+    vm.guard_flash = (vm.guard_flash - dt * 2.4).max(0.0);
+    for h in view.0.hits.iter().filter(|h| h.taken && h.other != 0) {
+        if blocking {
+            vm.guard_flash = vm.guard_flash.max(if h.amount == 0 { 1.0 } else { 0.55 });
+        }
+    }
+    let g = vm.guard;
+    if let Ok(mut sh) = tf.get_mut(ents.shield) {
+        let pop = 1.0 + 0.12 * vm.guard_flash;
+        sh.translation = Vec3::new(0.0, -0.02, -0.55);
+        sh.rotation = Quat::IDENTITY;
+        sh.scale = Vec3::new(0.62 * pop, 0.62 * pop, 1.0) * (0.55 + 0.45 * g);
+    }
+    if let Ok(mut sv) = vis.get_mut(ents.shield) {
+        sv.set_if_neq(if g > 0.02 { Visibility::Inherited } else { Visibility::Hidden });
+    }
+    if let Some(mut m) = mats.get_mut(&ents.shield_mat) {
+        let k = (0.07 + 0.015 * (time.elapsed_secs() * 9.0).sin() + 1.4 * vm.guard_flash) * g;
+        m.base_color = Color::linear_rgb(local.0[0] * k, local.0[1] * k, local.0[2] * k);
+    }
+    if let Some(mut m) = mats.get_mut(&ents.frame_mat) {
+        let k = (1.1 + 4.0 * vm.guard_flash) * g;
+        m.base_color = Color::linear_rgb(local.0[0] * k, local.0[1] * k, local.0[2] * k);
+    }
+
     let server_time = net.0.local_tick() / 60.0;
     let draw = katana_draw(&vm.katana, &Palette::TRON, server_time, 0.5 + 0.5 * (server_time as f32 * 7.85).sin());
 
@@ -319,6 +369,13 @@ pub fn update(
         let (rb, rp) = recoil_kick(vm.recoil);
         b.translation = Vec3::new(t.x + shake, t.y - w.y_dip + shake * 0.6, t.z + w.back - 0.06 * pulse + rb);
         b.rotation = Quat::from_rotation_x(w.pitch + rp) * Quat::from_xyzw(q.i, q.j, q.k, q.w);
+        // guard pose: the blade lies across the lower screen, tip to the left, hilt in the right hand
+        if g > 0.001 {
+            let guard_t = Vec3::new(0.2, -0.2, -0.42);
+            let guard_q = Quat::from_rotation_y(-1.35) * Quat::from_rotation_z(0.18);
+            b.translation = b.translation.lerp(guard_t, g);
+            b.rotation = b.rotation.slerp(guard_q, g);
+        }
     }
 
     // speed lines (dash / grapple / fast running), smoothed so they ease in and out

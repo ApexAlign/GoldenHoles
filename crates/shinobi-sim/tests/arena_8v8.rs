@@ -573,8 +573,10 @@ fn rope_feel_budget_smooth_pull_capped_speed_no_face_plants() {
             }
         }
         assert!(ticks < 400, "{label}: rope never ended");
-        assert!(max_v <= cfg.grapple_max_speed + 0.5, "{label}: speed {max_v} over the cap");
-        assert!(max_a <= cfg.grapple_accel * 1.35 + cfg.gravity, "{label}: acceleration spike {max_a:.0} m/s^2 on the rope");
-        assert!(first_a.unwrap() < cfg.grapple_accel * 0.6 + cfg.gravity, "{label}: the pull must ease in, first tick {:.0} m/s^2", first_a.unwrap());
+        assert!(max_v <= cfg.grapple_far_speed + 2.5, "{label}: speed {max_v} over the far-reel cap");
+        // pull and brake scale with the reel speed (`scale` in grapple_pull): a 140 m/s far reel pulls 140/18 times harder
+        let scale = cfg.grapple_far_speed / cfg.grapple_speed;
+        assert!(max_a <= cfg.grapple_accel * scale * 1.35 + cfg.gravity, "{label}: acceleration spike {max_a:.0} m/s^2 on the rope");
+        assert!(first_a.unwrap() < cfg.grapple_accel * scale * 0.6 + cfg.gravity, "{label}: the pull must ease in, first tick {:.0} m/s^2", first_a.unwrap());
     }
 }

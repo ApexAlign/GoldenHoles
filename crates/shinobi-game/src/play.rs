@@ -45,8 +45,11 @@ struct RemoteEnt {
     aura: Entity,
     /// Spinning gem above the head within `GEM_MAX_DIST`: marks "a player is here" at mid range.
     gem: Entity,
-    /// The block shield: a glowing panel in front of the body while `FX_BLOCK` is set.
+    /// The block shield: a big glowing framed panel held out in front of the body while `FX_BLOCK` is set (root of
+    /// the panel and its four frame bars).
     shield: Entity,
+    shield_panel: Entity,
+    shield_bars: [Entity; 4],
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
@@ -57,6 +60,8 @@ const VOID_Y: f32 = -20.0;
 struct BodyMats(
     std::collections::HashMap<u32, Handle<StandardMaterial>>,
     std::collections::HashMap<u32, Handle<StandardMaterial>>,
+    std::collections::HashMap<u32, Handle<StandardMaterial>>,
+    /// The block shield panel (additive, bright) per player colour.
     std::collections::HashMap<u32, Handle<StandardMaterial>>,
 );
 
@@ -276,7 +281,7 @@ pub fn setup(
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection { fov: 90f32.to_radians(), ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 90f32.to_radians(), far: 4000.0, ..default() }), // far plane well past the 1000 m hook
         Transform::from_xyz(0.0, 1.4, 0.0),
         PlayerCam,
     ));
@@ -328,6 +333,33 @@ const BLOOM_SCALE: f32 = 0.115;
 pub struct ForcedScale(pub f32);
 
 /// Edge-trigger a bevy key/mouse state into `ButtonEvent`s (press and release, in order).
+/// The keyboard / mouse bindings of every action, as button events for this frame (key down / key up edges).
+fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> Vec<ButtonEvent> {
+    let mut out = Vec::new();
+    let k = |code: KeyCode| (keys.just_pressed(code), keys.just_released(code));
+    let m = |b: MouseButton| (mouse.just_pressed(b), mouse.just_released(b));
+    for ((p, r), a) in [
+        (k(KeyCode::Space), Action::Jump),
+        (k(KeyCode::ShiftLeft), Action::Dash),
+        (k(KeyCode::KeyQ), Action::Roll),
+        (k(KeyCode::KeyC), Action::Slide),
+        (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
+        (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
+        (m(MouseButton::Left), Action::Slice),
+        (m(MouseButton::Right), Action::Fire),
+        // hold: shield + parry, view locked. Several keys on purpose: Ctrl is eaten by some window managers / layouts
+        (k(KeyCode::ControlLeft), Action::Block),
+        (k(KeyCode::ControlRight), Action::Block),
+        (k(KeyCode::KeyF), Action::Block),
+        (k(KeyCode::KeyV), Action::Block),
+        (m(MouseButton::Middle), Action::Block),
+        (m(MouseButton::Back), Action::Block),
+    ] {
+        key_events(&mut out, p, r, a);
+    }
+    out
+}
+
 fn key_events(out: &mut Vec<ButtonEvent>, pressed: bool, released: bool, action: Action) {
     if pressed {
         out.push(ButtonEvent { action, down: true });
@@ -495,23 +527,7 @@ pub fn input(
     }
 
     // the latch in ClientGame turns these into one-shot sim-tick edges, so a sub-tick tap is not lost
-    let mut out = Vec::new();
-    let k = |code: KeyCode| (keys.just_pressed(code), keys.just_released(code));
-    let m = |b: MouseButton| (mouse.just_pressed(b), mouse.just_released(b));
-    for ((p, r), a) in [
-        (k(KeyCode::Space), Action::Jump),
-        (k(KeyCode::ShiftLeft), Action::Dash),
-        (k(KeyCode::KeyQ), Action::Roll),
-        (k(KeyCode::KeyC), Action::Slide),
-        (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
-        (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
-        (m(MouseButton::Left), Action::Slice),
-        (m(MouseButton::Right), Action::Fire),
-        (k(KeyCode::ControlLeft), Action::Block), // hold: shield + parry, view locked
-        (k(KeyCode::KeyF), Action::Block),
-    ] {
-        key_events(&mut out, p, r, a);
-    }
+    let mut out = action_events(&keys, &mouse);
     out.extend(pad_out.events.iter().copied());
     for e in out {
         lock.tracker.apply(&e);
@@ -638,10 +654,14 @@ fn sync_remotes(
             let gem = commands
                 .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
-            let shield = commands
-                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
+            let shield = commands.spawn((Transform::default(), Visibility::Hidden, ChildOf(root))).id();
+            let shield_panel = commands
+                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield)))
                 .id();
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield }
+            let shield_bars = std::array::from_fn(|_| {
+                commands.spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield))).id()
+            });
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
@@ -661,14 +681,14 @@ fn sync_remotes(
             for e in &ent.parts {
                 commands.entity(*e).insert(MeshMaterial3d(m.clone()));
             }
-            let bm = body_mats.1.entry(k).or_insert_with(|| {
+            let bm: Handle<StandardMaterial> = body_mats.1.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
                     base_color: Color::linear_rgb(hue[0] * 4.0, hue[1] * 4.0, hue[2] * 4.0),
                     unlit: true,
                     alpha_mode: AlphaMode::Add,
                     ..default()
                 })
-            });
+            }).clone();
             commands.entity(ent.beacon).insert(MeshMaterial3d(bm.clone()));
             commands.entity(ent.gem).insert(MeshMaterial3d(bm.clone()));
             let am = body_mats.2.entry(k).or_insert_with(|| {
@@ -680,7 +700,18 @@ fn sync_remotes(
                 })
             });
             commands.entity(ent.aura).insert(MeshMaterial3d(am.clone()));
-            commands.entity(ent.shield).insert(MeshMaterial3d(am.clone()));
+            let sm = body_mats.3.entry(k).or_insert_with(|| {
+                mats.add(StandardMaterial {
+                    base_color: Color::linear_rgb(hue[0] * 1.3, hue[1] * 1.3, hue[2] * 1.3),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Add,
+                    ..default()
+                })
+            });
+            commands.entity(ent.shield_panel).insert(MeshMaterial3d(sm.clone()));
+            for b in &ent.shield_bars {
+                commands.entity(*b).insert(MeshMaterial3d(bm.clone())); // the frame: the hot additive colour
+            }
         }
         // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
@@ -697,10 +728,26 @@ fn sync_remotes(
             at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25), w);
         }
         // block shield: a glowing panel held out in front (local -Z is the facing), shown while the player guards
-        if let Ok(mut sh) = tf.get_mut(ent.shield) {
-            let flicker = 1.0 + 0.04 * (t * 17.0).sin();
-            sh.translation = Vec3::new(0.0, 0.1, -0.7);
-            sh.scale = Vec3::new(1.5 * flicker, 1.9, 0.05);
+        // a big framed panel (bigger with distance so it still reads): that is the whole "block pose" of a remote player
+        {
+            let flicker = 1.0 + 0.05 * (t * 17.0).sin();
+            let g = 1.0 + 0.25 * (dist / 40.0).min(1.5);
+            let (w, h) = (1.7 * g * flicker, 2.1 * g);
+            let fb = 0.07 * g;
+            if let Ok(mut sh) = tf.get_mut(ent.shield) {
+                sh.translation = Vec3::new(0.0, 0.1, -0.75);
+            }
+            if let Ok(mut sp) = tf.get_mut(ent.shield_panel) {
+                sp.scale = Vec3::new(w, h, 0.04);
+            }
+            let bars = [(Vec3::new(0.0, h * 0.5, 0.0), Vec3::new(w, fb, 0.06)), (Vec3::new(0.0, -h * 0.5, 0.0), Vec3::new(w, fb, 0.06)),
+                        (Vec3::new(w * 0.5, 0.0, 0.0), Vec3::new(fb, h, 0.06)), (Vec3::new(-w * 0.5, 0.0, 0.0), Vec3::new(fb, h, 0.06))];
+            for (e, (p, sc)) in ent.shield_bars.iter().zip(bars) {
+                if let Ok(mut bt) = tf.get_mut(*e) {
+                    bt.translation = p;
+                    bt.scale = sc;
+                }
+            }
         }
         if let Ok(mut sv) = vis.get_mut(ent.shield) {
             sv.set_if_neq(if st.fx & shinobi_proto::snapshot::FX_BLOCK != 0 { Visibility::Inherited } else { Visibility::Hidden });
@@ -893,5 +940,50 @@ mod beacon_tests {
     fn beacon_widens_with_distance() {
         assert!(beacon_width(60.0) > beacon_width(20.0));
         assert!(beacon_width(0.0) > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    fn events_for_press(code: Option<KeyCode>, btn: Option<MouseButton>) -> (Vec<ButtonEvent>, Vec<ButtonEvent>) {
+        let (mut keys, mut mouse) = (ButtonInput::<KeyCode>::default(), ButtonInput::<MouseButton>::default());
+        if let Some(c) = code {
+            keys.press(c);
+        }
+        if let Some(b) = btn {
+            mouse.press(b);
+        }
+        let down = action_events(&keys, &mouse);
+        keys.clear();
+        mouse.clear();
+        if let Some(c) = code {
+            keys.release(c);
+        }
+        if let Some(b) = btn {
+            mouse.release(b);
+        }
+        (down, action_events(&keys, &mouse))
+    }
+
+    /// Every block binding maps to the Block button: a down edge on press, an up edge on release.
+    #[test]
+    fn ctrl_f_v_middle_and_back_all_map_to_the_block_button() {
+        for (code, btn) in [
+            (Some(KeyCode::ControlLeft), None),
+            (Some(KeyCode::ControlRight), None),
+            (Some(KeyCode::KeyF), None),
+            (Some(KeyCode::KeyV), None),
+            (None, Some(MouseButton::Middle)),
+            (None, Some(MouseButton::Back)),
+        ] {
+            let (down, up) = events_for_press(code, btn);
+            assert_eq!(down, vec![ButtonEvent { action: Action::Block, down: true }], "{code:?} {btn:?} press");
+            assert_eq!(up, vec![ButtonEvent { action: Action::Block, down: false }], "{code:?} {btn:?} release");
+        }
+        // and the attack buttons are untouched
+        let (d, _) = events_for_press(None, Some(MouseButton::Left));
+        assert_eq!(d, vec![ButtonEvent { action: Action::Slice, down: true }]);
     }
 }
