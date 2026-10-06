@@ -401,3 +401,29 @@ fn a_held_jump_is_clearly_different_from_a_tap_through_the_real_input_path() {
     assert!(press > flick * 1.1, "and a press out-jumps a flick ({press:.2} vs {flick:.2} m)");
     assert!(press >= 2.0, "even an ordinary press is a real jump now ({press:.2} m; the old tuning gave ~1.5 m)");
 }
+
+/// Hold the block key through the real client: the view freezes (look input is ignored), the server raises the
+/// shield, the body still runs at full speed, and cutting is shut while it is up.
+#[test]
+fn blocking_locks_the_view_keeps_movement_and_the_server_raises_the_shield() {
+    let mut r = Rig::new();
+    r.idle(60);
+    let yaw0 = r.game.aim.yaw;
+    let z0 = r.me().pos(&r.srv.world)[2];
+    let down = |a, d| ButtonEvent { action: a, down: d };
+    // raise the shield and keep running forward while the mouse is dragged hard to the side
+    r.step(InputFrame { buttons: vec![down(Action::Block, true)], stick: (0.0, 1.0), look: (0.0, 0.0), ..Default::default() });
+    for _ in 0..40 {
+        r.step(InputFrame { stick: (0.0, 1.0), look: (200.0, 40.0), buttons: vec![down(Action::Slice, true), down(Action::Slice, false)], ..Default::default() });
+    }
+    assert!(r.me().blk.held, "the server raised the shield");
+    assert!((r.game.aim.yaw - yaw0).abs() < 1e-4, "the client view stayed locked: {} -> {}", yaw0, r.game.aim.yaw);
+    assert!((r.me().pos(&r.srv.world)[2] - z0).abs() > 2.0, "and the body kept running while blocking");
+    assert!(!r.srv.events.iter().any(|(id, e)| *id == 1 && matches!(e, shinobi_sim::combat::CombatEvent::Slash { .. })), "no katana swing while the shield is up");
+    // release: look works again and the shield drops
+    r.step(InputFrame { buttons: vec![down(Action::Block, false)], ..Default::default() });
+    r.step(InputFrame { look: (200.0, 0.0), ..Default::default() });
+    r.idle(30); // the client's intent lead: the release reaches the server a few ticks later
+    assert!(!r.me().blk.held, "the shield dropped on release");
+    assert!((r.game.aim.yaw - yaw0).abs() > 0.01, "look works again");
+}

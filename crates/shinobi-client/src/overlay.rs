@@ -10,7 +10,7 @@ pub fn window_title(locked: bool) -> &'static str {
     if locked { "Golden Shinobi" } else { "Golden Shinobi - click the window to play" }
 }
 
-const CONTROLS: [(&str, &str); 14] = [
+const CONTROLS: [(&str, &str); 15] = [
     ("W A S D", "MOVE"),
     ("MOUSE", "AIM"),
     ("SPACE", "JUMP / DOUBLE JUMP"),
@@ -24,6 +24,7 @@ const CONTROLS: [(&str, &str); 14] = [
     ("F1 / F3", "CONTROLS STRIP / PERF"),
     ("LEFT CLICK", "KATANA SLICE"),
     ("RIGHT CLICK", "THROW SHURIKEN"),
+    ("HOLD CTRL / F", "BLOCK, PARRY (VIEW LOCKS)"),
     ("ESC", "RELEASE MOUSE"),
 ];
 

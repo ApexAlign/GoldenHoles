@@ -497,6 +497,8 @@ pub fn input(
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (m(MouseButton::Left), Action::Slice),
         (m(MouseButton::Right), Action::Fire),
+        (k(KeyCode::ControlLeft), Action::Block), // hold: shield + parry, view locked
+        (k(KeyCode::KeyF), Action::Block),
     ] {
         key_events(&mut out, p, r, a);
     }
