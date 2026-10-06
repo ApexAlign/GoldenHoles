@@ -185,18 +185,22 @@ pub fn setup(
                 .max_by(|a, b| (a.half[0] * a.half[2]).total_cmp(&(b.half[0] * b.half[2])))
                 .map(|b| ([b.center[0], b.center[2]], [b.half[0], b.half[2]]))
         });
+    // floating-structure maps (ffa_sky): no floor box and nothing reaches down near y = 0, so there is NO ground to draw
+    let floating = big_floor.is_none() && level.as_ref().map_or(false, |l| shinobi_sim::level::is_floating(&l.0));
     let fog = crate::grid::FogFar::for_floor(big_floor.map(|(_, h)| h));
     commands.insert_resource(fog);
     let (floor_c, floor_h) = big_floor.unwrap_or(([0.0, 0.0], [200.0, 200.0]));
     let grid_mat = grids.add(GridFloor::from_client(&GridData::tron(&pal), fog.0));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(floor_h[0], floor_h[1])))),
-        MeshMaterial3d(grid_mat.clone()),
-        Transform::from_xyz(floor_c[0], 0.0, floor_c[1]),
-    ));
+    if !floating {
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(floor_h[0], floor_h[1])))),
+            MeshMaterial3d(grid_mat.clone()),
+            Transform::from_xyz(floor_c[0], 0.0, floor_c[1]),
+        ));
+    }
     // open-void maps: the kill plane drawn as a faint red grid far below the edges, so the world visibly ENDS
     // (players can see how far the drop is) instead of the floor seeming to run on into the sky
-    if big_floor.is_some() {
+    if big_floor.is_some() || floating {
         let mut vd = GridData::tron(&pal);
         vd.base = [0.012, 0.0, 0.02, 1.0];
         vd.glow = [pal.magenta.0 * 0.9, pal.magenta.1 * 0.12, pal.magenta.2 * 0.3, 1.0];
@@ -216,7 +220,11 @@ pub fn setup(
         let gd = GridData::tron(&pal);
         for b in l.0.boxes.iter().filter(|b| b.center[1] + b.half[1] > 0.05) {
             let top = b.center[1] + b.half[1];
-            let (tint, mode) = if b.center[1] - b.half[1] > 10.0 {
+            let (tint, mode) = if floating {
+                // floating buildings: tall bodies are cool-blue walls, decks / bridges / ledges / lips read cyan
+                // (a box high above the ground is a building here, not a ceiling)
+                if b.half[1] >= 4.0 { ([0.1, 0.55, 1.2], 1.0) } else { ([pal.cyan.0 * 1.4, pal.cyan.1 * 1.4, pal.cyan.2 * 1.4], 1.0) }
+            } else if b.center[1] - b.half[1] > 10.0 {
                 ([0.15, 0.35, 0.6], 2.0) // ceiling: faint skylight grid
             } else if top > 5.0 {
                 ([0.1, 0.55, 1.2], 1.0) // tall walls / perimeter
