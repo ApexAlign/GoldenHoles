@@ -83,6 +83,8 @@ pub struct Player {
     /// Server tick of the newest intent whose aim was applied (a hitching client may skip ticks: the aim slew
     /// allowance grows with the gap).
     pub last_aim_tick: u32,
+    /// Block / parry shield, guard energy, stagger and strike-window state (`block.rs`).
+    pub blk: crate::block::BlockState,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -258,6 +260,7 @@ impl Server {
             last_pkt: None,
             client_report: None,
             last_aim_tick: 0,
+            blk: Default::default(),
         });
     }
 
@@ -433,9 +436,13 @@ impl Server {
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
 
+        let bcfg = self.balance.guard.cfg();
         for i in 0..self.players.len() {
             let intent = self.players[i].queue.take_for_tick(tick);
             let before = self.players[i].pos(&self.world);
+            // the shield: raised only by a living player in a live match who is not staggered (see `block.rs`)
+            let can_act = !frozen && self.players[i].vitals.alive();
+            self.players[i].blk.update(intent.as_ref().map_or(false, |it| it.block), tick, &bcfg, can_act);
 
             // aim: clamp claimed slew, then derive everything from the server copy
             if let Some(it) = &intent {
@@ -452,8 +459,11 @@ impl Server {
                     let turn = (claimed - prev + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                     self.strike_log.push(format!("player {} tick {tick}: aim slew {:.1} deg over {gap} tick(s), allowed {:.1}", p.id, turn.to_degrees(), turn_cfg.max_turn.to_degrees()));
                 }
-                p.yaw = q_yaw(yaw);
-                p.pitch = it.aim_pitch;
+                // blocking locks the view: only the aim of the tick the shield went up counts, the rest is ignored
+                if !(p.blk.held && !p.blk.just_raised(tick)) {
+                    p.yaw = q_yaw(yaw);
+                    p.pitch = it.aim_pitch;
+                }
                 if v == Verdict::Kick {
                     kicked.push(p.id);
                     continue;
@@ -473,7 +483,13 @@ impl Server {
 
             // combat runs against the world as this attacker saw it (lag compensation)
             // (skipped when nothing can query: the rebuild is the expensive part with many players)
-            let acting = it.buttons.has(Buttons::FIRE) || it.buttons.has(Buttons::SLICE) || self.players[i].combat.busy();
+            // a raised shield or a stagger (parried) means no throwing, cutting or dashing
+            let shut = self.players[i].blk.held || self.players[i].blk.staggered(tick);
+            let (fire_in, slice_in) = (it.buttons.has(Buttons::FIRE) && !shut, it.buttons.has(Buttons::SLICE) && !shut);
+            if self.players[i].blk.staggered(tick) {
+                input.dash_pressed = false;
+            }
+            let acting = fire_in || slice_in || self.players[i].combat.busy();
             if acting {
                 pvp::rewind_hitboxes(&mut self.world, &self.players, i, tick, &self.cfg);
             }
@@ -489,9 +505,9 @@ impl Server {
                     dt,
                     now,
                     &CombatInput {
-                        fire: it.buttons.has(Buttons::FIRE),
-                        slice: it.buttons.has(Buttons::SLICE),
-                        ultimate: ultimate_pressed(&it),
+                        fire: fire_in,
+                        slice: slice_in,
+                        ultimate: ultimate_pressed(&it) && !shut,
                     },
                     &aim,
                     &self.world,
@@ -500,6 +516,10 @@ impl Server {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // travels in OwnState (lunge prediction)
+            }
+            // a swing leaves the swordsman open for a moment (the strike window the lock triangle shows)
+            if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
+                self.players[i].blk.open_for(tick, bcfg.swing_open_ticks);
             }
             let mut synthesized = Vec::new();
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
@@ -595,7 +615,7 @@ impl Server {
 
         // every attacker has run: settle damage once, then record the tick
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {

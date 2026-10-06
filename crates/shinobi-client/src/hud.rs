@@ -2356,7 +2356,7 @@ mod tests {
         assert!(KillEntry::from_pvp(&PvpEvent::Respawn { tick: 1, player: 1 }, 1, name).is_none());
         assert!(!KillEntry::from_pvp(&kill, 9, name).unwrap().involves_local);
 
-        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false };
+        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false, bonus: false };
         let mut fx = HudFx::default();
         fx.on_pvp(&hit(5, 6), 5, |_| panic!("not hurt"));
         let mut s = HudState::default();

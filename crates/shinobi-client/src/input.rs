@@ -178,6 +178,7 @@ pub fn build_intent(tick: u32, stick: (f32, f32), aim: &Aim, buttons: Buttons) -
         ultimate: false,
         build: false, build_wall: false, build_ramp: false,
         zip: false,
+        block: false,
     }
 }
 

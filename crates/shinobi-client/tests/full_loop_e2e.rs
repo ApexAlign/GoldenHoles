@@ -40,7 +40,7 @@ fn entity(srv: &Server, i: usize) -> (u16, EntityState) {
         MoveState::WallRun { .. } => MoveKind::WallRun,
     };
     let flags = if p.vitals.alive() { 0 } else { shinobi_proto::snapshot::FLAG_DEAD };
-    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags })
+    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags, fx: 0 })
 }
 
 struct Rig {

@@ -86,12 +86,16 @@ pub struct PlayerIntent {
     /// One-tick edge: fire the zipline gun at the aimed hookable anchor (server validates range, line of sight,
     /// cooldown, line cap). Own wire bit, cleared on lost-packet repeat.
     pub zip: bool,
+    /// Held (a level, not an edge, so a repeated intent keeps it): the block / parry shield. While it is held the
+    /// aim is locked where it was when the hold began (the server ignores any other aim), movement is unaffected.
+    /// Own wire bit: all 8 button bits are taken.
+    pub block: bool,
 }
 
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false }
     }
 }
 
@@ -124,6 +128,7 @@ impl PlayerIntent {
             && self.build_wall == o.build_wall
             && self.build_ramp == o.build_ramp
             && self.zip == o.zip
+            && self.block == o.block
     }
 
     fn write_body(&self, w: &mut BitWriter) {
@@ -140,6 +145,7 @@ impl PlayerIntent {
             w.write_bool(self.build_ramp);
         }
         w.write_bool(self.zip);
+        w.write_bool(self.block);
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
@@ -153,7 +159,7 @@ impl PlayerIntent {
         );
         let build = r.read_bool()?;
         let (build_wall, build_ramp) = if build { (r.read_bool()?, r.read_bool()?) } else { (false, false) };
-        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip: r.read_bool()? })
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip: r.read_bool()?, block: r.read_bool()? })
     }
 }
 
@@ -482,7 +488,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false }
     }
 
     #[test]

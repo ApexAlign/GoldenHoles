@@ -684,7 +684,7 @@ mod tests {
     }
 
     fn hit(taken: bool, other: u16) -> HitMsg {
-        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false, head: false }
+        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false, head: false, bonus: false }
     }
 
     #[test]
@@ -811,7 +811,7 @@ mod tests {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
         v.hp = Some(MAX_HP * 0.1);
-        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true, head: false });
+        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true, head: false, bonus: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.hit_kill && s.hp < 0.3);
         assert!(crate::hud::Hud::build(&s).iter().any(|p| matches!(p, crate::hud::Prim::Ring { .. })), "kill ring drawn");
@@ -821,7 +821,7 @@ mod tests {
     fn hazard_damage_shows_no_direction_arrow_but_a_weapon_hit_does() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false, head: false });
+        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false, head: false, bonus: false });
         assert!(b.update(0.016, &v, &net(), false).since_damage.is_none());
         v.hits.clear();
         v.hits.push(hit(true, 5));
@@ -1058,11 +1058,11 @@ mod tests {
     fn headshot_flag_reaches_the_hud_state() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        v.hits.push(HitMsg { other: 7, amount: 18, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: true });
+        v.hits.push(HitMsg { other: 7, amount: 18, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.hit_head && s.hit_amount == 18);
         v.hits.clear();
-        v.hits.push(HitMsg { other: 7, amount: 12, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: false });
+        v.hits.push(HitMsg { other: 7, amount: 12, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: false, bonus: false });
         assert!(!b.update(0.016, &v, &net(), false).hit_head, "a body hit replaces the headshot marker");
     }
 
@@ -1109,7 +1109,7 @@ mod tests {
             NetEvent::Kill { killer: 7, victim: 8, kind: KIND_SHURIKEN, tick: 2 },
             NetEvent::Kill { killer: 8, victim: 7, kind: KIND_SLASH, tick: 3 },
         ];
-        v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true });
+        v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false });
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] });
         let s = b.update(0.016, &v, &net(), false);
         assert_eq!(s.radar_pickups.len(), 1, "only the pickup inside radar range");

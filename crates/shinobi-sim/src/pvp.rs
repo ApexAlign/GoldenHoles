@@ -89,7 +89,8 @@ pub enum Cause {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PvpEvent {
     /// `head`: a shuriken that struck head height (`HeadCfg`), for the headshot marker.
-    Hit { tick: u32, attacker: u16, victim: u16, amount: f32, kind: DamageKind, head: bool },
+    /// `bonus`: the hit landed inside the victim's strike window (`block.rs`) and dealt bonus damage.
+    Hit { tick: u32, attacker: u16, victim: u16, amount: f32, kind: DamageKind, head: bool, bonus: bool },
     Kill { tick: u32, killer: u16, victim: u16, kind: DamageKind, head: bool },
     /// Obstacle / light-wall contact on a player. `Wall` hits carry the owner in `source`.
     HazardHit { tick: u32, victim: u16, amount: f32, source: HazardSource },
@@ -279,18 +280,55 @@ pub fn apply_hits(
     hits: &[PvpHit],
     tick: u32,
     respawn_ticks: u32,
+    block: &crate::block::BlockCfg,
     out: &mut Vec<PvpEvent>,
 ) {
     let mut died: Vec<usize> = Vec::new();
     for h in hits {
+        // the victim's shield and strike window decide what this hit is worth (weapons only, never hazards)
+        let (mut amount, mut bonus) = (h.amount, false);
+        if let Cause::Weapon(kind) = h.cause {
+            let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
+            let vp = &players[h.victim];
+            let vyaw = shinobi_proto::quant::dq_yaw(vp.yaw);
+            let guard = apos.map_or(crate::block::Guard::None, |a| crate::block::guard_vs(&vp.blk, vyaw, vp.pos(world), a, tick, block));
+            match guard {
+                crate::block::Guard::Parried => {
+                    amount = 0.0;
+                    // a parried melee attacker is staggered and wide open to the counter
+                    if kind == DamageKind::Slash {
+                        if let Some(a) = players.iter_mut().find(|p| p.id == h.attacker) {
+                            a.blk.stagger_until = tick + block.stagger_ticks;
+                            a.blk.open_for(tick, block.counter_open_ticks.max(block.stagger_ticks));
+                        }
+                    }
+                }
+                crate::block::Guard::Blocked => {
+                    amount *= block.front_mult;
+                    let v = &mut players[h.victim];
+                    v.blk.energy -= block.hit_cost;
+                    if v.blk.energy <= 0.0 {
+                        v.blk.break_guard(tick, block);
+                    }
+                }
+                crate::block::Guard::None => {
+                    if players[h.victim].blk.open(tick) && block.bonus_mult > 1.0 {
+                        amount *= block.bonus_mult;
+                        bonus = true;
+                    }
+                }
+            }
+        }
         let v = &mut players[h.victim];
         // the void kills through spawn protection and roll i-frames: nothing may fall forever
         let bypass = h.cause == Cause::Hazard(VOID);
         if !v.vitals.alive() || died.contains(&h.victim) || (!bypass && (v.vitals.spawn_protected(tick) || v.ch.invulnerable())) {
             continue;
         }
-        v.vitals.hp -= h.amount;
-        v.vitals.last_damage_tick = tick;
+        v.vitals.hp -= amount;
+        if amount > 0.0 {
+            v.vitals.last_damage_tick = tick;
+        }
         let victim_id = v.id;
         let dead = v.vitals.hp <= 0.0;
         if dead {
@@ -301,7 +339,7 @@ pub fn apply_hits(
         let killer = players.iter().position(|p| p.id == h.attacker && p.id != victim_id);
         match h.cause {
             Cause::Weapon(kind) => {
-                out.push(PvpEvent::Hit { tick, attacker: h.attacker, victim: victim_id, amount: h.amount, kind, head: h.head });
+                out.push(PvpEvent::Hit { tick, attacker: h.attacker, victim: victim_id, amount, kind, head: h.head, bonus });
                 if dead {
                     out.push(PvpEvent::Kill { tick, killer: h.attacker, victim: victim_id, kind, head: h.head });
                 }
@@ -331,6 +369,7 @@ pub fn apply_hits(
         p.ch.vel = Vector::zeros();
         p.ch.clear_grapple();
         p.combat.reset_projectiles();
+        p.blk.reset();
         if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
             col.set_collision_groups(InteractionGroups::none());
         }
@@ -500,6 +539,7 @@ mod tests {
         ultimate: false,
         build: false, build_wall: false, build_ramp: false,
         zip: false,
+        block: false,
     };
 
     #[test]

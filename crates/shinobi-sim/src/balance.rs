@@ -172,6 +172,71 @@ impl Default for AssistBalance {
     }
 }
 
+/// Block / parry and the strike-timing window (`block.rs`), in seconds. The default keeps the shield available
+/// but adds no strike bonus (so unit tests keep their timing); `Balance::demo` turns the windows on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GuardBalance {
+    /// Half-angle (degrees) of the protected frontal arc.
+    pub front_deg: f32,
+    /// Damage taken from the front while blocking (0 = immune, 1 = no block).
+    pub front_mult: f32,
+    /// A block raised within this many seconds before a hit lands is a parry.
+    pub parry_s: f32,
+    /// Seconds the guard lasts when held continuously.
+    pub max_hold_s: f32,
+    /// Seconds to refill a spent guard.
+    pub regen_s: f32,
+    /// Guard fraction a blocked hit costs.
+    pub hit_cost: f32,
+    /// After the guard is spent: seconds before it can be raised again.
+    pub rearm_s: f32,
+    /// Seconds a parried melee attacker cannot act.
+    pub stagger_s: f32,
+    /// Strike window (seconds) after one's own swing.
+    pub swing_open_s: f32,
+    /// Counter window (seconds) after being parried.
+    pub counter_open_s: f32,
+    /// Damage multiplier for a hit inside a strike window (1 = off).
+    pub bonus_mult: f32,
+}
+
+impl Default for GuardBalance {
+    fn default() -> Self {
+        Self {
+            front_deg: 70.0,
+            front_mult: 0.15,
+            parry_s: 0.25,
+            max_hold_s: 2.5,
+            regen_s: 3.0,
+            hit_cost: 0.2,
+            rearm_s: 1.0,
+            stagger_s: 0.8,
+            swing_open_s: 0.0,
+            counter_open_s: 0.0,
+            bonus_mult: 1.0,
+        }
+    }
+}
+
+impl GuardBalance {
+    pub fn cfg(&self) -> crate::block::BlockCfg {
+        let t = |s: f32| (s * crate::match_state::TICK_HZ as f32).round().max(0.0) as u32;
+        crate::block::BlockCfg {
+            front_rad: self.front_deg.to_radians(),
+            front_mult: self.front_mult,
+            parry_ticks: t(self.parry_s),
+            max_hold_ticks: t(self.max_hold_s).max(1),
+            regen_ticks: t(self.regen_s).max(1),
+            hit_cost: self.hit_cost,
+            rearm_ticks: t(self.rearm_s),
+            stagger_ticks: t(self.stagger_s),
+            swing_open_ticks: t(self.swing_open_s),
+            counter_open_ticks: t(self.counter_open_s),
+            bonus_mult: self.bonus_mult,
+        }
+    }
+}
+
 /// Client-side feedback timings. The sim never pauses: these only tell the shell how long to freeze the
 /// viewmodel / shake the camera after a confirmed hit.
 #[derive(Clone, Debug, PartialEq)]
@@ -277,6 +342,7 @@ pub struct Balance {
     pub blocks: BlockBalance,
     pub feedback: FeedbackBalance,
     pub assist: AssistBalance,
+    pub guard: GuardBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -343,6 +409,7 @@ impl Default for Balance {
             blocks: BlockBalance::default(),
             feedback: FeedbackBalance::default(),
             assist: AssistBalance::default(),
+            guard: GuardBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -471,6 +538,12 @@ impl Balance {
         b.combat.katana.combo_window = 1.0;
         b.combat.katana.magnet = 1.0; // a locked target pulls the whole blade sweep onto it
         b.player.max_hp = 100.0;
+        // block / parry: a held shield cuts frontal hits to 15 %, a block raised just before the hit parries it (negated,
+        // a melee attacker staggers 0.8 s); the strike window (0.25 s after your own swing, 1 s after being parried)
+        // makes hits on you worth 1.5x, which the lock triangle shows
+        b.guard.swing_open_s = 0.25;
+        b.guard.counter_open_s = 1.0;
+        b.guard.bonus_mult = 1.5;
         b.player.respawn_ticks = 150; // 2.5 s: the death animation fills ~1.6 s of it, then the countdown
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
@@ -635,6 +708,17 @@ impl Balance {
         s!("assist.magnet", F, self.assist.magnet);
         s!("assist.centre", F, self.assist.centre);
         s!("assist.touch_mult", F, self.assist.touch_mult);
+        s!("guard.front_deg", F, self.guard.front_deg);
+        s!("guard.front_mult", F, self.guard.front_mult);
+        s!("guard.parry_s", F, self.guard.parry_s);
+        s!("guard.max_hold_s", F, self.guard.max_hold_s);
+        s!("guard.regen_s", F, self.guard.regen_s);
+        s!("guard.hit_cost", F, self.guard.hit_cost);
+        s!("guard.rearm_s", F, self.guard.rearm_s);
+        s!("guard.stagger_s", F, self.guard.stagger_s);
+        s!("guard.swing_open_s", F, self.guard.swing_open_s);
+        s!("guard.counter_open_s", F, self.guard.counter_open_s);
+        s!("guard.bonus_mult", F, self.guard.bonus_mult);
         s!("combat.knockback_slash", F, self.combat.knockback_slash);
         s!("combat.knockback_shuriken", F, self.combat.knockback_shuriken);
         s!("combat.knockback_ultimate", F, self.combat.knockback_ultimate);
@@ -790,6 +874,13 @@ impl Balance {
                 "player.first_spawn_invuln_ticks must be 0 or >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.first_spawn_invuln_ticks
             ));
+        }
+        let g = &self.guard;
+        if !(1.0..=180.0).contains(&g.front_deg) || !(0.0..=1.0).contains(&g.front_mult) || !(0.0..=1.0).contains(&g.hit_cost) {
+            e.push("guard.front_deg must be 1..180, guard.front_mult and guard.hit_cost 0..1".into());
+        }
+        if g.max_hold_s <= 0.0 || g.regen_s <= 0.0 || [g.parry_s, g.rearm_s, g.stagger_s, g.swing_open_s, g.counter_open_s].iter().any(|v| *v < 0.0) || g.bonus_mult < 1.0 {
+            e.push("guard times must be >= 0 (max_hold_s and regen_s > 0) and guard.bonus_mult >= 1".into());
         }
         if self.player.regen_delay_s < 0.0 || self.player.regen_per_s < 0.0 {
             e.push("player.regen_delay_s and player.regen_per_s must be >= 0".into());
