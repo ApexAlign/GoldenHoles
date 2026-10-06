@@ -18,9 +18,10 @@ pub enum Use {
     Build,
     Katana,
     Shuriken,
+    Block,
 }
 
-const ROWS: [(Use, &str, &str); 8] = [
+const ROWS: [(Use, &str, &str); 9] = [
     (Use::Move, "WASD", "MOVE"),
     (Use::Jump, "SPACE", "JUMP"),
     (Use::Dash, "SHIFT", "DASH"),
@@ -29,6 +30,7 @@ const ROWS: [(Use, &str, &str); 8] = [
     (Use::Build, "N M", "BUILD"),
     (Use::Katana, "LMB", "KATANA"),
     (Use::Shuriken, "RMB", "THROW + LOCK"),
+    (Use::Block, "CTRL / F", "BLOCK + PARRY"),
 ];
 
 /// One drawn row: key text, action text, opacity 0..1.
@@ -44,7 +46,7 @@ pub struct ControlsCard {
     /// Seconds of play so far (counted only while in the game).
     played: f32,
     /// Seconds since each row's first use (None = not used yet).
-    used: [Option<f32>; 8],
+    used: [Option<f32>; 9],
     /// F1: show every row at full strength until toggled off again.
     pinned: bool,
 }
@@ -116,12 +118,12 @@ mod tests {
     #[test]
     fn all_rows_show_at_first_and_the_whole_card_fades_after_30_s() {
         let mut c = ControlsCard::default();
-        assert_eq!(c.rows().len(), 8);
+        assert_eq!(c.rows().len(), 9);
         assert!(c.rows().iter().all(|r| r.alpha == 1.0));
         for _ in 0..(29.0 * 60.0) as u32 {
             c.tick(1.0 / 60.0);
         }
-        assert_eq!(c.rows().len(), 8, "still up at 29 s");
+        assert_eq!(c.rows().len(), 9, "still up at 29 s");
         for _ in 0..(3.0 * 60.0) as u32 {
             c.tick(1.0 / 60.0);
         }
@@ -142,16 +144,16 @@ mod tests {
         for _ in 0..60 {
             c.tick(1.0 / 60.0);
         }
-        assert_eq!(c.rows().len(), 7, "the used row is gone");
+        assert_eq!(c.rows().len(), 8, "the used row is gone");
         // using it again changes nothing
         c.mark(Use::Grapple);
-        assert_eq!(c.rows().len(), 7);
+        assert_eq!(c.rows().len(), 8);
     }
 
     #[test]
     fn using_every_key_finishes_the_card_early() {
         let mut c = ControlsCard::default();
-        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken] {
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block] {
             c.mark(u);
         }
         for _ in 0..60 {
@@ -169,7 +171,7 @@ mod tests {
             }
         }
         // finish it, then F1 shows everything again at full strength, F1 again hides it
-        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken] {
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block] {
             c.mark(u);
         }
         for _ in 0..60 {
@@ -177,7 +179,7 @@ mod tests {
         }
         assert!(c.finished() && c.rows().is_empty());
         c.toggle_pin();
-        assert!(!c.finished() && c.rows().len() == 8 && c.rows().iter().all(|r| r.alpha == 1.0));
+        assert!(!c.finished() && c.rows().len() == 9 && c.rows().iter().all(|r| r.alpha == 1.0));
         c.toggle_pin();
         assert!(c.rows().is_empty());
     }

@@ -402,6 +402,56 @@ fn a_held_jump_is_clearly_different_from_a_tap_through_the_real_input_path() {
     assert!(press >= 2.0, "even an ordinary press is a real jump now ({press:.2} m; the old tuning gave ~1.5 m)");
 }
 
+/// Player 2 (a server-side shooter standing 15 m ahead, facing the client's player) throws one shuriken at tick
+/// `fire_at` of the run while the client's player blocks from tick `block_from` (None = never). Returns the hp the
+/// client's player lost and the events seen. Everything on the client side goes through `ClientGame`.
+fn star_vs_block(block_from: Option<u32>) -> (f32, Vec<PvpEvent>) {
+    use shinobi_proto::intent::{Buttons, PlayerIntent, ViewState, PITCH_LEVEL};
+    use shinobi_proto::quant::q_yaw;
+    let mut r = Rig::new();
+    r.srv.set_balance(shinobi_sim::balance::Balance::demo()).unwrap(); // the demo numbers: 7 hp stars, the guard
+    r.idle(120);
+    // the shooter faces +Z (toward the client's player), no aim noise, no lock tricks
+    r.srv.players.iter_mut().find(|p| p.id == 1).unwrap().vitals.hp = 100.0;
+    let hp0 = r.srv.players.iter().find(|p| p.id == 1).unwrap().vitals.hp;
+    let down = |d| ButtonEvent { action: Action::Block, down: d };
+    let mut events = Vec::new();
+    for t in 0..90u32 {
+        let tick = r.srv.tick;
+        let fire = t == 30;
+        let it = PlayerIntent { tick, buttons: Buttons(if fire { Buttons::FIRE } else { 0 }), aim_yaw: q_yaw(std::f32::consts::PI), aim_pitch: PITCH_LEVEL, ..Default::default() };
+        let from = tick.saturating_sub(6).max(1);
+        let pkt = shinobi_proto::intent::ClientPacket { ack_snapshot_tick: from, view: ViewState { from_tick: from, alpha: 0 }, intents: vec![it], ..Default::default() };
+        r.srv.ingest(2, &pkt.encode().unwrap());
+        let mut buttons = vec![];
+        if block_from == Some(t) {
+            buttons.push(down(true));
+        }
+        r.step(InputFrame { buttons, ..Default::default() });
+        events.extend(r.srv.pvp_events.iter().copied());
+    }
+    (hp0 - r.srv.players.iter().find(|p| p.id == 1).unwrap().vitals.hp, events)
+}
+
+#[test]
+fn a_star_does_7_unblocked_about_1_blocked_and_nothing_on_a_parry_through_the_real_client() {
+    let (open, ev) = star_vs_block(None);
+    eprintln!("star unblocked: -{open:.2} hp; events {ev:?}");
+    assert!((open - 7.0).abs() < 0.01, "an unblocked star does 7 ({open})");
+    // raised long before the star arrives: a plain block, 15 % of 7
+    let (blocked, ev) = star_vs_block(Some(5));
+    eprintln!("star blocked: -{blocked:.2} hp; events {ev:?}");
+    assert!((blocked - 7.0 * 0.15).abs() < 0.05, "a held shield takes the star down to 15 % ({blocked})");
+    // raised later and later: early enough = a plain block (1.05), just before the star lands = a parry (0), too late =
+    // the full 7. The client's intent lead shifts the exact ticks, so sweep and check the shape.
+    let sweep: Vec<f32> = (8..44).map(|t| star_vs_block(Some(t)).0).collect();
+    eprintln!("hp lost by raise tick 8..44: {sweep:?}");
+    assert!(sweep.iter().any(|l| *l < 0.01), "some raise time parries the star completely: {sweep:?}");
+    assert!(sweep.iter().any(|l| (l - 1.05).abs() < 0.05), "an earlier one is a plain 15 % block: {sweep:?}");
+    assert!(sweep.iter().any(|l| (l - 7.0).abs() < 0.01), "a shield that comes up too late takes the full 7: {sweep:?}");
+    assert!(sweep.iter().all(|l| *l < 0.01 || (l - 1.05).abs() < 0.05 || (l - 7.0).abs() < 0.01), "only ever 0, 1.05 or 7: {sweep:?}");
+}
+
 /// Hold the block key through the real client: the view freezes (look input is ignored), the server raises the
 /// shield, the body still runs at full speed, and cutting is shut while it is up.
 #[test]

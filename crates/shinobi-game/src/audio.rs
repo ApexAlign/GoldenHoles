@@ -75,8 +75,11 @@ pub struct Frame {
     pub hp: Option<f32>,
     /// Hits we dealt: (damage, killed, headshot).
     pub dealt: Vec<(u8, bool, bool)>,
-    /// Damage amounts we took.
+    /// Damage amounts we took (hits our shield absorbed or parried are counted in `absorbed` / `parried` instead).
     pub taken: Vec<u8>,
+    /// Hits the shield took (reduced damage) and parried (zero damage) this frame.
+    pub absorbed: u32,
+    pub parried: u32,
     /// Discs in flight: (position, owner id).
     pub discs: Vec<([f32; 3], u16)>,
     /// Pieces: (owner, cell) and the cell edge in metres.
@@ -106,7 +109,9 @@ impl Frame {
             wall_running: f.wall_running,
             hp: v.hp.map(|h| (h / 100.0).clamp(0.0, 1.0)),
             dealt: v.hits.iter().filter(|h| !h.taken).map(|h| (h.amount, h.kill, h.head)).collect(),
-            taken: v.hits.iter().filter(|h| h.taken).map(|h| h.amount).collect(),
+            taken: v.hits.iter().filter(|h| h.taken && h.amount > 0 && !v.blocking).map(|h| h.amount).collect(),
+            absorbed: v.hits.iter().filter(|h| h.taken && h.amount > 0 && v.blocking).count() as u32,
+            parried: v.hits.iter().filter(|h| h.taken && h.amount == 0 && !h.kill && h.other != 0).count() as u32,
             discs: v.discs.iter().enumerate().map(|(i, (p, _))| (*p, v.disc_owners.get(i).copied().unwrap_or(0))).collect(),
             blocks: v.blocks.iter().map(|b| (b.owner, b.cell)).collect(),
             block_size: v.block_size,
@@ -195,6 +200,14 @@ impl Cuer {
             if *head && *kill {
                 cues.push(Cue::flat(Sound::HitHard, 1.0));
             }
+        }
+        // the shield: a clang for every absorbed hit, a bright double ring for a parry
+        for _ in 0..f.absorbed {
+            cues.push(Cue::flat(Sound::Clash, 0.7));
+        }
+        for _ in 0..f.parried {
+            cues.push(Cue::flat(Sound::Clash, 1.0));
+            cues.push(Cue::flat(Sound::LockChirp, 0.9));
         }
         for amount in &f.taken {
             cues.push(Cue::flat(Sound::Hurt, (0.5 + *amount as f32 / 100.0).min(1.0)));

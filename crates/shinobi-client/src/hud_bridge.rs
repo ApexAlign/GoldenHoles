@@ -156,6 +156,8 @@ pub struct HudBridge {
     /// Lock-on target from combat (`RenderView.lock` once it exists): world position + progress. Stub input.
     pub lock: Option<LockInfo>,
     boot: Option<f32>,
+    /// Client estimate of the guard energy SPENT, 0 = full (see `HudState::guard_spent`).
+    guard_spent: f32,
     grapple_flash: f32,
     /// The last kill that eliminated us (shown while dead).
     last_death: Option<KilledBy>,
@@ -566,6 +568,20 @@ impl HudBridge {
             });
             hs.my_headshots = self.stats.my_headshots;
         }
+        // guard energy mirrors the server (`Balance::demo().guard`): 2.5 s of hold, 3 s to refill, a blocked hit costs 20 %
+        {
+            let g = shinobi_sim::balance::GuardBalance::default();
+            if view.blocking {
+                self.guard_spent = (self.guard_spent + dt / g.max_hold_s).min(1.0);
+            } else {
+                self.guard_spent = (self.guard_spent - dt / g.regen_s).max(0.0);
+            }
+            let absorbed = view.hits.iter().filter(|h| h.taken && h.amount > 0 && h.other != 0).count();
+            if view.blocking {
+                self.guard_spent = (self.guard_spent + g.hit_cost * absorbed as f32).min(1.0);
+            }
+        }
+        hs.guard_spent = self.guard_spent;
         hs.guarding = view.blocking;
         hs.guard_flash = self.fx.guard_flash();
         hs.audio = self.audio;
