@@ -24,7 +24,17 @@ pub struct KatanaCfg {
     pub magnet: f32,
     /// Damage to each player-built piece inside the blade box.
     pub piece_damage: f32,
+    /// Hook-strike (swing while hooked / just after the rope let go): damage multiplier, and blade reach added on top
+    /// of the blade length (plus `STRIKE_REACH_PER_MPS` x the speed you arrive with).
+    pub hook_damage_mult: f32,
+    pub hook_reach: f32,
+    /// Wall slash (swing during a wall-run): same two knobs.
+    pub wall_damage_mult: f32,
+    pub wall_reach: f32,
 }
+
+/// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
+pub const STRIKE_REACH_PER_MPS: f32 = 0.15;
 
 /// Distance `CharacterSystem`'s dash travels: speed = dash_speed * (0.4 + 0.6 f), f: 1 -> 0 over
 /// `dash_time`, so the mean speed is 0.7 * dash_speed (30 * 0.18 * 0.7 = 3.8 m by default).
@@ -44,14 +54,19 @@ impl KatanaCfg {
             lunge_distance: dash_distance(ch),
             magnet: 0.8,
             piece_damage: 60.0,
+            hook_damage_mult: 1.5,
+            hook_reach: 4.0,
+            wall_damage_mult: 1.35,
+            wall_reach: 3.0,
         }
     }
 }
 
 /// The movement-relevant part of a katana swing, for client prediction and replay. Mirrors `Katana::fire`
 /// minus everything that needs the world (wall truncation of the blade, hit boxes): advance the cooldown by
-/// `dt`, and if `pressed` and ready, consume it and (when the dash is ready) turn the tick's input into a dash
-/// along `dir`. Returns `Some(lunged)` when a swing happened.
+/// `dt`, and if `pressed` and ready, consume it and (when the dash is ready, or `strike` says a hook-strike / wall
+/// slash launch applies) turn the tick's input into a dash / strike launch along `dir`. Returns `Some(lunged)` when a
+/// swing happened.
 ///
 /// Known divergence: `Katana::fire` cuts in place when a target is already inside blade reach (it must not dash
 /// through them); that needs the enemy set, which the client does not have, so it is corrected by reconciliation.
@@ -62,17 +77,22 @@ pub fn predict_slice(
     dt: f32,
     pressed: bool,
     dash_ready: bool,
+    strike: Option<crate::character::StrikeKind>,
     dir: Vector<Real>,
     input: &mut crate::character::PlayerInput,
 ) -> Option<bool> {
     *cd_left = (*cd_left - dt).max(0.0);
     if pressed && *cd_left <= 0.0 {
-        if dash_ready {
+        let lunge = dash_ready || strike.is_some();
+        if strike.is_some() {
+            input.strike = true;
+            input.move_dir = dir;
+        } else if dash_ready {
             input.dash_pressed = true;
             input.move_dir = dir;
         }
         *cd_left = cooldown;
-        Some(dash_ready)
+        Some(lunge)
     } else {
         None
     }
@@ -116,7 +136,15 @@ impl Weapon for Katana {
             .exclude_sensors()
             .groups(InteractionGroups::new(GROUP_MELEE, solid_groups()));
         let ray = Ray::new(Point::from(origin), dir);
-        let max_reach = c.blade_len + c.lunge_distance;
+        // hook-strike / wall slash: the launch carries the blade further and hits harder (docs/traversal_melee.md)
+        let strike = ctx.ch.strike_kind();
+        let (strike_dmg, strike_reach) = match strike {
+            Some(crate::character::StrikeKind::Hook) => (c.hook_damage_mult, c.hook_reach),
+            Some(crate::character::StrikeKind::Wall) => (c.wall_damage_mult, c.wall_reach),
+            None => (1.0, 0.0),
+        };
+        let strike_reach = if strike.is_some() { strike_reach + STRIKE_REACH_PER_MPS * ctx.ch.vel.norm().min(60.0) } else { 0.0 };
+        let max_reach = c.blade_len + if strike.is_some() { strike_reach } else { c.lunge_distance };
         let wall = ctx
             .world
             .queries
@@ -178,7 +206,7 @@ impl Weapon for Katana {
         // Lunge = the character's own dash, aimed along the slash. If the dash is still on cooldown the
         // slash still lands (blade reach only, no lunge) rather than eating the input. If someone is already
         // inside blade reach we cut in place: dashing would carry you through them and out the other side.
-        let mut lunge = ctx.ch.dash_ready();
+        let mut lunge = strike.is_some() || ctx.ch.dash_ready();
         let mut reach = if lunge { full } else { short };
         let mut hits = boxhits(reach);
         if lunge {
@@ -190,7 +218,11 @@ impl Weapon for Katana {
             }
         }
         if lunge {
-            ctx.input.dash_pressed = true;
+            if strike.is_some() {
+                ctx.input.strike = true;
+            } else {
+                ctx.input.dash_pressed = true;
+            }
             ctx.input.move_dir = dir;
         }
 
@@ -222,7 +254,7 @@ impl Weapon for Katana {
             ctx.events.push(CombatEvent::Damage {
                 target: col.user_data,
                 collider: *h,
-                amount: c.damage,
+                amount: c.damage * strike_dmg,
                 kind: DamageKind::Slash,
                 point: Point::from(*col.translation()),
             });
@@ -238,7 +270,7 @@ impl Weapon for Katana {
             reach,
             half_width: c.half_width,
             half_height: c.half_height,
-            damage: c.damage,
+            damage: c.damage * strike_dmg,
         });
         true
     }
@@ -300,7 +332,7 @@ mod tests {
             });
 
             let mut pred = PlayerInput { dash_pressed: dash, ..Default::default() };
-            let got = predict_slice(k.cooldown, &mut cd, DT, slice, ch.dash_ready(), aim.flat_forward(), &mut pred);
+            let got = predict_slice(k.cooldown, &mut cd, DT, slice, ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut pred);
 
             assert_eq!(got, real_slash, "tick {t}: swing/lunge decision");
             assert_eq!((pred.dash_pressed, pred.move_dir), (real.dash_pressed, real.move_dir), "tick {t}: input");

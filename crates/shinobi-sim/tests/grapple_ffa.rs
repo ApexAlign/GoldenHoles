@@ -104,11 +104,12 @@ fn hook_pull_release_over_the_ffa_map_never_snags_clips_or_goes_nonfinite() {
                         t.bad_speed.push(format!("{tag}: non-finite at tick {k}"));
                         break;
                     }
-                    if v.norm() > cfg.grapple_max_speed.max(cfg.terminal) * 1.2 {
+                    if v.norm() > (cfg.grapple_far_speed + 4.0).max(cfg.terminal) * 1.2 {
                         t.bad_speed.push(format!("{tag}: speed {:.1} at tick {k}", v.norm()));
                     }
                     if l.level.boxes.iter().any(|b| inside(b, [p.x, p.y, p.z])) {
-                        t.inside.push(format!("{tag}: centre inside geometry at tick {k}"));
+                        let bx: Vec<String> = l.level.boxes.iter().filter(|b| inside(b, [p.x, p.y, p.z])).map(|b| format!("{:?} half {:?} rot_z {}", b.center, b.half, b.rot_z)).collect();
+                        t.inside.push(format!("{tag}: centre inside geometry at tick {k} boxes {bx:?} anchor {:?} state {:?} vel {:?} pos {:?} grapple {:?}", anchor, ch.state, ch.vel, p, ch.grapple.is_some()));
                         break;
                     }
                     if ch.grapple.is_some() {

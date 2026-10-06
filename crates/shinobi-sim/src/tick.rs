@@ -569,7 +569,11 @@ impl Server {
 
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
-            match p.guard.check_step(before, after, 0.0, &ac) {
+            // rope and strike momentum: a far hook reels at up to `grapple_far_speed` and the release keeps it; allow what the
+            // (server-side, authoritative) velocity says the body legitimately did this tick, never past the reel ceiling
+            let v = p.ch.vel.norm();
+            let allowance = if v > self.cfg.grapple_max_speed { (v.min(self.cfg.grapple_far_speed + 2.0) * dt * 1.25 - ac.max_step).max(0.0) } else { 0.0 };
+            match p.guard.check_step(before, after, allowance, &ac) {
                 Verdict::Ok => {}
                 Verdict::SnapBack { to } => {
                     self.strike_log.push(format!("player {} tick {tick}: moved {:.2} m in one tick (ceiling {:.2}), vel {:.1} m/s, state {:?}", p.id, ((after[0] - before[0]).powi(2) + (after[1] - before[1]).powi(2) + (after[2] - before[2]).powi(2)).sqrt(), ac.max_step, p.ch.vel.norm(), p.ch.state));
@@ -654,6 +658,7 @@ pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
         wall_cling: it.buttons.has(Buttons::WALL_CLING),
         slide: it.buttons.has(Buttons::SLIDE),
         grapple_aim: if it.zip { Some(view_dir(it.aim_yaw, it.aim_pitch)) } else { None },
+        strike: false, // set by the katana (server) / predict_slice (client) when a swing launches
     }
 }
 

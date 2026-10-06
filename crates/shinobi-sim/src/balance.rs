@@ -69,6 +69,12 @@ pub struct KatanaBalance {
     pub magnet: f32,
     /// Damage a swing does to each player-built piece in the blade box.
     pub piece_damage: f32,
+    /// Hook-strike (katana while hooked / just after the rope let go) and wall slash (katana in a wall-run): damage
+    /// multiplier and blade reach added on top (plus 0.15 m per m/s of speed). See docs/traversal_melee.md.
+    pub hook_damage_mult: f32,
+    pub hook_reach: f32,
+    pub wall_damage_mult: f32,
+    pub wall_reach: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -319,7 +325,7 @@ impl Default for Balance {
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -518,6 +524,10 @@ impl Balance {
         k.half_height = b.half_height;
         k.magnet = b.magnet;
         k.piece_damage = b.piece_damage;
+        k.hook_damage_mult = b.hook_damage_mult;
+        k.hook_reach = b.hook_reach;
+        k.wall_damage_mult = b.wall_damage_mult;
+        k.wall_reach = b.wall_reach;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -603,6 +613,10 @@ impl Balance {
         s!("combat.katana.half_height", F, self.combat.katana.half_height);
         s!("combat.katana.magnet", F, self.combat.katana.magnet);
         s!("combat.katana.piece_damage", F, self.combat.katana.piece_damage);
+        s!("combat.katana.hook_damage_mult", F, self.combat.katana.hook_damage_mult);
+        s!("combat.katana.hook_reach", F, self.combat.katana.hook_reach);
+        s!("combat.katana.wall_damage_mult", F, self.combat.katana.wall_damage_mult);
+        s!("combat.katana.wall_reach", F, self.combat.katana.wall_reach);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
