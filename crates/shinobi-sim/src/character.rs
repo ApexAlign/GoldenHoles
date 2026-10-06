@@ -130,6 +130,14 @@ pub struct Cfg {
     pub wall_front_min_speed: f32,
     pub wall_up_enter: f32,
     pub wall_topout_push: f32,
+    /// Wall clash (two players wall-running the same face and meeting; see `tick.rs`): how close they must be, how long
+    /// the strike window lasts (s), the winner's damage multiplier on top of the wall-slash bonus, the knock-off speed
+    /// the loser (or both, on a draw) gets, and the cooldown before the same pair can clash again.
+    pub clash_range: f32,
+    pub clash_window: f32,
+    pub clash_mult: f32,
+    pub clash_knock: f32,
+    pub clash_cd: f32,
 }
 
 impl Cfg {
@@ -238,6 +246,11 @@ impl Default for Cfg {
             wall_front_min_speed: 2.5,
             wall_up_enter: 6.0,
             wall_topout_push: 3.5,
+            clash_range: 2.2,
+            clash_window: 0.6,
+            clash_mult: 1.5,
+            clash_knock: 11.0,
+            clash_cd: 2.5,
         }
     }
 }
@@ -464,6 +477,28 @@ impl CharacterSystem {
     /// True when a dash (and therefore a katana lunge) can start this tick.
     pub fn dash_ready(&self) -> bool {
         self.evasion.is_none() && self.dash_cd <= 0.0
+    }
+
+    /// Server-side knock (wall clash): throw the character off the wall along `dir` (flat) at `speed` with a small hop,
+    /// cancelling the rope and the wall-run. Reconciled to the client like any server push.
+    pub fn knock_off(&mut self, dir: Vector<Real>, speed: f32) {
+        let d = flat_norm(dir);
+        self.vel = Vector::new(d.x * speed, 4.0, d.z * speed);
+        if matches!(self.state, MoveState::WallRun { .. }) {
+            self.state = MoveState::Airborne;
+        }
+        self.wall_cd = 0.6;
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
+    /// The wall normal while wall-running (flat, out of the wall), else `None`.
+    pub fn wall_normal(&self) -> Option<Vector<Real>> {
+        match self.state {
+            MoveState::WallRun { normal, .. } => Some(normal),
+            _ => None,
+        }
     }
 
     /// Katana press right now = hook-strike / wall slash? (Evaluated on the pre-step state, same on server and client.)
