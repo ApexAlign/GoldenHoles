@@ -226,8 +226,17 @@ fn four_duelist_free_for_all_for_five_minutes_keeps_the_books() {
                 }
                 PvpEvent::Hit { tick, amount, attacker, victim, .. } => {
                     assert_eq!(tick, t);
-                    assert!(amount > 0.0 && attacker != victim);
+                    assert!(amount >= 0.0 && attacker != victim, "a parried hit reports 0, nothing reports negative");
                     hits += 1;
+                }
+                // ring-outs and wall-splats: a death like any other, credited to whoever pushed
+                PvpEvent::HazardKill { victim, killer, .. } => {
+                    assert!(alive_before[&victim], "tick {t}: {victim} killed while already dead");
+                    victims_this_frame.push(victim);
+                    if let Some(k) = killer {
+                        tally.entry(k).or_default().0 += 1;
+                    }
+                    tally.entry(victim).or_default().1 += 1;
                 }
                 _ => {}
             }

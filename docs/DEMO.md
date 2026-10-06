@@ -31,6 +31,7 @@ discs, slice with a katana, and print floors/walls out of the grid that others c
   within 0.25 s before a hit is a PARRY: the hit is negated and a melee attacker is staggered 0.8 s and open for 1 s. The guard lasts
   2.5 s held, each blocked hit costs 20 %, a spent guard re-arms after 1 s. Strike window: 0.25 s after your own cut and 1 s after
   being parried, hits on you are worth 1.5x (the HIT marker and `HitMsg.bonus` show it). Keys: `guard.*` Balance keys.
+- Melee accuracy and heighteners (docs/melee.md): the katana lunge homes onto the lock, a target-centred cone forgives sloppy aim, cuts scale with your speed, launch their victims (wall-splat stun, void ring-outs credit the pusher), and katana kills stack a heal-and-damage streak.
 - Grapple: E fire/release, pull + swing/orbit, speed cap 28 m/s, range 40 m.
 - HUD: cyber-computer look, console/menus interactive, radar without wallhack.
 - Audio: procedural synth behind the `audio` cargo feature, OFF by default; it may slip past the demo.

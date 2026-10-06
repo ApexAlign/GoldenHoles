@@ -69,6 +69,8 @@ pub const NO_ATTACKER: u16 = u16::MAX;
 /// care can special-case this id ("fell").
 pub const VOID_SOURCE_ID: u16 = u16::MAX;
 pub const VOID: HazardSource = HazardSource::Obstacle(VOID_SOURCE_ID);
+/// A wall-splat (`melee.rs`): an obstacle id too, so clients can special-case it ("splatted").
+pub const SPLAT: HazardSource = HazardSource::Obstacle(crate::melee::SPLAT_SOURCE_ID);
 /// Default kill plane: a player whose capsule centre drops below this dies and respawns.
 pub const KILL_PLANE_Y: f32 = -20.0;
 
@@ -263,12 +265,16 @@ pub fn player_hits(
 }
 
 /// Lethal `PvpHit`s for every living player below `plane_y` (fell out of the world).
-pub fn void_hits(players: &[Player], world: &PhysicsWorld, plane_y: f32) -> Vec<PvpHit> {
+pub fn void_hits(players: &[Player], world: &PhysicsWorld, plane_y: f32, tick: u32, melee: &crate::melee::MeleeCfg) -> Vec<PvpHit> {
     players
         .iter()
         .enumerate()
         .filter(|(_, p)| p.vitals.alive() && world.bodies[p.ch.body].translation().y < plane_y)
-        .map(|(i, p)| PvpHit { attacker: NO_ATTACKER, victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false })
+        .map(|(i, p)| {
+            // ring-out: whoever hit this player a moment ago gets the kill
+            let pusher = p.melee.last_hit.filter(|(_, t)| melee.ring_ticks > 0 && tick.wrapping_sub(*t) <= melee.ring_ticks).map(|(a, _)| a);
+            PvpHit { attacker: pusher.unwrap_or(NO_ATTACKER), victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false }
+        })
         .collect()
 }
 
@@ -281,17 +287,29 @@ pub fn apply_hits(
     tick: u32,
     respawn_ticks: u32,
     block: &crate::block::BlockCfg,
+    melee: &crate::melee::MeleeCfg,
     out: &mut Vec<PvpEvent>,
 ) {
     let mut died: Vec<usize> = Vec::new();
     for h in hits {
         // the victim's shield and strike window decide what this hit is worth (weapons only, never hazards)
         let (mut amount, mut bonus) = (h.amount, false);
+        let mut guard_seen = crate::block::Guard::None;
         if let Cause::Weapon(kind) = h.cause {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
+            // momentum + kill streak: a fast, hot swordsman cuts harder
+            if kind == DamageKind::Slash {
+                if let Some(a) = players.iter().find(|p| p.id == h.attacker) {
+                    let v = a.ch.vel;
+                    let falling = if matches!(a.ch.state, crate::character::MoveState::Grounded) { 0.0 } else { (-v.y).max(0.0) * 0.5 };
+                    let speed = (v.x * v.x + v.z * v.z).sqrt() + falling;
+                    amount *= melee.damage_mult(&a.melee, speed, tick);
+                }
+            }
             let vp = &players[h.victim];
             let vyaw = shinobi_proto::quant::dq_yaw(vp.yaw);
             let guard = apos.map_or(crate::block::Guard::None, |a| crate::block::guard_vs(&vp.blk, vyaw, vp.pos(world), a, tick, block));
+            guard_seen = guard;
             match guard {
                 crate::block::Guard::Parried => {
                     amount = 0.0;
@@ -356,9 +374,36 @@ pub fn apply_hits(
                 }
             }
         }
+        // melee heighteners: remember who hurt whom (ring-out), launch a slashed victim (knockback / juggle / splat window)
+        if let Cause::Weapon(kind) = h.cause {
+            if amount > 0.0 && h.attacker != NO_ATTACKER {
+                players[h.victim].melee.last_hit = Some((h.attacker, tick));
+            }
+            if kind == DamageKind::Slash && !dead && amount > 0.0 && guard_seen != crate::block::Guard::Blocked && guard_seen != crate::block::Guard::Parried {
+                if let Some(a) = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world)) {
+                    let vp = &mut players[h.victim];
+                    let airborne = !matches!(vp.ch.state, crate::character::MoveState::Grounded);
+                    let vel = [vp.ch.vel.x, vp.ch.vel.y, vp.ch.vel.z];
+                    if let Some(nv) = melee.knock(vp.pos(world), a, vel, airborne) {
+                        vp.ch.vel = Vector::new(nv[0], nv[1], nv[2]);
+                        if matches!(vp.ch.state, crate::character::MoveState::Grounded) {
+                            vp.ch.state = crate::character::MoveState::Airborne; // the controller keeps a grounded body stuck to the floor
+                        }
+                        vp.melee.knock_until = tick + melee.splat_ticks;
+                        vp.melee.knock_speed = melee.knock_speed;
+                        vp.melee.knock_by = h.attacker;
+                    }
+                }
+            }
+        }
         if dead {
             if let Some(k) = killer {
                 players[k].vitals.kills = players[k].vitals.kills.saturating_add(1);
+                if matches!(h.cause, Cause::Weapon(DamageKind::Slash)) {
+                    let heal = melee.on_kill(&mut players[k].melee, tick);
+                    let a = &mut players[k].vitals;
+                    a.hp = (a.hp + heal).min(a.max_hp);
+                }
             }
         }
     }
@@ -370,6 +415,7 @@ pub fn apply_hits(
         p.ch.clear_grapple();
         p.combat.reset_projectiles();
         p.blk.reset();
+        p.melee.knock_speed = 0.0; // a corpse splats nothing (the kill streak and last-hit survive: ring-outs after death are over)
         if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
             col.set_collision_groups(InteractionGroups::none());
         }
