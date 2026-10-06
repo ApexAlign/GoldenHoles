@@ -276,7 +276,7 @@ pub fn setup(
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection { fov: 90f32.to_radians(), ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 90f32.to_radians(), far: 4000.0, ..default() }), // far plane well past the 1000 m hook
         Transform::from_xyz(0.0, 1.4, 0.0),
         PlayerCam,
     ));

@@ -64,13 +64,13 @@ impl Material for GridFloor {
 }
 
 /// Fog distance (m) for the grid shaders, scaled from the level's floor so the far side of a big map doesn't fade out:
-/// 1.5x the floor diagonal (HALF 112 m -> ~476 m, 168 m -> ~713 m). Levels without a big floor box (the built-in
+/// 1.5x the floor diagonal, never below `DEFAULT` (1100 m, the grapple range). Levels without a big floor box (the built-in
 /// arena) keep the original 300 m.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct FogFar(pub f32);
 
 impl FogFar {
-    pub const DEFAULT: f32 = 300.0;
+    pub const DEFAULT: f32 = 1100.0; // geometry stays visible out to the 1000 m hook range (was 300 m: far faces faded to black)
 
     pub fn for_floor(half: Option<[f32; 2]>) -> Self {
         match half {
@@ -85,12 +85,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fog_scales_with_the_floor_and_never_shrinks_below_default() {
-        assert_eq!(FogFar::for_floor(None).0, 300.0);
-        let f = FogFar::for_floor(Some([112.0, 112.0])).0;
-        assert!((f - 475.9).abs() < 1.0, "{f}");
-        assert!(FogFar::for_floor(Some([168.0, 168.0])).0 > 700.0);
-        assert_eq!(FogFar::for_floor(Some([20.0, 20.0])).0, 300.0);
+    fn fog_covers_the_hook_range_and_still_scales_up_with_a_huge_floor() {
+        assert_eq!(FogFar::for_floor(None).0, FogFar::DEFAULT);
+        assert!(FogFar::DEFAULT >= 1000.0, "far faces must stay visible out to the 1000 m hook");
+        assert_eq!(FogFar::for_floor(Some([20.0, 20.0])).0, FogFar::DEFAULT);
+        assert_eq!(FogFar::for_floor(Some([112.0, 112.0])).0, FogFar::DEFAULT); // 476 m scaled < default
+        assert!(FogFar::for_floor(Some([600.0, 600.0])).0 > FogFar::DEFAULT);
     }
 }
 
