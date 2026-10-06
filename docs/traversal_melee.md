@@ -12,13 +12,27 @@ face fight a **wall clash**.
 
 ## Grapple (E)
 
-| | before | now | key |
+| | original | now | key |
 |---|---|---|---|
-| range | 40 m | **400 m** | `grapple_range` |
-| reel speed | 18 m/s flat | 18 m/s up close, **0.6 m/s per metre of rope up to 60 m/s** | `grapple_speed_per_m`, `grapple_far_speed` |
-| 100 m of reel | 5.6 s | **1.8 s** | |
-| speed ceiling on the rope | 20 m/s | `max(grapple_max_speed, reel + 2)` = 62 m/s | |
-| arrival | fixed soft brake | brake and soft-arrival scale with the reel so a 60 m/s reel still slows before the wall | `grapple_soft_dist`, `grapple_brake` |
+| range | 40 m | **1000 m** (map-wide) | `grapple_range` |
+| reel speed | 18 m/s flat | 18 m/s up close, **full 140 m/s until ~80 m out**, then eases down to the arrival | `grapple_far_speed`, `grapple_speed_per_m` (1.75 m/s per metre of rope: 140 m/s from 80 m) |
+| 100 m of reel | 5.6 s | **0.9 s** | |
+| 300 m hook | n/a | **2.8 s** (live client path, `far_hook_e2e`) | |
+| 500 m hook | n/a | 4.2 s | |
+| speed ceiling on the rope | 20 m/s | `max(grapple_max_speed, reel + 2)` = 142 m/s | |
+| arrival | fixed soft brake | pull, brake and soft-arrival scale with the reel so a 140 m/s reel still slows before the wall | `grapple_soft_dist`, `grapple_brake` |
+
+Why the 400 m hook felt short in the real game (checked along the whole live path, `crates/shinobi-client/tests/far_hook_e2e.rs`):
+- The reel speed was proportional to the **remaining** distance, so it decayed exponentially: a 150 m hook took 4.2 s and
+  peaked at 70 m/s. It now holds full speed until the last ~80 m.
+- The rope's cable width was capped at 0.12 m, so beyond ~55 m it shrank to a sub-pixel line (`rope.rs`). The cap is now 3 m
+  (about 2 px on screen at any distance up to the range).
+- The distant faces themselves faded into the fog (300 m default); `FogFar::DEFAULT` is now 1100 m (`grid.rs`), and the camera
+  far plane is 4000 m (`play.rs`).
+- Nothing else capped it: the client probe (`ClientGame::probe_hook`), the crosshair tint, the server raycast, the lock-on /
+  assist range (it only applies to player lock-on, not hooks), the 10 s rope timer (a 1000 m reel is ~8 s at worst) and the
+  `Cfg` the game and server load (`Cfg::default()` on both; it is not part of `Balance`) all honour `grapple_range`.
+- The wire carries velocity up to 512 m/s and positions up to 4 km, so a 140 m/s reel is safe on it.
 
 - **Players are hookable.** The hook takes the nearest living player's hitbox along the aim (if it is closer than the
   geometry). The anchor is their centre and follows them every tick (`player_near`, 2.5 m re-anchor radius). Geometry
@@ -26,7 +40,11 @@ face fight a **wall clash**.
 - A reel that drags a grounded player into a ledge pops them up (`grapple_hop`, 4.5 m/s) so the rope carries them over.
 - After the release, speed above `grapple_max_speed` bleeds off (`overspeed_bleed`, 0.8 / s): a long hook is a fast
   flight that settles, not a permanent rocket.
-- Anti-cheat: the per-tick displacement ceiling grows with the (server-side) velocity, never past the reel ceiling.
+- Anti-cheat: the per-tick displacement ceiling grows with the (server-side) velocity, never past the reel ceiling
+  (`grapple_far_speed + 2` m/s, 2.4 m per tick).
+- Steering and release at speed: the stick still only nudges on the rope; **release (E or jump) or a katana press keeps the
+  momentum** (the strike launch keeps any speed above its floor, `overspeed_bleed` settles it), a wall catch snaps to the
+  wall-run, so a far hook can be cut into a wall-run or a hook-strike at full speed.
 
 ## Hook-strike (katana while hooked, or within 0.35 s after the rope lets go)
 
@@ -74,7 +92,7 @@ Strike-timing damage driven by the lock-on is owned by the melee-balance work; t
 
 ## Bots
 
-Normal/hard bots hook a visible target at 16-90 m now and then (`HOOK_CHANCE` per tick, 7 s cooldown), and swing the moment
+Normal/hard bots hook a visible target at 16-90 m now and then (a bot never hooks farther than 90 m) (`HOOK_CHANCE` per tick, 7 s cooldown), and swing the moment
 the target is inside the hook / wall reach (`select_phase`). 8 bots x 120 s: ffa_small 27 hooks / 17 hook-strikes; ffa 31 / 21
 plus wall slashes. The stuck-bot tests stay green on ffa, ffa_xl and ffa_small.
 
@@ -88,7 +106,7 @@ plus wall slashes. The stuck-bot tests stay green on ffa, ffa_xl and ffa_small.
 
 ## Tuning cheatsheet
 
-- Hook too fast / slow: `grapple_far_speed`, `grapple_speed_per_m`.
+- Hook too fast / slow: `grapple_far_speed` (top speed), `grapple_speed_per_m` (how soon it eases down: top speed / this = metres out).
 - Strikes too strong: `combat.katana.hook_damage_mult`, `wall_damage_mult`, `hook_reach`, `wall_reach` (Balance text keys).
 - Wall-run too sticky / long: `wall_max_time`, `wall_coast_burn`, `wall_steer`.
 - Climbing too easy: `wall_climb_speed`, `wall_front_min_speed`.

@@ -290,9 +290,9 @@ fn lossy_jittery_links_keep_grapple_prediction_tight_and_never_snap() {
     // (zip, dash, jump, build) are re-sent in every datagram until the server confirms them (`intent_complete`) and a
     // late one is applied exactly once on the next tick, so even at 20 % loss the worst error stays at decimetres
     // (it used to reach 2.4 m with the rope on one side for a whole RTT).
-    // max/offset bounds are sized for far hooks that reel at up to 60 m/s (10x range, `grapple_far_speed`): a one-tick timing
-    // difference on a lossy link is 1 m at that speed (it was 0.33 m at the old 20 m/s cap); p99 is still ~0
-    for (loss, p99_bound, max_bound, snap_bound) in [(0.0, 0.01, 0.6, 0.5), (0.05, 0.02, 0.7, 0.6), (0.20, 0.05, 1.0, 0.9)] {
+    // max/offset bounds are sized for far hooks that reel at up to 140 m/s (1000 m range, `grapple_far_speed`): a one-tick timing
+    // difference on a lossy link is 2.3 m at that speed (it was 0.33 m at the old 20 m/s cap); p99 is still ~0
+    for (loss, p99_bound, max_bound, snap_bound) in [(0.0, 0.01, 4.0, 3.0), (0.05, 0.02, 4.0, 3.0), (0.20, 0.05, 4.5, 3.5)] {
         let (mut worst99, mut worst_max, mut worst_off, mut worst_step, mut corr, mut hooks) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0u32, 0u32);
         for seed in [11u64, 12, 13] {
             let o = run(3.0, 2.4, loss, seed + (loss * 1000.0) as u64, 3000); // 3000 ticks: slower movement means fewer grapple attempts per tick
@@ -310,8 +310,8 @@ fn lossy_jittery_links_keep_grapple_prediction_tight_and_never_snap() {
         assert!(worst99 < p99_bound, "loss {loss}: p99 err {worst99} (bound {p99_bound})");
         assert!(worst_max < max_bound, "loss {loss}: max err {worst_max} (bound {max_bound})");
         assert!(worst_off < snap_bound, "loss {loss}: visual offset {worst_off} (bound {snap_bound})");
-        // the fastest legal mover is a far-hook reel: 60 m/s = 1 m per tick
-        assert!(worst_step < 1.1, "loss {loss}: displayed position jumped {worst_step} m in one tick");
+        // the fastest legal mover is a far-hook reel: 140 m/s = 2.3 m per tick
+        assert!(worst_step < 2.6, "loss {loss}: displayed position jumped {worst_step} m in one tick");
     }
 }
 
@@ -336,7 +336,7 @@ fn adaptive_lead_converges_from_any_start_without_oscillating() {
             assert!((8..=15).contains(&fin), "start {start} loss {loss}: settled at {fin} (log {:?})", o.lead_log);
             let late_changes = o.lead_log.iter().filter(|(t, _)| *t > 600).count();
             assert!(late_changes <= 2, "start {start} loss {loss}: still changing after 10 s: {:?}", o.lead_log);
-            assert!(o.max() < 1.6, "start {start} loss {loss}: max err {} (log {:?})", o.max(), o.lead_log); // 60 m/s far hooks (was 0.35 at 20 m/s)
+            assert!(o.max() < 4.5, "start {start} loss {loss}: max err {} (log {:?})", o.max(), o.lead_log); // 140 m/s far hooks (was 0.35 at 20 m/s)
         }
     }
 }
