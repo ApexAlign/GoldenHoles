@@ -176,11 +176,11 @@ impl Default for Cfg {
             gravity: 20.0,
             terminal: 32.0,
             ground_stick: -2.0,
-            jump_speed: 8.8,
+            jump_speed: 10.0,
             double_jump_speed: 7.2,
             peak_window: 3.0,
-            rise_hold_mult: 0.8,
-            rise_cut_mult: 1.5,
+            rise_hold_mult: 0.75,
+            rise_cut_mult: 1.25,
             fall_glide_mult: 0.6,
             jump_carry: 3.0,
             double_jump_carry: 2.0,
@@ -1627,8 +1627,8 @@ mod tests {
     fn jump_height_and_double_jump_gain() {
         // a tap is a short hop, a held jump rises higher and floats (variable jump), the double jump adds height
         let (h1, t1) = jump_peak(false);
-        assert!((1.1..1.5).contains(&h1), "tap jump peak {h1} m");
-        assert!((0.24..0.40).contains(&t1), "time to apex {t1} s");
+        assert!((1.7..2.2).contains(&h1), "tap jump peak {h1} m");
+        assert!((0.30..0.50).contains(&t1), "time to apex {t1} s");
         let (h2, _) = jump_peak(true);
         assert!(h2 > h1 + 0.6, "double jump at the apex must add real height: {h1} -> {h2}");
     }
@@ -2494,14 +2494,14 @@ mod tests {
         let (hold_h, hold_t, hold_d) = run_jump(cfg, true, false);
         let (dbl_h, dbl_t, dbl_d) = run_jump(cfg, true, true);
         eprintln!("FEEL tap {tap_h:.2} m {tap_t:.2} s {tap_d:.1} m | hold {hold_h:.2} m {hold_t:.2} s {hold_d:.1} m | hold+double {dbl_h:.2} m {dbl_t:.2} s {dbl_d:.1} m");
-        assert!((1.0..1.5).contains(&tap_h), "tap hop {tap_h}");
-        assert!((2.1..2.8).contains(&hold_h), "held jump {hold_h}");
-        assert!((0.9..1.3).contains(&hold_t), "a held jump floats about a second: {hold_t}");
-        assert!(hold_d >= 7.0, "a held run-in jump covers {hold_d} m");
-        assert!((3.5..4.5).contains(&dbl_h), "double jump apex {dbl_h}");
-        assert!(dbl_d >= 13.0, "jump + double jump crosses {dbl_d} m with two inputs");
+        assert!((1.7..2.2).contains(&tap_h), "tap hop {tap_h} (an ordinary press must be a real jump: the first retune left it at the old ~1.5 m)");
+        assert!((2.9..3.6).contains(&hold_h), "held jump {hold_h}");
+        assert!((1.0..1.5).contains(&hold_t), "a held jump floats about a second: {hold_t}");
+        assert!(hold_d >= 8.0, "a held run-in jump covers {hold_d} m");
+        assert!((4.4..5.4).contains(&dbl_h), "double jump apex {dbl_h}");
+        assert!(dbl_d >= 14.5, "jump + double jump crosses {dbl_d} m with two inputs");
         // the arc is a glide, not a moon jump: a double jump stays under ~2 s
-        assert!(dbl_t < 2.2, "air time {dbl_t}");
+        assert!(dbl_t < 2.4, "air time {dbl_t}");
         // cfg helpers agree with the simulation (bots plan with them)
         assert!((cfg.jump_apex(true) - hold_h).abs() < 0.15 && (cfg.jump_apex(false) - tap_h).abs() < 0.2);
     }

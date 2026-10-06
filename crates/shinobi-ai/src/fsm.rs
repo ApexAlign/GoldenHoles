@@ -42,6 +42,10 @@ const HOOK_MIN: f32 = 16.0;
 const HOOK_MAX: f32 = 90.0;
 const HOOK_CHANCE: f32 = 0.012;
 const HOOK_COOLDOWN_TICKS: u32 = 420;
+/// A target this close after a cut gets the next cut of the combo (blade reach 2.4 m + a little).
+const COMBO_REACH: f32 = 2.9;
+/// No shuriken inside this range: point-blank is for the katana.
+const POKE_MIN_RANGE: f32 = 3.0;
 /// Bots ask for a ticket this far out so it is ready when they arrive.
 pub const REQUEST_RANGE: f32 = 13.0;
 const SHURIKEN_RANGE: f32 = 34.0;
@@ -198,6 +202,10 @@ pub struct BotMem {
     pause_until: u32,
     /// Yaw offset (rad) of the dash being wound up: 0 = a clean read, else a deliberate whiff (`skill.slice_miss`).
     slice_off: f32,
+    /// Cuts landed so far in the current combo (0..=2) and the shield hold / re-arm ticks.
+    combo: u32,
+    block_until: u32,
+    block_ok: u32,
     evade_ok: u32,
     retreat_block: u32,
     strafe_sign: f32,
@@ -242,6 +250,9 @@ impl BotMem {
             hook_ok: 0,
             pause_until: 0,
             slice_off: 0.0,
+            combo: 0,
+            block_until: 0,
+            block_ok: 0,
             evade_ok: 0,
             retreat_block: 0,
             strafe_sign: if id % 2 == 0 { 1.0 } else { -1.0 },
@@ -382,6 +393,18 @@ impl BotMem {
         // ---- 5. attacks (never from inside a hop or hold that would be disturbed)
         self.attacks(ctx, p, dir, &mut buttons, &mut rng);
 
+        // ---- 5b. guard: a star flying at me gets a short raised shield now and then (never mid-strike)
+        if tick >= self.block_ok && incoming_disc(ctx) && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
+            self.block_ok = tick + 90;
+            if rng.chance(self.skill.evade_chance * 0.6) {
+                self.block_until = tick + 22;
+            }
+        }
+        let blocking = tick < self.block_until && !matches!(self.phase, Phase::Strike { .. });
+        if blocking {
+            buttons &= !(Buttons::FIRE | Buttons::SLICE);
+        }
+
         // ---- 6. aim
         let (yaw, pitch) = self.aim(ctx, p, dir);
 
@@ -438,6 +461,7 @@ impl BotMem {
             ultimate: false,
             build: false, build_wall: false, build_ramp: false,
             zip,
+            block: blocking,
         };
         // leaving Strike hands the ticket back
         if released {
@@ -479,7 +503,17 @@ impl BotMem {
                         self.set_phase(Phase::Strike { stage: StrikeStage::Recover }, tick);
                     }
                     StrikeStage::Recover => {
-                        if tick >= since + 14 {
+                        // melee-first: a target still inside blade reach gets the next cut of the combo as soon as the
+                        // swing cooldown (~0.42 s = 25 ticks) is over, up to three cuts; otherwise back out
+                        // (an off-screen bot only keeps cutting while its attack ticket is still valid: the ticket cap guards the human)
+                        let in_reach = t.dist <= COMBO_REACH && t.los && !t.view.spawn_protected && (ctx.has_ticket || !t.needs_ticket());
+                        if in_reach && self.combo < 2 {
+                            if tick >= since + 26 {
+                                self.combo += 1;
+                                self.stats.strikes += 1;
+                                self.set_phase(Phase::Strike { stage: StrikeStage::Slice }, tick);
+                            }
+                        } else if tick >= since + 14 {
                             self.slice_ok = tick + 36;
                             self.set_phase(Phase::Zone, tick);
                             *released = true;
@@ -531,6 +565,7 @@ impl BotMem {
                 self.stats.strikes += 1;
                 // a bad read is decided up front so the aim has the whole wind-up to slew onto the wrong spot
                 self.slice_off = if rng.chance(self.skill.slice_miss) { 1.2 * rng.signed().signum() } else { 0.0 };
+                self.combo = 0;
                 self.set_phase(Phase::Strike { stage: StrikeStage::WindUp }, tick);
                 return;
             }
@@ -706,8 +741,13 @@ impl BotMem {
                     (to_t, 1.0)
                 }
                 StrikeStage::Recover => {
-                    let side = vector![-to_t.z, 0.0, to_t.x] * self.strafe_sign;
-                    (unit_or_zero(side - to_t * 0.4), 1.0)
+                    if t.dist <= COMBO_REACH && self.combo < 2 {
+                        // stay on them for the next cut: close the last metre, do not circle off
+                        (to_t, if t.dist > 1.4 { 0.5 } else { 0.0 })
+                    } else {
+                        let side = vector![-to_t.z, 0.0, to_t.x] * self.strafe_sign;
+                        (unit_or_zero(side - to_t * 0.4), 1.0)
+                    }
                 }
             },
             Phase::Evade { kind, dir, until } => {
@@ -983,7 +1023,8 @@ impl BotMem {
             self.phase,
             Phase::Advance | Phase::Flank | Phase::Zone | Phase::Perch | Phase::Retreat
         ) || matches!(self.phase, Phase::Evade { kind: EvadeKind::WallCling | EvadeKind::Strafe, .. });
-        if !can_throw || !t.los || t.dist > SHURIKEN_RANGE || tick < self.fire_ok || t.view.spawn_protected {
+        // stars are the poke: nothing is thrown at point-blank range, where the katana is the weapon
+        if !can_throw || !t.los || t.dist > SHURIKEN_RANGE || t.dist < POKE_MIN_RANGE || tick < self.fire_ok || t.view.spawn_protected {
             return;
         }
         let (want_yaw, _) = self.aim_angles(ctx, &t);

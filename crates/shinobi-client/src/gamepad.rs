@@ -139,8 +139,8 @@ impl PadMapper {
                 Pad::West => Some(Action::Grapple),
                 Pad::North => Some(Action::Roll),
                 Pad::LeftBumper => Some(Action::Dash),
-                Pad::RightBumper => Some(Action::BuildFloor),
-                Pad::DPadRight => Some(Action::BuildWall),
+                Pad::RightBumper => Some(Action::Block), // hold the right bumper to guard / parry
+                Pad::DPadRight => Some(Action::BuildFloor),
                 Pad::Start => None,
             };
             if let Some(a) = action {
@@ -241,8 +241,8 @@ mod tests {
             (Pad::West, Action::Grapple),
             (Pad::North, Action::Roll),
             (Pad::LeftBumper, Action::Dash),
-            (Pad::RightBumper, Action::BuildFloor),
-            (Pad::DPadRight, Action::BuildWall),
+            (Pad::RightBumper, Action::Block),
+            (Pad::DPadRight, Action::BuildFloor),
         ];
         for (b, a) in table {
             s.set(b, true);

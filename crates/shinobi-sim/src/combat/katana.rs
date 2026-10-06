@@ -31,10 +31,23 @@ pub struct KatanaCfg {
     /// Wall slash (swing during a wall-run): same two knobs.
     pub wall_damage_mult: f32,
     pub wall_reach: f32,
+    /// Seconds after a swing within which the next swing continues the combo.
+    pub combo_window: f32,
+    /// Damage multiplier of the third swing of a combo (every swing before it must have connected).
+    pub finisher_mult: f32,
+    /// Extra blade length (m) of that finishing swing.
+    pub finisher_reach: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
 pub const STRIKE_REACH_PER_MPS: f32 = 0.15;
+
+/// A katana swing comes round after this fraction of the dash cooldown: a fast combo of cuts, of which only every
+/// third or so carries the dash lunge (the dash has its own, longer cooldown). Derived from the character, like
+/// the dash itself, so the client's prediction (`KatanaCfg::for_character`) and the server agree.
+pub const SWING_CD_FRAC: f32 = 0.35;
+/// Swings in one combo; the last is the finisher.
+pub const COMBO_LEN: u32 = 3;
 
 /// Distance `CharacterSystem`'s dash travels: speed = dash_speed * (0.4 + 0.6 f), f: 1 -> 0 over
 /// `dash_time`, so the mean speed is 0.7 * dash_speed (30 * 0.18 * 0.7 = 3.8 m by default).
@@ -49,8 +62,8 @@ impl KatanaCfg {
             blade_len: 1.6,
             half_width: 1.0,
             half_height: 1.0,
-            // Matching the dash cooldown keeps every slice paired with a lunge.
-            cooldown: ch.dash_cd,
+            // Swings are quicker than the dash comes back: a combo of cuts, the lunge on the first.
+            cooldown: (ch.dash_cd * SWING_CD_FRAC).max(0.25),
             lunge_distance: dash_distance(ch),
             magnet: 0.8,
             piece_damage: 60.0,
@@ -58,6 +71,9 @@ impl KatanaCfg {
             hook_reach: 4.0,
             wall_damage_mult: 1.35,
             wall_reach: 3.0,
+            combo_window: 1.0,
+            finisher_mult: 1.0,
+            finisher_reach: 0.0,
         }
     }
 }
@@ -101,11 +117,15 @@ pub fn predict_slice(
 pub struct Katana {
     pub cfg: KatanaCfg,
     flip: bool,
+    /// Consecutive swings that connected inside the combo window (0, 1, 2 -> the next one is the finisher).
+    combo: u32,
+    /// `now` of the last swing (the combo window runs from it).
+    last_swing: f32,
 }
 
 impl Katana {
     pub fn new(cfg: KatanaCfg) -> Self {
-        Self { cfg, flip: false }
+        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY }
     }
 }
 
@@ -125,8 +145,22 @@ impl Weapon for Katana {
         self.cfg.cooldown
     }
 
+    fn reset(&mut self) {
+        self.combo = 0;
+        self.last_swing = f32::NEG_INFINITY;
+    }
+
     fn fire(&mut self, ctx: &mut FireCtx) -> bool {
-        let c = self.cfg;
+        let mut c = self.cfg;
+        // combo: every swing that connected within the window brings the finisher closer; it hits harder and reaches further
+        if ctx.now - self.last_swing > c.combo_window {
+            self.combo = 0;
+        }
+        let finisher = self.combo + 1 >= COMBO_LEN;
+        if finisher {
+            c.damage *= c.finisher_mult;
+            c.blade_len += c.finisher_reach;
+        }
         let dir = ctx.aim.flat_forward();
         let origin = ctx.aim.origin;
 
@@ -245,6 +279,9 @@ impl Weapon for Katana {
             }
         }
 
+        self.last_swing = ctx.now;
+        self.combo = if hits.is_empty() || finisher { 0 } else { self.combo + 1 };
+
         if hits.is_empty() {
             ctx.events.push(CombatEvent::SlashMiss { origin: Point::from(origin), dir });
         }
@@ -315,7 +352,7 @@ mod tests {
         let mut cd = 0.0f32;
         let mut now = 0.0;
         let mut swings = (0, 0);
-        for t in 0..1000u32 {
+        for t in 0..2000u32 {
             // slice taps at irregular intervals, dash taps that sometimes steal the dash cooldown first
             let slice = t % 25 == 3 || t % 91 == 50;
             let dash = t % 100 == 76 || t % 53 == 20;
@@ -346,5 +383,74 @@ mod tests {
             now += DT;
         }
         assert!(swings.0 >= 10 && swings.1 >= 5 && swings.1 < swings.0, "covers lunges and cooldown-blocked swings: {swings:?}");
+    }
+
+    /// Drives the demo katana against a standing target: returns `(time, damage)` of every hit while the slice button
+    /// is held down for `secs`; the target is out of reach during `away` (a whiff).
+    fn hold_slice(secs: f32, away: Option<(f32, f32)>) -> Vec<(f32, f32)> {
+        let cfg = Cfg::default();
+        let mut w = PhysicsWorld {
+            bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            islands: IslandManager::new(),
+            queries: QueryPipeline::new(),
+        };
+        let body = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().translation(vector![0.0, 0.81, 0.0]).build());
+        let target = |z: f32| {
+            ColliderBuilder::cuboid(0.4, 0.9, 0.4)
+                .translation(vector![0.0, 0.81, z])
+                .collision_groups(InteractionGroups::new(crate::combat::GROUP_ENEMY, Group::ALL))
+                .user_data(7)
+                .build()
+        };
+        let tgt = w.colliders.insert(target(-1.6));
+        let ch = CharacterSystem::new(body, cfg);
+        let mut combat = CombatSystem::ninja(&cfg);
+        combat.apply_balance(&crate::balance::Balance::demo(), &cfg);
+        let aim = Aim { origin: vector![0.0, 0.81, 0.0], yaw: 0.0, pitch: 0.0 };
+        let mut hits = Vec::new();
+        let (mut tgt, mut gone) = (tgt, false);
+        let mut now = 0.0f32;
+        while now < secs {
+            let want_gone = away.map_or(false, |(a, b)| now >= a && now < b);
+            if want_gone && !gone {
+                w.colliders.remove(tgt, &mut w.islands, &mut w.bodies, false);
+                gone = true;
+            } else if !want_gone && gone {
+                tgt = w.colliders.insert(target(-1.6));
+                gone = false;
+            }
+            w.queries.update(&w.colliders);
+            let mut input = PlayerInput::default();
+            let mut ev = Vec::new();
+            combat.update(DT, now, &CombatInput::new(false, true), &aim, &w, &ch, &mut input, &mut ev);
+            for e in &ev {
+                if let CombatEvent::Damage { amount, kind: DamageKind::Slash, .. } = e {
+                    hits.push((now, *amount));
+                }
+            }
+            now += DT;
+        }
+        hits
+    }
+
+    /// The demo combo: 20, 20, then a 30 finisher, then it starts over; swings 0.42 s apart. A whiff resets it.
+    #[test]
+    fn the_third_connected_cut_is_the_finisher_and_a_whiff_resets_the_combo() {
+        let hits = hold_slice(2.4, None);
+        let dmg: Vec<f32> = hits.iter().map(|h| h.1).collect();
+        assert!(dmg.len() >= 5, "a held slice button keeps cutting: {hits:?}");
+        assert_eq!(dmg[..5], [20.0, 20.0, 30.0, 20.0, 20.0], "combo: two cuts, a 30 hp finisher, then it starts over");
+        let gaps: Vec<f32> = hits.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        assert!(gaps.iter().all(|g| (0.38..0.47).contains(g)), "swings come round every ~0.42 s: {gaps:?}");
+        // five cuts = 20+20+30+20+20 = 110 >= 100 hp: a kill ~1.7 s after the first cut
+        let ttk = hits[4].0 - hits[0].0;
+        eprintln!("katana-only kill: 5 cuts in {ttk:.2} s");
+        assert!((1.4..2.0).contains(&ttk), "katana-only time to kill {ttk}");
+
+        // the target steps out of reach for one swing after the second cut (a whiff) and comes back: the combo starts over
+        let hits = hold_slice(2.4, Some((0.6, 1.1)));
+        let dmg: Vec<f32> = hits.iter().map(|h| h.1).collect();
+        assert_eq!(dmg[..3], [20.0, 20.0, 20.0], "the whiff took the finisher away: {hits:?}");
     }
 }

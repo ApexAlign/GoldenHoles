@@ -141,7 +141,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v14, for client authors)
+## Network events (protocol v15, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
@@ -162,6 +162,11 @@ an edge until the server's owner block says every intent up to that tick arrived
 applies an edge that arrives after its tick was simulated exactly once on the next tick. The owner block also reports
 how much headroom the newest intent had (`lead_margin`); `NetClient` grows / shrinks its intent lead from that, so a
 50 ms link with 80 ms of jitter needs no hand-tuned constant.
+Protocol v15 adds the block / parry shield and the strike window: `PlayerIntent.block` (held, own wire bit; while it is
+held the server ignores any aim but the one of the tick the shield went up, so clients lock the view and keep moving),
+`EntityState.fx` (3 bits in the snapshot status: `FX_BLOCK` shield up, `FX_OPEN` strike window open = hits on that player
+deal bonus damage, `FX_STAGGER` parried) and `HitMsg.bonus` (the hit landed inside the window). Tunables are the
+`guard.*` Balance keys (`Balance::demo().to_text()` lists them).
 Hit markers (`OwnExtras.hits`) are resent in 3 consecutive datagrams with a sequence
 number; `NetClient` de-duplicates them.
 

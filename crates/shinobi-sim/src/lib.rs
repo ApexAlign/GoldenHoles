@@ -5,6 +5,7 @@ pub use rapier3d;
 
 pub mod anticheat;
 pub mod balance;
+pub mod block;
 pub mod blocks;
 pub mod character;
 pub mod combat;

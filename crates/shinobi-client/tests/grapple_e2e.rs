@@ -72,6 +72,7 @@ fn snapshot_datagram(srv: &Server, margin: i8) -> Vec<u8> {
             MoveState::WallRun { .. } => MoveKind::WallRun,
         },
         flags: 0,
+        fx: 0,
     };
     let snap = Snapshot { tick: srv.tick, entities: vec![(p.id, st)] };
     let mut ev = BitWriter::new();

@@ -116,6 +116,7 @@ fn fuzz(seed: u64, players: u16, ticks: u32) {
                     build_wall: h.build && h.wall,
                     build_ramp: h.build && h.ramp,
                     zip: false,
+        block: false,
                 })
                 .collect();
             seqs[i] = seqs[i].wrapping_add(1);

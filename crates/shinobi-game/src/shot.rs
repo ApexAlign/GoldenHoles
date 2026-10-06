@@ -269,6 +269,7 @@ fn ent(pos: [f32; 3], vel: [f32; 3], kind: MoveKind) -> EntityState {
         yaw: 0,
         kind,
         flags: 0,
+        fx: 0,
     }
 }
 

@@ -29,7 +29,7 @@ fn entity(srv: &Server, i: usize) -> (u16, EntityState) {
         MoveState::Airborne => MoveKind::Airborne,
         MoveState::WallRun { .. } => MoveKind::WallRun,
     };
-    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags: 0 })
+    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags: 0, fx: 0 })
 }
 
 /// What the server sends player 1: both players in the snapshot, own state in the owner block.

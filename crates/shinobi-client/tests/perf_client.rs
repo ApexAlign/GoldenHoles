@@ -46,7 +46,7 @@ fn client_frame_cost_with_16_remotes_at_144hz() {
         for i in 0..REMOTES {
             let a = tick as f32 * 0.02 + i as f32;
             let p = [a.cos() * (10.0 + i as f32), 0.81, a.sin() * (10.0 + i as f32)];
-            entities.push((2 + i, EntityState { pos: q_pos3(p), vel: [64, 0, 0], yaw: q_yaw(a), kind: MoveKind::Grounded, flags: 0 }));
+            entities.push((2 + i, EntityState { pos: q_pos3(p), vel: [64, 0, 0], yaw: q_yaw(a), kind: MoveKind::Grounded, flags: 0, fx: 0 }));
         }
         let snap = Snapshot { tick, entities };
         let mut ev = BitWriter::new();
