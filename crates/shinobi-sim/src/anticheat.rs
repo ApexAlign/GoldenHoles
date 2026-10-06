@@ -26,7 +26,7 @@ impl AntiCheatCfg {
     /// Ceiling = fastest legal mover (dash/roll/wall-run/terminal fall) * dt, plus `slack` (fraction) for
     /// depenetration and step-up, so honest play never trips it.
     pub fn for_character(cfg: &Cfg, dt: f32, slack: f32) -> Self {
-        let fastest = [cfg.dash_speed, cfg.roll_speed, cfg.wall_speed, cfg.run_speed, cfg.terminal.abs()]
+        let fastest = [cfg.dash_speed, cfg.roll_speed, cfg.wall_speed, cfg.run_speed, cfg.terminal.abs(), cfg.hookstrike_speed, cfg.wallslash_speed]
             .into_iter()
             .fold(0.0, f32::max);
         Self { max_step: fastest * dt * (1.0 + slack), max_turn: FRAC_PI_2, kick_at: 8, decay_ticks: 600 }

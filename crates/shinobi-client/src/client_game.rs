@@ -307,7 +307,7 @@ fn lunge_input(katana: &KatanaCfg, it: &PlayerIntent, ch: &mut CharacterSystem) 
     let mut input = to_player_input(it);
     let mut cd = ch.slice_cooldown();
     let aim = CombatAim { origin: vector![0.0, 0.0, 0.0], yaw: dq_yaw(it.aim_yaw), pitch: 0.0 };
-    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), aim.flat_forward(), &mut input);
+    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut input);
     ch.set_slice_cooldown(cd);
     input
 }
@@ -385,6 +385,8 @@ pub struct LocalFx {
     pub grapple_cooldown: f32,
     /// The crosshair is on something the hook can grab right now (client-side ray in the predicted world).
     pub grapple_hookable: bool,
+    /// A katana swing right now is a strike: 0 none, 1 hook-strike (rope on / just released), 2 wall slash (wall-run).
+    pub strike_armed: u8,
     /// Hooked this interval: the anchor point.
     pub grapple_attached: Option<[f32; 3]>,
     pub grapple_released: bool,
@@ -1095,6 +1097,11 @@ impl ClientGame {
             fx.grapple_ready = !fx.grappling && p.ch.grapple_cooldown() <= 0.0;
             fx.grapple_cooldown = (p.ch.grapple_cooldown() / self.cfg.sim.grapple_cd.max(1e-3)).clamp(0.0, 1.0);
             fx.grapple_hookable = p.hookable;
+            fx.strike_armed = match p.ch.strike_kind() {
+                Some(shinobi_sim::character::StrikeKind::Hook) => 1,
+                Some(shinobi_sim::character::StrikeKind::Wall) => 2,
+                None => 0,
+            };
         }
         if let Some(p) = &self.pred {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);

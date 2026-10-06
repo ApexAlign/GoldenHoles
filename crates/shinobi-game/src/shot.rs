@@ -220,6 +220,14 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 v.rope = Some((e, [e[0] + 4.0, e[1] + 7.0, e[2] - 18.0]));
                 v.fx.grappling = true;
             }
+            // a 300 m hook (pulse packets spread over the length) with the hook-strike ring armed
+            "longrope" => {
+                let e = v.eye;
+                v.rope = Some((e, [e[0] + 40.0, e[1] + 60.0, e[2] - 290.0]));
+                v.fx.grappling = true;
+                v.fx.strike_armed = 1;
+            }
+            "wallslash" => v.fx.strike_armed = 2,
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);

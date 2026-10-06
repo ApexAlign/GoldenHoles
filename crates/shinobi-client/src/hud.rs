@@ -231,6 +231,8 @@ pub struct GrappleHud {
     pub on_rope: bool,
     /// A fizzle ('no target') just happened: flash the arc.
     pub missed: bool,
+    /// Katana strike armed: 0 none, 1 hook-strike, 2 wall slash (gold ring + label around the crosshair).
+    pub strike: u8,
 }
 
 /// Live movement readouts for the left panel.
@@ -1086,6 +1088,14 @@ impl Hud {
             }
             if g.missed {
                 out.push(Prim::Ring { c: (0.40, 0.94), r: 0.034, color: p.magenta.a(0.9), fill: false, glow: 0.008 });
+            }
+            if g.strike != 0 {
+                // a katana press NOW launches along the aim with extra reach and damage: ring the crosshair and say so
+                let a = 0.65 + 0.35 * (s.time * 14.0).sin().abs();
+                out.push(Prim::Ring { c: (0.5, 0.5), r: 0.05, color: p.gold.a(a), fill: false, glow: 0.008 });
+                out.push(Prim::Ring { c: (0.5, 0.5), r: 0.065, color: p.gold.a(a * 0.5), fill: false, glow: 0.004 });
+                let label = if g.strike == 1 { "HOOK STRIKE" } else { "WALL SLASH" };
+                out.push(Prim::Text { pos: (0.5, 0.585), text: label.into(), size: 0.018, color: p.gold.a(a), align: Align::Center });
             }
         }
         if let Some(b) = s.build {
@@ -2777,7 +2787,7 @@ mod tests {
         // hookable crosshair tints gold; ghost ring is cyan when valid, magenta when blocked
         let ticks = |s: &HudState, c: Rgba| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (c.0, c.1, c.2))).count();
         let base = HudState { hp: 1.0, ..Default::default() };
-        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false }), ..base.clone() };
+        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false, strike: 0 }), ..base.clone() };
         assert!(ticks(&hook, p.gold) > ticks(&base, p.gold));
         let ring = |valid| {
             let s = HudState { build: Some(BuildHud { selected: BuildSlot::Floor, ready: 1.0, placed: 0, max: 4, ghost: Some(valid) }), ..base.clone() };

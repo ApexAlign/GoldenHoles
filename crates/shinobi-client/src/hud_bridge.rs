@@ -582,6 +582,7 @@ impl HudBridge {
             hookable: gf.grapple_hookable,
             on_rope: gf.grappling,
             missed: self.grapple_flash > 0.0,
+            strike: gf.strike_armed,
         }));
         hs.team_scores = team_scores;
         hs.ally_tags = ally_tags;
@@ -879,7 +880,7 @@ mod tests {
         let mut b = HudBridge::default();
         b.kill_limit = Some(25);
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
-        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false });
+        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false, strike: 0 });
         let mut v = RenderView::default();
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
         let s = b.update(0.016, &v, &net(), false);
