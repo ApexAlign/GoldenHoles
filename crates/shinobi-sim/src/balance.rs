@@ -69,6 +69,12 @@ pub struct KatanaBalance {
     pub magnet: f32,
     /// Damage a swing does to each player-built piece in the blade box.
     pub piece_damage: f32,
+    /// Seconds after a swing within which the next one continues the combo.
+    pub combo_window: f32,
+    /// Damage multiplier of the third swing of a combo (the first two must have connected); 1 = no finisher bonus.
+    pub finisher_mult: f32,
+    /// Extra blade length (m) of the finishing swing.
+    pub finisher_reach: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -319,7 +325,7 @@ impl Default for Balance {
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -442,11 +448,13 @@ impl Balance {
     /// Demo / small-lobby (1v1 to 3v3, bots welcome) feel. Not the default so unit tests keep their timing;
     /// the server applies it with `server.set_balance(Balance::demo())`.
     ///
-    /// * katana is a 2-hit kill (60) instead of a one-hit; its lunge+blade reach stays ~5 m (derived from the
-    ///   character dash), so closing distance is still rewarded without being a guaranteed kill;
-    /// * shuriken: 70 m/s (a flat, fast star), 18 damage at ~5.9/s = ~106 dps, so a clean body-shot stream kills in
-    ///   ~0.9 s; level crosshair (head height) is a 1.5x headshot, ~0.6 s; 0.6 m hit radius (generous graze);
-    /// * katana blade 2.0 m long, 1.2 m half-width (a rough swing still connects);
+    /// * MELEE-FIRST. The katana is the weapon: 20 per cut, swings 0.42 s apart (`katana::SWING_CD_FRAC`), the third
+    ///   connected cut of a combo (1 s window) is a 30 hp finisher with +0.6 m reach, so 100 hp falls to five cuts
+    ///   (20, 20, 30, 20, 20) in ~1.7 s; the first cut carries the dash lunge (~3.3 m), so strike reach from a
+    ///   standing start is ~5.7 m, and the lock triangle bends the whole sweep onto the target;
+    /// * shuriken is the poke: 70 m/s (a flat, fast star), 7 damage at 5/s = 35 dps, ~2.8 s of clean fire for a kill
+    ///   (headshots 1.5x, ~1.9 s); 0.6 m hit radius (generous graze);
+    /// * katana blade 2.4 m long, 1.2 m half-width (a rough swing still connects);
     /// * light-walls 34 per touch (3 to kill), obstacles 60 (2 to kill), 1 s re-arm so one pass is one hit, and
     ///   your own trail never hurts you (it still blocks you);
     /// * hp 100, respawn 2.5 s, 1.5 s spawn protection (3 s on first join);
@@ -454,24 +462,31 @@ impl Balance {
     ///   10 frags or 6 minutes, 8 s intermission (docs/DEMO.md).
     pub fn demo() -> Self {
         let mut b = Balance::default();
-        b.combat.katana.damage = 66.0; // two slashes still kill (2 x 66 >= 130 hp)
-        b.player.max_hp = 130.0; // a bit more room to react: dying in under 2 s felt unfair
+        // MELEE-FIRST: stars are a 7 hp poke, the katana is the weapon. 100 hp = 15 star hits (~2.8 s of clean fire) but
+        // only 5 slashes: 20, 20, finisher 30, then 20, 20 at one swing per 0.42 s = ~1.7 s of cutting. Closing the
+        // distance (dash lunge, grapple, wall-run) is what wins fights, and a missed combo resets.
+        b.combat.katana.damage = 20.0;
+        b.combat.katana.finisher_mult = 1.5; // the third connected swing of a combo cuts for 30
+        b.combat.katana.finisher_reach = 0.6; // and reaches 0.6 m further
+        b.combat.katana.combo_window = 1.0;
+        b.combat.katana.magnet = 1.0; // a locked target pulls the whole blade sweep onto it
+        b.player.max_hp = 100.0;
         b.player.respawn_ticks = 150; // 2.5 s: the death animation fills ~1.6 s of it, then the countdown
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
         // shooter feel: fast flat-flying stars (no drop), 5 shots/s, head height pays 1.5x
         b.combat.shuriken.speed = 70.0;
-        b.combat.shuriken.damage = 12.0; // 9 body hits at 4.5/s: ~1.85 s to kill; kills come from aim assist / hit reach / small map, not from fast melting (18 dmg at 5.9/s was far too deadly)
+        b.combat.shuriken.damage = 7.0; // a poke: ~2.8 s of clean fire for a kill (headshots 10.5), so it softens a target for the blade
         b.combat.shuriken.cooldown = 0.20;
         b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
         // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
-        b.combat.katana.blade_len = 2.0;
+        b.combat.katana.blade_len = 2.4; // + the dash lunge (~3.3 m) = ~5.7 m of strike reach from a standing start
         b.combat.katana.half_width = 1.2;
         // hazards must not feel like unfair deaths: a light-wall is a 3-touch kill (34 each), an obstacle needs
         // two hits (60), contact re-arms only after 1 s (one pass = one hit), your own trail never hurts you
-        b.hazards.wall_damage = 44.0;
-        b.hazards.obstacle_damage = 66.0;
+        b.hazards.wall_damage = 34.0;
+        b.hazards.obstacle_damage = 60.0;
         b.hazards.rearm_ticks = 60;
         b.hazards.owner_immune = true;
         b.matches.warmup_ticks = 3 * crate::match_state::TICK_HZ;
@@ -518,6 +533,9 @@ impl Balance {
         k.half_height = b.half_height;
         k.magnet = b.magnet;
         k.piece_damage = b.piece_damage;
+        k.combo_window = b.combo_window;
+        k.finisher_mult = b.finisher_mult;
+        k.finisher_reach = b.finisher_reach;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -603,6 +621,9 @@ impl Balance {
         s!("combat.katana.half_height", F, self.combat.katana.half_height);
         s!("combat.katana.magnet", F, self.combat.katana.magnet);
         s!("combat.katana.piece_damage", F, self.combat.katana.piece_damage);
+        s!("combat.katana.combo_window", F, self.combat.katana.combo_window);
+        s!("combat.katana.finisher_mult", F, self.combat.katana.finisher_mult);
+        s!("combat.katana.finisher_reach", F, self.combat.katana.finisher_reach);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
@@ -890,14 +911,27 @@ mod tests {
         assert_eq!(Balance::from_text(&d.to_text()).unwrap(), d);
         // sensible for 1v1..3v3: nobody dies to one slash or a handful of stars in a blink
         let b = Balance::default();
-        assert!(d.combat.katana.damage * 2.0 >= d.player.max_hp && d.combat.katana.damage < d.player.max_hp, "katana is a 2-hit kill");
+        // melee-first: the katana is a combo, 5 cuts kill (20, 20, finisher 30, 20, 20) and 3 never do; stars are a poke
+        let k = &d.combat.katana;
+        let cuts_to_kill = |hp: f32| {
+            let (mut dealt, mut n) = (0.0, 0);
+            while dealt < hp {
+                n += 1;
+                dealt += if n % 3 == 0 { k.damage * k.finisher_mult } else { k.damage };
+            }
+            n
+        };
+        assert_eq!(cuts_to_kill(d.player.max_hp), 5, "five connected cuts kill a full-health player");
+        assert!(k.damage * 3.0 + k.damage * (k.finisher_mult - 1.0) < d.player.max_hp, "a 3-cut combo alone never kills");
+        assert!(k.finisher_mult > 1.0 && k.finisher_reach > 0.0 && k.magnet >= 0.8);
         let dps = d.combat.shuriken.damage / d.combat.shuriken.cooldown;
         let ttk = d.player.max_hp / dps;
-        // kills come from aim help and the small map, not melting: ~1.9 s of clean fire, still not a blink
-        assert!((1.5..2.4).contains(&ttk), "a clean body-shot stream takes 1.5-2.4 s to kill ({dps} dps, {ttk:.2} s)");
-        assert!(ttk / d.combat.headshot_mult > 0.55, "headshots speed it up without making it instant");
+        assert!(d.combat.shuriken.damage <= 7.0 + 1e-3 && k.damage <= 20.0 + 1e-3, "the user's numbers: 7 hp stars, 20 hp cuts");
+        // stars are a poke: a clean stream takes ~2.8 s, so it is slower than the ~1.7 s of cutting (melee wins fights)
+        assert!((2.4..3.4).contains(&ttk), "a clean body-shot stream takes 2.4-3.4 s to kill ({dps} dps, {ttk:.2} s)");
+        assert!(ttk / d.combat.headshot_mult > 1.2, "headshots speed it up without making it instant");
         assert!(d.combat.shuriken.speed >= 60.0, "fast stars");
-        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (130.0, 150), "2.5 s: the death animation fills it");
+        assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 150), "2.5 s: the death animation fills it");
         // hazards: not instant kills, one pass = one hit, own trail harmless
         let h = &d.hazards;
         assert!(h.wall_damage * 3.0 >= d.player.max_hp && h.wall_damage * 2.0 < d.player.max_hp, "walls: 3 touches kill");
