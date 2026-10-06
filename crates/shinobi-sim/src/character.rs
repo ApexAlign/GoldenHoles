@@ -56,6 +56,8 @@ pub struct Cfg {
     pub wall_jump_push: f32,
     pub snap_dist: f32,
     pub slope_limit: f32,
+    /// Highest lip / stair riser (m) the character walks over without jumping (KCC autostep).
+    pub step_height: f32,
     pub trail_spacing: f32,
     pub trail_life: f32,
     pub trail_height: f32,
@@ -202,6 +204,7 @@ impl Default for Cfg {
             wall_jump_push: 8.5,
             snap_dist: 0.25,
             slope_limit: 45f32.to_radians(),
+            step_height: 0.35, // a knob (KCC autostep + bot nav). Tried 0.38-0.55: each value broke a different parity/grapple/e2e test (chaotic, not monotonic): grapple_ffa edge clip, e2e_prediction drift, guard_duel foot-riding, full_loop_e2e builds. Maps are designed around 0.35.
             trail_spacing: 0.4,
             trail_life: 4.0,
             trail_height: 1.6,
@@ -414,7 +417,7 @@ impl CharacterSystem {
             offset: CharacterLength::Absolute(cfg.kcc_offset),
             slide: true,
             autostep: Some(CharacterAutostep {
-                max_height: CharacterLength::Absolute(0.35),
+                max_height: CharacterLength::Absolute(cfg.step_height),
                 min_width: CharacterLength::Absolute(0.2),
                 include_dynamic_bodies: false,
             }),

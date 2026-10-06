@@ -122,6 +122,8 @@ pub struct NavGrid {
     void: Vec<bool>,
     /// Built for a vertical, ground-less map (`build_sky`): the guard `edge_ahead` is meaningful.
     sky: bool,
+    /// Largest height difference between neighbouring cells that is simply walked (steps, curbs, stair risers).
+    autostep: f32,
 }
 
 /// `(searches, nodes expanded)` on this thread since the previous call; resets the counters.
@@ -175,8 +177,9 @@ thread_local! {
 
 /// Largest ground-height difference between neighbouring cells a walking bot crosses on a smooth ramp.
 const NAV_STEP: f32 = 0.9;
-/// A height difference the character steps over without a ramp (its autostep is 0.35 m).
-const NAV_AUTOSTEP: f32 = 0.3;
+/// A height difference the character steps over without a ramp: the controller's autostep (`Cfg::step_height`, 0.55 m)
+/// less a margin. Used when the grid is built; `NavGrid::autostep` carries the value.
+const NAV_AUTOSTEP_MARGIN: f32 = 0.05;
 /// How far the ground at the edge midpoint may sit from the average of the two cells and still count as a ramp.
 const NAV_RAMP_TOL: f32 = 0.12;
 /// Highest ground a path may use: tiers a bot can walk onto, not roofs only reachable by hopping.
@@ -243,7 +246,7 @@ impl NavGrid {
                 }
             }
         }
-        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n], void, sky };
+        let mut grid = NavGrid { x0, z0, cell, nx: n, nz: n, y, ye, ys, adj: vec![0; n * n], hug: vec![false; n * n], void, sky, autostep: cfg.step_height - NAV_AUTOSTEP_MARGIN };
         for iz in 0..n as i32 {
             for ix in 0..n as i32 {
                 if grid.ground(ix, iz).is_none() {
@@ -273,29 +276,50 @@ impl NavGrid {
     }
 
     /// Would walking from `from` along `dir` (horizontal, any length) within `reach` metres leave the deck: open void
-    /// under a sample point, a surface more than 2 m below `feet_y`, or the edge of the scanned area? Samples every
-    /// half cell from 0.4 m out. Walls and tight spots are not edges (the whiskers handle those).
+    /// under a sample point, a surface more than 2 m below `feet_y`, or the edge of the scanned area? The body is
+    /// 0.6 m wide, so every sample is taken at the centre line and 0.45 m to each side (a catwalk edge under a shoulder
+    /// is an edge). Samples every half cell from 0.4 m out. Walls and tight spots are not edges (the whiskers handle
+    /// those).
     pub fn edge_ahead(&self, from: V3, dir: V3, reach: f32, feet_y: f32) -> bool {
         let d = unit_or_zero(flat(dir));
         if d == Vector::zeros() {
             return false;
         }
+        let side = Vector::new(-d.z, 0.0, d.x) * 0.45;
         let step = (self.cell * 0.5).max(0.25);
         let mut t = 0.4;
         while t <= reach {
-            let (x, z) = (from.x + d.x * t, from.z + d.z * t);
-            let (cx, cz) = self.cell_of(x, z);
-            match self.idx(cx, cz) {
-                None => return true,
-                Some(i) => {
-                    if self.void[i] || (!self.y[i].is_nan() && self.y[i] < feet_y - 2.0) {
-                        return true;
-                    }
+            for off in [Vector::zeros(), side, -side] {
+                if self.drop_at(from.x + d.x * t + off.x, from.z + d.z * t + off.z, feet_y) {
+                    return true;
                 }
             }
             t += step;
         }
         false
+    }
+
+    /// Is the ground at (x, z) open void, far below `feet_y`, or off the scanned area?
+    fn drop_at(&self, x: f32, z: f32, feet_y: f32) -> bool {
+        let (cx, cz) = self.cell_of(x, z);
+        match self.idx(cx, cz) {
+            None => true,
+            Some(i) => self.void[i] || (!self.y[i].is_nan() && self.y[i] < feet_y - 2.0),
+        }
+    }
+
+    /// Unit vector pointing away from nearby drops (zero when none within `r` metres): the sum of the 8 compass
+    /// directions whose point `r` m out is a drop, negated. Used to keep a body off an edge it is standing beside.
+    pub fn edge_push(&self, from: V3, r: f32, feet_y: f32) -> V3 {
+        let mut acc = Vector::zeros();
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let d = Vector::new(a.cos(), 0.0, a.sin());
+            if self.drop_at(from.x + d.x * r, from.z + d.z * r, feet_y) {
+                acc -= d;
+            }
+        }
+        unit_or_zero(acc)
     }
 
     fn idx(&self, ix: i32, iz: i32) -> Option<usize> {
@@ -343,7 +367,7 @@ impl NavGrid {
     /// slope (the ground at the shared edge's midpoint lies between the two, not at one cell's level).
     fn edge_ok(&self, a: (i32, i32), b: (i32, i32), ya: f32, yb: f32) -> bool {
         let d = (ya - yb).abs();
-        if d <= NAV_AUTOSTEP {
+        if d <= self.autostep {
             return true;
         }
         if d > NAV_STEP {

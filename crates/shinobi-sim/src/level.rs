@@ -39,6 +39,71 @@ pub fn is_floating(l: &LevelDesc) -> bool {
     !l.boxes.is_empty() && l.boxes.iter().all(|b| b.center[1] - b.half[1] > 4.0)
 }
 
+/// A rise (m) at or above which an obstacle counts as a full wall: nobody is expected to hop it (a jump + double jump
+/// reaches ~2.8 m, so anything under this is a "jump over it" block).
+pub const WALL_RISE: f32 = 3.0;
+
+/// Height of box `b`'s top face above the world at (x, z), or `None` outside its footprint. Rolled boxes (ramps) give
+/// the slope surface.
+fn box_top_at(b: &LevelBox, x: f32, z: f32) -> Option<f32> {
+    if (z - b.center[2]).abs() > b.half[2] {
+        return None;
+    }
+    let (s, c) = b.rot_z.sin_cos();
+    let u = (x - b.center[0] + b.half[1] * s) / c;
+    (u.abs() <= b.half[0]).then(|| b.center[1] + u * s + b.half[1] * c)
+}
+
+/// Indices of boxes a walking player cannot get onto or past without jumping. A (non-ramp) box is an offender when it
+/// is taller than `step` (the character's autostep, `Cfg::step_height`) but lower than a full wall (`WALL_RISE`) as seen
+/// from the ground beside it, and no side offers a way up (a stair / lip no higher than `step`, or a ramp whose top
+/// meets it). Ground is sampled every metre round the footprint, 0.45 m out, using only surfaces within the box's own
+/// height span, so floating buildings, roofs seen from below and open void never count.
+pub fn unwalkable_obstacles(l: &LevelDesc, step: f32) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, b) in l.boxes.iter().enumerate() {
+        if b.rot_z != 0.0 {
+            continue; // ramps are the way up
+        }
+        let (top, bot) = (b.center[1] + b.half[1], b.center[1] - b.half[1]);
+        let (cx, cz, hx, hz) = (b.center[0], b.center[2], b.half[0], b.half[2]);
+        let mut samples: Vec<(f32, f32)> = Vec::new();
+        let n = |h: f32| (2.0 * h).ceil().max(1.0) as i32;
+        for k in 0..=n(hx) {
+            let x = cx - hx + 2.0 * hx * k as f32 / n(hx) as f32;
+            samples.push((x, cz - hz - 0.45));
+            samples.push((x, cz + hz + 0.45));
+        }
+        for k in 0..=n(hz) {
+            let z = cz - hz + 2.0 * hz * k as f32 / n(hz) as f32;
+            samples.push((cx - hx - 0.45, z));
+            samples.push((cx + hx + 0.45, z));
+        }
+        let (mut any, mut easy, mut min_rise) = (false, false, f32::MAX);
+        for (x, z) in samples {
+            let ground = l
+                .boxes
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .filter_map(|(_, o)| box_top_at(o, x, z))
+                .filter(|g| *g < top - 1e-3 && *g > bot - 0.2)
+                .fold(f32::MIN, f32::max);
+            if ground == f32::MIN {
+                continue;
+            }
+            any = true;
+            let rise = top - ground;
+            min_rise = min_rise.min(rise);
+            easy |= rise <= step + 0.01;
+        }
+        if any && !easy && min_rise < WALL_RISE {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// Where the shipped free-for-all map lives relative to the repo / install root (the demo's default level).
 pub const DEFAULT_LEVEL: &str = "levels/ffa_small.lvl";
 /// Fallback when `DEFAULT_LEVEL` is not installed.

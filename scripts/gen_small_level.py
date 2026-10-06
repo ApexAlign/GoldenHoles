@@ -18,6 +18,24 @@ R20 = 0.35
 RAMP_RUN = 1.7498 * math.cos(R20)  # horizontal half-length of a 1.2 m ramp at 20 degrees
 
 
+def slope_box(xa, ya, xb, yb, hz, th=0.25):
+    """A ramp whose TOP surface runs from (xa, ya) to (xb, yb) (any x order), `th` thick, `hz` half width."""
+    if xb < xa:
+        xa, ya, xb, yb = xb, yb, xa, ya
+    theta = math.atan2(yb - ya, xb - xa)
+    length = math.hypot(xb - xa, yb - ya)
+    return ((xa + xb) / 2 + th * math.sin(theta), (ya + yb) / 2 - th * math.cos(theta), 0, length / 2, th, hz, theta)
+
+
+def tier_ramps():
+    # ground -> tier 1 ramps exist already; tier 1 (1.2) -> tier 2 (2.4) over x 9..6, tier 2 -> tier 3 (3.6) over x 6..3.5
+    out = []
+    for sgn in (1, -1):
+        out.append(slope_box(sgn * 9.0, 1.2, sgn * 6.0, 2.4, 3.0))
+        out.append(slope_box(sgn * 6.0, 2.4, sgn * 3.5, 3.6, 2.5))
+    return out
+
+
 def f(v):
     s = ("%.4f" % v).rstrip("0").rstrip(".")
     return "0" if s in ("-0", "") else s
@@ -48,12 +66,12 @@ part("ground: one floor, open void beyond it (kill plane y = -20)", [(0, -0.5, 0
 seg = (h + 6.0) / 2.0
 half_seg = (h - 6.0) / 2.0
 part(
-    "void lip (12 m gaps)",
+    "void lip (0.3 m curb, 12 m gaps)",
     [
-        (-seg, 0.5, -h + 0.25, half_seg, 0.5, 0.25, 0),
-        (-seg, 0.5, h - 0.25, half_seg, 0.5, 0.25, 0),
-        (-h + 0.25, 0.5, -seg, 0.25, 0.5, half_seg, 0),
-        (-h + 0.25, 0.5, seg, 0.25, 0.5, half_seg, 0),
+        (-seg, 0.15, -h + 0.25, half_seg, 0.15, 0.25, 0),
+        (-seg, 0.15, h - 0.25, half_seg, 0.15, 0.25, 0),
+        (-h + 0.25, 0.15, -seg, 0.25, 0.15, half_seg, 0),
+        (-h + 0.25, 0.15, seg, 0.25, 0.15, half_seg, 0),
     ],
     rot180=True,
 )
@@ -68,7 +86,8 @@ part(
         (0, 8.0, 0, 1.2, 5.0, 1.2, 0),
         (9 + RAMP_RUN, 0.4591, 0, 1.7498, 0.15, 3.0, -R20),
         (-(9 + RAMP_RUN), 0.4591, 0, 1.7498, 0.15, 3.0, R20),
-    ],
+    ]
+    + tier_ramps(),
 )
 
 # wall-run lanes: two 8 m walls, 5.6 m between the faces, 20 m long, NW and (rotated) SE
@@ -82,8 +101,8 @@ part(
 )
 
 # low cover (jumpable, 1.6 m) around the hub, four corners of a square
-part("cover blocks", [(15, 0.8, 15, 1.5, 0.8, 1.5, 0)], mx=True, rot180=False)
-part("cover blocks (z mirror)", [(15, 0.8, -15, 1.5, 0.8, 1.5, 0)], mx=True)
+part("cover pillars (3.2 m: full walls, nothing waist high)", [(15, 1.6, 15, 1.5, 1.6, 1.5, 0)], mx=True, rot180=False)
+part("cover pillars (z mirror)", [(15, 1.6, -15, 1.5, 1.6, 1.5, 0)], mx=True)
 
 # monoliths: 6 m x 4 m x 1 m slabs that split the diagonals
 part("monoliths", [(-8, 3, -14, 2, 3, 0.5, 0)], rot180=True)

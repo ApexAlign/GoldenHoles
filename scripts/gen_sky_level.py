@@ -1,28 +1,49 @@
 #!/usr/bin/env python3
-"""Generates levels/ffa_sky.lvl: the vertical free-for-all arena of floating buildings (124 x 124 m, 92 m tall).
+"""Generates levels/ffa_sky.lvl: a floating vertical city (232 x 190 m, 200 m tall, no ground, kill plane y = -20).
 
     python3 scripts/gen_sky_level.py [out.lvl]
 
-Design: no ground at all, only void below y = -20 (the kill plane). Seven floating structures share one roof height
-(y = 56) so the roofs are fighting decks you can walk between over six narrow bridges; everything else is vertical:
-  - centre tower (20 x 20 m) with a 36 m spire (the grapple / wall-run column);
-  - two slabs at x = +-44: 6 m thick, 28 m long, 48 m tall faces, made for wall-running up and down;
-  - four corner towers (18 x 18 m) at (+-50, +-50): NE / SW carry a stepped crown, NW / SE a low penthouse;
-  - ten mid-air ledges stuck to the faces (hook targets, wall-run landing pads, ambush spots).
-Gaps between structures are 27 m (bridged) to 40+ m (grapple / wall-run only). A 0.9 m lip runs round every roof edge
-except at the bridge mouths and one open "launch notch" per roof, so a roof is a fight, not a cliff you trip off.
-Everything is axis aligned and rectangular: big flat faces, no clutter, readable from far away.
-Cfg limits used: single jump 1.6 m, jump + double ~2.8 m (crown steps are 2.4 m), grapple 40 m (the 10x traversal
-agent makes the long gaps cheap).
-Tests: crates/shinobi-sim/tests/arena_sky.rs, crates/shinobi-ai/tests/stuck.rs (no_bot_stays_stuck_on_ffa_sky)
+The ground-level structures of the old maps (towers, courtyards, canyons, terraces, bridges) lifted into the air and
+stacked in FOUR TIERS whose decks sit at y = 24 / 55 / 86 / 117. Each tier is a "band" 40 m deep and ~135 m long made of two
+rows of floating plates (a street between them), the plates joined by flat catwalks (a few gaps are left open: jump or
+grapple). The bands are chained into one walkable serpentine by long 24 degree ramps (x direction only: the level format
+rolls boxes about Z) and turn plazas:
+
+    tier 0 (y 24, z -95..-55)  ->  ramp east  ->  plaza  ->  tier 1 (y 55, z -45..-5)
+    tier 1  ->  ramp west  ->  plaza  ->  tier 2 (y 86, z 5..45)  ->  ramp east  ->  plaza  ->  tier 3 (y 117, z 55..95)
+
+so a bot (or a player who does not want the hook) can WALK to every tier. Nothing needs a jump: every obstacle is a lip
+under the step height, has a ramp beside it, or is a full wall (>= 3 m); see crates/shinobi-sim/tests/walkable.rs.
+Above and around the bands: crown towers up to y = 200, five free-floating satellite towers (grapple / wall-run only),
+and a central spire. Hanging plate bodies and tower flanks give 14 to 80 m wall-run faces everywhere.
+
+Cfg limits used: step 0.35 m, ramps 24 degrees (slope limit 45), double jump ~2.8 m, grapple 400 m.
+Tests: crates/shinobi-sim/tests/arena_sky.rs, walkable.rs, crates/shinobi-ai/tests/sky.rs, sky_nav.rs
 """
+import math
 import sys
 
-ROOF = 56.0  # every walkable deck
-LIP_H = 0.9
-LIP_T = 0.2  # half thickness
-BRIDGE_W = 2.0  # half width
-BOX = []  # (title, [(cx, cy, cz, hx, hy, hz)])
+H = [24.0, 55.0, 86.0, 117.0]  # deck heights per tier
+ZC = [-75.0, -25.0, 25.0, 75.0]  # band centre z
+ROW_HD = 8.5  # row half depth (rows are 17 m deep)
+ROW_OFF = 11.5  # row centre offset from the band centre (street = 6 m)
+GAP = 7.0  # open gap between plates in a row
+BRIDGE_HW = 2.5  # catwalk half width
+BAND_X = [(-100.0, 34.0), (-30.0, 104.0), (-100.0, 30.0), (-30.0, 100.0)]
+RAMP_DY = H[1] - H[0]  # 31 m per tier
+
+BOXES = []  # (title, [boxes])
+_cur = None
+
+
+def section(title):
+    global _cur
+    _cur = []
+    BOXES.append((title, _cur))
+
+
+def add(cx, cy, cz, hx, hy, hz, rot=0.0):
+    _cur.append((cx, cy, cz, hx, hy, hz, rot))
 
 
 def f(v):
@@ -30,166 +51,267 @@ def f(v):
     return "0" if s in ("-0", "") else s
 
 
-def block(title, items):
-    BOX.append((title, items))
+def slab(x0, x1, z0, z1, top, depth):
+    x0, x1 = min(x0, x1), max(x0, x1)
+    z0, z1 = min(z0, z1), max(z0, z1)
+    add((x0 + x1) / 2, top - depth / 2, (z0 + z1) / 2, (x1 - x0) / 2, depth / 2, (z1 - z0) / 2)
 
 
-def tower(cx, cz, hx, hz, base, top=ROOF):
-    """A solid building from `base` up to `top`."""
-    return (cx, (base + top) / 2, cz, hx, (top - base) / 2, hz)
+def block(cx, cz, hx, hz, y0, y1):
+    add(cx, (y0 + y1) / 2, cz, hx, (y1 - y0) / 2, hz)
 
 
-def slab_top(cx, cz, hx, hz, y_top, thick):
-    return (cx, y_top - thick, cz, hx, thick, hz)
+def ramp(xa, ya, xb, yb, zc, hz, th=0.4):
+    """A ramp whose TOP surface runs from (xa, ya) to (xb, yb), thick `th`, width 2 hz (rolled about Z)."""
+    if xb < xa:
+        xa, ya, xb, yb = xb, yb, xa, ya
+    t = math.atan2(yb - ya, xb - xa)
+    ln = math.hypot(xb - xa, yb - ya)
+    add((xa + xb) / 2 + th * math.sin(t), (ya + yb) / 2 - th * math.cos(t), zc, ln / 2, th, hz, t)
 
 
-def lip_segments(cx, cz, hx, hz, gaps):
-    """Roof-edge lips. `gaps` = [(side, lo, hi)] with side in 'n','s','e','w' ('n' = +z, 'e' = +x) and lo..hi the open
-    interval along the edge in world coordinates (x for n/s, z for e/w)."""
-    out = []
-    y = ROOF + LIP_H / 2
-    hh = LIP_H / 2
+class Rng:
+    def __init__(self, seed):
+        self.s = seed
 
-    def cut(lo, hi, opens):
-        segs = [(lo, hi)]
-        for (a, b) in opens:
-            nxt = []
-            for (s0, s1) in segs:
-                if b <= s0 or a >= s1:
-                    nxt.append((s0, s1))
-                    continue
-                if a > s0:
-                    nxt.append((s0, a))
-                if b < s1:
-                    nxt.append((b, s1))
-            segs = nxt
-        return [(s0, s1) for (s0, s1) in segs if s1 - s0 > 0.5]
+    def u(self):
+        self.s = (self.s * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        return (self.s >> 33) / float(1 << 31)
 
-    for side in "nsew":
-        opens = [(lo, hi) for (sd, lo, hi) in gaps if sd == side]
-        if side in "ns":
-            z = cz + (hz - LIP_T if side == "n" else -(hz - LIP_T))
-            for (s0, s1) in cut(cx - hx, cx + hx, opens):
-                out.append(((s0 + s1) / 2, y, z, (s1 - s0) / 2, hh, LIP_T))
+    def pick(self, seq):
+        return seq[int(self.u() * len(seq)) % len(seq)]
+
+    def rng(self, a, b):
+        return a + (b - a) * self.u()
+
+
+rng = Rng(0x534b59)
+
+
+def tile(xa, xb, lens, gap=GAP):
+    """Plates tiling [xa, xb] with `gap` between them; lens cycle, the last plate is stretched to end exactly at xb."""
+    out, x, i = [], xa, 0
+    while True:
+        ln = lens[i % len(lens)]
+        i += 1
+        if x + ln + gap + 20.0 > xb:
+            out.append((x, xb))
+            return out
+        out.append((x, x + ln))
+        x += ln + gap
+
+
+spawns = []
+pickups = []
+terrace_tops = []
+
+# --------------------------------------------------------------------------------------------- the four bands
+plates_all = []  # (tier, row, idx, x0, x1, zc) for the cross-checking below
+
+
+def band(k):
+    xa, xb = BAND_X[k]
+    zc, top = ZC[k], H[k]
+    rows = {"S": zc - ROW_OFF, "N": zc + ROW_OFF}
+    # plate lengths differ between the rows and tiers so the skyline is not a grid
+    lens = {"S": [28.0, 24.0, 32.0, 26.0], "N": [24.0, 30.0, 26.0, 34.0]}
+    if k % 2:
+        lens = {"S": lens["N"][::-1], "N": lens["S"][::-1]}
+    # which plates must stay empty (ramp feet / heads and plaza joins)
+    keep_clear = {(0, "S", "last"), (1, "S", "last"), (1, "N", "first"), (2, "S", "first"), (2, "N", "last"), (3, "S", "last")}
+    section("tier %d plates, catwalks and buildings (deck y = %g)" % (k, top))
+    row_plates = {}
+    cand = []
+    for r, rz in rows.items():
+        out_sign = -1.0 if r == "S" else 1.0
+        plates = tile(xa, xb, lens[r])
+        row_plates[r] = plates
+        for i, (x0, x1) in enumerate(plates):
+            depth = 14.0 + 3.0 * (i % 3) + (2.0 if k else 0.0)
+            depth = min(depth, top - 8.0)
+            slab(x0, x1, rz - ROW_HD, rz + ROW_HD, top, depth)
+            plates_all.append((k, r, i, x0, x1, rz))
+            cx, ln = (x0 + x1) / 2, x1 - x0
+            first, last = i == 0, i == len(plates) - 1
+            clear = (k, r, "first") in keep_clear and first or (k, r, "last") in keep_clear and last
+            # hanging keel: a wall-run spine under tiers 1..3
+            if k and ln > 20:
+                block(cx, rz, 2.5, 2.5, top - depth - 12.0, top - depth)
+            if not clear:
+                dress(k, r, rz, out_sign, i, x0, x1, top)
+            # spawn candidates: plate centres on the inward side of the row (buildings sit on the outer side)
+            if not clear and ln >= 24.0:
+                cand.append((cx, rz - out_sign * 3.0, top))
+        # catwalks across the open gaps (the second gap of the N row stays open: jump or grapple)
+        for i in range(len(plates) - 1):
+            g0, g1 = plates[i][1], plates[i + 1][0]
+            open_gap = r == "N" and i == 1 and k != 2
+            if not open_gap:
+                slab(g0 - 0.5, g1 + 0.5, rz - BRIDGE_HW, rz + BRIDGE_HW, top, 1.0)
+    # cross-street catwalks: every N plate gets one to an overlapping S plate; plus every other overlap
+    n = 0
+    for (x0, x1) in row_plates["N"]:
+        best = None
+        for (s0, s1) in row_plates["S"]:
+            lo, hi = max(x0, s0), min(x1, s1)
+            if hi - lo >= 8.0 and (best is None or hi - lo > best[1] - best[0]):
+                best = (lo, hi)
+        if best:
+            cx = (best[0] + best[1]) / 2
+            slab(cx - BRIDGE_HW, cx + BRIDGE_HW, zc - ROW_OFF + ROW_HD - 0.5, zc + ROW_OFF - ROW_HD + 0.5, top, 1.0)
+            n += 1
+    # five spawns per tier, spread along the band (every plate is on the walkable network)
+    cand.sort()
+    step = max(1, len(cand) // 5)
+    spawns.extend(cand[::step][:5])
+
+
+FEATURE_W ={"tower": 7.0, "tower2": 6.0, "canyon": 20.0, "terrace": 24.0, "pillars": 14.0, "arcade": 13.0, "chicane": 14.0}
+KINDS = ["tower", "canyon", "terrace", "pillars", "arcade", "chicane", "tower2"]
+
+
+def dress(k, r, rz, out_sign, i, x0, x1, top):
+    """Buildings on one plate, all on the OUTER side of the row so the walkway along the row and the catwalk mouths stay
+    free. Greedy layout from the plate's two ends inward: each feature takes its width from the free span."""
+    o = lambda off: rz + out_sign * off  # z at `off` metres outward of the row centre line
+    lo, hi = x0 + 3.0, x1 - 3.0
+    order = [KINDS[(i * 3 + 2 * k + (1 if r == "N" else 0) + j * 2) % len(KINDS)] for j in range(5)]
+    left = (i + k) % 2 == 0
+    if x1 - x0 >= 30.0 and (i + k) % 2 == 0:
+        order = ["terrace"] + [kd for kd in order if kd != "terrace"]  # long plates get a raised roof with a ramp up
+    placed = 0
+    for kind in order:
+        w = FEATURE_W[kind]
+        if hi - lo < w + 2.0 or placed >= 4:
+            continue
+        cx = (lo + w / 2) if left else (hi - w / 2)
+        th = rng.pick([14.0, 18.0, 24.0]) + 5.0 * k + (rng.rng(0, 16) if k == 3 else 0.0)
+        if kind == "tower":
+            if k == 3:  # the crown: tier 3 towers climb toward y = 200
+                th = rng.pick([55.0, 70.0, 83.0])
+            block(cx, o(5.5), 3.0, 3.0, top, top + th)
+        elif kind == "tower2":
+            block(cx, o(5.8), 2.5, 2.5, top, top + th * 0.55)
+        elif kind == "canyon":  # two walls 4.5 m apart: a wall-run lane that is also a corridor (open ends, no roof)
+            for off in (1.2, 7.4):
+                block(cx, o(off), 9.0, 0.6, top, top + 12.0 + 2.0 * k)
+        elif kind == "terrace":  # a raised roof (top + 5) with a 22 degree ramp up to it along x
+            pw, rise = 12.0, 5.0
+            run = rise / 0.45
+            if left:
+                px0, px1 = lo, lo + pw
+                ramp(px1, top + rise, px1 + run, top, o(6.0), 2.0)
+            else:
+                px0, px1 = hi - pw, hi
+                ramp(px0 - run, top, px0, top + rise, o(6.0), 2.0)
+            block((px0 + px1) / 2, o(5.5), pw / 2, 3.0, top, top + rise)
+            terrace_tops.append(((px0 + px1) / 2, top + rise, o(5.5)))
+            cx = (lo + w / 2) if left else (hi - w / 2)
+        elif kind == "pillars":  # full-height cover walls (3.5 m: nothing waist high)
+            for dx in (-4.0, 4.0):
+                block(cx + dx, o(2.8), 3.0, 0.6, top, top + 3.5)
+        elif kind == "arcade":  # a colonnade of 2 m columns (6 m full walls) with 5 m between them
+            for dx in (-5.0, 0.0, 5.0):
+                block(cx + dx, o(4.0), 1.0, 1.0, top, top + 6.0)
+        else:  # chicane: two staggered baffle walls
+            block(cx - 3.0, o(2.5), 4.0, 0.6, top, top + 3.5)
+            block(cx + 3.0, o(6.5), 4.0, 0.6, top, top + 3.5)
+        if left:
+            lo += w + 2.0
         else:
-            x = cx + (hx - LIP_T if side == "e" else -(hx - LIP_T))
-            for (s0, s1) in cut(cz - hz, cz + hz, opens):
-                out.append((x, y, (s0 + s1) / 2, LIP_T, hh, (s1 - s0) / 2))
-    return out
+            hi -= w + 2.0
+        left = not left
+        placed += 1
+    # balconies: deck-level ledges jutting 4 m into the void on the outer edge (walkable, flush with the deck)
+    ln = x1 - x0
+    if ln >= 24.0:
+        for fx in (0.28, 0.72):
+            bx = x0 + ln * fx
+            slab(bx - 4.0, bx + 4.0, min(o(ROW_HD), o(ROW_HD + 4.0)) - 0.5, max(o(ROW_HD), o(ROW_HD + 4.0)) + 0.0, top, 3.0)
 
 
-# --------------------------------------------------------------------------------------------- structures
-C = (0.0, 0.0, 10.0, 10.0, 12.0)  # cx, cz, hx, hz, base
-SLABS = [(-44.0, 0.0, 3.0, 14.0, 8.0), (44.0, 0.0, 3.0, 14.0, 8.0)]
-CORNERS = [  # (cx, cz, hx, hz, base, kind)
-    (50.0, 50.0, 9.0, 9.0, 14.0, "crown"),
-    (-50.0, -50.0, 9.0, 9.0, 14.0, "crown"),
-    (-50.0, 50.0, 9.0, 9.0, 14.0, "penthouse"),
-    (50.0, -50.0, 9.0, 9.0, 14.0, "penthouse"),
+for k in range(4):
+    band(k)
+
+# --------------------------------------------------------------------------------------------- ramps and plazas
+section("ramps (24 degrees, x direction) and turn plazas that chain the four tiers into one walkable serpentine")
+# tier 0 -> 1: east along the south row of band 0
+ramp(34.0, H[0], 104.0, H[1], ZC[0] - ROW_OFF, 4.0)
+slab(104.0, 116.0, -92.0, -28.0, H[1], 12.0)
+# tier 1 -> 2: west along the north row of band 1
+ramp(-30.0, H[1], -100.0, H[2], ZC[1] + ROW_OFF, 4.0)
+slab(-116.0, -100.0, -18.0, 22.0, H[2], 12.0)
+# tier 2 -> 3: east along the north row of band 2
+ramp(30.0, H[2], 100.0, H[3], ZC[2] + ROW_OFF, 4.0)
+slab(100.0, 116.0, 32.0, 72.0, H[3], 12.0)
+
+# --------------------------------------------------------------------------------------------- crown, satellites, spire
+section("satellite towers (free floating: grapple or wall-run only) and the central spire")
+sats = [
+    (78.0, -70.0, 14.0, 96.0, 5.0),
+    (-72.0, -36.0, 26.0, 132.0, 6.0),
+    (74.0, 14.0, 44.0, 158.0, 6.0),
+    (-68.0, 72.0, 56.0, 178.0, 6.0),
+    (0.0, 0.0, 38.0, 200.0, 3.5),
 ]
+for cx, cz, y0, y1, hw in sats:
+    block(cx, cz, hw, hw, y0, y1)
+    pad = hw + 5.0
+    slab(cx - pad, cx + pad, cz - pad, cz + pad, y1, 1.5) if hw > 4 else None
+    # ledges on the faces (landing pads while wall-running / hooking), spaced up the shaft
+    for j, yl in enumerate([y0 + (y1 - y0) * 0.35, y0 + (y1 - y0) * 0.68]):
+        sgn = 1.0 if j == 0 else -1.0
+        slab(cx + sgn * hw, cx + sgn * (hw + 7.0), cz - 3.5, cz + 3.5, yl, 1.0)
+        pickups_ledge = (cx + sgn * (hw + 3.5), yl + 1.0, cz)
+        if j == 1 and cz in (-36.0, 14.0, 72.0):
+            pickups.append((pickups_ledge[0], pickups_ledge[1], pickups_ledge[2], 25))
 
-block("centre tower", [tower(*C)])
-block("slabs (wall-run faces)", [tower(*s) for s in SLABS])
-block("corner towers", [tower(cx, cz, hx, hz, base) for (cx, cz, hx, hz, base, _) in CORNERS])
-
-# bridges: 4 m wide, 0.5 m thick, top at ROOF. (x0, z0) -> (x1, z1) along one axis.
-BRIDGES = [
-    ("x", 0.0, 0.0, 10.0, 41.0),    # centre -> east slab
-    ("x", 0.0, 0.0, -41.0, -10.0),  # west slab -> centre
-    ("z", 44.0, 14.0, 41.0, None),  # east slab -> NE corner (z from 14 to 41 at x = 44)
-    ("z", 44.0, -41.0, -14.0, None),  # SE corner -> east slab
-    ("z", -44.0, 14.0, 41.0, None),  # west slab -> NW corner
-    ("z", -44.0, -41.0, -14.0, None),  # SW corner -> west slab
+section("floating islands (disconnected: grapple or wall-run chains; kept out of the columns above any walkable deck)")
+islands = [  # (cx, cz, top)
+    (62.0, -56.0, 44.0), (96.0, -60.0, 72.0),    # east of tier 0
+    (-50.0, -30.0, 74.0), (-96.0, -38.0, 104.0),  # west of tier 1
+    (50.0, 14.0, 104.0), (96.0, 18.0, 138.0),     # east of tier 2
+    (-48.0, 84.0, 134.0), (-96.0, 70.0, 164.0),   # west of tier 3
 ]
-bridges = []
-for b in BRIDGES:
-    if b[0] == "x":
-        _, z, _, lo, hi = b
-        bridges.append(((lo + hi) / 2, ROOF - 0.25, z, (hi - lo) / 2, 0.25, BRIDGE_W))
-    else:
-        _, x, lo, hi, _ = b
-        bridges.append((x, ROOF - 0.25, (lo + hi) / 2, BRIDGE_W, 0.25, (hi - lo) / 2))
-block("bridges (the easy route between decks)", bridges)
+for j, (cx, cz, top) in enumerate(islands):
+    slab(cx - 9.0, cx + 9.0, cz - 7.0, cz + 7.0, top, 8.0)
+    block(cx - 3.0 if j % 2 else cx + 3.0, cz, 2.5, 2.5, top, top + 12.0 + 3.0 * (j % 3))
+    slab(cx + 9.0, cx + 14.0, cz - 3.0, cz + 3.0, top, 1.0)  # a walkable lip off the +x edge
+    if j in (1, 4, 6):
+        pickups.append((cx + (-3.0 if j % 2 else 3.0) + 5.0, top + 1.0, cz, 25))
 
-# roofs: crowns, spire, penthouses
-roofs = []
-roofs.append((0.0, ROOF + 18.0, 0.0, 2.5, 18.0, 2.5))  # spire: 56 -> 92
-roofs.append((0.0, ROOF + 0.6, 0.0, 6.0, 0.6, 6.0))  # spire plinth, top 57.2 (a 1.2 m step: walkable)
-for (cx, cz, hx, hz, base, kind) in CORNERS:
-    if kind == "crown":
-        roofs.append((cx, ROOF + 1.2, cz, 5.0, 1.2, 5.0))  # top 58.4
-        roofs.append((cx, ROOF + 3.6, cz, 2.5, 1.2, 2.5))  # top 60.8
-    else:
-        roofs.append((cx, ROOF + 1.2, cz, 5.5, 1.2, 3.0))  # top 58.4
-block("roof crowns, penthouses and the spire", roofs)
+# --------------------------------------------------------------------------------------------- pickups
+# on terrace roofs (reachable on foot by ramp): one per tier, the rest sit on the satellite ledges above
+by_tier = {}
+for (x, y, z) in terrace_tops:
+    t = min(range(4), key=lambda i: abs(H[i] + 5.0 - y))
+    by_tier.setdefault(t, []).append((x, y, z))
+for t in range(4):
+    if t in by_tier:
+        x, y, z = by_tier[t][len(by_tier[t]) // 2]
+        pickups.append((x, y + 1.0, z, 25))
 
-# lips with open mouths where bridges land and one launch notch per roof
-lips = []
-lips += lip_segments(C[0], C[1], C[2], C[3], [("e", -3, 3), ("w", -3, 3), ("n", -4, 4)])
-for (cx, cz, hx, hz, base) in SLABS:
-    sgn = 1 if cx > 0 else -1
-    # bridges land on the z ends (corner side) and the inner x face (centre side)
-    gaps = [("n", cx - 3, cx + 3), ("s", cx - 3, cx + 3), ("e" if sgn < 0 else "w", -3, 3), ("w" if sgn < 0 else "e", -4, 4)]
-    lips += lip_segments(cx, cz, hx, hz, gaps)
-for (cx, cz, hx, hz, base, kind) in CORNERS:
-    # bridge mouth faces the slab: slab z end -> corner south/north face at x = 44 (+-)
-    face = "s" if cz > 0 else "n"
-    gaps = [(face, 44.0 * (1 if cx > 0 else -1) - 3, 44.0 * (1 if cx > 0 else -1) + 3)]
-    # launch notch on the outer x face
-    gaps.append(("e" if cx > 0 else "w", cz - 3, cz + 3))
-    lips += lip_segments(cx, cz, hx, hz, gaps)
-block("roof lips (0.9 m, open at bridge mouths and launch notches)", lips)
-
-# mid-air ledges: 8 x 8 m, 0.8 m thick, stuck to a face (hook targets, wall-run pads)
-ledges = []
-
-
-def ledge(x, y, z, hx=4.0, hz=4.0):
-    ledges.append((x, y - 0.4, z, hx, 0.4, hz))
-
-
-for (cx, cz, hx, hz, base, kind) in CORNERS:  # facing the centre
-    sx, sz = (-1 if cx > 0 else 1), (-1 if cz > 0 else 1)
-    ledge(cx + sx * (hx + 4.0), 38.4, cz)  # on the x face toward the centre
-for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-    ledge(dx * 14.0, 30.4, dz * 14.0)  # centre tower, one per side
-for (cx, cz, hx, hz, base) in SLABS:
-    sgn = 1 if cx > 0 else -1
-    ledge(cx + sgn * (hx + 4.0), 24.4, 0.0, 4.0, 6.0)  # outer face
-block("mid-air ledges", ledges)
-
-# --------------------------------------------------------------------------------------------- spawns, pickups
-spawns = [(C[0] + 7, C[1] - 7), (C[0] - 7, C[1] + 7)]
-for (cx, cz, hx, hz, base, kind) in CORNERS:
-    sx = 1 if cx > 0 else -1
-    sz = 1 if cz > 0 else -1
-    spawns.append((cx - sx * 6.5, cz + sz * 6.5))
-    spawns.append((cx + sx * 6.5, cz - sz * 6.5))
-for (cx, cz, hx, hz, base) in SLABS:
-    spawns.append((cx, 8.0 if cx > 0 else -8.0))
-
-pickups = [
-    (50, ROOF + 5.8, 50, 25), (-50, ROOF + 5.8, -50, 25),  # crown tops (60.8 + 1)
-    (-50 + 13, 39.4, 50, 25),  # NW corner ledge
-    (50 - 13, 39.4, -50, 25),  # SE corner ledge
-]
-
+# --------------------------------------------------------------------------------------------- write
 lines = [
-    "# SHINOBI FFA SKY - 124 x 124 m, 92 m tall: seven floating buildings, no ground (kill plane y=-20).",
-    "# GENERATED by scripts/gen_sky_level.py. Edit the script, not this file; tests: crates/shinobi-sim/tests/arena_sky.rs",
-    "# x right, y up. Roof decks at y=56 joined by six bridges; wall-run faces 48 m tall; ten mid-air ledges; a centre spire to y=92.",
+    "# SHINOBI FFA SKY - a floating vertical city: 232 x 190 m, 200 m tall, four tiers at y 24 / 55 / 86 / 117, no ground (kill plane y=-20).",
+    "# GENERATED by scripts/gen_sky_level.py. Edit the script, not this file; tests: crates/shinobi-sim/tests/arena_sky.rs, walkable.rs",
+    "# x right, y up. Plates + catwalks + towers per tier, 24 degree ramps and plazas chain the tiers on foot, crown towers to 200 m,",
+    "# satellite towers and a central spire for the hook and wall-runs. Nothing needs a jump: lips <= step, ramps, or full walls.",
     "",
 ]
 n = 0
-for title, items in BOX:
+for title, items in BOXES:
     lines.append("# --- %s ---" % title)
-    for (cx, cy, cz, hx, hy, hz) in items:
-        lines.append("box %s %s %s  %s %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz)))
+    for (cx, cy, cz, hx, hy, hz, rot) in items:
+        row = "box %s %s %s  %s %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz))
+        if rot:
+            row += " " + f(rot)
+        lines.append(row)
         n += 1
     lines.append("")
-lines.append("# --- %d spawns (roof decks, spread so players meet within seconds) ---" % len(spawns))
-for x, z in spawns:
-    lines.append("spawn %s %s %s" % (f(x), f(ROOF + 0.81), f(z)))
+lines.append("# --- %d spawns (deck level, spread over all four tiers so contact is quick) ---" % len(spawns))
+for x, z, top in spawns:
+    lines.append("spawn %s %s %s" % (f(x), f(top + 0.81), f(z)))
 lines.append("")
 lines.append("# --- %d pickups ---" % len(pickups))
 for x, y, z, r in pickups:
