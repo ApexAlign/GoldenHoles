@@ -81,6 +81,9 @@ pub struct KatanaBalance {
     pub finisher_mult: f32,
     /// Extra blade length (m) of the finishing swing.
     pub finisher_reach: f32,
+    /// Half-angle (degrees) of the target-centred hit cone (0 = box only) and its extra reach (m).
+    pub cone_deg: f32,
+    pub cone_extra: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -397,7 +400,7 @@ impl Default for Balance {
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -542,6 +545,9 @@ impl Balance {
         b.combat.katana.finisher_mult = 1.5; // the third connected swing of a combo cuts for 30
         b.combat.katana.finisher_reach = 0.6; // and reaches 0.6 m further
         b.combat.katana.combo_window = 1.0;
+        // forgiving blade: any enemy within 38 degrees of the swing and 1.0 m past the blade's reach is hit (target-centred)
+        b.combat.katana.cone_deg = 38.0;
+        b.combat.katana.cone_extra = 1.0;
         b.combat.katana.magnet = 1.0; // a locked target pulls the whole blade sweep onto it
         b.player.max_hp = 100.0;
         // block / parry: a held shield cuts frontal hits to 15 %, a block raised just before the hit parries it (negated,
@@ -619,6 +625,8 @@ impl Balance {
         k.combo_window = b.combo_window;
         k.finisher_mult = b.finisher_mult;
         k.finisher_reach = b.finisher_reach;
+        k.cone_deg = b.cone_deg;
+        k.cone_extra = b.cone_extra;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -711,6 +719,8 @@ impl Balance {
         s!("combat.katana.combo_window", F, self.combat.katana.combo_window);
         s!("combat.katana.finisher_mult", F, self.combat.katana.finisher_mult);
         s!("combat.katana.finisher_reach", F, self.combat.katana.finisher_reach);
+        s!("combat.katana.cone_deg", F, self.combat.katana.cone_deg);
+        s!("combat.katana.cone_extra", F, self.combat.katana.cone_extra);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);

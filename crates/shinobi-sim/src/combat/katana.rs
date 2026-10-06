@@ -37,6 +37,11 @@ pub struct KatanaCfg {
     pub finisher_mult: f32,
     /// Extra blade length (m) of that finishing swing.
     pub finisher_reach: f32,
+    /// Target-centred hit cone: a swing also hits any enemy whose centre lies within this half-angle (degrees, flat) of
+    /// the aim and within reach + `cone_extra` of the eye, line of sight permitting (0 = off, box only).
+    pub cone_deg: f32,
+    /// Extra reach (m) of the cone beyond the blade box: generous at the start of a swing.
+    pub cone_extra: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -74,8 +79,42 @@ impl KatanaCfg {
             combo_window: 1.0,
             finisher_mult: 1.0,
             finisher_reach: 0.0,
+            cone_deg: 0.0,
+            cone_extra: 0.0,
         }
     }
+}
+
+/// Enemies inside the swing's cone: the target-centred half of the hit test. The blade box is a hand-sized volume and a
+/// moving target slips out of its corners; this is "is the enemy roughly where I swung, and near enough".
+fn cone_hits(world: &crate::character::PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>, reach: f32, cone_deg: f32, own: RigidBodyHandle, allies: &[ColliderHandle], lock: Option<ColliderHandle>) -> Vec<ColliderHandle> {
+    let cos = cone_deg.to_radians().cos();
+    let flat_dir = vector![dir.x, 0.0, dir.z];
+    let fd = flat_dir.norm();
+    if fd < 1e-4 {
+        return Vec::new();
+    }
+    let flat_dir = flat_dir / fd;
+    let mut out = Vec::new();
+    for (h, c) in world.colliders.iter() {
+        if !c.collision_groups().memberships.intersects(TARGETS) || c.parent() == Some(own) || allies.contains(&h) {
+            continue;
+        }
+        let centre = *c.translation();
+        let to = centre - eye;
+        let flat = vector![to.x, 0.0, to.z];
+        let dist = flat.norm();
+        // a locked target is forgiven a wider angle (the player is plainly trying to hit it)
+        let wide = if lock == Some(h) { (cos * 0.82).max(-1.0) } else { cos };
+        if dist > reach || dist < 1e-4 || flat.dot(&flat_dir) / dist < wide || to.y.abs() > 1.6 {
+            continue;
+        }
+        if crate::spawn::blocked(world, [eye.x, eye.y, eye.z], [centre.x, centre.y, centre.z]) {
+            continue;
+        }
+        out.push(h);
+    }
+    out
 }
 
 /// The movement-relevant part of a katana swing, for client prediction and replay. Mirrors `Katana::fire`
@@ -260,6 +299,19 @@ impl Weapon for Katana {
             ctx.input.move_dir = dir;
         }
 
+        // target-centred cone: anything roughly where the swing points and near enough is hit, whatever the box did
+        let (mut ev_reach, mut ev_half) = (reach, c.half_width);
+        if c.cone_deg > 0.0 {
+            ev_reach = reach + c.cone_extra;
+            for h in cone_hits(ctx.world, origin, dir, ev_reach, c.cone_deg, ctx.ch.body, ctx.allies, ctx.lock.map(|l| l.collider)) {
+                if !hits.contains(&h) {
+                    hits.push(h);
+                }
+            }
+            // the lag-compensated re-test in pvp.rs sweeps a cylinder of this half-width: match the cone at full reach
+            ev_half = ev_half.max((ev_reach * c.cone_deg.to_radians().tan()).min(2.2));
+        }
+
         // player-built pieces in the blade box take damage too (the server decides if they de-rez)
         {
             let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
@@ -304,8 +356,8 @@ impl Weapon for Katana {
             lunge,
             hits: hits.len() as u32,
             origin: Point::from(origin),
-            reach,
-            half_width: c.half_width,
+            reach: ev_reach,
+            half_width: ev_half,
             half_height: c.half_height,
             damage: c.damage * strike_dmg,
         });

@@ -67,7 +67,8 @@ struct Rig {
 impl Rig {
     fn new() -> Rig {
         let lv = level();
-        let game = ClientGame::new(lv.clone(), ClientGameCfg::default());
+        // melee homing off here: this scenario scripts exact positions (a separate test covers the homing)
+        let game = ClientGame::new(lv.clone(), ClientGameCfg { melee_home: false, ..ClientGameCfg::default() });
         let mut srv = Server::new(Cfg::default());
         lv.apply_to_server(&mut srv);
         srv.set_spawns(lv.spawns.clone());
@@ -450,6 +451,34 @@ fn a_star_does_7_unblocked_about_1_blocked_and_nothing_on_a_parry_through_the_re
     assert!(sweep.iter().any(|l| (l - 1.05).abs() < 0.05), "an earlier one is a plain 15 % block: {sweep:?}");
     assert!(sweep.iter().any(|l| (l - 7.0).abs() < 0.01), "a shield that comes up too late takes the full 7: {sweep:?}");
     assert!(sweep.iter().all(|l| *l < 0.01 || (l - 1.05).abs() < 0.05 || (l - 7.0).abs() < 0.01), "only ever 0, 1.05 or 7: {sweep:?}");
+}
+
+/// Katana homing through the real client: the locked target stands 4.5 m away, 30 degrees off the crosshair. A plain
+/// slice swings past it; with homing the view turns onto the target, the lunge goes at it and the cut lands. Prediction
+/// stays exact because the server uses the very aim the client sent.
+#[test]
+fn the_katana_homes_onto_the_locked_target_and_stays_in_sync() {
+    let run = |home: bool| {
+        let mut r = Rig::new();
+        r.game.cfg.melee_home = home;
+        r.srv.set_balance(shinobi_sim::balance::Balance::demo()).unwrap();
+        r.idle(60);
+        // the target 4.5 m away, 30 degrees to the left of straight ahead (-Z): the lock cone holds it
+        let ang = 30f32.to_radians();
+        r.teleport(2, [-4.5 * ang.sin(), 0.81, -4.5 * ang.cos()]);
+        r.idle(40); // the lock acquires and holds
+        let yaw0 = r.game.aim.yaw;
+        r.press(Action::Slice);
+        r.idle(40);
+        let hit = r.pvp.iter().any(|e| matches!(e, PvpEvent::Hit { attacker: 1, victim: 2, kind: DamageKind::Slash, .. }));
+        (hit, (r.game.aim.yaw - yaw0).abs(), r.phase("homing slice"))
+    };
+    let (plain_hit, plain_turn, _) = run(false);
+    let (home_hit, home_turn, err) = run(true);
+    eprintln!("homing: plain hit {plain_hit} (turned {plain_turn:.2} rad), homed hit {home_hit} (turned {home_turn:.2} rad), prediction error {err:.3} m");
+    assert!(home_hit, "the homed slice connected");
+    assert!(home_turn > 0.2, "the view turned onto the target ({home_turn:.2} rad)");
+    assert!(err < 0.2, "prediction stays exact ({err:.3} m)");
 }
 
 /// Hold the block key through the real client: the view freezes (look input is ignored), the server raises the
