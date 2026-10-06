@@ -83,6 +83,11 @@ pub struct Player {
     /// Server tick of the newest intent whose aim was applied (a hitching client may skip ticks: the aim slew
     /// allowance grows with the gap).
     pub last_aim_tick: u32,
+    /// Wall clash in progress: (opponent id, last tick of the strike window), and the tick before which no new clash starts.
+    pub clash: Option<(u16, u32)>,
+    pub clash_ready_tick: u32,
+    /// Block / parry shield, guard energy, stagger and strike-window state (`block.rs`).
+    pub blk: crate::block::BlockState,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -258,6 +263,9 @@ impl Server {
             last_pkt: None,
             client_report: None,
             last_aim_tick: 0,
+            clash: None,
+            clash_ready_tick: 0,
+            blk: Default::default(),
         });
     }
 
@@ -429,13 +437,18 @@ impl Server {
         // (attacker, victim) pairs hit by a bounced disc this tick, and attackers that were wall-running
         let mut ricochets: Vec<(u16, u16)> = Vec::new();
         let mut wall_runners: Vec<u16> = Vec::new();
+        let mut clash_wins: Vec<(u16, u16)> = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
 
+        let bcfg = self.balance.guard.cfg();
         for i in 0..self.players.len() {
             let intent = self.players[i].queue.take_for_tick(tick);
             let before = self.players[i].pos(&self.world);
+            // the shield: raised only by a living player in a live match who is not staggered (see `block.rs`)
+            let can_act = !frozen && self.players[i].vitals.alive();
+            self.players[i].blk.update(intent.as_ref().map_or(false, |it| it.block), tick, &bcfg, can_act);
 
             // aim: clamp claimed slew, then derive everything from the server copy
             if let Some(it) = &intent {
@@ -452,8 +465,11 @@ impl Server {
                     let turn = (claimed - prev + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                     self.strike_log.push(format!("player {} tick {tick}: aim slew {:.1} deg over {gap} tick(s), allowed {:.1}", p.id, turn.to_degrees(), turn_cfg.max_turn.to_degrees()));
                 }
-                p.yaw = q_yaw(yaw);
-                p.pitch = it.aim_pitch;
+                // blocking locks the view: only the aim of the tick the shield went up counts, the rest is ignored
+                if !(p.blk.held && !p.blk.just_raised(tick)) {
+                    p.yaw = q_yaw(yaw);
+                    p.pitch = it.aim_pitch;
+                }
                 if v == Verdict::Kick {
                     kicked.push(p.id);
                     continue;
@@ -473,7 +489,13 @@ impl Server {
 
             // combat runs against the world as this attacker saw it (lag compensation)
             // (skipped when nothing can query: the rebuild is the expensive part with many players)
-            let acting = it.buttons.has(Buttons::FIRE) || it.buttons.has(Buttons::SLICE) || self.players[i].combat.busy();
+            // a raised shield or a stagger (parried) means no throwing, cutting or dashing
+            let shut = self.players[i].blk.held || self.players[i].blk.staggered(tick);
+            let (fire_in, slice_in) = (it.buttons.has(Buttons::FIRE) && !shut, it.buttons.has(Buttons::SLICE) && !shut);
+            if self.players[i].blk.staggered(tick) {
+                input.dash_pressed = false;
+            }
+            let acting = fire_in || slice_in || self.players[i].combat.busy();
             if acting {
                 pvp::rewind_hitboxes(&mut self.world, &self.players, i, tick, &self.cfg);
             }
@@ -489,9 +511,9 @@ impl Server {
                     dt,
                     now,
                     &CombatInput {
-                        fire: it.buttons.has(Buttons::FIRE),
-                        slice: it.buttons.has(Buttons::SLICE),
-                        ultimate: ultimate_pressed(&it),
+                        fire: fire_in,
+                        slice: slice_in,
+                        ultimate: ultimate_pressed(&it) && !shut,
                     },
                     &aim,
                     &self.world,
@@ -501,9 +523,26 @@ impl Server {
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // travels in OwnState (lunge prediction)
             }
+            // a swing leaves the swordsman open for a moment (the strike window the lock triangle shows)
+            if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
+                self.players[i].blk.open_for(tick, bcfg.swing_open_ticks);
+            }
             let mut synthesized = Vec::new();
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
+            let first_hit = hits.len();
             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg, head, &mut synthesized));
+            // wall clash: the first katana hit inside the window wins the exchange: bigger hit, loser thrown off the wall
+            if let Some((foe, until)) = self.players[i].clash {
+                if tick <= until {
+                    let me = self.players[i].id;
+                    for h in hits[first_hit..].iter_mut() {
+                        if h.cause == crate::pvp::Cause::Weapon(crate::combat::DamageKind::Slash) && self.players.get(h.victim).map_or(false, |v| v.id == foe) {
+                            h.amount *= self.cfg.clash_mult;
+                            clash_wins.push((me, foe));
+                        }
+                    }
+                }
+            }
             // weapons hurt player-built pieces too (anyone's, the owner's included); at zero hp a piece de-rezzes
             let mut pieces_changed = false;
             for e in &ev {
@@ -569,7 +608,11 @@ impl Server {
 
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
-            match p.guard.check_step(before, after, 0.0, &ac) {
+            // rope and strike momentum: a far hook reels at up to `grapple_far_speed` and the release keeps it; allow what the
+            // (server-side, authoritative) velocity says the body legitimately did this tick, never past the reel ceiling
+            let v = p.ch.vel.norm();
+            let allowance = if v > self.cfg.grapple_max_speed { (v.min(self.cfg.grapple_far_speed + 2.0) * dt * 1.25 - ac.max_step).max(0.0) } else { 0.0 };
+            match p.guard.check_step(before, after, allowance, &ac) {
                 Verdict::Ok => {}
                 Verdict::SnapBack { to } => {
                     self.strike_log.push(format!("player {} tick {tick}: moved {:.2} m in one tick (ceiling {:.2}), vel {:.1} m/s, state {:?}", p.id, ((after[0] - before[0]).powi(2) + (after[1] - before[1]).powi(2) + (after[2] - before[2]).powi(2)).sqrt(), ac.max_step, p.ch.vel.norm(), p.ch.state));
@@ -583,6 +626,8 @@ impl Server {
             }
         }
 
+        self.resolve_clashes(tick, &clash_wins);
+
         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement
         crate::separation::separate(&self.players, &mut self.world, &self.cfg, &self.separation);
 
@@ -595,7 +640,7 @@ impl Server {
 
         // every attacker has run: settle damage once, then record the tick
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {
@@ -629,6 +674,67 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Wall clash (docs/traversal_melee.md): two living players wall-running the same face within `clash_range` open a
+    /// strike window; a katana hit inside it was boosted in `step` (`clash_wins`) and throws the loser off the wall; a
+    /// window that ends with no hit knocks both apart. Server only: the knock arrives as an ordinary reconciliation.
+    fn resolve_clashes(&mut self, tick: u32, wins: &[(u16, u16)]) {
+        let cfg = self.cfg;
+        let window = (cfg.clash_window * TICK_HZ_F) as u32;
+        for &(winner, loser) in wins {
+            let Some(n) = self.players.iter().find(|p| p.id == loser).and_then(|p| p.ch.wall_normal()) else { continue };
+            if let Some(l) = self.players.iter_mut().find(|p| p.id == loser) {
+                l.ch.knock_off(n, cfg.clash_knock);
+                l.clash = None;
+                l.clash_ready_tick = tick + (cfg.clash_cd * TICK_HZ_F) as u32;
+            }
+            if let Some(w) = self.players.iter_mut().find(|p| p.id == winner) {
+                w.clash = None;
+                w.clash_ready_tick = tick + (cfg.clash_cd * TICK_HZ_F) as u32;
+            }
+        }
+        // windows that ran out: a draw throws both off the face
+        for i in 0..self.players.len() {
+            if let Some((foe, until)) = self.players[i].clash {
+                if tick > until {
+                    if let Some(n) = self.players[i].ch.wall_normal() {
+                        self.players[i].ch.knock_off(n, cfg.clash_knock * 0.7);
+                    }
+                    self.players[i].clash = None;
+                    self.players[i].clash_ready_tick = tick + (cfg.clash_cd * TICK_HZ_F) as u32;
+                    let _ = foe;
+                }
+            }
+        }
+        // new clashes
+        for i in 0..self.players.len() {
+            for j in (i + 1)..self.players.len() {
+                let (a, b) = (&self.players[i], &self.players[j]);
+                if a.clash.is_some() || b.clash.is_some() || tick < a.clash_ready_tick || tick < b.clash_ready_tick {
+                    continue;
+                }
+                if !a.vitals.alive() || !b.vitals.alive() || allied(a.team, b.team) {
+                    continue;
+                }
+                let (Some(na), Some(nb)) = (a.ch.wall_normal(), b.ch.wall_normal()) else { continue };
+                if na.dot(&nb) < 0.9 {
+                    continue; // not the same face
+                }
+                let (pa, pb) = (a.pos(&self.world), b.pos(&self.world));
+                let d = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt();
+                if d > cfg.clash_range {
+                    continue;
+                }
+                let (ia, ib) = (a.id, b.id);
+                self.players[i].clash = Some((ib, tick + window));
+                self.players[j].clash = Some((ia, tick + window));
+            }
+        }
+    }
+}
+
+const TICK_HZ_F: f32 = crate::match_state::TICK_HZ as f32;
+
 /// Ultimate edge from the wire (`PlayerIntent.ultimate`; cleared on lost-packet repeats, so it fires once).
 pub fn ultimate_pressed(it: &PlayerIntent) -> bool {
     it.ultimate
@@ -654,6 +760,7 @@ pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
         wall_cling: it.buttons.has(Buttons::WALL_CLING),
         slide: it.buttons.has(Buttons::SLIDE),
         grapple_aim: if it.zip { Some(view_dir(it.aim_yaw, it.aim_pitch)) } else { None },
+        strike: false, // set by the katana (server) / predict_slice (client) when a swing launches
     }
 }
 

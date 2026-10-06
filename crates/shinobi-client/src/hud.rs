@@ -231,6 +231,8 @@ pub struct GrappleHud {
     pub on_rope: bool,
     /// A fizzle ('no target') just happened: flash the arc.
     pub missed: bool,
+    /// Katana strike armed: 0 none, 1 hook-strike, 2 wall slash (gold ring + label around the crosshair).
+    pub strike: u8,
 }
 
 /// Live movement readouts for the left panel.
@@ -270,6 +272,9 @@ pub struct TargetHud {
     pub breaking: bool,
     /// Where a star thrown now should arrive (the target's aim point carried along its velocity), normalized screen.
     pub lead: Option<(f32, f32)>,
+    /// Melee cue on the triangle: 0 none, 1 in cutting range (strike ready), 2 the target's strike window is open
+    /// (it just swung or was parried: a hit now deals bonus damage).
+    pub strike: u8,
 }
 
 /// Stable two-word callsign for a player id ("NEON FOX"): 144 distinct names, so the HUD has something readable
@@ -431,6 +436,11 @@ pub struct HudState {
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
     pub heading: Option<f32>,
     pub target: Option<TargetHud>,
+    /// The shield is up: draw the guard ring around the crosshair.
+    pub guarding: bool,
+    /// Guard feedback: (kind, age seconds). 0 parried (you blocked it just in time), 1 your cut was parried (staggered),
+    /// 2 you hit inside a strike window (bonus damage).
+    pub guard_flash: Option<(u8, f32)>,
     /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
     pub boot: Option<f32>,
     /// Kills that end a free-for-all match, when the server has a limit.
@@ -559,6 +569,7 @@ pub const TOAST_TIME: f32 = 1.6;
 /// then `apply` onto the `HudState` each frame.
 #[derive(Clone, Debug, Default)]
 pub struct HudFx {
+    guard_flash: Option<(u8, f32)>,
     hit: Option<(f32, DamageKind)>,
     hit_kill: bool,
     hit_amount: u8,
@@ -571,6 +582,7 @@ pub struct HudFx {
 
 impl HudFx {
     pub fn tick(&mut self, dt: f32) {
+        self.guard_flash = self.guard_flash.map(|(k, t)| (k, t + dt)).filter(|(_, t)| *t < GUARD_FLASH_TIME);
         self.hit = self.hit.map(|(t, k)| (t + dt, k)).filter(|(t, _)| *t < HIT_MARK_TIME);
         self.hurt = self.hurt.map(|(t, b)| (t + dt, b)).filter(|(t, _)| *t < DAMAGE_TIME);
         if let Some(b) = &mut self.banner {
@@ -661,6 +673,15 @@ impl HudFx {
         self.hit_kill = killed;
         self.hit_amount = amount;
         self.hit_head = head;
+    }
+
+    /// Shield feedback (see `HudState::guard_flash`).
+    pub fn on_guard(&mut self, kind: u8) {
+        self.guard_flash = Some((kind, 0.0));
+    }
+
+    pub fn guard_flash(&self) -> Option<(u8, f32)> {
+        self.guard_flash
     }
 
     /// `bearing` from `bearing_to`: radians relative to view, 0 = ahead, +ve = clockwise (to the right).
@@ -1087,6 +1108,14 @@ impl Hud {
             if g.missed {
                 out.push(Prim::Ring { c: (0.40, 0.94), r: 0.034, color: p.magenta.a(0.9), fill: false, glow: 0.008 });
             }
+            if g.strike != 0 {
+                // a katana press NOW launches along the aim with extra reach and damage: ring the crosshair and say so
+                let a = 0.65 + 0.35 * (s.time * 14.0).sin().abs();
+                out.push(Prim::Ring { c: (0.5, 0.5), r: 0.05, color: p.gold.a(a), fill: false, glow: 0.008 });
+                out.push(Prim::Ring { c: (0.5, 0.5), r: 0.065, color: p.gold.a(a * 0.5), fill: false, glow: 0.004 });
+                let label = if g.strike == 1 { "HOOK STRIKE" } else { "WALL SLASH" };
+                out.push(Prim::Text { pos: (0.5, 0.585), text: label.into(), size: 0.018, color: p.gold.a(a), align: Align::Center });
+            }
         }
         if let Some(b) = s.build {
             build_panel(&mut out, &b, p);
@@ -1120,8 +1149,9 @@ impl Hud {
             radar_panel(&mut out, s, p);
         }
         if let Some(t) = &s.target {
-            target_brackets(&mut out, t, p);
+            target_brackets(&mut out, t, p, s.time);
         }
+        guard_cue(&mut out, s, p);
         if let Some(t) = s.boot {
             boot_sequence(&mut out, t, p);
         }
@@ -1601,7 +1631,42 @@ fn results_screen(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
 
 /// Brackets around the lock target: they close in as lock progress rises, then snap tight and go solid.
 /// Name + distance above, a health bar below.
-fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
+/// Seconds the guard / strike flash text stays up.
+pub const GUARD_FLASH_TIME: f32 = 0.7;
+
+/// The shield ring around the crosshair while blocking, and the parry / stagger / bonus flash text under it.
+fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
+    let (cx, cy) = (0.5, 0.5);
+    if s.guarding && !s.dead {
+        // an octagonal ring that breathes a little: a shield, not a reticle
+        let r = 0.052 + 0.003 * (s.time * 9.0).sin();
+        for k in 0..8 {
+            let (a0, a1) = (k as f32 * std::f32::consts::TAU / 8.0 + 0.2, (k as f32 + 0.8) * std::f32::consts::TAU / 8.0 + 0.2);
+            out.push(Prim::Line { a: (cx + r * a0.cos() * ax(), cy + r * a0.sin()), b: (cx + r * a1.cos() * ax(), cy + r * a1.sin()), color: p.cyan.a(0.9), glow: 0.006 });
+        }
+        out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center });
+    }
+    if let Some((kind, t)) = s.guard_flash {
+        let u = (t / GUARD_FLASH_TIME).clamp(0.0, 1.0);
+        let fade = 1.0 - u * u;
+        let (text, col) = match kind {
+            0 => ("PARRY", p.gold),
+            1 => ("STAGGERED", p.magenta),
+            _ => ("STRIKE x1.5", p.gold),
+        };
+        if kind == 0 {
+            // a burst ring on a successful parry
+            let r = 0.05 + 0.12 * u;
+            for k in 0..12 {
+                let (a0, a1) = (k as f32 * std::f32::consts::TAU / 12.0, (k as f32 + 0.6) * std::f32::consts::TAU / 12.0);
+                out.push(Prim::Line { a: (cx + r * a0.cos() * ax(), cy + r * a0.sin()), b: (cx + r * a1.cos() * ax(), cy + r * a1.sin()), color: col.a(0.9 * fade), glow: 0.008 });
+            }
+        }
+        out.push(Prim::Text { pos: (cx, cy + 0.125 - 0.02 * u), text: text.into(), size: 0.026, color: col.a(fade), align: Align::Center });
+    }
+}
+
+fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette, time: f32) {
     let (x, y) = t.pos;
     let prog = t.progress.clamp(0.0, 1.0);
     if t.breaking {
@@ -1620,8 +1685,12 @@ fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
     let snap = if t.locked { (1.0 - t.since / 0.12).clamp(0.0, 1.0) } else { 0.0 };
     let ease = 1.0 - (1.0 - prog).powi(2);
     let half = if t.locked { 0.032 + 0.02 * snap * snap - 0.006 * snap } else { 0.032 + 0.05 * (1.0 - ease) };
-    let col = if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
-    let l = 0.012 + 0.006 * snap;
+    // strike cue: in cutting range the corners reach in and the tag reads SLASH; while the target's strike window is open
+    // the whole triangle goes gold and pulses fast with STRIKE (a hit now is worth 1.5x)
+    let pulse = if t.strike >= 2 { 0.5 + 0.5 * (time * 22.0).sin() } else { 0.0 };
+    let col = if t.strike >= 2 { p.gold } else if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
+    let half = if t.strike >= 2 { half - 0.008 * pulse } else if t.strike == 1 && t.locked { half - 0.004 } else { half };
+    let l = 0.012 + 0.006 * snap + if t.strike >= 1 { 0.004 } else { 0.0 };
     // lead marker: where a star thrown now arrives, with a faint line from the target to it
     if let (Some((lx, ly)), true) = (t.lead, prog > 0.4) {
         let r = 0.007;
@@ -1639,6 +1708,11 @@ fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette) {
     }
     out.push(Prim::Text { pos: (x, y - half - 0.012), text: t.name.clone(), size: 0.018, color: col, align: Align::Center });
     out.push(Prim::Text { pos: (x, y + half + 0.03), text: format!("{:.0}M", t.dist), size: 0.015, color: p.text.a(0.7), align: Align::Center });
+    match t.strike {
+        2 => out.push(Prim::Text { pos: (x, y + half + 0.062), text: "STRIKE".into(), size: 0.02, color: p.gold.a(0.6 + 0.4 * pulse), align: Align::Center }),
+        1 => out.push(Prim::Text { pos: (x, y + half + 0.062), text: "SLASH".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center }),
+        _ => {}
+    }
     if let Some(hp) = t.hp {
         let w = half * ax() * 2.8;
         let r = Rect::new(x - w * 0.5, y + half + 0.036, w, 0.005);
@@ -2134,7 +2208,7 @@ mod tests {
             telemetry: Some(Telemetry { speed: 14.2, altitude: 3.1, rope: Some(8.0) }),
             radar: vec![RadarPing { pos: (0.4, 0.5), colour: Rgba::MAGENTA, ally: false }, RadarPing { pos: (-1.4, 0.2), colour: Rgba::CYAN, ally: true }],
             heading: Some(0.7),
-            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false, since: 0.1, breaking: false, lead: None }),
+            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false, since: 0.1, breaking: false, lead: None, strike: 0 }),
             boot: Some(1.0),
             ..Default::default()
         }
@@ -2356,7 +2430,7 @@ mod tests {
         assert!(KillEntry::from_pvp(&PvpEvent::Respawn { tick: 1, player: 1 }, 1, name).is_none());
         assert!(!KillEntry::from_pvp(&kill, 9, name).unwrap().involves_local);
 
-        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false };
+        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false, bonus: false };
         let mut fx = HudFx::default();
         fx.on_pvp(&hit(5, 6), 5, |_| panic!("not hurt"));
         let mut s = HudState::default();
@@ -2777,7 +2851,7 @@ mod tests {
         // hookable crosshair tints gold; ghost ring is cyan when valid, magenta when blocked
         let ticks = |s: &HudState, c: Rgba| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (c.0, c.1, c.2))).count();
         let base = HudState { hp: 1.0, ..Default::default() };
-        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false }), ..base.clone() };
+        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false, strike: 0 }), ..base.clone() };
         assert!(ticks(&hook, p.gold) > ticks(&base, p.gold));
         let ring = |valid| {
             let s = HudState { build: Some(BuildHud { selected: BuildSlot::Floor, ready: 1.0, placed: 0, max: 4, ghost: Some(valid) }), ..base.clone() };

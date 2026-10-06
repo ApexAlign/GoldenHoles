@@ -132,7 +132,7 @@ mod tests {
     use shinobi_proto::snapshot::{EntityState, MoveKind};
 
     fn snap(tick: u32, x: i32, vx: i16) -> Snapshot {
-        let st = EntityState { pos: [x, 0, 0], vel: [vx, 0, 0], yaw: 0, kind: MoveKind::Grounded, flags: 0 };
+        let st = EntityState { pos: [x, 0, 0], vel: [vx, 0, 0], yaw: 0, kind: MoveKind::Grounded, flags: 0, fx: 0 };
         Snapshot { tick, entities: vec![(1, st)] }
     }
 

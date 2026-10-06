@@ -101,6 +101,43 @@ pub struct Cfg {
     pub grapple_soft_dist: f32,
     /// Braking (m/s^2) applied when closing faster than the soft-arrival cap.
     pub grapple_brake: f32,
+    /// Reel speed grows with the distance to the anchor (`grapple_speed_per_m` x metres) up to this, so a hook from
+    /// across the map is a ~2 s trip instead of a 20 s crawl. Never below `grapple_speed`.
+    pub grapple_far_speed: f32,
+    pub grapple_speed_per_m: f32,
+    /// A katana press while hooked, or within this many seconds after the rope let go, is a hook-strike.
+    pub hookstrike_window: f32,
+    /// Hook-strike launch: horizontal speed floor along the aim (momentum above it is kept) and vertical speed floor.
+    pub hookstrike_speed: f32,
+    pub hookstrike_lift: f32,
+    /// Wall slash (katana during a wall-run): launch speed along the aim, away from the wall, and its upward kick.
+    pub wallslash_speed: f32,
+    pub wallslash_lift: f32,
+    /// Wall lost mid-run (a corner, a gap): coast along the old tangent while burning the remaining run time this many
+    /// times faster than normal. 0 = drop off at once.
+    pub wall_coast_burn: f32,
+    /// Horizontal speed over `grapple_max_speed` bleeds off at this rate per second (fraction of the excess): a rope
+    /// release at 60 m/s is a fast flight that settles in a second or two, not a permanent rocket.
+    pub overspeed_bleed: f32,
+    /// A reel that drags a grounded player into a ledge or wall face it cannot step (the capsule barely moves while the
+    /// rope pulls) pops them up at this vertical speed so the rope carries them over instead of grinding along the face.
+    pub grapple_hop: f32,
+    /// Vertical wall-runs (up / down the face): climb/descent speed, how fast the run velocity turns toward the stick
+    /// (m/s^2), the closing speed needed to catch a face head-on, the climb speed that entry starts with, and the push
+    /// over the roof edge when a climb runs out of wall.
+    pub wall_climb_speed: f32,
+    pub wall_steer: f32,
+    pub wall_front_min_speed: f32,
+    pub wall_up_enter: f32,
+    pub wall_topout_push: f32,
+    /// Wall clash (two players wall-running the same face and meeting; see `tick.rs`): how close they must be, how long
+    /// the strike window lasts (s), the winner's damage multiplier on top of the wall-slash bonus, the knock-off speed
+    /// the loser (or both, on a draw) gets, and the cooldown before the same pair can clash again.
+    pub clash_range: f32,
+    pub clash_window: f32,
+    pub clash_mult: f32,
+    pub clash_knock: f32,
+    pub clash_cd: f32,
 }
 
 impl Cfg {
@@ -114,6 +151,11 @@ impl Cfg {
     pub fn double_jump_gain(&self, hold: bool) -> f32 {
         let g = self.gravity * if hold { self.rise_hold_mult } else { self.rise_cut_mult };
         self.double_jump_speed * self.double_jump_speed / (2.0 * g)
+    }
+
+    /// Reel speed toward an anchor `d` m away: `grapple_speed_per_m` x d, clamped to `grapple_speed..=grapple_far_speed`.
+    pub fn grapple_reel_speed(&self, d: f32) -> f32 {
+        (d * self.grapple_speed_per_m).clamp(self.grapple_speed, self.grapple_far_speed.max(self.grapple_speed))
     }
 
     /// Highest ledge (m above the feet) a held single + double jump reaches, with `margin` m to spare (bot planning).
@@ -134,17 +176,17 @@ impl Default for Cfg {
             gravity: 20.0,
             terminal: 32.0,
             ground_stick: -2.0,
-            jump_speed: 8.8,
+            jump_speed: 10.0,
             double_jump_speed: 7.2,
             peak_window: 3.0,
-            rise_hold_mult: 0.8,
-            rise_cut_mult: 1.5,
+            rise_hold_mult: 0.75,
+            rise_cut_mult: 1.25,
             fall_glide_mult: 0.6,
             jump_carry: 3.0,
             double_jump_carry: 2.0,
             air_speed_cap: 9.5,
             air_drag: 2.0,
-            wall_jump_keep: 1.0,
+            wall_jump_keep: 1.15,
             coyote: 0.14,
             jump_buffer: 0.15,
             dash_speed: 15.5,
@@ -154,10 +196,10 @@ impl Default for Cfg {
             roll_time: 0.35,
             wall_probe: 0.35,
             wall_min_speed: 3.5,
-            wall_speed: 7.0,
+            wall_speed: 9.5,
             wall_stick: 1.5,
-            wall_max_time: 2.2,
-            wall_jump_push: 7.5,
+            wall_max_time: 4.0,
+            wall_jump_push: 8.5,
             snap_dist: 0.25,
             slope_limit: 45f32.to_radians(),
             trail_spacing: 0.4,
@@ -173,7 +215,7 @@ impl Default for Cfg {
             kcc_offset: 0.01,
             eye_above_center: 0.6,
             slide_eye_drop: 0.35,
-            grapple_range: 40.0,
+            grapple_range: 400.0,
             grapple_min_len: 2.5,
             grapple_speed: 18.0,
             grapple_accel: 80.0,
@@ -189,6 +231,26 @@ impl Default for Cfg {
             grapple_arrive_speed: 10.0,
             grapple_soft_dist: 6.0,
             grapple_brake: 70.0,
+            grapple_far_speed: 60.0,
+            grapple_speed_per_m: 0.6,
+            hookstrike_window: 0.35,
+            hookstrike_speed: 24.0,
+            hookstrike_lift: 3.0,
+            wallslash_speed: 13.0,
+            wallslash_lift: 4.5,
+            wall_coast_burn: 5.0,
+            overspeed_bleed: 0.8,
+            grapple_hop: 4.5,
+            wall_climb_speed: 8.0,
+            wall_steer: 45.0,
+            wall_front_min_speed: 2.5,
+            wall_up_enter: 6.0,
+            wall_topout_push: 3.5,
+            clash_range: 2.2,
+            clash_window: 0.6,
+            clash_mult: 1.5,
+            clash_knock: 11.0,
+            clash_cd: 2.5,
         }
     }
 }
@@ -206,6 +268,9 @@ pub struct PlayerInput {
     pub slide: bool,
     /// One-tick edge: fire (or, while attached, release) the wrist grapple along this view direction.
     pub grapple_aim: Option<Vector<Real>>,
+    /// One-tick edge set by the katana (and mirrored by `predict_slice`) when a swing starts while `strike_kind()` is
+    /// some: launch along `move_dir` (flat aim) instead of the plain dash. See docs/traversal_melee.md.
+    pub strike: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -217,6 +282,14 @@ pub enum MoveState {
         tangent: Vector<Real>,
         time_left: f32,
     },
+}
+
+/// What a katana press would be right now besides a plain slash: a hook-strike (rope attached, or just let go) or a
+/// wall slash (wall-run). Both launch the character and give the blade extra reach and damage (`KatanaCfg`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrikeKind {
+    Hook,
+    Wall,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -406,6 +479,39 @@ impl CharacterSystem {
         self.evasion.is_none() && self.dash_cd <= 0.0
     }
 
+    /// Server-side knock (wall clash): throw the character off the wall along `dir` (flat) at `speed` with a small hop,
+    /// cancelling the rope and the wall-run. Reconciled to the client like any server push.
+    pub fn knock_off(&mut self, dir: Vector<Real>, speed: f32) {
+        let d = flat_norm(dir);
+        self.vel = Vector::new(d.x * speed, 4.0, d.z * speed);
+        if matches!(self.state, MoveState::WallRun { .. }) {
+            self.state = MoveState::Airborne;
+        }
+        self.wall_cd = 0.6;
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
+    /// The wall normal while wall-running (flat, out of the wall), else `None`.
+    pub fn wall_normal(&self) -> Option<Vector<Real>> {
+        match self.state {
+            MoveState::WallRun { normal, .. } => Some(normal),
+            _ => None,
+        }
+    }
+
+    /// Katana press right now = hook-strike / wall slash? (Evaluated on the pre-step state, same on server and client.)
+    pub fn strike_kind(&self) -> Option<StrikeKind> {
+        if matches!(self.state, MoveState::WallRun { .. }) {
+            Some(StrikeKind::Wall)
+        } else if self.grapple.is_some() || self.grapple_cd > self.cfg.grapple_cd - self.cfg.hookstrike_window {
+            Some(StrikeKind::Hook)
+        } else {
+            None
+        }
+    }
+
     pub fn snapshot(&self, w: &PhysicsWorld) -> CharacterSnapshot {
         CharacterSnapshot {
             pos: *w.bodies[self.body].translation(),
@@ -520,6 +626,11 @@ impl CharacterSystem {
             self.grapple_fire(w, pos, aim, &mut jumped);
         }
 
+        // ---- katana strike: hook-strike / wall slash launch along the aim (set by Katana::fire / predict_slice) ----
+        if input.strike {
+            self.strike_launch(dir_in, &mut jumped);
+        }
+
         // ---- evasion start (dash any time, roll on ground) ----
         if self.evasion.is_none() {
             let d = if dir_in.norm_squared() > 0.0 { dir_in } else { self.facing };
@@ -552,30 +663,67 @@ impl CharacterSystem {
             let hit = self
                 .cast(w, pos, -normal, cfg.radius + cfg.wall_probe * 1.5)
                 .filter(|(_, n)| flat_norm(*n).norm_squared() > 0.0);
+            // the run is a 2D velocity in the wall's plane: `a` along the horizontal tangent, `b` straight up (down < 0).
+            // Both live in `vel` (on the wire), so a vertical run needs no extra state.
+            let (a, b) = (self.vel.dot(&tangent), self.vel.y);
             if self.jump_buf > 0.0 {
-                // wall jump
+                // wall jump: kick off the wall, keep the sideways run, and add the climb you had
                 self.vel = normal * cfg.wall_jump_push
-                    + tangent * cfg.wall_speed * cfg.wall_jump_keep
-                    + up * cfg.jump_speed;
+                    + tangent * a.clamp(-cfg.wall_speed, cfg.wall_speed) * cfg.wall_jump_keep
+                    + up * (cfg.jump_speed + b.max(0.0) * 0.5);
                 self.jump_buf = 0.0;
                 self.wall_cd = 0.3;
                 self.double_used = false;
                 self.state = MoveState::Airborne;
                 jumped = true;
-            } else if !(input.jump_held || input.wall_cling) || time_left - dt <= 0.0 || hit.is_none() {
+            } else if !(input.jump_held || input.wall_cling) || time_left - dt <= 0.0 {
                 self.wall_cd = 0.15;
                 self.state = MoveState::Airborne;
-            } else if let Some((_, n)) = hit {
-                let mut t = flat_norm(up.cross(&n));
-                if t.dot(&tangent) < 0.0 {
-                    t = -t;
+            } else {
+                // steer in the plane: the stick along the wall runs sideways, pressing INTO the wall climbs, pressing AWAY
+                // runs down; no stick keeps the current run (sticky: a wall-run never slides off by itself)
+                let (s_h, s_v) = (dir_in.dot(&tangent), -dir_in.dot(&normal));
+                let (mut ta, mut tb) = (a, b);
+                if dir_in.norm_squared() > 0.0 && s_h.abs() + s_v.abs() > 0.2 {
+                    let m = (s_h * s_h + s_v * s_v).sqrt();
+                    ta = s_h / m * cfg.wall_speed;
+                    tb = s_v / m * cfg.wall_climb_speed;
                 }
-                self.vel = t * cfg.wall_speed - flat_norm(n) * cfg.wall_stick; // gravity OFF: vy = 0
-                self.state = MoveState::WallRun {
-                    normal: flat_norm(n),
-                    tangent: t,
-                    time_left: time_left - dt,
-                };
+                let (da, db) = (ta - a, tb - b);
+                let dn = (da * da + db * db).sqrt();
+                let step = cfg.wall_steer * dt;
+                let (mut a2, mut b2) = if dn <= step { (ta, tb) } else { (a + da / dn * step, b + db / dn * step) };
+                let cap = cfg.wall_speed.max(cfg.wall_climb_speed);
+                let m2 = (a2 * a2 + b2 * b2).sqrt();
+                if m2 > cap {
+                    a2 *= cap / m2;
+                    b2 *= cap / m2;
+                }
+                match hit {
+                    Some((_, n)) => {
+                        let mut t = flat_norm(up.cross(&n));
+                        if t.dot(&tangent) < 0.0 {
+                            t = -t;
+                        }
+                        let nn = flat_norm(n);
+                        self.vel = t * a2 + up * b2 - nn * cfg.wall_stick; // gravity OFF
+                        self.state = MoveState::WallRun { normal: nn, tangent: t, time_left: time_left - dt };
+                    }
+                    None => {
+                        // wall lost (a corner, a gap, the roof edge): keep going along the plane for a moment, burning the
+                        // remaining run time faster; a wall that comes back picks the run up again, a jump still wall-jumps.
+                        // Climbing past the top edge pushes over it (onto the roof), not away from it.
+                        let left = time_left - dt * (1.0 + cfg.wall_coast_burn);
+                        if cfg.wall_coast_burn > 0.0 && left > 0.0 {
+                            let over = if b2 > 0.5 { cfg.wall_topout_push } else { 0.0 };
+                            self.vel = tangent * a2 + up * b2 - normal * over;
+                            self.state = MoveState::WallRun { normal, tangent, time_left: left };
+                        } else {
+                            self.wall_cd = 0.15;
+                            self.state = MoveState::Airborne;
+                        }
+                    }
+                }
             }
         }
         if !matches!(self.state, MoveState::WallRun { .. }) {
@@ -644,7 +792,14 @@ impl CharacterSystem {
                 } else {
                     delta.normalize() * max
                 };
-                let nh = h + step;
+                let mut nh = h + step;
+                if !grounded_state && self.grapple.is_none() {
+                    // rope / strike momentum past the rope's speed ceiling settles back down over a second or two
+                    let sp = nh.norm();
+                    if sp > cfg.grapple_max_speed {
+                        nh *= (sp - (sp - cfg.grapple_max_speed) * (cfg.overspeed_bleed * dt).min(1.0)) / sp;
+                    }
+                }
                 self.vel.x = nh.x;
                 self.vel.z = nh.z;
             }
@@ -690,21 +845,30 @@ impl CharacterSystem {
                 self.vel.y = (self.vel.y - g * dt).max(-cfg.terminal);
             }
 
-            // wall-run entry: airborne + jump held + lateral rays
-            if !grounded_state
-                && (input.jump_held || input.wall_cling)
-                && self.wall_cd <= 0.0
-                && self.evasion.is_none()
-                && flat(self.vel).norm() >= cfg.wall_min_speed
-            {
+            // wall-run entry: airborne + jump held + a wall beside you (run along it) or in front (run up it)
+            if !grounded_state && (input.jump_held || input.wall_cling) && self.wall_cd <= 0.0 && self.evasion.is_none() {
                 let fwd = if dir_in.norm_squared() > 0.0 { dir_in } else { flat_norm(self.vel) };
-                if let Some((n, t)) = self.probe_wall(w, pos, fwd) {
-                    self.state = MoveState::WallRun {
-                        normal: n,
-                        tangent: t,
-                        time_left: cfg.wall_max_time,
-                    };
-                    self.vel = t * cfg.wall_speed - n * cfg.wall_stick; // snap to horizontal run
+                let mut entered = false;
+                if flat(self.vel).norm() >= cfg.wall_min_speed {
+                    if let Some((n, t)) = self.probe_wall(w, pos, fwd) {
+                        self.state = MoveState::WallRun { normal: n, tangent: t, time_left: cfg.wall_max_time };
+                        // snap to the run along the wall; a rising entry keeps (most of) its climb, a fall is eased
+                        self.vel = t * cfg.wall_speed + up * (self.vel.y.max(-2.0) * 0.6) - n * cfg.wall_stick;
+                        entered = true;
+                    }
+                }
+                if !entered {
+                    // head-on: running or jumping at a face climbs it
+                    if let Some(n) = self.probe_wall_front(w, pos, fwd) {
+                        let toward = -flat(self.vel).dot(&n);
+                        if toward >= cfg.wall_front_min_speed {
+                            let t = flat_norm(up.cross(&n));
+                            let side = flat(self.vel).dot(&t).clamp(-cfg.wall_speed, cfg.wall_speed);
+                            let t = if side < 0.0 { -t } else { t };
+                            self.state = MoveState::WallRun { normal: n, tangent: t, time_left: cfg.wall_max_time };
+                            self.vel = t * side.abs() + up * self.vel.y.max(cfg.wall_up_enter) - n * cfg.wall_stick;
+                        }
+                    }
                 }
             }
         }
@@ -784,6 +948,16 @@ impl CharacterSystem {
                     new_pos = from + mv2.translation;
                     mv = mv2;
                     mv.translation += away;
+                }
+            }
+        }
+        // far hooks drag a grounded player along the floor: a ledge they cannot step stops them cold, so hop (see Cfg)
+        if let Some(g) = self.grapple {
+            let want = desired.norm();
+            if mv.grounded && want > 0.05 && flat(mv.translation).norm() < flat(desired).norm() * 0.2 && self.vel.y < cfg.grapple_hop {
+                let eye = pos + Vector::y() * cfg.eye_above_center;
+                if (g.anchor - eye).norm() >= cfg.grapple_arrive + 0.6 {
+                    self.vel.y = cfg.grapple_hop;
                 }
             }
         }
@@ -869,6 +1043,100 @@ impl CharacterSystem {
         (toi >= self.cfg.grapple_min_len && toi.is_finite()).then(|| (toi, eye + dir * toi))
     }
 
+    /// Geometry or player: the nearest of `grapple_probe` and a living player's hitbox along `dir` (the anchor is the
+    /// player's centre and follows them while the rope is on). `(rope length, anchor)`.
+    pub fn grapple_target(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>) -> Option<(f32, Vector<Real>)> {
+        let geo = self.grapple_probe(w, eye, dir);
+        if dir.norm_squared() >= 1e-6 {
+            let reach = geo.map_or(self.cfg.grapple_range, |g| g.0);
+            if let Some((t, centre)) = self.player_cast(w, eye, dir.normalize(), reach) {
+                if t >= self.cfg.grapple_min_len {
+                    return Some(((centre - eye).norm(), centre));
+                }
+            }
+        }
+        geo
+    }
+
+    /// Nearest living player hitbox (sensor capsule in `GROUP_HITBOX`) along the ray: `(distance, centre)`. Sensors are not
+    /// in the solid pipeline `update` runs on, so this scans the collider set: a few microseconds, and only on a hook
+    /// press or while a player hook is on. Hitboxes within 1.6 m of the body are skipped (our own, a tick behind).
+    fn player_cast(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>, max: f32) -> Option<(f32, Vector<Real>)> {
+        if !(eye.iter().all(|v| v.is_finite()) && dir.iter().all(|v| v.is_finite())) {
+            return None;
+        }
+        let ray = Ray::new(Point::from(eye), dir);
+        let me = *w.bodies[self.body].translation();
+        let mut best: Option<(f32, Vector<Real>)> = None;
+        for (_, c) in w.colliders.iter() {
+            if !c.is_sensor() || !c.collision_groups().memberships.intersects(crate::combat::GROUP_HITBOX) {
+                continue;
+            }
+            let centre = *c.translation();
+            if (centre - me).norm() < 1.6 {
+                continue;
+            }
+            let Some(t) = c.shape().cast_ray(c.position(), &ray, max, true) else { continue };
+            if best.map_or(true, |b| t < b.0) {
+                best = Some((t, centre));
+            }
+        }
+        best
+    }
+
+    /// The living player hitbox centre nearest `p` within `r` metres (a player hook re-anchors onto it every tick).
+    fn player_near(&self, w: &PhysicsWorld, p: Vector<Real>, r: f32) -> Option<Vector<Real>> {
+        let me = *w.bodies[self.body].translation();
+        let mut best: Option<(f32, Vector<Real>)> = None;
+        for (_, c) in w.colliders.iter() {
+            if !c.is_sensor() || !c.collision_groups().memberships.intersects(crate::combat::GROUP_HITBOX) {
+                continue;
+            }
+            let centre = *c.translation();
+            if (centre - me).norm() < 1.6 {
+                continue; // our own hitbox (a tick behind; the client has none): never re-anchor onto ourselves
+            }
+            let d = (centre - p).norm();
+            if d <= r && best.map_or(true, |b| d < b.0) {
+                best = Some((d, centre));
+            }
+        }
+        best.map(|b| b.1)
+    }
+
+    /// Katana strike launch (see `StrikeKind`): redirect the momentum along the flat aim `dir`, keeping any speed above
+    /// the strike floor. Hook: drop the rope. Wall: leave the wall (never into it). Both give the double jump back.
+    fn strike_launch(&mut self, dir: Vector<Real>, jumped: &mut bool) {
+        let cfg = self.cfg;
+        if dir.norm_squared() == 0.0 {
+            return;
+        }
+        match self.strike_kind() {
+            Some(StrikeKind::Wall) => {
+                if let MoveState::WallRun { normal, .. } = self.state {
+                    let d = if dir.dot(&normal) < 0.3 { flat_norm(dir + normal * 0.8) } else { dir };
+                    let sp = flat(self.vel).norm().max(cfg.wallslash_speed);
+                    self.vel = Vector::new(d.x * sp, cfg.wallslash_lift, d.z * sp);
+                    self.state = MoveState::Airborne;
+                    self.wall_cd = 0.25;
+                    self.double_used = false;
+                    *jumped = true;
+                }
+            }
+            Some(StrikeKind::Hook) => {
+                if self.grapple.is_some() {
+                    self.grapple_release();
+                }
+                let sp = flat(self.vel).norm().max(cfg.hookstrike_speed);
+                self.vel = Vector::new(dir.x * sp, self.vel.y.max(cfg.hookstrike_lift), dir.z * sp);
+                self.coyote = 0.0;
+                self.double_used = false;
+                *jumped = true;
+            }
+            None => {}
+        }
+    }
+
     /// Seconds until the wrist grapple can fire again (0 = ready).
     pub fn grapple_cooldown(&self) -> f32 {
         self.grapple_cd
@@ -887,7 +1155,7 @@ impl CharacterSystem {
         }
         let dir = aim.normalize();
         let eye = pos + Vector::y() * self.eye_above();
-        match self.grapple_probe(w, eye, dir) {
+        match self.grapple_target(w, eye, dir) {
             Some((toi, anchor)) => {
                 self.grapple = Some(GrappleState { anchor, len: toi, time: 0.0 });
                 // the rope takes over from wall-run and slide (both overwrite velocity every tick); a dash / roll in
@@ -935,7 +1203,7 @@ impl CharacterSystem {
     /// Detach conditions, evaluated at the start of the tick (velocity is kept on release).
     fn grapple_release_check(&mut self, w: &PhysicsWorld, pos: Vector<Real>, input: &PlayerInput, jumped: &mut bool) {
         let cfg = self.cfg;
-        let Some(g) = self.grapple else { return };
+        let Some(mut g) = self.grapple else { return };
         let eye = pos + Vector::y() * cfg.eye_above_center;
         let to = g.anchor - eye;
         let d = to.norm();
@@ -956,7 +1224,14 @@ impl CharacterSystem {
         }
         // the surface must still be there (a block can be evicted or removed mid-swing)
         if !release && !self.grapple_anchor_present(w, g.anchor) {
-            release = true;
+            // not geometry: a player hook follows the player (their hitbox centre near the old anchor), else let go
+            match self.player_near(w, g.anchor, 2.5) {
+                Some(c) => {
+                    g.anchor = c;
+                    self.grapple = Some(g);
+                }
+                None => release = true,
+            }
         }
         if release {
             self.grapple_release();
@@ -980,16 +1255,20 @@ impl CharacterSystem {
         let along = self.vel.dot(&dir);
         // ease-in: the first 0.25 s of the reel pulls at 35 % -> 100 %, so the hook yanks instead of slamming
         let ease = (0.35 + 0.65 * g.time / cfg.grapple_ease_in).min(1.0);
+        // far hooks reel faster (`grapple_reel_speed`); the soft arrival and the brake scale with it so a 60 m/s reel
+        // still slows down before the wall instead of hitting it at full speed
+        let reel = cfg.grapple_reel_speed(d);
+        let scale = reel / cfg.grapple_speed;
         // soft arrival: inside `grapple_soft_dist` of the release radius the closing speed is eased down so the player
         // is not driven into the surface at full reel speed (momentum past a free-hanging anchor still carries)
         let near = (d - cfg.grapple_arrive).max(0.0);
-        let cap_near = cfg.grapple_arrive_speed + near * (cfg.grapple_speed - cfg.grapple_arrive_speed) / cfg.grapple_soft_dist;
+        let cap_near = cfg.grapple_arrive_speed + near * (reel - cfg.grapple_arrive_speed) / (cfg.grapple_soft_dist * scale);
         if swing {
             // hold the rope length (see above)
         } else if along > cap_near {
-            self.vel -= dir * (cfg.grapple_brake * dt).min(along - cap_near);
-        } else if along < cfg.grapple_speed {
-            self.vel += dir * (cfg.grapple_accel * ease * dt).min(cfg.grapple_speed - along);
+            self.vel -= dir * (cfg.grapple_brake * scale * dt).min(along - cap_near);
+        } else if along < reel {
+            self.vel += dir * (cfg.grapple_accel * scale * ease * dt).min(reel - along);
             // a reeling rope carries the weight: cancel this tick's gravity so shallow shots still lift the player
             self.vel.y += cfg.gravity * dt;
         }
@@ -1007,8 +1286,9 @@ impl CharacterSystem {
             }
         }
         let speed = self.vel.norm();
-        if speed > cfg.grapple_max_speed {
-            self.vel *= cfg.grapple_max_speed / speed;
+        let max_speed = cfg.grapple_max_speed.max(reel + 2.0);
+        if speed > max_speed {
+            self.vel *= max_speed / speed;
         }
         self.grapple = Some(g);
     }
@@ -1090,6 +1370,29 @@ impl CharacterSystem {
             t = -t;
         }
         Some((n, t))
+    }
+
+    /// A near-vertical face straight ahead along `fwd`: three flat rays (feet, centre, head) must hit one coplanar wall
+    /// that faces us. Returns the wall normal (flat, pointing out of the wall).
+    fn probe_wall_front(&self, w: &PhysicsWorld, pos: Vector<Real>, fwd: Vector<Real>) -> Option<Vector<Real>> {
+        let cfg = self.cfg;
+        let f = flat_norm(fwd);
+        if f.norm_squared() == 0.0 {
+            return None;
+        }
+        let reach = cfg.radius + cfg.wall_probe * 2.0;
+        let mut n0: Option<Vector<Real>> = None;
+        for dy in [-cfg.half_height, 0.0, cfg.half_height] {
+            match self.cast(w, pos + Vector::y() * dy, f, reach) {
+                Some((_, n)) if n.y.abs() < 0.15 && flat_norm(n).dot(&f) < -0.6 => match n0 {
+                    None => n0 = Some(flat_norm(n)),
+                    Some(a) if a.dot(&flat_norm(n)) > 0.95 => {}
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        n0
     }
 
     /// Signed vertical gap between the capsule's lowest point and the ground below (negative = sunk in),
@@ -1324,8 +1627,8 @@ mod tests {
     fn jump_height_and_double_jump_gain() {
         // a tap is a short hop, a held jump rises higher and floats (variable jump), the double jump adds height
         let (h1, t1) = jump_peak(false);
-        assert!((1.1..1.5).contains(&h1), "tap jump peak {h1} m");
-        assert!((0.24..0.40).contains(&t1), "time to apex {t1} s");
+        assert!((1.7..2.2).contains(&h1), "tap jump peak {h1} m");
+        assert!((0.30..0.50).contains(&t1), "time to apex {t1} s");
         let (h2, _) = jump_peak(true);
         assert!(h2 > h1 + 0.6, "double jump at the apex must add real height: {h1} -> {h2}");
     }
@@ -1581,7 +1884,7 @@ mod tests {
         assert!(g.anchor.z < -28.0, "{:?}", g.anchor);
 
         let mut w2 = world();
-        boxc(&mut w2, [0.0, 5.0, -80.0], [30.0, 40.0, 1.0]);
+        boxc(&mut w2, [0.0, 5.0, -520.0], [30.0, 40.0, 1.0]); // grapple_range is 400 m (10x the old 40)
         let mut far = player(&mut w2, [0.0, 5.0, 0.0]);
         tick(&mut far, &mut w2, &fire([0.0, 0.0, -1.0]), &mut now);
         assert!(far.grapple.is_none(), "beyond grapple_range");
@@ -2179,7 +2482,9 @@ mod tests {
     fn run_speed_is_about_a_sixth_slower_than_the_old_6_5() {
         let cfg = Cfg::default();
         assert!((5.2..5.7).contains(&cfg.run_speed), "run {}", cfg.run_speed);
-        assert!(cfg.dash_speed < 16.5 && cfg.roll_speed < 8.0 && cfg.slide_boost < 8.0 && cfg.wall_speed < 7.5);
+        assert!(cfg.dash_speed < 16.5 && cfg.roll_speed < 8.0 && cfg.slide_boost < 8.0);
+        // wall-runs were made deliberately stronger than the old 7.0 m/s (traversal/melee round): fast, but still under a dash
+        assert!((8.0..11.0).contains(&cfg.wall_speed) && cfg.wall_speed < 2.0 * cfg.dash_speed);
     }
 
     #[test]
@@ -2189,14 +2494,14 @@ mod tests {
         let (hold_h, hold_t, hold_d) = run_jump(cfg, true, false);
         let (dbl_h, dbl_t, dbl_d) = run_jump(cfg, true, true);
         eprintln!("FEEL tap {tap_h:.2} m {tap_t:.2} s {tap_d:.1} m | hold {hold_h:.2} m {hold_t:.2} s {hold_d:.1} m | hold+double {dbl_h:.2} m {dbl_t:.2} s {dbl_d:.1} m");
-        assert!((1.0..1.5).contains(&tap_h), "tap hop {tap_h}");
-        assert!((2.1..2.8).contains(&hold_h), "held jump {hold_h}");
-        assert!((0.9..1.3).contains(&hold_t), "a held jump floats about a second: {hold_t}");
-        assert!(hold_d >= 7.0, "a held run-in jump covers {hold_d} m");
-        assert!((3.5..4.5).contains(&dbl_h), "double jump apex {dbl_h}");
-        assert!(dbl_d >= 13.0, "jump + double jump crosses {dbl_d} m with two inputs");
+        assert!((1.7..2.2).contains(&tap_h), "tap hop {tap_h} (an ordinary press must be a real jump: the first retune left it at the old ~1.5 m)");
+        assert!((2.9..3.6).contains(&hold_h), "held jump {hold_h}");
+        assert!((1.0..1.5).contains(&hold_t), "a held jump floats about a second: {hold_t}");
+        assert!(hold_d >= 8.0, "a held run-in jump covers {hold_d} m");
+        assert!((4.4..5.4).contains(&dbl_h), "double jump apex {dbl_h}");
+        assert!(dbl_d >= 14.5, "jump + double jump crosses {dbl_d} m with two inputs");
         // the arc is a glide, not a moon jump: a double jump stays under ~2 s
-        assert!(dbl_t < 2.2, "air time {dbl_t}");
+        assert!(dbl_t < 2.4, "air time {dbl_t}");
         // cfg helpers agree with the simulation (bots plan with them)
         assert!((cfg.jump_apex(true) - hold_h).abs() < 0.15 && (cfg.jump_apex(false) - tap_h).abs() < 0.2);
     }

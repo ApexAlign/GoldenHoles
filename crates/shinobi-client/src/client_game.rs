@@ -66,6 +66,9 @@ pub enum Action {
     BuildFloor,
     /// Print a wall where the ghost preview points (`M`; `build` edge + `build_wall`).
     BuildWall,
+    /// Held: the block / parry shield. The view is locked where it was when the hold began (look input is ignored) while
+    /// movement, jump, dash, grapple and wall-run keep working; throwing and cutting are shut while it is up.
+    Block,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -307,7 +310,7 @@ fn lunge_input(katana: &KatanaCfg, it: &PlayerIntent, ch: &mut CharacterSystem) 
     let mut input = to_player_input(it);
     let mut cd = ch.slice_cooldown();
     let aim = CombatAim { origin: vector![0.0, 0.0, 0.0], yaw: dq_yaw(it.aim_yaw), pitch: 0.0 };
-    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), aim.flat_forward(), &mut input);
+    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut input);
     ch.set_slice_cooldown(cd);
     input
 }
@@ -385,6 +388,8 @@ pub struct LocalFx {
     pub grapple_cooldown: f32,
     /// The crosshair is on something the hook can grab right now (client-side ray in the predicted world).
     pub grapple_hookable: bool,
+    /// A katana swing right now is a strike: 0 none, 1 hook-strike (rope on / just released), 2 wall slash (wall-run).
+    pub strike_armed: u8,
     /// Hooked this interval: the anchor point.
     pub grapple_attached: Option<[f32; 3]>,
     pub grapple_released: bool,
@@ -489,6 +494,8 @@ pub struct RenderView {
     pub build_ghost: Option<BuildGhost>,
     /// Set while we are dead: camera, controls and HUD switch to the death sequence.
     pub death: Option<DeathView>,
+    /// The shield is up (the block key is held and we are alive): the HUD draws the guard ring.
+    pub blocking: bool,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
     pub lock: Option<LockOn>,
     /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
@@ -524,6 +531,9 @@ pub struct ClientGame {
     level: LevelDesc,
     latch: ButtonLatch,
     zip_edge: bool,
+    /// The block key is down (raw), and whether the shield is actually up this tick (not while dead).
+    block_held: bool,
+    blocking: bool,
     /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
     build_edge: Option<PieceKind>,
     /// Direction of the newest predicted katana swing (the hit kick opposes it).
@@ -589,6 +599,8 @@ impl ClientGame {
             level,
             latch: ButtonLatch::default(),
             zip_edge: false,
+            block_held: false,
+            blocking: false,
             build_edge: None,
             last_slash_dir: None,
             controls: ControlsCard::default(),
@@ -642,6 +654,7 @@ impl ClientGame {
             Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
+            Action::Block => self.block_held = e.down,
             Action::BuildFloor if e.down => {
                 let cd = self.pred.as_ref().map_or(BlockCfg::default().cooldown_ticks, |p| p.blocks.cfg.cooldown_ticks);
                 let again = self.n_press_tick.map_or(false, |t| self.last_input_tick.wrapping_sub(t) < cd);
@@ -841,11 +854,15 @@ impl ClientGame {
         }
         let aim_before = (self.aim.yaw, self.aim.pitch);
         let (dx, dy) = frame.look;
+        // block: the view is frozen where it was when the shield went up (the server applies no other aim while it is up)
+        let blocking = self.block_held && self.death.is_none();
+        let (dx, dy) = if blocking { (0.0, 0.0) } else { (dx, dy) };
         if dx != 0.0 || dy != 0.0 {
             self.settings.look(&mut self.aim, dx, dy, false);
             self.look_touch = false;
         }
         let (tx, ty) = self.touch.take_look();
+        let (tx, ty) = if blocking { (0.0, 0.0) } else { (tx, ty) };
         if tx != 0.0 || ty != 0.0 {
             self.settings.look(&mut self.aim, tx, ty, true); // the aim pad has its own sensitivity
             self.look_touch = true;
@@ -878,7 +895,7 @@ impl ClientGame {
         }
         // look assist: slow the look and follow the target's motion while one is locked. It edits the aim BEFORE the
         // intent is built, so the server sees exactly the aim the player (and the predictor) used.
-        let assist_in = self.pred.as_ref().filter(|p| !dead && p.combat.lock.pull(&p.combat.lock_cfg) > 0.0).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
+        let assist_in = self.pred.as_ref().filter(|p| !dead && !blocking && p.combat.lock.pull(&p.combat.lock_cfg) > 0.0).map(|p| shinobi_sim::combat::aim_assist::AssistInput {
             eye: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
             target: { let t = p.combat.lock.pos_now(); vector![t[0], t[1], t[2]] },
             target_id: p.combat.lock.target_id,
@@ -890,9 +907,16 @@ impl ClientGame {
         let (ay, ap) = self.look_assist.apply(&self.cfg.assist, assist_in.as_ref(), aim_before, (self.aim.yaw, self.aim.pitch));
         self.aim.yaw = ay;
         self.aim.pitch = ap;
-        let held = self.latch.sample();
+        let mut held = self.latch.sample();
+        let blocking = blocking && !dead;
+        if blocking {
+            // a raised shield shuts throwing and cutting (the server drops them too), dash / jump / grapple stay live
+            held = Buttons(held.0 & !(Buttons::FIRE | Buttons::SLICE));
+        }
         let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
+        intent.block = blocking;
+        self.blocking = blocking;
         let press = self.build_edge.take().filter(|_| !dead);
         intent.build = press.is_some();
         intent.build_wall = press == Some(PieceKind::Wall);
@@ -1095,6 +1119,11 @@ impl ClientGame {
             fx.grapple_ready = !fx.grappling && p.ch.grapple_cooldown() <= 0.0;
             fx.grapple_cooldown = (p.ch.grapple_cooldown() / self.cfg.sim.grapple_cd.max(1e-3)).clamp(0.0, 1.0);
             fx.grapple_hookable = p.hookable;
+            fx.strike_armed = match p.ch.strike_kind() {
+                Some(shinobi_sim::character::StrikeKind::Hook) => 1,
+                Some(shinobi_sim::character::StrikeKind::Wall) => 2,
+                None => 0,
+            };
         }
         if let Some(p) = &self.pred {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);
@@ -1198,6 +1227,7 @@ impl ClientGame {
         });
         let dead = death.is_some();
         RenderView {
+            blocking: self.blocking,
             fx,
             feel: self.camera.feel,
             connect_failed: self.net.connect_failed(local_tick),

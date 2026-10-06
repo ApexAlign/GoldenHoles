@@ -32,6 +32,15 @@ pub const FLAG_INVULN: u8 = 1 << 0;
 pub const FLAG_ROLL: u8 = 1 << 1;
 pub const FLAG_DEAD: u8 = 1 << 2;
 
+/// `EntityState::fx` bits (combat state other players can see).
+/// Shield up (the block / parry stance).
+pub const FX_BLOCK: u8 = 1 << 0;
+/// The strike window is open: hits on this player right now deal bonus damage (recovering from a swing, or
+/// staggered after a parry). The targeting triangle pulses on it.
+pub const FX_OPEN: u8 = 1 << 1;
+/// Staggered: this player's attack was just parried; they cannot act for a moment.
+pub const FX_STAGGER: u8 = 1 << 2;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct EntityState {
     /// 1/512 m
@@ -41,6 +50,8 @@ pub struct EntityState {
     pub yaw: u16,
     pub kind: MoveKind,
     pub flags: u8,
+    /// `FX_*` combat-state bits (3).
+    pub fx: u8,
 }
 
 /// `flags` bits 3..7 hold health LOST in 1/31 steps (0 = full health, so a default entity is healthy).
@@ -63,9 +74,9 @@ pub fn with_hp_frac(flags: u8, frac: f32) -> u8 {
 }
 
 impl EntityState {
-    /// kind (2 bits) + flags (8 bits), see `FLAG_*` and `hp_lost5`.
+    /// kind (2 bits) + flags (8 bits) + fx (3 bits), see `FLAG_*`, `hp_lost5` and `FX_*`.
     fn status_bits(&self) -> u32 {
-        self.kind as u32 | ((self.flags as u32) << 2)
+        self.kind as u32 | ((self.flags as u32) << 2) | (((self.fx & 7) as u32) << 10)
     }
 }
 
@@ -169,7 +180,7 @@ pub fn encode_delta(baseline: Option<&Snapshot>, cur: &Snapshot) -> Vec<u8> {
             w.write_zigzag(st.yaw.wrapping_sub(base_st.yaw) as i16 as i32);
         }
         if mask & M_STATUS != 0 {
-            w.write_bits(st.status_bits(), 10);
+            w.write_bits(st.status_bits(), 13);
         }
     }
     w.finish()
@@ -238,9 +249,10 @@ pub fn decode_delta<'a>(
             st.yaw = st.yaw.wrapping_add(r.read_zigzag()? as u16);
         }
         if mask & M_STATUS != 0 {
-            let b = r.read_bits(10)?;
+            let b = r.read_bits(13)?;
             st.kind = MoveKind::from_bits(b);
             st.flags = (b >> 2) as u8;
+            st.fx = ((b >> 10) & 7) as u8;
         }
         entities.push((id as EntityId, st));
     }
@@ -253,7 +265,7 @@ mod tests {
     use super::*;
 
     fn st(x: i32, vx: i16, yaw: u16) -> EntityState {
-        EntityState { pos: [x, 512, -x], vel: [vx, 0, -vx], yaw, kind: MoveKind::Grounded, flags: 0 }
+        EntityState { pos: [x, 512, -x], vel: [vx, 0, -vx], yaw, kind: MoveKind::Grounded, flags: 0, fx: 0 }
     }
 
     #[test]

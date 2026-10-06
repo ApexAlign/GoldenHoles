@@ -18,6 +18,15 @@ discs, slice with a katana, and print floors/walls out of the grid that others c
   build cooldown 12 ticks, range 6 m. Pieces de-rez into data fragments. No fall damage (kill plane only).
 - Aim: Predator three-dot lock-on, acquire -> lock over 0.35 s, pull full only at lock, enemies only, needs LOS.
   Katana lunges toward the lock. Hit-stop 60 ms on katana hit (client-only).
+- Combat (melee-first, `Balance::demo()`): 100 hp. Shuriken = the poke: 7 dmg, 5/s, ~2.8 s of clean fire to kill (headshot 1.5x).
+  Katana = the weapon: 20 per cut, a cut every 0.42 s, the 3rd connected cut of a combo (1 s window) is a 30 hp finisher with +0.6 m
+  reach, so 5 cuts (20/20/30/20/20) kill in ~1.7 s; the first cut carries the dash lunge (~5.7 m strike reach). The lock triangle
+  reads SLASH when the target is inside cutting reach and flashes gold STRIKE while its strike window is open.
+- Block / parry: hold Ctrl or F (right bumper on a pad). The view locks where it was when the shield went up, movement, jump, dash,
+  grapple and wall-run all keep working, throwing and cutting are shut. Frontal hits are cut to 15 %, nothing from behind. A block raised
+  within 0.25 s before a hit is a PARRY: the hit is negated and a melee attacker is staggered 0.8 s and open for 1 s. The guard lasts
+  2.5 s held, each blocked hit costs 20 %, a spent guard re-arms after 1 s. Strike window: 0.25 s after your own cut and 1 s after
+  being parried, hits on you are worth 1.5x (the HIT marker and `HitMsg.bonus` show it). Keys: `guard.*` Balance keys.
 - Grapple: E fire/release, pull + swing/orbit, speed cap 28 m/s, range 40 m.
 - HUD: cyber-computer look, console/menus interactive, radar without wallhack.
 - Audio: procedural synth behind the `audio` cargo feature, OFF by default; it may slip past the demo.

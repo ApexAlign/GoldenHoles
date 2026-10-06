@@ -317,9 +317,10 @@ fn corridor_maths_fit_the_wall_run_and_wall_jump_limits() {
                 let length = 2.0 * a.half[2];
                 let top = a.center[1] + a.half[1];
 
-                // run length: the wall-run covers wall_speed * wall_max_time; leave a run-up and an exit
+                // the wall-run (9.5 m/s for up to 4 s since the traversal round) may now outlast the corridor: it ends at
+                // the corridor mouth, not by timing out mid-run
                 let run = cfg.wall_speed * cfg.wall_max_time;
-                assert!(length >= 25.0 && length >= run + 8.0, "corridor {length} m vs wall-run {run} m + run-up");
+                assert!(length >= 25.0 && run >= length * 0.9, "corridor {length} m vs wall-run {run} m");
                 // tall enough for a run started at the double-jump peak, with the probe rays and head room
                 let peak = max_rise(&cfg) + 0.3;
                 let needed = peak + 2.0 * (cfg.half_height + cfg.radius) + cfg.half_height;

@@ -40,7 +40,7 @@ fn entity(srv: &Server, i: usize) -> (u16, EntityState) {
         MoveState::WallRun { .. } => MoveKind::WallRun,
     };
     let flags = if p.vitals.alive() { 0 } else { shinobi_proto::snapshot::FLAG_DEAD };
-    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags })
+    (p.id, EntityState { pos: q_pos3(p.pos(&srv.world)), vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)], yaw: p.yaw, kind, flags, fx: 0 })
 }
 
 struct Rig {
@@ -364,4 +364,66 @@ fn the_whole_loop_stays_in_sync() {
     let err = ((p[0] - s[0]).powi(2) + (p[1] - s[1]).powi(2) + (p[2] - s[2]).powi(2)).sqrt();
     assert!(err < 0.6, "prediction is back on the server's position after the respawn (err {err:.2} m)");
     assert!(r.game.predicting());
+}
+
+/// Peak height (m above the standing start) of one jump driven through the real input path: the key goes down in one
+/// frame, stays down for `hold_ticks` sim ticks (0 = down and up inside one frame), then goes up. The server's own
+/// body is measured, so this covers the client latch -> intent -> server -> physics chain.
+fn jump_apex(hold_ticks: u32) -> f32 {
+    let mut r = Rig::new();
+    r.idle(60);
+    let y0 = r.me().pos(&r.srv.world)[1];
+    let mut apex = 0.0f32;
+    let down = |d| InputFrame { buttons: vec![ButtonEvent { action: Action::Jump, down: d }], ..Default::default() };
+    if hold_ticks == 0 {
+        r.press(Action::Jump);
+    } else {
+        r.step(down(true));
+        for _ in 1..hold_ticks {
+            r.step(InputFrame::default());
+        }
+        r.step(down(false));
+    }
+    for _ in 0..120 {
+        r.idle(1);
+        apex = apex.max(r.me().pos(&r.srv.world)[1] - y0);
+    }
+    apex
+}
+
+#[test]
+fn a_held_jump_is_clearly_different_from_a_tap_through_the_real_input_path() {
+    let flick = jump_apex(0); // down and up inside one frame
+    let press = jump_apex(6); // a normal keypress: ~100 ms
+    let held = jump_apex(45); // holding Space through the rise
+    eprintln!("jump apex through ClientGame <-> Server: flick {flick:.2} m, 100 ms press {press:.2} m, held {held:.2} m");
+    assert!(held > press * 1.25, "holding Space must visibly out-jump a normal press ({held:.2} vs {press:.2} m)");
+    assert!(press > flick * 1.1, "and a press out-jumps a flick ({press:.2} vs {flick:.2} m)");
+    assert!(press >= 2.0, "even an ordinary press is a real jump now ({press:.2} m; the old tuning gave ~1.5 m)");
+}
+
+/// Hold the block key through the real client: the view freezes (look input is ignored), the server raises the
+/// shield, the body still runs at full speed, and cutting is shut while it is up.
+#[test]
+fn blocking_locks_the_view_keeps_movement_and_the_server_raises_the_shield() {
+    let mut r = Rig::new();
+    r.idle(60);
+    let yaw0 = r.game.aim.yaw;
+    let z0 = r.me().pos(&r.srv.world)[2];
+    let down = |a, d| ButtonEvent { action: a, down: d };
+    // raise the shield and keep running forward while the mouse is dragged hard to the side
+    r.step(InputFrame { buttons: vec![down(Action::Block, true)], stick: (0.0, 1.0), look: (0.0, 0.0), ..Default::default() });
+    for _ in 0..40 {
+        r.step(InputFrame { stick: (0.0, 1.0), look: (200.0, 40.0), buttons: vec![down(Action::Slice, true), down(Action::Slice, false)], ..Default::default() });
+    }
+    assert!(r.me().blk.held, "the server raised the shield");
+    assert!((r.game.aim.yaw - yaw0).abs() < 1e-4, "the client view stayed locked: {} -> {}", yaw0, r.game.aim.yaw);
+    assert!((r.me().pos(&r.srv.world)[2] - z0).abs() > 2.0, "and the body kept running while blocking");
+    assert!(!r.srv.events.iter().any(|(id, e)| *id == 1 && matches!(e, shinobi_sim::combat::CombatEvent::Slash { .. })), "no katana swing while the shield is up");
+    // release: look works again and the shield drops
+    r.step(InputFrame { buttons: vec![down(Action::Block, false)], ..Default::default() });
+    r.step(InputFrame { look: (200.0, 0.0), ..Default::default() });
+    r.idle(30); // the client's intent lead: the release reaches the server a few ticks later
+    assert!(!r.me().blk.held, "the shield dropped on release");
+    assert!((r.game.aim.yaw - yaw0).abs() > 0.01, "look works again");
 }
