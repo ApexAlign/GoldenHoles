@@ -37,13 +37,38 @@ fn run(bots: u16, secs: u32, seed: u64) -> Option<Report> {
     let mut window: BTreeMap<u16, (u32, [f32; 3])> = BTreeMap::new();
     let mut roam: BTreeMap<u16, std::collections::BTreeSet<(i32, i32)>> = BTreeMap::new();
     let mut rep = Report { void_deaths: 0, kills: 0, stuck: Vec::new(), max_roam: 0 };
+    let mut last: BTreeMap<u16, std::collections::VecDeque<([f32; 3], &'static str, [f32; 3], String)>> = BTreeMap::new();
     for t in 0..secs * 60 {
         step(&mut h, &mut s);
         for e in &s.pvp_events {
             match e {
-                PvpEvent::HazardKill { .. } => rep.void_deaths += 1,
+                PvpEvent::HazardKill { victim, .. } => {
+                    rep.void_deaths += 1;
+                    if std::env::var("SKY_DEBUG").is_ok() {
+                        if let Some(tr) = last.get(victim) {
+                            println!("void death t={:.1}s bot {victim}; trail (every 6 ticks, newest last):", t as f32 / 60.0);
+                            // from the last tick the bot was not simply falling: where did it leave the deck?
+                            let leave = tr.iter().rposition(|e| !e.3.contains("Airborne")).unwrap_or(0);
+                            let from = leave.saturating_sub(12);
+                            for (p, ph, v, st) in tr.iter().skip(from).take(66).step_by(3) {
+                                println!("    pos {:.1?} vel {:.1?} {ph} {st}", p, v);
+                            }
+                        }
+                    }
+                }
                 PvpEvent::Kill { .. } => rep.kills += 1,
                 _ => {}
+            }
+        }
+        for p in &s.players {
+            if p.vitals.alive() && p.pos(&s.world)[1] > 2.0 {
+                let v = s.world.bodies[p.ch.body].linvel();
+                let _ = v;
+                let tr = last.entry(p.id).or_default();
+                tr.push_back((p.pos(&s.world), phase_name(&h, p.id), [p.ch.vel.x, p.ch.vel.y, p.ch.vel.z], format!("{:?}", p.ch.state)));
+                if tr.len() > 900 {
+                    tr.pop_front();
+                }
             }
         }
         if t % 60 != 0 {

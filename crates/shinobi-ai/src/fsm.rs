@@ -822,6 +822,19 @@ impl BotMem {
             *buttons &= !(Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED | Buttons::JUMP_HELD);
             self.stats.edge_stops += 1;
         }
+        // standing beside a drop (a catwalk edge under a shoulder, a knockback, a strafe): lean away from it, and never
+        // walk toward it at all
+        let push = nav.edge_push(me.pos, 0.9, feet);
+        let (mut dir, mut mag) = (dir, mag);
+        if push != Vector::zeros() {
+            self.stats.edge_stops += 1;
+            let toward = dir.dot(&push) < 0.0; // heading at the drop
+            dir = unit_or_zero(if toward { flat(dir) + push * 1.6 } else { flat(dir) + push * 0.8 });
+            if dir == Vector::zeros() {
+                dir = push;
+            }
+            mag = mag.max(0.5);
+        }
         if mag < 0.05 {
             return (dir, mag);
         }
