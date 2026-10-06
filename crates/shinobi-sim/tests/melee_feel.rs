@@ -28,6 +28,7 @@ fn server(dist: f32, cone: bool) -> Server {
         b.combat.katana.cone_deg = 0.0;
         b.combat.katana.cone_extra = 0.0;
     }
+    b.melee = shinobi_sim::balance::MeleeBalance::default(); // accuracy only: no knockback
     b.player.max_hp = 1.0e6; // nobody dies: this is about connecting, not killing
     b.player.regen_per_s = 0.0;
     s.set_balance(b).unwrap();

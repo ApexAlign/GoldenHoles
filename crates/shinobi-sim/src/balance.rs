@@ -181,6 +181,52 @@ impl Default for AssistBalance {
     }
 }
 
+/// Melee action heighteners (`melee.rs`), in seconds / m / m/s. All zero in the default balance (off); the demo turns
+/// them on.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct MeleeBalance {
+    /// Slash damage bonus per m/s of attacker speed, capped at `momentum_cap` (0.6 = +60 %).
+    pub momentum_per_mps: f32,
+    pub momentum_cap: f32,
+    /// Launch speed a slash gives its victim (0 = no knockback), the upward pop for a grounded victim, the vertical
+    /// floor that keeps an already airborne victim up (the juggle).
+    pub knock_speed: f32,
+    pub knock_pop: f32,
+    pub juggle_up: f32,
+    /// Window in which a wall stop counts as a splat, the bonus damage of one and the stun it causes (0 = off).
+    pub splat_window_s: f32,
+    pub splat_damage: f32,
+    pub splat_stun_s: f32,
+    /// Seconds after being hit in which a fall into the void credits the attacker (0 = no ring-out credit).
+    pub ring_window_s: f32,
+    /// Kill-streak window, damage bonus per stacked kill, the stack cap and the hp healed per kill (0 window = off).
+    pub streak_window_s: f32,
+    pub streak_bonus: f32,
+    pub streak_cap: u32,
+    pub streak_heal: f32,
+}
+
+impl MeleeBalance {
+    pub fn cfg(&self) -> crate::melee::MeleeCfg {
+        let t = |s: f32| (s * crate::match_state::TICK_HZ as f32).round().max(0.0) as u32;
+        crate::melee::MeleeCfg {
+            momentum_per_mps: self.momentum_per_mps,
+            momentum_cap: self.momentum_cap,
+            knock_speed: self.knock_speed,
+            knock_pop: self.knock_pop,
+            juggle_up: self.juggle_up,
+            splat_ticks: t(self.splat_window_s),
+            splat_damage: self.splat_damage,
+            splat_stagger_ticks: t(self.splat_stun_s),
+            ring_ticks: t(self.ring_window_s),
+            streak_ticks: t(self.streak_window_s),
+            streak_bonus: self.streak_bonus,
+            streak_cap: self.streak_cap,
+            streak_heal: self.streak_heal,
+        }
+    }
+}
+
 /// Block / parry and the strike-timing window (`block.rs`), in seconds. The default keeps the shield available
 /// but adds no strike bonus (so unit tests keep their timing); `Balance::demo` turns the windows on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -352,6 +398,7 @@ pub struct Balance {
     pub feedback: FeedbackBalance,
     pub assist: AssistBalance,
     pub guard: GuardBalance,
+    pub melee: MeleeBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -419,6 +466,7 @@ impl Default for Balance {
             feedback: FeedbackBalance::default(),
             assist: AssistBalance::default(),
             guard: GuardBalance::default(),
+            melee: MeleeBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -553,6 +601,25 @@ impl Balance {
         // block / parry: a held shield cuts frontal hits to 15 %, a block raised just before the hit parries it (negated,
         // a melee attacker staggers 0.8 s); the strike window (0.25 s after your own swing, 1 s after being parried)
         // makes hits on you worth 1.5x, which the lock triangle shows
+        // melee heighteners: +4 % slash damage per m/s of your speed (cap +60 %), a slash launches its victim 8 m/s with a pop
+        // (an airborne victim is kept up for the next cut), a launched victim stopped by a wall takes 15 and is stunned
+        // 0.6 s, a fall into the void within 3 s of a hit is the attacker's kill, katana kills inside 8 s stack +8 % damage
+        // (cap 4) and heal 20 hp
+        b.melee = MeleeBalance {
+            momentum_per_mps: 0.04,
+            momentum_cap: 0.6,
+            knock_speed: 8.0,
+            knock_pop: 4.0,
+            juggle_up: 5.0,
+            splat_window_s: 0.5,
+            splat_damage: 15.0,
+            splat_stun_s: 0.6,
+            ring_window_s: 3.0,
+            streak_window_s: 8.0,
+            streak_bonus: 0.08,
+            streak_cap: 4,
+            streak_heal: 20.0,
+        };
         b.guard.swing_open_s = 0.25;
         b.guard.counter_open_s = 1.0;
         b.guard.bonus_mult = 1.5;
@@ -732,6 +799,19 @@ impl Balance {
         s!("assist.magnet", F, self.assist.magnet);
         s!("assist.centre", F, self.assist.centre);
         s!("assist.touch_mult", F, self.assist.touch_mult);
+        s!("melee.momentum_per_mps", F, self.melee.momentum_per_mps);
+        s!("melee.momentum_cap", F, self.melee.momentum_cap);
+        s!("melee.knock_speed", F, self.melee.knock_speed);
+        s!("melee.knock_pop", F, self.melee.knock_pop);
+        s!("melee.juggle_up", F, self.melee.juggle_up);
+        s!("melee.splat_window_s", F, self.melee.splat_window_s);
+        s!("melee.splat_damage", F, self.melee.splat_damage);
+        s!("melee.splat_stun_s", F, self.melee.splat_stun_s);
+        s!("melee.ring_window_s", F, self.melee.ring_window_s);
+        s!("melee.streak_window_s", F, self.melee.streak_window_s);
+        s!("melee.streak_bonus", F, self.melee.streak_bonus);
+        s!("melee.streak_cap", U, self.melee.streak_cap);
+        s!("melee.streak_heal", F, self.melee.streak_heal);
         s!("guard.front_deg", F, self.guard.front_deg);
         s!("guard.front_mult", F, self.guard.front_mult);
         s!("guard.parry_s", F, self.guard.parry_s);
@@ -898,6 +978,10 @@ impl Balance {
                 "player.first_spawn_invuln_ticks must be 0 or >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.first_spawn_invuln_ticks
             ));
+        }
+        let m = &self.melee;
+        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.streak_window_s, m.streak_bonus, m.streak_heal].iter().any(|v| *v < 0.0) {
+            e.push("melee.* values must be >= 0".into());
         }
         let g = &self.guard;
         if !(1.0..=180.0).contains(&g.front_deg) || !(0.0..=1.0).contains(&g.front_mult) || !(0.0..=1.0).contains(&g.hit_cost) {

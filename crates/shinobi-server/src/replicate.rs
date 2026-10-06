@@ -376,10 +376,16 @@ impl Replicator {
                 }
                 PvpEvent::HazardKill { tick, victim, source, killer } => {
                     let (kind, _) = hazard_code(source);
-                    let by = killer.map_or(String::new(), |k| format!(" (p{k}'s trail)"));
+                    let by = killer.map_or(String::new(), |k| match source {
+                        // a ring-out or a wall-splat: someone put them there
+                        HazardSource::Obstacle(id) if id == shinobi_sim::pvp::VOID_SOURCE_ID || id == shinobi_sim::melee::SPLAT_SOURCE_ID => format!(" (knocked by p{k})"),
+                        _ => format!(" (p{k}'s trail)"),
+                    });
                     // the sim's kill plane reports as obstacle id 65535 (`pvp::VOID_SOURCE_ID`)
                     let verb = if matches!(source, HazardSource::Obstacle(shinobi_sim::pvp::VOID_SOURCE_ID)) {
                         "fell out of the world"
+                    } else if matches!(source, HazardSource::Obstacle(shinobi_sim::melee::SPLAT_SOURCE_ID)) {
+                        "was splatted"
                     } else {
                         kind_verb(kind)
                     };
