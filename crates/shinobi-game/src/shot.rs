@@ -285,6 +285,18 @@ fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
     let fx = std::env::var("SHOT_FX").unwrap_or_default();
     let has = |n: &str| fx.split(',').any(|i| i.split(':').next() == Some(n));
     let dead = |on: bool| if on && t >= 100.0 { shinobi_proto::snapshot::FLAG_DEAD } else { 0 };
+    // SHOT_FX=rguard: a player 6 m ahead faces us with the shield up (yaw pi = faces +Z, toward the camera)
+    let rguard = if has("rguard") {
+        vec![(5, EntityState { yaw: 32768, fx: shinobi_proto::snapshot::FX_BLOCK, ..ent(at(1.5, 0.0, -6.0), [0.0; 3], MoveKind::Grounded) })]
+    } else {
+        Vec::new()
+    };
+    // SHOT_FX=ropen: the same player with the strike window open (the lock triangle pulses gold)
+    let ropen = if has("ropen") {
+        vec![(6, EntityState { yaw: 32768, fx: shinobi_proto::snapshot::FX_OPEN, ..ent(at(-1.5, 0.0, -5.0), [0.0; 3], MoveKind::Grounded) })]
+    } else {
+        Vec::new()
+    };
     let snap = Snapshot {
         tick: t as u32,
         entities: vec![
@@ -294,6 +306,11 @@ fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
             (4, EntityState { flags: dead(has("rdeath")), ..ent(at(8.0, 1.6 + 1.2 * (sec * 3.0).sin(), -14.0), [0.0; 3], MoveKind::Airborne) }),
         ],
     };
+    let mut snap = snap;
+    snap.entities.extend(rguard);
+    snap.entities.extend(ropen);
+    // SHOT_FX=guard: our own shield up (first-person blade + shield + HUD ring)
+    net.0.game.force_blocking(has("guard"));
     net.0.game.net.interp.push(snap, t);
 }
 
