@@ -499,6 +499,12 @@ pub struct RenderView {
     pub death: Option<DeathView>,
     /// The shield is up (the block key is held and we are alive): the HUD draws the guard ring.
     pub blocking: bool,
+    /// Star energy (charges, pool size, locked out): the client's estimate, synced to the server's. `None` = no pool.
+    pub star: Option<(f32, f32, bool)>,
+    /// How far the throw button has charged toward a MARK star, 0..=1 (0 when up or after a tap).
+    pub charging: f32,
+    /// A throw was refused this tick for lack of energy.
+    pub star_refused: bool,
     /// Predator lock-on (docs/lock-on-and-hud.md): `None` while searching, else the target as the predictor sees it.
     pub lock: Option<LockOn>,
     /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
@@ -522,6 +528,14 @@ impl RenderView {
 
 /// Katana homing (see `sim_tick`): range (m) and half-cone (rad) in which a slice press turns the view onto the lock,
 /// the range / per-tick step of the slow tracking turn during the swing cadence.
+/// Star energy as the client estimates it between server reports (the server's pool is authoritative): seconds per
+/// recovered charge and the charges needed to throw again after running dry; the cost of a charged MARK star; sim ticks
+/// the throw button must be held to charge one.
+const STAR_REGEN_S: f32 = 0.45;
+const STAR_RESUME: f32 = 2.0;
+const MARK_COST: f32 = 2.0;
+pub const MARK_CHARGE_TICKS: u32 = 24;
+
 const HOME_RANGE: f32 = 9.0;
 const HOME_CONE: f32 = 0.9;
 const HOME_TRACK_RANGE: f32 = 5.0;
@@ -544,6 +558,16 @@ pub struct ClientGame {
     /// The block key is down (raw), and whether the shield is actually up this tick (not while dead).
     block_held: bool,
     blocking: bool,
+    /// Throw button held for this many sim ticks (None = up). The throw happens on RELEASE: a tap is a normal star, a hold
+    /// of `MARK_CHARGE_TICKS` or more is a MARK star.
+    fire_hold: Option<u32>,
+    /// A release waiting for the next sim tick: `Some(true)` = charged (mark).
+    fire_release: Option<bool>,
+    /// The star-energy estimate (charges, pool size, locked out) and the last server report it was synced to.
+    star_est: Option<(f32, f32, bool)>,
+    star_seen: Option<(f32, f32, bool)>,
+    /// This tick a throw was refused for lack of energy (the HUD flashes the empty readout).
+    star_refused: bool,
     /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
     build_edge: Option<PieceKind>,
     /// Direction of the newest predicted katana swing (the hit kick opposes it).
@@ -611,6 +635,11 @@ impl ClientGame {
             zip_edge: false,
             block_held: false,
             blocking: false,
+            fire_hold: None,
+            fire_release: None,
+            star_est: None,
+            star_seen: None,
+            star_refused: false,
             build_edge: None,
             last_slash_dir: None,
             controls: ControlsCard::default(),
@@ -666,7 +695,14 @@ impl ClientGame {
             Action::Dash => self.latch.set(Buttons::DASH, e.down),
             Action::Roll => self.latch.set(Buttons::ROLL, e.down),
             Action::Slice => self.latch.set(Buttons::SLICE, e.down),
-            Action::Fire => self.latch.set(Buttons::FIRE, e.down),
+            Action::Fire => {
+                // the throw happens on release so a held press can become a charged MARK star
+                if e.down {
+                    self.fire_hold = Some(0);
+                } else if let Some(h) = self.fire_hold.take() {
+                    self.fire_release = Some(h >= MARK_CHARGE_TICKS);
+                }
+            }
             Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
@@ -923,11 +959,56 @@ impl ClientGame {
         let (ay, ap) = self.look_assist.apply(&self.cfg.assist, assist_in.as_ref(), aim_before, (self.aim.yaw, self.aim.pitch));
         self.aim.yaw = ay;
         self.aim.pitch = ap;
+        // a released throw button becomes a FIRE edge (and the MARK flag when it was held long enough)
+        let mut mark_now = false;
+        if let Some(h) = &mut self.fire_hold {
+            *h += 1;
+        }
+        if let Some(m) = self.fire_release.take() {
+            self.latch.set(Buttons::FIRE, true);
+            self.latch.set(Buttons::FIRE, false);
+            mark_now = m;
+        }
         let mut held = self.latch.sample();
         let blocking = blocking && !dead;
         if blocking {
             // a raised shield shuts throwing and cutting (the server drops them too), dash / jump / grapple stay live
             held = Buttons(held.0 & !(Buttons::FIRE | Buttons::SLICE));
+        }
+        // star energy: follow the server's pool (re-synced whenever it reports), regenerate in between, and do not throw
+        // (or play a throw) a star the server would refuse
+        self.star_refused = false;
+        match self.net.star_energy() {
+            None => self.star_est = None,
+            Some(srv) => {
+                if self.star_seen != Some(srv) {
+                    self.star_seen = Some(srv);
+                    self.star_est = Some(srv);
+                }
+                if let Some((e, max, locked)) = &mut self.star_est {
+                    *e = (*e + TICK_DT / STAR_REGEN_S).min(*max);
+                    if *locked && *e + 1e-3 >= STAR_RESUME.min(*max) {
+                        *locked = false;
+                    }
+                }
+            }
+        }
+        if held.has(Buttons::FIRE) {
+            if let Some((e, _, locked)) = &mut self.star_est {
+                let cost = if mark_now { MARK_COST } else { 1.0 };
+                if *locked || *e + 1e-3 < cost {
+                    held = Buttons(held.0 & !Buttons::FIRE);
+                    mark_now = false;
+                    self.star_refused = true;
+                } else {
+                    *e -= cost;
+                    if *e + 1e-3 < 1.0 {
+                        *locked = true;
+                    }
+                }
+            }
+        } else {
+            mark_now = false;
         }
         // melee homing: the lunge goes where the AIM points (client prediction and server both use it), so the aim is
         // what gets bent. Pressing slice with a lock turns the view onto the locked target (within range and a generous
@@ -954,6 +1035,7 @@ impl ClientGame {
         let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
         intent.block = blocking;
+        intent.mark = mark_now;
         self.blocking = blocking;
         let press = self.build_edge.take().filter(|_| !dead);
         intent.build = press.is_some();
@@ -1009,6 +1091,7 @@ impl ClientGame {
                         fire: intent.buttons.has(Buttons::FIRE),
                         slice: intent.buttons.has(Buttons::SLICE),
                         ultimate: intent.ultimate,
+                        mark: intent.mark,
                     },
                     &aim,
                     &p.world,
@@ -1266,6 +1349,9 @@ impl ClientGame {
         let dead = death.is_some();
         RenderView {
             blocking: self.blocking,
+            star: self.star_est,
+            charging: self.fire_hold.map_or(0.0, |h| (h as f32 / MARK_CHARGE_TICKS as f32).min(1.0)),
+            star_refused: self.star_refused,
             fx,
             feel: self.camera.feel,
             connect_failed: self.net.connect_failed(local_tick),

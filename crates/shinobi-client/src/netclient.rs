@@ -96,6 +96,8 @@ pub struct NetClient {
     /// Wrapping seq of the newest hit already surfaced; hits are resent by the server, so dedup by seq.
     last_hit_seq: Option<u8>,
     hp_x10: Option<u16>,
+    /// Star energy as the server last reported it: (pool size, energy in 1/16 charge, locked out).
+    star: Option<(u8, u8, bool)>,
     hits: Vec<HitMsg>,
     board: Option<Board>,
     /// Last tick handed out by `pace_tick`.
@@ -153,6 +155,7 @@ impl Default for NetClient {
             last_extras_tick: None,
             last_hit_seq: None,
             hp_x10: None,
+            star: None,
             hits: Vec::new(),
             board: None,
             cursor: None,
@@ -315,6 +318,7 @@ impl NetClient {
             if self.last_extras_tick.map_or(true, |t| snap.tick > t) {
                 self.last_extras_tick = Some(snap.tick);
                 self.hp_x10 = Some(x.hp_x10);
+                self.star = (x.star_max > 0).then_some((x.star_max, x.star_energy, x.star_locked));
                 self.intent_complete = self.intent_complete.max(x.intent_complete);
                 self.on_lead_margin(x.lead_margin as i32);
                 self.on_echo(x.echo_seq, x.echo_age, local_tick);
@@ -342,6 +346,11 @@ impl NetClient {
     }
 
     /// Exact own health in `0.0..=100.0`-style units (server hp x10 / 10); `None` before the first extras block.
+    /// Star energy as (charges, pool size, locked out) from the newest owner block; `None` = no pool in this match.
+    pub fn star_energy(&self) -> Option<(f32, f32, bool)> {
+        self.star.map(|(max, e, locked)| (e as f32 / 16.0, max as f32, locked))
+    }
+
     pub fn hp(&self) -> Option<f32> {
         self.hp_x10.map(|h| h as f32 / 10.0)
     }

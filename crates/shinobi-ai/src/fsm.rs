@@ -395,9 +395,9 @@ impl BotMem {
 
         // ---- 5b. guard: a star flying at me gets a short raised shield now and then (never mid-strike)
         if tick >= self.block_ok && incoming_disc(ctx) && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
-            self.block_ok = tick + 90;
-            if rng.chance(self.skill.evade_chance * 0.6) {
-                self.block_until = tick + 22;
+            self.block_ok = tick + 150;
+            if rng.chance(self.skill.evade_chance * 0.3) {
+                self.block_until = tick + 14;
             }
         }
         let blocking = tick < self.block_until && !matches!(self.phase, Phase::Strike { .. });
@@ -410,7 +410,8 @@ impl BotMem {
 
         // ---- 6b. void-edge guard (vertical maps: stepping, dashing or lunging off a deck is death)
         if let Some(nav) = ctx.nav.filter(|n| n.is_sky()) {
-            let (d3, m3) = self.edge_guard(nav, ctx, dir, mag, yaw, &mut buttons);
+            let to_target = p.target.map(|t| (unit_or_zero(flat(t.view.pos - ctx.me.pos)), t.dist));
+            let (d3, m3) = self.edge_guard(nav, ctx, dir, mag, yaw, to_target, &mut buttons);
             dir = d3;
             mag = m3;
         }
@@ -462,6 +463,7 @@ impl BotMem {
             build: false, build_wall: false, build_ramp: false,
             zip,
             block: blocking,
+            mark: false,
         };
         // leaving Strike hands the ticket back
         if released {
@@ -809,16 +811,36 @@ impl BotMem {
     /// bot off the deck (the lunge reach is checked along the aim and the move direction), and a walk toward an edge
     /// (reach grows with speed: a runner needs room to stop) bends to the nearest safe heading, or stops. Airborne bots
     /// keep whatever the rest of the brain decided (they cannot be steered back anyway).
-    fn edge_guard(&mut self, nav: &crate::nav::NavGrid, ctx: &ThinkCtx, dir: V3, mag: f32, yaw: f32, buttons: &mut u8) -> (V3, f32) {
+    fn edge_guard(&mut self, nav: &crate::nav::NavGrid, ctx: &ThinkCtx, dir: V3, mag: f32, yaw: f32, to_target: Option<(V3, f32)>, buttons: &mut u8) -> (V3, f32) {
         let me = ctx.me;
-        if !me.grounded() {
-            return (dir, mag);
-        }
         let cfg = ctx.world.cfg;
         let feet = me.pos.y - cfg.half_height - cfg.radius;
+        if !me.grounded() {
+            // A lunge, dash or knockback leaves a fast airborne body with a long carry (air drag is only ~2 m/s^2): when a
+            // drop lies inside its stopping distance, hold the stick against the motion (the stick brakes hard in the air,
+            // ~20 m/s^2). `feet - 3`: a jump arc is not a drop, only surfaces well below the arc and open void are.
+            if matches!(me.state, shinobi_sim::character::MoveState::Airborne) {
+                let v = flat(me.vel);
+                let speed = v.norm();
+                if speed > 4.0 {
+                    let vd = v / speed;
+                    let stop = speed * speed / (2.0 * (cfg.air_accel + cfg.air_drag)) + 1.5;
+                    if nav.edge_ahead(me.pos, vd, stop, feet - 3.0) {
+                        self.stats.edge_stops += 1;
+                        *buttons &= !(Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED | Buttons::JUMP_HELD);
+                        return (-vd, 1.0);
+                    }
+                }
+            }
+            return (dir, mag);
+        }
         let aim_dir = dir_from_yaw(yaw);
         let leaping = *buttons & (Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED) != 0;
-        if leaping && (nav.edge_ahead(me.pos, aim_dir, 8.0, feet) || (mag > 0.05 && nav.edge_ahead(me.pos, dir, 8.0, feet))) {
+        // a katana lunge homes onto a locked target and a dash carries far: vet the aim, the move direction AND the line to
+        // the target (the lunge may go there, not along the aim), over the longest reach the lunge can have
+        let lunge_reach: f32 = 11.0;
+        let toward_target = to_target.map_or(false, |(d, dist)| nav.edge_ahead(me.pos, d, lunge_reach.min(dist + 2.0), feet));
+        if leaping && (nav.edge_ahead(me.pos, aim_dir, lunge_reach, feet) || toward_target || (mag > 0.05 && nav.edge_ahead(me.pos, dir, lunge_reach, feet))) {
             *buttons &= !(Buttons::DASH | Buttons::ROLL | Buttons::SLICE | Buttons::JUMP_PRESSED | Buttons::JUMP_HELD);
             self.stats.edge_stops += 1;
         }

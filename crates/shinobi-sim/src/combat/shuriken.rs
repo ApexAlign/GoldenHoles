@@ -40,6 +40,15 @@ pub struct ShurikenCfg {
     pub bounce_retention: f32,
     /// Damage a bounce does to a player-built piece it strikes (Balance `combat.shuriken.piece_damage`).
     pub piece_damage: f32,
+    /// Star energy: a pool of `energy_max` charges (0 = no pool, unlimited), one star costs `energy_cost`, a charge comes
+    /// back every `energy_regen_s` seconds. Emptying the pool locks throwing until `energy_resume` charges are back, so
+    /// stars can be fired in measured volleys but not spammed across the map.
+    pub energy_max: f32,
+    pub energy_cost: f32,
+    pub energy_regen_s: f32,
+    pub energy_resume: f32,
+    /// Charges a MARK star (hold to charge) costs: it does no damage and marks its target for the katana.
+    pub mark_cost: f32,
     /// Collider groups this disc damages when it touches them.
     pub targets: Group,
     /// Collider groups it can touch at all (everything else is ignored).
@@ -65,6 +74,11 @@ impl Default for ShurikenCfg {
             homing_turn: 5.0,
             bounce_retention: 0.9,
             piece_damage: 12.0,
+            energy_max: 0.0,
+            energy_cost: 1.0,
+            energy_regen_s: 0.45,
+            energy_resume: 2.0,
+            mark_cost: 2.0,
             targets: TARGETS,
             mask: projectile_groups(),
         }
@@ -81,17 +95,32 @@ pub struct Disc {
     pub speed_scale: f32,
     /// Target hitbox a locked throw curves toward until its first bounce.
     pub homing: Option<ColliderHandle>,
+    /// A mark star: no damage, it marks the player it strikes (`melee.rs`).
+    pub mark: bool,
 }
 
-#[derive(Default)]
 pub struct ShurikenLauncher {
     pub cfg: ShurikenCfg,
     discs: Vec<Disc>,
+    /// Star energy in charges (only meaningful with `cfg.energy_max > 0`) and the empty-pool lockout.
+    energy: f32,
+    locked: bool,
+}
+
+impl Default for ShurikenLauncher {
+    fn default() -> Self {
+        Self::new(ShurikenCfg::default())
+    }
 }
 
 impl ShurikenLauncher {
     pub fn new(cfg: ShurikenCfg) -> Self {
-        Self { cfg, discs: Vec::new() }
+        Self { cfg, discs: Vec::new(), energy: cfg.energy_max, locked: false }
+    }
+
+    /// (energy, max, locked) when a pool is in force.
+    pub fn energy_state(&self) -> Option<(f32, f32, bool)> {
+        (self.cfg.energy_max > 0.0).then_some((self.energy, self.cfg.energy_max, self.locked))
     }
 
     /// For the renderer (spin the mesh by `age`).
@@ -111,14 +140,29 @@ impl Weapon for ShurikenLauncher {
         self.cfg.cooldown
     }
 
+    fn energy(&self) -> Option<(f32, f32, bool)> {
+        self.energy_state()
+    }
+
     fn fire(&mut self, ctx: &mut FireCtx) -> bool {
         if self.discs.len() >= self.cfg.max_discs {
             return false;
         }
+        // star energy: a star (or a mark star) must be affordable and the pool must not be locked out
+        if self.cfg.energy_max > 0.0 {
+            let cost = if ctx.mark { self.cfg.mark_cost } else { self.cfg.energy_cost };
+            if self.locked || self.energy + 1e-4 < cost {
+                return false; // refused: the cooldown is not consumed either
+            }
+            self.energy -= cost;
+            if self.energy + 1e-4 < self.cfg.energy_cost {
+                self.locked = true; // cannot afford another star: locked until `energy_resume` charges are back
+            }
+        }
         let dir = assisted_dir(&self.cfg, ctx);
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
         let homing = ctx.lock.filter(|h| h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
-        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing });
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark });
         ctx.events.push(CombatEvent::ShurikenThrown { pos, dir });
         ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
         true
@@ -126,6 +170,8 @@ impl Weapon for ShurikenLauncher {
 
     fn apply_balance(&mut self, b: &crate::balance::Balance, _ch: &crate::character::Cfg) {
         self.cfg = b.shuriken_cfg();
+        self.energy = self.cfg.energy_max;
+        self.locked = false;
     }
 
     fn active(&self) -> bool {
@@ -137,6 +183,8 @@ impl Weapon for ShurikenLauncher {
     }
 
     fn reset(&mut self) {
+        self.energy = self.cfg.energy_max; // a new life starts with a full pool
+        self.locked = false;
         self.discs.clear();
     }
 
@@ -146,6 +194,12 @@ impl Weapon for ShurikenLauncher {
 
     fn tick(&mut self, dt: f32, ctx: &mut TickCtx) {
         let cfg = self.cfg;
+        if cfg.energy_max > 0.0 {
+            self.energy = (self.energy + dt / cfg.energy_regen_s.max(1e-3)).min(cfg.energy_max);
+            if self.locked && self.energy + 1e-4 >= cfg.energy_resume.min(cfg.energy_max) {
+                self.locked = false;
+            }
+        }
         self.discs.retain_mut(|d| match advance_disc_skipping(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.allies, ctx.events) {
             DiscStep::Flying => true,
             DiscStep::Hit { collider, point } => {
@@ -153,7 +207,11 @@ impl Weapon for ShurikenLauncher {
                 if d.bounces > 0 {
                     ctx.events.push(CombatEvent::RicochetHit { collider });
                 }
-                ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage, kind: DamageKind::Shuriken, point });
+                if d.mark {
+                    ctx.events.push(CombatEvent::MarkHit { target, collider });
+                } else {
+                    ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage, kind: DamageKind::Shuriken, point });
+                }
                 ctx.events.push(CombatEvent::ShurikenGone { pos: point });
                 false
             }

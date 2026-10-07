@@ -228,9 +228,7 @@ pub fn setup(
         for b in l.0.boxes.iter().filter(|b| b.center[1] + b.half[1] > 0.05) {
             let top = b.center[1] + b.half[1];
             let (tint, mode) = if floating {
-                // floating buildings: tall bodies are cool-blue walls, decks / bridges / ledges / lips read cyan
-                // (a box high above the ground is a building here, not a ceiling)
-                if b.half[1] >= 4.0 { ([0.1, 0.55, 1.2], 1.0) } else { ([pal.cyan.0 * 1.4, pal.cyan.1 * 1.4, pal.cyan.2 * 1.4], 1.0) }
+                crate::env_look::city_surface() // floating city: tier colours by height, circuit traces (env_look.rs, shader mode 3)
             } else if b.center[1] - b.half[1] > 10.0 {
                 ([0.15, 0.35, 0.6], 2.0) // ceiling: faint skylight grid
             } else if top > 5.0 {

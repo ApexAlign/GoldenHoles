@@ -534,7 +534,11 @@ fn move_kind(p: &Player) -> (MoveKind, u8) {
 fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32) -> Vec<u8> {
     let Some(p) = server.players.iter().find(|p| p.id == id) else { return Vec::new() };
     let acked = p.queue.last_executed_tick().filter(|_| p.vitals.alive());
+    let star = p.combat.shuriken_energy();
     let extras = OwnExtras {
+        star_max: star.map_or(0, |s| s.1.round().clamp(1.0, 15.0) as u8),
+        star_energy: star.map_or(0, |s| (s.0 * 16.0).round().clamp(0.0, 255.0) as u8),
+        star_locked: star.map_or(false, |s| s.2),
         has_state: acked.is_some(),
         acked_tick: acked.unwrap_or(0),
         hp_x10: if p.vitals.alive() { (p.vitals.hp * 10.0).round().clamp(1.0, u16::MAX as f32) as u16 } else { 0 },
@@ -634,7 +638,7 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
                     yaw: p.yaw,
                     kind,
                     flags,
-                    fx: p.blk.fx_bits(tick),
+                    fx: p.blk.fx_bits(tick) | if p.melee.marked(tick) { shinobi_proto::snapshot::FX_MARK } else { 0 },
                 },
             )
         })

@@ -247,7 +247,7 @@ fn allies_are_ignored_by_the_blade_and_discs_fly_through_them() {
 
     // disc: passes the ally, hits the enemy behind it, and never bounced off the ally
     let scfg = ShurikenCfg::default();
-    let mut d = Disc { pos: Point::new(0.0, 1.0, -0.5), dir: vector![0.0, 0.0, -1.0], bounces: 0, age: 0.0, speed_scale: 1.0, homing: None };
+    let mut d = Disc { pos: Point::new(0.0, 1.0, -0.5), dir: vector![0.0, 0.0, -1.0], bounces: 0, age: 0.0, speed_scale: 1.0, homing: None, mark: false };
     let mut evs = Vec::new();
     let mut hit = None;
     for _ in 0..30 {
@@ -303,7 +303,7 @@ mod disc_physics {
     use crate::combat::shuriken::{advance_disc, Disc, DiscStep, ShurikenCfg};
 
     fn disc(pos: [f32; 3], dir: Vector<Real>) -> Disc {
-        Disc { pos: Point::new(pos[0], pos[1], pos[2]), dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing: None }
+        Disc { pos: Point::new(pos[0], pos[1], pos[2]), dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing: None, mark: false }
     }
 
     fn wall(w: &mut PhysicsWorld, z: f32, half_thickness: f32, piece: Option<[i32; 3]>) {

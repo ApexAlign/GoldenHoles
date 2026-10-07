@@ -81,6 +81,7 @@ fn snapshot_datagram(srv: &Server, margin: i8) -> Vec<u8> {
     let extras = OwnExtras { has_state: true, acked_tick: srv.tick - 1, hp_x10: 1000, hits: vec![], hit_seq: 0, intent_complete: srv.players[0].queue.complete_tick(), lead_margin: margin,
         echo_seq: srv.players[0].last_pkt.map_or(0, |(s, _)| s),
         echo_age: srv.players[0].last_pkt.map_or(0, |(_, t)| srv.tick.saturating_sub(t).min(255) as u8),
+        ..Default::default()
     };
     extras.write(&mut own, |w| OwnState::from_snapshot(&p.ch.snapshot(&srv.world)).write(w));
     frame_snapshot_v3(&ev.finish(), &own.finish(), &[], &encode_delta(None, &snap))
@@ -275,7 +276,7 @@ fn report(name: &str, o: &Out) {
 
 #[test]
 fn clean_link_grapple_prediction_is_exact() {
-    let o = run_ex(0.0, 0.0, 0.0, 1, 1500, true, ClientGameCfg::default().lead_ticks);
+    let o = run_ex(0.0, 0.0, 0.0, 1, 3500, true, ClientGameCfg::default().lead_ticks); // soft arrival ends ropes at the anchor: the scripted bot needs a longer run for its 4 hooks
     report("clean", &o);
     assert!(o.attaches >= 4 && o.releases >= 4, "the bot must actually grapple: {o:?}");
     assert!(o.server_grapple_ticks > 100, "server saw the rope");

@@ -16,6 +16,7 @@ mod audio;
 mod blocks;
 mod death;
 mod discs;
+mod env_look;
 mod impacts;
 mod lock;
 mod rope;
@@ -172,6 +173,7 @@ fn main() {
     }
     app.add_plugins(signal::SignalExitPlugin);
     app.add_plugins(play::PlayPlugin);
+    app.add_plugins(env_look::EnvLookPlugin);
     if !off("vm") {
         app.add_plugins(vm::VmPlugin);
     }

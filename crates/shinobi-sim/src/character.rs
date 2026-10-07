@@ -140,6 +140,22 @@ pub struct Cfg {
     pub clash_mult: f32,
     pub clash_knock: f32,
     pub clash_cd: f32,
+    /// Soft arrival: when the rope ends by arrival (inside `grapple_arrive` of the anchor) or by the hook key, only this
+    /// fraction of the speed is kept (1.0 = the old launch), unless the player holds jump or presses dash (then the
+    /// momentum is theirs: a deliberate launch). `cancel_keep` is the same for the hook key (a brake, not a release).
+    pub arrive_speed_keep: f32,
+    pub cancel_keep: f32,
+    /// Ledge assist: after a reel ends within `mantle_window` s (or while on the rope), a ledge /
+    /// deck / ramp edge up to `mantle_height` m above the feet and within reach ahead lifts the player onto it
+    /// (0 height = off), with `mantle_carry` m/s of forward carry.
+    pub mantle_height: f32,
+    pub mantle_window: f32,
+    pub mantle_carry: f32,
+    /// Hook yank (hook key again on a player rope): the target is pulled toward you at this speed (+ a hop), then the
+    /// rope is cut; cooldown before the next yank.
+    pub yank_speed: f32,
+    pub yank_hop: f32,
+    pub yank_cd: f32,
 }
 
 impl Cfg {
@@ -223,15 +239,15 @@ impl Default for Cfg {
             grapple_speed: 18.0,
             grapple_accel: 80.0,
             grapple_cd: 0.5,
-            grapple_arrive: 2.0,
+            grapple_arrive: 1.3,
             grapple_max_time: 10.0,
             grapple_jump_boost: 5.0,
             grapple_lift: 3.0,
-            grapple_steer: 0.35,
+            grapple_steer: 1.0,
             grapple_miss_cd: 0.15,
             grapple_max_speed: 20.0,
             grapple_ease_in: 0.25,
-            grapple_arrive_speed: 10.0,
+            grapple_arrive_speed: 6.0,
             grapple_soft_dist: 6.0,
             grapple_brake: 70.0,
             grapple_far_speed: 140.0,
@@ -254,6 +270,14 @@ impl Default for Cfg {
             clash_mult: 1.5,
             clash_knock: 11.0,
             clash_cd: 2.5,
+            arrive_speed_keep: 0.25,
+            cancel_keep: 0.2,
+            mantle_height: 6.5,
+            mantle_window: 0.45,
+            mantle_carry: 3.2,
+            yank_speed: 34.0,
+            yank_hop: 5.0,
+            yank_cd: 1.6,
         }
     }
 }
@@ -899,6 +923,14 @@ impl CharacterSystem {
         if self.evasion.is_none() {
             self.grapple_pull(dt, pos, input.slide);
         }
+        // ---- ledge assist: near the anchor, or just after the reel ended (not when the player is jumping off on purpose) ----
+        if cfg.mantle_height > 0.0 && !input.jump_held && self.evasion.is_none() && !matches!(self.state, MoveState::WallRun { .. }) {
+            let near_rope = self.grapple.is_some(); // blocked by a steep face is the only trigger, so any rope distance is fine
+            let recent = self.grapple.is_none() && self.grapple_cd > cfg.grapple_cd - cfg.mantle_window;
+            if near_rope || recent {
+                self.mantle_assist(w, pos);
+            }
+        }
 
         // ---- KCC ----
         let shape = Capsule::new_y(cfg.half_height, cfg.radius);
@@ -1210,7 +1242,20 @@ impl CharacterSystem {
         let eye = pos + Vector::y() * cfg.eye_above_center;
         let to = g.anchor - eye;
         let d = to.norm();
-        let mut release = input.grapple_aim.is_some() || g.time > cfg.grapple_max_time || d < cfg.grapple_arrive;
+        let hook_key = input.grapple_aim.is_some();
+        let arrived = d < cfg.grapple_arrive;
+        let mut release = hook_key || g.time > cfg.grapple_max_time || arrived;
+        // soft arrival / cancel: the speed is bled off unless the player is deliberately launching (jump held, dash)
+        let launch = input.jump_held || input.dash_pressed || self.jump_buf > 0.0;
+        let keep = if launch {
+            1.0
+        } else if hook_key {
+            cfg.cancel_keep
+        } else if arrived {
+            cfg.arrive_speed_keep
+        } else {
+            1.0
+        };
         if !release && self.jump_buf > 0.0 {
             release = true;
             if !matches!(self.state, MoveState::WallRun { .. }) {
@@ -1238,6 +1283,55 @@ impl CharacterSystem {
         }
         if release {
             self.grapple_release();
+            if keep < 1.0 {
+                self.vel *= keep;
+            }
+        }
+    }
+
+    /// Ledge assist (see `Cfg::mantle_*`): a deck / ramp / ledge top up to `mantle_height` above the feet and just ahead
+    /// lifts the player onto it with a little forward carry, instead of letting them hang against the face or fly over.
+    /// `fwd`: the direction of travel (toward the anchor on the rope, else the velocity / facing).
+    fn mantle_assist(&mut self, w: &PhysicsWorld, pos: Vector<Real>) {
+        let cfg = self.cfg;
+        let fwd = match self.grapple {
+            Some(g) => flat_norm(g.anchor - pos),
+            None => flat_norm(self.vel),
+        };
+        let fwd = if fwd.norm_squared() > 0.0 { fwd } else { self.facing };
+        let feet = pos.y - cfg.half_height - cfg.radius;
+        // only when something steep blocks the way (a deck face, a lip, a wall): free flight and walkable slopes need no help
+        let reach = cfg.radius + 0.45;
+        let blocked = [0.25f32, 1.0, 1.7].iter().any(|dy| {
+            self.cast(w, Vector::new(pos.x, feet + dy, pos.z), fwd, reach).map_or(false, |(_, n)| n.y.abs() < 0.6)
+        });
+        if !blocked {
+            return;
+        }
+        for off in [0.45f32, 0.85, 1.3] {
+            let o = Vector::new(pos.x + fwd.x * off, feet + cfg.mantle_height + 0.6, pos.z + fwd.z * off);
+            let Some((toi, n)) = self.cast(w, o, -Vector::y(), cfg.mantle_height + 1.1) else { continue };
+            if n.y < 0.7 {
+                continue;
+            }
+            let top = o.y - toi;
+            let rise = top - feet;
+            if rise > 0.04 && rise <= cfg.mantle_height + 0.05 {
+                // room to stand: nothing within a capsule's height above the landing spot
+                if self.cast(w, Vector::new(o.x, top + 0.05, o.z), Vector::y(), 1.9).is_some() {
+                    continue;
+                }
+                let vy = ((rise + 0.35) / 0.14).min(28.0);
+                // proportional approach: the climb speed follows the rise still needed, so the player arrives at the lip
+                // gently instead of keeping the lift speed and shooting past the deck
+                self.vel.y = vy;
+                let h = flat(self.vel);
+                if h.dot(&fwd) < cfg.mantle_carry {
+                    self.vel.x = fwd.x * cfg.mantle_carry;
+                    self.vel.z = fwd.z * cfg.mantle_carry;
+                }
+                return;
+            }
         }
     }
 
@@ -1873,7 +1967,8 @@ mod tests {
         assert_eq!(ch.grapple_event, GrappleEvent::Released);
         let p = *w.bodies[ch.body].translation();
         assert!(p.z < -20.0, "was pulled most of the way to the wall: z = {}", p.z);
-        assert!(ch.vel.norm() > 5.0, "momentum kept on release: {:?}", ch.vel);
+        // soft arrival (traversal round): the rope's end bleeds the speed instead of launching past the anchor
+        assert!(ch.vel.norm() < 8.0, "soft arrival: speed {:?}", ch.vel);
     }
 
     #[test]
@@ -2582,26 +2677,54 @@ mod tests {
         assert!(ch.vel.x < -cfg.wall_jump_push * 0.9, "and kicks off the wall: {:?}", ch.vel);
     }
 
-    #[test]
-    fn grapple_release_launches_instead_of_braking() {
+    /// Ride the rope to the end with `input` held every tick; (peak speed on the rope, horizontal speed at release, 0.4 s later).
+    fn ride_rope(input: PlayerInput) -> (f32, f32, f32, MoveState) {
         let (mut w, mut ch) = grapple_scene();
         let mut now = 0.0;
         tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now);
         assert!(ch.grapple.is_some());
-        let idle = PlayerInput::default();
         let mut best = 0.0f32;
         while ch.grapple.is_some() {
-            tick(&mut ch, &mut w, &idle, &mut now);
+            tick(&mut ch, &mut w, &input, &mut now);
             best = best.max(ch.vel.norm());
             assert!(now < 8.0, "rope never ended");
         }
         let h_release = hspeed(&ch);
         for _ in 0..24 {
-            tick(&mut ch, &mut w, &idle, &mut now);
+            tick(&mut ch, &mut w, &input, &mut now);
         }
-        eprintln!("FEEL grapple: peak {best:.1} m/s, h at release {h_release:.1}, 0.4 s later h {:.1} v {:.1}", hspeed(&ch), ch.vel.y);
-        assert!(best <= Cfg::default().grapple_far_speed + 2.5, "rope speed {best}"); // far reels run up to grapple_far_speed
-        assert!(hspeed(&ch) >= 0.7 * h_release, "horizontal momentum is not braked away: {h_release} -> {}", hspeed(&ch));
+        (best, h_release, hspeed(&ch), ch.state)
+    }
+
+    #[test]
+    fn grapple_arrival_bleeds_the_speed_unless_the_player_launches() {
+        let cfg = Cfg::default();
+        // idle: the rope's end is a soft landing, not a launch past the anchor
+        let (best, h_release, h_later, _) = ride_rope(PlayerInput::default());
+        eprintln!("FEEL grapple arrival (idle): peak {best:.1} m/s, h at release {h_release:.1}, 0.4 s later {h_later:.1}");
+        assert!(best <= cfg.grapple_far_speed + 2.5, "rope speed {best}");
+        assert!(h_release <= best * (cfg.arrive_speed_keep + 0.2), "arrival bleeds: {best:.1} -> {h_release:.1}");
+        // jump held = a deliberate launch: the momentum is theirs (or it chains into a wall-run on the face)
+        let (best, h_release, h_later, state) = ride_rope(PlayerInput { jump_held: true, ..Default::default() });
+        eprintln!("FEEL grapple arrival (jump held): peak {best:.1} m/s, h at release {h_release:.1}, 0.4 s later {h_later:.1}, {state:?}");
+        assert!(matches!(state, MoveState::WallRun { .. }) || h_release >= 0.5 * best, "jump held keeps the momentum: {best:.1} -> {h_release:.1}");
+    }
+
+    #[test]
+    fn the_hook_key_on_a_rope_is_a_brake() {
+        let cfg = Cfg::default();
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now);
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        let before = ch.vel.norm();
+        assert!(before > 15.0 && ch.grapple.is_some());
+        tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now); // hook key again: cancel
+        assert!(ch.grapple.is_none());
+        eprintln!("hook key brake: {before:.1} m/s -> {:.1} m/s", ch.vel.norm());
+        assert!(ch.vel.norm() < before * (cfg.cancel_keep + 0.15), "cancel kills most of the speed");
     }
 
     #[test]
