@@ -339,6 +339,13 @@ impl Rig {
         }
     }
 
+    /// Paint every rig part with one material (the hit flash); `skin` restores the colours.
+    pub fn flash(&self, commands: &mut Commands, mat: &Handle<StandardMaterial>) {
+        for (e, _) in &self.roles {
+            commands.entity(*e).insert(MeshMaterial3d(mat.clone()));
+        }
+    }
+
     /// Pose and place everything for this frame.
     pub fn update(&mut self, c: &Ctx, tf: &mut Query<&mut Transform>, vis: &mut Query<&mut Visibility>) {
         let near = c.dist < GLOW_MAX;

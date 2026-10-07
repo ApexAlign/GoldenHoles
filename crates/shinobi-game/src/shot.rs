@@ -69,7 +69,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
     .add_plugins(sky::SkyPlugin)
     .add_plugins(PlayPlugin)
     .add_plugins(crate::env_look::EnvLookPlugin)
-    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin))
+    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin))
     .add_plugins(hud_view::HudPlugin)
     .insert_resource(ShotRequest { width: dims.0, height: dims.1 });
     app
@@ -235,6 +235,20 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 v.rope = Some((e, [e[0] + 3.0, e[1] - 0.4, e[2] - 22.0]));
                 v.fx.grappling = true;
                 v.fx.strike_armed = 4;
+            }
+            // `hits` (or `hitkill`): at frame 112 server hit messages land on players 2 (30 slash), 3 (three star hits),
+            // 4 (head star; `hitkill` = a slash kill) and one slash hit on us from 2: numbers, flash, bursts, bars, wedge
+            "hits" | "hitkill" => {
+                use shinobi_proto::gameplay::{HitMsg, KIND_SHURIKEN, KIND_SLASH};
+                if frame == 112 {
+                    let m = |other, amount, kind, taken, kill, head, bonus| HitMsg { other, amount, kind, taken, kill, head, bonus };
+                    v.hits.push(m(2, 30, KIND_SLASH, false, false, false, false));
+                    for _ in 0..3 {
+                        v.hits.push(m(3, 12, KIND_SHURIKEN, false, false, false, false));
+                    }
+                    v.hits.push(if name == "hitkill" { m(4, 60, KIND_SLASH, false, true, false, true) } else { m(4, 24, KIND_SHURIKEN, false, false, true, false) });
+                    v.hits.push(m(2, 35, KIND_SLASH, true, false, false, false));
+                }
             }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));

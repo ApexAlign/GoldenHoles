@@ -18,6 +18,7 @@ mod character_look;
 mod death;
 mod discs;
 mod env_look;
+mod hit_feedback;
 mod impacts;
 mod lock;
 mod rope;
@@ -181,7 +182,7 @@ fn main() {
     }
     app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
     if !off("fx") {
-        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin));
+        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin));
     }
     if !off("hud") {
         app.add_plugins(hud_view::HudPlugin);
