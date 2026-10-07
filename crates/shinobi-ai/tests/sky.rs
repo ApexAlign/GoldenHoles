@@ -13,6 +13,8 @@ use shinobi_sim::tick::Server;
 
 struct Report {
     void_deaths: u32,
+    splats: u32,
+    ring_outs: u32,
     kills: u32,
     stuck: Vec<(u16, u32, f32, f32, &'static str)>,
     /// distinct 8 m x 8 m cells visited by each bot (a bot that never leaves its spawn deck scores low)
@@ -39,21 +41,29 @@ fn run(bots: u16, secs: u32, seed: u64) -> Option<Report> {
     let mut window: BTreeMap<u16, (u32, [f32; 3])> = BTreeMap::new();
     let mut roam: BTreeMap<u16, std::collections::BTreeSet<(i32, i32)>> = BTreeMap::new();
     let mut tiers: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
-    let mut rep = Report { void_deaths: 0, kills: 0, stuck: Vec::new(), max_roam: 0, tiers_seen: 0 };
+    let mut rep = Report { void_deaths: 0, splats: 0, ring_outs: 0, kills: 0, stuck: Vec::new(), max_roam: 0, tiers_seen: 0 };
     let mut last: BTreeMap<u16, std::collections::VecDeque<([f32; 3], &'static str, [f32; 3], String)>> = BTreeMap::new();
     for t in 0..secs * 60 {
         step(&mut h, &mut s);
         for e in &s.pvp_events {
             match e {
+                PvpEvent::HazardKill { source, killer, .. } if *source != shinobi_sim::pvp::VOID => {
+                    let _ = killer;
+                    rep.splats += 1; // melee wall splat: a legitimate kill
+                }
+                PvpEvent::HazardKill { victim, killer: Some(_), .. } => {
+                    let _ = victim;
+                    rep.ring_outs += 1; // shoved into the void by a player: a ring-out kill, credited
+                }
                 PvpEvent::HazardKill { victim, .. } => {
-                    rep.void_deaths += 1;
+                    rep.void_deaths += 1; // nobody pushed: the bot walked, dashed or lunged off by itself
                     if std::env::var("SKY_DEBUG").is_ok() {
                         if let Some(tr) = last.get(victim) {
                             println!("void death t={:.1}s bot {victim}; trail (every 6 ticks, newest last):", t as f32 / 60.0);
                             // from the last tick the bot was not simply falling: where did it leave the deck?
                             let leave = tr.iter().rposition(|e| !e.3.contains("Airborne")).unwrap_or(0);
-                            let from = leave.saturating_sub(12);
-                            for (p, ph, v, st) in tr.iter().skip(from).take(66).step_by(3) {
+                            let from = leave.saturating_sub(40);
+                            for (p, ph, v, st) in tr.iter().skip(from).take(110).step_by(5) {
                                 println!("    pos {:.1?} vel {:.1?} {ph} {st}", p, v);
                             }
                         }
@@ -112,10 +122,10 @@ fn seeds() -> Vec<u64> {
 fn sky_bots_fight_without_freezing_or_walking_off_the_roofs() {
     for seed in seeds() {
         let Some(r) = run(12, 240, seed) else { return };
-        println!("seed {seed}: kills {} void deaths {} stuck {} max roam {} cells, tiers walked {}", r.kills, r.void_deaths, r.stuck.len(), r.max_roam, r.tiers_seen);
+        println!("seed {seed}: kills {} unforced void deaths {} (wall splats {} ring-outs {}) stuck {} max roam {} cells, tiers walked {}", r.kills, r.void_deaths, r.splats, r.ring_outs, r.stuck.len(), r.max_roam, r.tiers_seen);
         assert!(r.stuck.is_empty(), "seed {seed}: stuck stretches (bot, tick, x, z, phase): {:?}", &r.stuck[..r.stuck.len().min(10)]);
         // 12 bots x 4 minutes: a roof is not a cliff. Slashes now launch their victims and a ring-out is a kill (melee heighteners), so shoves off the roofs are part of the fight; a flood of them is a bug.
-        assert!(r.void_deaths <= 20, "seed {seed}: {} bots walked or got shoved off the roofs in 240 s", r.void_deaths);
+        assert!(r.void_deaths <= 3, "seed {seed}: {} bots walked or got shoved off the roofs in 240 s", r.void_deaths);
         assert!(r.tiers_seen >= 3, "seed {seed}: bots only stood on {} tier(s): they are not using the ramps", r.tiers_seen);
         assert!(r.kills >= 20, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
     }
