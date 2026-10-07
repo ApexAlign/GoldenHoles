@@ -276,7 +276,7 @@ fn report(name: &str, o: &Out) {
 
 #[test]
 fn clean_link_grapple_prediction_is_exact() {
-    let o = run_ex(0.0, 0.0, 0.0, 1, 1500, true, ClientGameCfg::default().lead_ticks);
+    let o = run_ex(0.0, 0.0, 0.0, 1, 3500, true, ClientGameCfg::default().lead_ticks); // soft arrival ends ropes at the anchor: the scripted bot needs a longer run for its 4 hooks
     report("clean", &o);
     assert!(o.attaches >= 4 && o.releases >= 4, "the bot must actually grapple: {o:?}");
     assert!(o.server_grapple_ticks > 100, "server saw the rope");
