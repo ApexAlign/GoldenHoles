@@ -231,7 +231,7 @@ pub struct GrappleHud {
     pub on_rope: bool,
     /// A fizzle ('no target') just happened: flash the arc.
     pub missed: bool,
-    /// Katana strike armed: 0 none, 1 hook-strike, 2 wall slash (gold ring + label around the crosshair).
+    /// Katana strike armed: 0 none, 1 hook-strike, 2 wall slash, 3 rope slash, 4 rope slash + yank (gold ring + label around the crosshair).
     pub strike: u8,
 }
 
@@ -1117,7 +1117,12 @@ impl Hud {
                 let a = 0.65 + 0.35 * (s.time * 14.0).sin().abs();
                 out.push(Prim::Ring { c: (0.5, 0.5), r: 0.05, color: p.gold.a(a), fill: false, glow: 0.008 });
                 out.push(Prim::Ring { c: (0.5, 0.5), r: 0.065, color: p.gold.a(a * 0.5), fill: false, glow: 0.004 });
-                let label = if g.strike == 1 { "HOOK STRIKE" } else { "WALL SLASH" };
+                let label = match g.strike {
+                    1 => "HOOK STRIKE",
+                    3 => "ROPE SLASH",
+                    4 => "ROPE SLASH  -  E: YANK",
+                    _ => "WALL SLASH",
+                };
                 out.push(Prim::Text { pos: (0.5, 0.585), text: label.into(), size: 0.018, color: p.gold.a(a), align: Align::Center });
             }
         }

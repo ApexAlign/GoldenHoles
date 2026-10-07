@@ -147,6 +147,8 @@ struct Predicted {
     prev_pos: [f32; 3],
     /// Crosshair is on a hookable surface (probed every tick against the predicted world).
     hookable: bool,
+    /// The rope is on a player (hook key again = yank). Refreshed with `hookable`.
+    rope_on_player: bool,
     /// Client clock (ticks) at the most recent `sim_tick`; interpolation alpha is measured from here.
     sim_local: f64,
     /// Predicted position per recent sim tick, `(client tick clock, pos)`, oldest first: the draw time can sit up to
@@ -303,6 +305,7 @@ impl Predicted {
         std::mem::swap(&mut self.world.queries, &mut self.solid);
         let eye = vector![self.pos[0], self.pos[1] + self.ch.eye_above(), self.pos[2]];
         self.hookable = self.ch.grapple_probe(&self.world, eye, view_dir(aim_yaw, aim_pitch)).is_some();
+        self.rope_on_player = self.ch.rope_on_player(&self.world);
         std::mem::swap(&mut self.world.queries, &mut self.solid);
     }
 }
@@ -391,7 +394,8 @@ pub struct LocalFx {
     pub grapple_cooldown: f32,
     /// The crosshair is on something the hook can grab right now (client-side ray in the predicted world).
     pub grapple_hookable: bool,
-    /// A katana swing right now is a strike: 0 none, 1 hook-strike (rope on / just released), 2 wall slash (wall-run).
+    /// A katana swing right now is a strike: 0 none, 1 hook-strike (just released), 2 wall slash (wall-run), 3 hook-strike
+    /// + rope slash (rope taut), 4 the same with the rope on a player (hook key again = yank).
     pub strike_armed: u8,
     /// Hooked this interval: the anchor point.
     pub grapple_attached: Option<[f32; 3]>,
@@ -845,6 +849,7 @@ impl ClientGame {
             pos: ack.own.pos,
             prev_pos: ack.own.pos,
             hookable: false,
+            rope_on_player: false,
             sim_local: 0.0,
             hist: std::collections::VecDeque::new(),
             // the server evicts at its cap and says so (BlockRemoved): never evict locally on our own
@@ -1115,6 +1120,7 @@ impl ClientGame {
                 match p.ch.grapple_event {
                     GrappleEvent::Attached { anchor, .. } => self.fx_edges.grapple_attached = Some([anchor.x, anchor.y, anchor.z]),
                     GrappleEvent::Released => self.fx_edges.grapple_released = true,
+                    GrappleEvent::Yank { .. } => self.fx_edges.grapple_released = true,
                     GrappleEvent::Miss { .. } => self.fx_edges.grapple_missed = true,
                     GrappleEvent::None => {}
                 }
@@ -1241,6 +1247,8 @@ impl ClientGame {
             fx.grapple_cooldown = (p.ch.grapple_cooldown() / self.cfg.sim.grapple_cd.max(1e-3)).clamp(0.0, 1.0);
             fx.grapple_hookable = p.hookable;
             fx.strike_armed = match p.ch.strike_kind() {
+                // 3 = the rope is taut (a swing is also a rope slash), 4 = and it is on a player (hook key again = yank)
+                Some(shinobi_sim::character::StrikeKind::Hook) if p.ch.grapple.is_some() => 3 + p.rope_on_player as u8,
                 Some(shinobi_sim::character::StrikeKind::Hook) => 1,
                 Some(shinobi_sim::character::StrikeKind::Wall) => 2,
                 None => 0,
