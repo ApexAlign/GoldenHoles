@@ -31,6 +31,11 @@ pub struct KatanaCfg {
     /// Wall slash (swing during a wall-run): same two knobs.
     pub wall_damage_mult: f32,
     pub wall_reach: f32,
+    /// Rope slash (swing while the rope is taut): enemies within `rope_radius` m of the rope line, up to `rope_reach` m
+    /// from the eye, are cut for `rope_damage_mult` (at least the strike multiplier).
+    pub rope_damage_mult: f32,
+    pub rope_radius: f32,
+    pub rope_reach: f32,
     /// Seconds after a swing within which the next swing continues the combo.
     pub combo_window: f32,
     /// Damage multiplier of the third swing of a combo (every swing before it must have connected).
@@ -76,6 +81,9 @@ impl KatanaCfg {
             hook_reach: 4.0,
             wall_damage_mult: 1.35,
             wall_reach: 3.0,
+            rope_damage_mult: 1.6,
+            rope_radius: 1.5,
+            rope_reach: 25.0,
             combo_window: 1.0,
             finisher_mult: 1.0,
             finisher_reach: 0.0,
@@ -151,6 +159,30 @@ pub fn predict_slice(
     } else {
         None
     }
+}
+
+/// Enemies whose centre is within `radius` of the rope segment `eye -> anchor` (cut to `reach` m from the eye).
+fn rope_line_hits(world: &crate::character::PhysicsWorld, eye: Vector<Real>, anchor: Option<Vector<Real>>, radius: f32, reach: f32, own: RigidBodyHandle, allies: &[ColliderHandle]) -> Vec<ColliderHandle> {
+    let Some(anchor) = anchor else { return Vec::new() };
+    let full = anchor - eye;
+    let len = full.norm();
+    if len < 0.5 || radius <= 0.0 || reach <= 0.0 || !len.is_finite() {
+        return Vec::new();
+    }
+    let dir = full / len;
+    let seg = len.min(reach);
+    let mut out = Vec::new();
+    for (h, c) in world.colliders.iter() {
+        if !c.collision_groups().memberships.intersects(TARGETS) || c.parent() == Some(own) || allies.contains(&h) {
+            continue;
+        }
+        let rel = *c.translation() - eye;
+        let t = rel.dot(&dir).clamp(0.0, seg);
+        if (rel - dir * t).norm() <= radius {
+            out.push(h);
+        }
+    }
+    out
 }
 
 pub struct Katana {
@@ -337,13 +369,21 @@ impl Weapon for Katana {
         if hits.is_empty() {
             ctx.events.push(CombatEvent::SlashMiss { origin: Point::from(origin), dir });
         }
+        // rope slash: a taut rope is a blade too (docs/traversal_melee.md)
+        let rope_hits = rope_line_hits(ctx.world, origin, ctx.ch.grapple.map(|g| g.anchor), c.rope_radius, c.rope_reach, ctx.ch.body, ctx.allies);
+        for h in &rope_hits {
+            if !hits.contains(h) {
+                hits.push(*h);
+            }
+        }
         for h in &hits {
             let Some(col) = ctx.world.colliders.get(*h) else { continue };
+            let mult = if rope_hits.contains(h) { strike_dmg.max(c.rope_damage_mult) } else { strike_dmg };
             ctx.events.push(CombatEvent::SlashHit { target: col.user_data, point: Point::from(*col.translation()), killed: false });
             ctx.events.push(CombatEvent::Damage {
                 target: col.user_data,
                 collider: *h,
-                amount: c.damage * strike_dmg,
+                amount: c.damage * mult,
                 kind: DamageKind::Slash,
                 point: Point::from(*col.translation()),
             });

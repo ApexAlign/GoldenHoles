@@ -82,6 +82,10 @@ pub struct KatanaBalance {
     pub hook_reach: f32,
     pub wall_damage_mult: f32,
     pub wall_reach: f32,
+    /// Rope slash (swing with the rope taut): damage multiplier for enemies near the rope line, line radius, reach from the eye.
+    pub rope_damage_mult: f32,
+    pub rope_radius: f32,
+    pub rope_reach: f32,
     /// Seconds after a swing within which the next one continues the combo.
     pub combo_window: f32,
     /// Damage multiplier of the third swing of a combo (the first two must have connected); 1 = no finisher bonus.
@@ -475,7 +479,7 @@ impl Default for Balance {
                     energy_resume: s.energy_resume,
                     mark_cost: s.mark_cost,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -746,6 +750,9 @@ impl Balance {
         k.hook_reach = b.hook_reach;
         k.wall_damage_mult = b.wall_damage_mult;
         k.wall_reach = b.wall_reach;
+        k.rope_damage_mult = b.rope_damage_mult;
+        k.rope_radius = b.rope_radius;
+        k.rope_reach = b.rope_reach;
         k.combo_window = b.combo_window;
         k.finisher_mult = b.finisher_mult;
         k.finisher_reach = b.finisher_reach;
@@ -838,6 +845,9 @@ impl Balance {
         s!("combat.katana.piece_damage", F, self.combat.katana.piece_damage);
         s!("combat.katana.hook_damage_mult", F, self.combat.katana.hook_damage_mult);
         s!("combat.katana.hook_reach", F, self.combat.katana.hook_reach);
+        s!("combat.katana.rope_damage_mult", F, self.combat.katana.rope_damage_mult);
+        s!("combat.katana.rope_radius", F, self.combat.katana.rope_radius);
+        s!("combat.katana.rope_reach", F, self.combat.katana.rope_reach);
         s!("combat.katana.wall_damage_mult", F, self.combat.katana.wall_damage_mult);
         s!("combat.katana.wall_reach", F, self.combat.katana.wall_reach);
         s!("combat.katana.combo_window", F, self.combat.katana.combo_window);

@@ -441,6 +441,7 @@ impl Server {
         let mut ricochets: Vec<(u16, u16)> = Vec::new();
         let mut wall_runners: Vec<u16> = Vec::new();
         let mut clash_wins: Vec<(u16, u16)> = Vec::new();
+        let mut yanks: Vec<(usize, Vector<Real>, Vector<Real>)> = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
@@ -617,6 +618,11 @@ impl Server {
                     let c = p.pos(&self.world);
                     self.events.push((id, CombatEvent::GrappleRelease { pos: Point::new(c[0], c[1], c[2]) }));
                 }
+                crate::character::GrappleEvent::Yank { origin, anchor } => {
+                    let c = p.pos(&self.world);
+                    self.events.push((id, CombatEvent::GrappleRelease { pos: Point::new(c[0], c[1], c[2]) }));
+                    yanks.push((i, origin, anchor));
+                }
                 crate::character::GrappleEvent::Miss { origin, dir } => {
                     self.events.push((id, CombatEvent::GrappleMiss { origin: Point::from(origin), dir }));
                 }
@@ -655,6 +661,7 @@ impl Server {
             }
         }
 
+        self.resolve_yanks(tick, &yanks);
         self.resolve_clashes(tick, &clash_wins);
 
         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement
@@ -704,6 +711,38 @@ impl Server {
 }
 
 impl Server {
+    /// Hook yank (docs/traversal_melee.md): the living, non-allied player at the rope's anchor is pulled toward the
+    /// yanker (speed scales with the gap, capped at `yank_speed`) and staggered. Server only: the pull reaches the victim
+    /// as an ordinary reconciliation, the yanker's own rope cut is predicted.
+    fn resolve_yanks(&mut self, tick: u32, yanks: &[(usize, Vector<Real>, Vector<Real>)]) {
+        let cfg = self.cfg;
+        for &(i, origin, anchor) in yanks {
+            let team = self.players[i].team;
+            let mut best: Option<(f32, usize)> = None;
+            for (j, q) in self.players.iter().enumerate() {
+                if j == i || !q.vitals.alive() || allied(team, q.team) {
+                    continue;
+                }
+                let c = q.pos(&self.world);
+                let d = (vector![c[0], c[1], c[2]] - anchor).norm();
+                if d <= 2.5 && best.map_or(true, |b| d < b.0) {
+                    best = Some((d, j));
+                }
+            }
+            let Some((_, j)) = best else { continue };
+            let c = self.players[j].pos(&self.world);
+            let me = self.players[i].pos(&self.world);
+            let to = vector![me[0] - c[0], me[1] - c[1], me[2] - c[2]];
+            let gap = to.norm();
+            let _ = origin;
+            let speed = (gap * cfg.yank_gain).clamp(cfg.yank_speed * 0.3, cfg.yank_speed);
+            self.players[j].ch.yank_pull(to, speed, cfg.yank_hop);
+            let ticks = (cfg.yank_stagger * TICK_HZ_F) as u32;
+            self.players[j].blk.stagger_until = tick + ticks;
+            self.players[j].blk.open_for(tick, ticks);
+        }
+    }
+
     /// Wall clash (docs/traversal_melee.md): two living players wall-running the same face within `clash_range` open a
     /// strike window; a katana hit inside it was boosted in `step` (`clash_wins`) and throws the loser off the wall; a
     /// window that ends with no hit knocks both apart. Server only: the knock arrives as an ordinary reconciliation.

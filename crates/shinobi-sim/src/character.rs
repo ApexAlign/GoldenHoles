@@ -156,6 +156,10 @@ pub struct Cfg {
     pub yank_speed: f32,
     pub yank_hop: f32,
     pub yank_cd: f32,
+    /// Seconds the yanked player is staggered (cannot act, wide open to a cut).
+    pub yank_stagger: f32,
+    /// Pull speed grows with the gap (m/s per metre) so a close target is not flung past you; floor 30 % of `yank_speed`.
+    pub yank_gain: f32,
 }
 
 impl Cfg {
@@ -275,9 +279,11 @@ impl Default for Cfg {
             mantle_height: 6.5,
             mantle_window: 0.45,
             mantle_carry: 3.2,
-            yank_speed: 34.0,
-            yank_hop: 5.0,
+            yank_speed: 46.0,
+            yank_hop: 6.0,
             yank_cd: 1.6,
+            yank_stagger: 0.7,
+            yank_gain: 2.0,
         }
     }
 }
@@ -349,6 +355,8 @@ pub enum GrappleEvent {
     None,
     Attached { origin: Vector<Real>, anchor: Vector<Real> },
     Released,
+    /// Hook key again on a player rope: the rope is cut and the server pulls whoever is at `anchor` toward `origin`.
+    Yank { origin: Vector<Real>, anchor: Vector<Real> },
     /// Fired but nothing hookable in range (sky, too far, too close, a player / moving block): 'no target' feedback.
     Miss { origin: Vector<Real>, dir: Vector<Real> },
 }
@@ -520,6 +528,22 @@ impl CharacterSystem {
         }
     }
 
+    /// Hook yank victim side (server only): pulled toward `to` at `speed` (+ `hop`), ropes and wall-runs dropped.
+    pub fn yank_pull(&mut self, dir: Vector<Real>, speed: f32, hop: f32) {
+        let d = if dir.norm_squared() > 1e-8 { dir.normalize() } else { return };
+        self.vel = Vector::new(d.x * speed, d.y * speed * 0.5 + hop, d.z * speed);
+        if matches!(self.state, MoveState::WallRun { .. }) {
+            self.state = MoveState::Airborne;
+        }
+        self.slide = None;
+        self.state = MoveState::Airborne; // the hop lifts them off the floor (ground friction would eat the pull)
+        self.coyote = 0.0;
+        self.wall_cd = 0.4;
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
     /// The wall normal while wall-running (flat, out of the wall), else `None`.
     pub fn wall_normal(&self) -> Option<Vector<Real>> {
         match self.state {
@@ -532,7 +556,7 @@ impl CharacterSystem {
     pub fn strike_kind(&self) -> Option<StrikeKind> {
         if matches!(self.state, MoveState::WallRun { .. }) {
             Some(StrikeKind::Wall)
-        } else if self.grapple.is_some() || self.grapple_cd > self.cfg.grapple_cd - self.cfg.hookstrike_window {
+        } else if self.grapple.is_some() || (self.grapple_cd > self.cfg.grapple_cd - self.cfg.hookstrike_window && self.grapple_cd <= self.cfg.grapple_cd) {
             Some(StrikeKind::Hook)
         } else {
             None
@@ -1216,6 +1240,11 @@ impl CharacterSystem {
         }
     }
 
+    /// The rope is on, and its anchor is not geometry: a player hook (hook key again = yank). Needs the solid queries.
+    pub fn rope_on_player(&self, w: &PhysicsWorld) -> bool {
+        self.grapple.map_or(false, |g| !self.grapple_anchor_present(w, g.anchor))
+    }
+
     /// Is hookable geometry still within a hair of `anchor`?
     fn grapple_anchor_present(&self, w: &PhysicsWorld, anchor: Vector<Real>) -> bool {
         if !anchor.iter().all(|v| v.is_finite()) {
@@ -1282,7 +1311,14 @@ impl CharacterSystem {
             }
         }
         if release {
+            // hook key on a rope that is not on geometry = a player rope: yank (same physics as the cancel brake; the
+            // server finds the victim; the longer cooldown rides in `grapple_cd`, so it is predicted exactly)
+            let yank = hook_key && cfg.yank_speed > 0.0 && !self.grapple_anchor_present(w, g.anchor);
             self.grapple_release();
+            if yank {
+                self.grapple_cd = cfg.yank_cd;
+                self.grapple_event = GrappleEvent::Yank { origin: eye, anchor: g.anchor };
+            }
             if keep < 1.0 {
                 self.vel *= keep;
             }

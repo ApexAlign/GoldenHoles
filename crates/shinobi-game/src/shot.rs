@@ -229,6 +229,13 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 v.fx.strike_armed = 1;
             }
             "wallslash" => v.fx.strike_armed = 2,
+            // a rope on a player: rope slash + yank cue
+            "yankrope" => {
+                let e = v.eye;
+                v.rope = Some((e, [e[0] + 3.0, e[1] - 0.4, e[2] - 22.0]));
+                v.fx.grappling = true;
+                v.fx.strike_armed = 4;
+            }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
