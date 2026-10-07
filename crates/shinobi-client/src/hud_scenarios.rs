@@ -6,6 +6,7 @@ use crate::hud::{
     callsign, AllyTag, BuildHud, BuildSlot, GrappleHud, Hud, HudState, KillEntry, KilledBy, Palette, Prim, RadarPing, ScoreRow, TargetHud,
     Telemetry, Winner,
 };
+use crate::hud_energy::{HintId, StarHud};
 use crate::radial;
 use shinobi_sim::combat::DamageKind;
 use crate::colour::player_rgba;
@@ -86,6 +87,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         grapple: Some(GrappleHud { ready: 0.7, hookable: true, on_rope: false, missed: false, strike: 0 }),
         ally_tags: vec![AllyTag { pos: (0.35, 0.5), name: callsign(8), dist: 22.0, clamped: false }],
         wall_run: true,
+        star: Some(StarHud { charges: 4.4, max: 6.0, idle: 0.2, ..Default::default() }),
         ..base()
     };
     out.push(("fight_lock", Hud::build_with(&fight, &p)));
@@ -159,6 +161,27 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
 
     let board = HudState { show_scoreboard: true, cursor: Some((0.5, 0.435)), ..base() };
     out.push(("scoreboard", Hud::build_with(&board, &p)));
+
+    // star energy: dry and locked out (refused throw, hint up), a MARK charge, a refill flash, a low guard
+    let dry = HudState {
+        star: Some(StarHud { charges: 0.7, max: 6.0, locked: true, refused: Some(0.1), idle: 0.3, ..Default::default() }),
+        hint: Some((HintId::OutOfStars, 1.0)),
+        ..base()
+    };
+    out.push(("star_locked", Hud::build_with(&dry, &p)));
+    let mark = HudState { star: Some(StarHud { charges: 3.0, max: 6.0, charging: 0.6, idle: 0.1, ..Default::default() }), ..base() };
+    out.push(("star_mark_charge", Hud::build_with(&mark, &p)));
+    let full = HudState { star: Some(StarHud { charges: 6.0, max: 6.0, flash: Some(0.15), idle: 0.1, ..Default::default() }), ..base() };
+    out.push(("star_refill_flash", Hud::build_with(&full, &p)));
+    let low = HudState {
+        guarding: true,
+        guard_spent: 0.85,
+        time: 2.03,
+        star: Some(StarHud { charges: 6.0, max: 6.0, idle: 5.0, ..Default::default() }),
+        hint: Some((HintId::ShieldLow, 1.0)),
+        ..base()
+    };
+    out.push(("guard_low", Hud::build_with(&low, &p)));
 
     let mut prims = Hud::build_with(&base(), &p);
     prims.extend(radial::draw_with(Some(BuildSlot::Ramp), BuildSlot::Floor, &p, if ASPECT.with(|a| a.get()) > 0.1 { ASPECT.with(|a| a.get()) } else { 16.0 / 9.0 }));

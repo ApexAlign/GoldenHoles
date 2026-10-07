@@ -453,7 +453,7 @@ fn update(
     touch: Option<Res<crate::mobile::TouchRes>>,
     lock: Res<crate::play::Lock>,
     menu: Res<MenuRes>,
-    settings: Res<SettingsRes>,
+    mut settings: ResMut<SettingsRes>,
     mode: Res<crate::play::ModeRes>,
     console: Res<ConsoleRes>,
     label: Option<Res<ServerLabel>>,
@@ -472,7 +472,13 @@ fn update(
     let ctl = &mut *ctl;
 
     ctl.bridge.aspect = aspect;
+    ctl.bridge.hints.load(settings.0.hints_seen);
     let mut state: HudState = ctl.bridge.update(dt, &view.0, &net.0.game.net, tab);
+    // a hint was shown: remember it across runs (without re-applying the settings to the game)
+    if ctl.bridge.hints.counts() != settings.0.hints_seen {
+        settings.bypass_change_detection().0.hints_seen = ctl.bridge.hints.counts();
+        save(&settings.0);
+    }
     let cur = match (&window, mode.mode()) {
         (Some(w), Mode::Scoreboard | Mode::BuildRadial) => w.cursor_position().map(|c| (c.x / w.width().max(1.0), c.y / w.height().max(1.0))),
         _ => None,

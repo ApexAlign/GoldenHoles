@@ -685,7 +685,10 @@ impl ClientGame {
                 Action::Grapple => self.controls.mark(Use::Grapple),
                 Action::BuildFloor | Action::BuildWall => self.controls.mark(Use::Build),
                 Action::Slice => self.controls.mark(Use::Katana),
-                Action::Fire => self.controls.mark(Use::Shuriken),
+                Action::Fire => {
+                    self.controls.mark(Use::Shuriken);
+                    self.controls.mark(Use::Stars);
+                }
                 Action::Block => self.controls.mark(Use::Block),
                 _ => {}
             }
