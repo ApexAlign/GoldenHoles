@@ -15,6 +15,9 @@ pub const HINT_MAX_SHOWS: u8 = 3;
 /// Seconds one hint stays up.
 pub const HINT_SECS: f32 = 3.5;
 const PIPS: usize = 6;
+/// Arc radius (outside the crosshair ring) and pip radius, screen fractions.
+const PIP_R: f32 = 0.105;
+const PIP_SIZE: f32 = 0.0075;
 
 /// What the HUD needs to draw the star pool.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -150,9 +153,9 @@ impl HintState {
 
 /// Pip centre `i` of `n` on the arc right of the crosshair.
 fn pip_pos(i: usize, n: usize, ax: f32) -> (f32, f32) {
-    let span = 1.05f32; // radians, centred on 3 o'clock
+    let span = 1.3f32; // radians, centred on 3 o'clock
     let a = if n > 1 { -span * 0.5 + span * i as f32 / (n - 1) as f32 } else { 0.0 };
-    let r = 0.078;
+    let r = PIP_R;
     (0.5 + r * a.cos() * ax, 0.5 + r * a.sin())
 }
 
@@ -182,16 +185,16 @@ fn star_pips(out: &mut Vec<Prim>, st: &StarHud, p: &Palette, ax: f32) {
         let f = (st.charges - i as f32).clamp(0.0, 1.0);
         // the 2nd charge is the unlock threshold: mark it while locked out
         let marker = st.locked && i == 1;
-        out.push(Prim::Ring { c, r: 0.0085, color: if marker { p.magenta.a(0.9) } else { base.a(0.3 * dim) }, fill: false, glow: if marker { 0.006 } else { 0.0 } });
+        out.push(Prim::Ring { c, r: PIP_SIZE, color: if marker { p.magenta.a(0.9) } else { base.a(0.3 * dim) }, fill: false, glow: if marker { 0.006 } else { 0.0 } });
         if f > 0.0 {
             let col = if st.refused.is_some() { LOW_RED } else { base };
             let a = (if st.locked { 0.4 } else { 0.95 }) * dim * (0.4 + 0.6 * f);
-            out.push(Prim::Ring { c, r: 0.0085 * (0.35 + 0.65 * f), color: col.a(a), fill: true, glow: if st.locked { 0.0 } else { 0.004 } });
+            out.push(Prim::Ring { c, r: PIP_SIZE * (0.35 + 0.65 * f), color: col.a(a), fill: true, glow: if st.locked { 0.0 } else { 0.004 } });
         }
     }
     if let Some(t) = st.flash {
         let u = (t / REFILL_FLASH).clamp(0.0, 1.0);
-        out.push(Prim::Ring { c: (0.5 + 0.078 * ax, 0.5), r: 0.03 + 0.05 * u, color: p.cyan.a(0.8 * (1.0 - u)), fill: false, glow: 0.008 });
+        out.push(Prim::Ring { c: (0.5 + PIP_R * ax, 0.5), r: 0.03 + 0.05 * u, color: p.cyan.a(0.8 * (1.0 - u)), fill: false, glow: 0.008 });
     }
     if st.locked {
         let k = 0.6 + 0.4 * (st.idle * 6.0).sin().abs();

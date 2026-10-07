@@ -27,3 +27,6 @@ UPDATE: plain `--shot-offline` is now IDLE (rest pose, no scripted swing/throw).
 More `SHOT_FX` hooks: `print` (pieces appear at frame 108: scan-in mid-build), `derez` (pieces vanish at frame 100: voxel dissolve), `cracks:N` (damage bucket 0-8 on every piece), `katana` / `katanakill` (katana connect at frame 114: flash, sparks, arc flare, hit-stop). Flashes are capped to 30% of the eye distance so melee hits never white out the screen.
 
 `ffa_small_overview.png`: levels/ffa_small.lvl (88 m demo arena) from the SW corner, 16 m up. `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan SHOT_EYE=-40,16,-40 SHOT_LOOK=-2.356,-0.38 shinobi-game --shot-offline out.ppm --secs 2.0 --level levels/ffa_small.lvl --spawn 0`
+
+## HUD energy frames
+`hud_cpu_star_locked.png` (dry pool, RECHARGE, out-of-stars hint), `hud_cpu_guard_low.png` (red guard pulse, shield-low hint), `hud_cpu_star_mark_charge.png`, `hud_cpu_star_refill_flash.png`; `hud_cpu_spawn.png` / `hud_cpu_fight_lock.png` re-rendered (controls card block + star rows, pips). CPU-rendered, same as the other hud_cpu frames.
