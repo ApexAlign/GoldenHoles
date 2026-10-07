@@ -140,6 +140,23 @@ pub struct Cfg {
     pub clash_mult: f32,
     pub clash_knock: f32,
     pub clash_cd: f32,
+    /// Soft arrival: when the rope ends by arrival (inside `grapple_arrive` of the anchor) or by the hook key, only this
+    /// fraction of the speed is kept (1.0 = the old launch), unless the player holds jump or presses dash (then the
+    /// momentum is theirs: a deliberate launch). `cancel_keep` is the same for the hook key (a brake, not a release).
+    pub arrive_speed_keep: f32,
+    pub cancel_keep: f32,
+    /// Ledge assist: after a reel ends within `mantle_window` s (or while within `mantle_near` m of the anchor), a ledge /
+    /// deck / ramp edge up to `mantle_height` m above the feet and within reach ahead lifts the player onto it
+    /// (0 height = off), with `mantle_carry` m/s of forward carry.
+    pub mantle_height: f32,
+    pub mantle_window: f32,
+    pub mantle_near: f32,
+    pub mantle_carry: f32,
+    /// Hook yank (hook key again on a player rope): the target is pulled toward you at this speed (+ a hop), then the
+    /// rope is cut; cooldown before the next yank.
+    pub yank_speed: f32,
+    pub yank_hop: f32,
+    pub yank_cd: f32,
 }
 
 impl Cfg {
@@ -227,12 +244,12 @@ impl Default for Cfg {
             grapple_max_time: 10.0,
             grapple_jump_boost: 5.0,
             grapple_lift: 3.0,
-            grapple_steer: 0.35,
+            grapple_steer: 1.0,
             grapple_miss_cd: 0.15,
             grapple_max_speed: 20.0,
             grapple_ease_in: 0.25,
-            grapple_arrive_speed: 10.0,
-            grapple_soft_dist: 6.0,
+            grapple_arrive_speed: 6.0,
+            grapple_soft_dist: 8.0,
             grapple_brake: 70.0,
             grapple_far_speed: 140.0,
             grapple_speed_per_m: 1.75,
@@ -254,6 +271,15 @@ impl Default for Cfg {
             clash_mult: 1.5,
             clash_knock: 11.0,
             clash_cd: 2.5,
+            arrive_speed_keep: 0.25,
+            cancel_keep: 0.2,
+            mantle_height: 6.5,
+            mantle_window: 0.45,
+            mantle_near: 5.0,
+            mantle_carry: 3.2,
+            yank_speed: 34.0,
+            yank_hop: 5.0,
+            yank_cd: 1.6,
         }
     }
 }
@@ -899,6 +925,15 @@ impl CharacterSystem {
         if self.evasion.is_none() {
             self.grapple_pull(dt, pos, input.slide);
         }
+        // ---- ledge assist: near the anchor, or just after the reel ended (not when the player is jumping off on purpose) ----
+        if cfg.mantle_height > 0.0 && !input.jump_held && self.evasion.is_none() && !matches!(self.state, MoveState::WallRun { .. }) {
+            let eye = pos + up * cfg.eye_above_center;
+            let near_rope = self.grapple.map_or(false, |g| (g.anchor - eye).norm() < cfg.mantle_near);
+            let recent = self.grapple.is_none() && self.grapple_cd > cfg.grapple_cd - cfg.mantle_window;
+            if near_rope || recent {
+                self.mantle_assist(w, pos);
+            }
+        }
 
         // ---- KCC ----
         let shape = Capsule::new_y(cfg.half_height, cfg.radius);
@@ -1210,7 +1245,20 @@ impl CharacterSystem {
         let eye = pos + Vector::y() * cfg.eye_above_center;
         let to = g.anchor - eye;
         let d = to.norm();
-        let mut release = input.grapple_aim.is_some() || g.time > cfg.grapple_max_time || d < cfg.grapple_arrive;
+        let hook_key = input.grapple_aim.is_some();
+        let arrived = d < cfg.grapple_arrive;
+        let mut release = hook_key || g.time > cfg.grapple_max_time || arrived;
+        // soft arrival / cancel: the speed is bled off unless the player is deliberately launching (jump held, dash)
+        let launch = input.jump_held || input.dash_pressed || self.jump_buf > 0.0;
+        let keep = if launch {
+            1.0
+        } else if hook_key {
+            cfg.cancel_keep
+        } else if arrived {
+            cfg.arrive_speed_keep
+        } else {
+            1.0
+        };
         if !release && self.jump_buf > 0.0 {
             release = true;
             if !matches!(self.state, MoveState::WallRun { .. }) {
@@ -1238,6 +1286,47 @@ impl CharacterSystem {
         }
         if release {
             self.grapple_release();
+            if keep < 1.0 {
+                self.vel *= keep;
+            }
+        }
+    }
+
+    /// Ledge assist (see `Cfg::mantle_*`): a deck / ramp / ledge top up to `mantle_height` above the feet and just ahead
+    /// lifts the player onto it with a little forward carry, instead of letting them hang against the face or fly over.
+    /// `fwd`: the direction of travel (toward the anchor on the rope, else the velocity / facing).
+    fn mantle_assist(&mut self, w: &PhysicsWorld, pos: Vector<Real>) {
+        let cfg = self.cfg;
+        let fwd = match self.grapple {
+            Some(g) => flat_norm(g.anchor - pos),
+            None => flat_norm(self.vel),
+        };
+        let fwd = if fwd.norm_squared() > 0.0 { fwd } else { self.facing };
+        let feet = pos.y - cfg.half_height - cfg.radius;
+        for off in [0.45f32, 0.85, 1.3] {
+            let o = Vector::new(pos.x + fwd.x * off, feet + cfg.mantle_height + 0.6, pos.z + fwd.z * off);
+            let Some((toi, n)) = self.cast(w, o, -Vector::y(), cfg.mantle_height + 1.1) else { continue };
+            if n.y < 0.7 {
+                continue;
+            }
+            let top = o.y - toi;
+            let rise = top - feet;
+            if rise > 0.04 && rise <= cfg.mantle_height + 0.05 {
+                // room to stand: nothing within a capsule's height above the landing spot
+                if self.cast(w, Vector::new(o.x, top + 0.05, o.z), Vector::y(), 1.9).is_some() {
+                    continue;
+                }
+                let vy = ((rise + 0.35) / 0.14).min(28.0);
+                // proportional approach: the climb speed follows the rise still needed, so the player arrives at the lip
+                // gently instead of keeping the lift speed and shooting past the deck
+                self.vel.y = vy;
+                let h = flat(self.vel);
+                if h.dot(&fwd) < cfg.mantle_carry {
+                    self.vel.x = fwd.x * cfg.mantle_carry;
+                    self.vel.z = fwd.z * cfg.mantle_carry;
+                }
+                return;
+            }
         }
     }
 
