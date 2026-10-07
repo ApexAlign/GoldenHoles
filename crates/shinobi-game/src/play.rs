@@ -50,6 +50,8 @@ struct RemoteEnt {
     shield: Entity,
     shield_panel: Entity,
     shield_bars: [Entity; 4],
+    /// Tron x shinobi dressing on the body (hood, plates, katana edge, scarf, poses): `character_look.rs`.
+    rig: crate::character_look::Rig,
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
@@ -158,6 +160,7 @@ impl Plugin for PlayPlugin {
         app.insert_resource(ClearColor(Color::linear_rgb(0.003, 0.004, 0.012)))
             .init_resource::<Remotes>()
             .init_resource::<BodyMats>()
+            .init_resource::<crate::character_look::LookMats>()
             .init_resource::<Lock>()
             .init_resource::<ModeRes>()
             .add_systems(Update, update_title)
@@ -609,6 +612,8 @@ fn sync_remotes(
     look: Res<Look>,
     mut remotes: ResMut<Remotes>,
     mut body_mats: ResMut<BodyMats>,
+    mut look_mats: ResMut<crate::character_look::LookMats>,
+    time: Res<Time>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut tf: Query<&mut Transform>,
     mut vis: Query<&mut Visibility>,
@@ -659,13 +664,15 @@ fn sync_remotes(
             let shield_bars = std::array::from_fn(|_| {
                 commands.spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield))).id()
             });
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars }
+            let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.cube);
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
         let k = crate::team::key(hue);
         if ent.colour != Some(k) {
             ent.colour = Some(k);
+            ent.rig.skin(&mut commands, &mut look_mats, &mut mats, hue, k);
             let m = body_mats.0.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
                     base_color: {
@@ -782,6 +789,13 @@ fn sync_remotes(
                 ot.scale = (half + Vec3::splat(grow)) * 2.0;
             }
         }
+        let vel = Vec3::new(st.vel[0] as f32, st.vel[1] as f32, st.vel[2] as f32) / 64.0;
+        let anchor = s.game.net.rope_anchor(*id).map(Vec3::from);
+        ent.rig.update(
+            &crate::character_look::Ctx { draw: &d, kind: st.kind, flags: st.flags, fx: st.fx, vel, dist, dt: time.delta_secs(), t, boost: (bw, bh), anchor },
+            &mut tf,
+            &mut vis,
+        );
     }
 
     remotes.0.retain(|id, e| {
