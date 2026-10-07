@@ -14,10 +14,10 @@ const RAMP_TILT: f32 = 0.419; // 24 degrees
 const RAMP_HALF: f32 = 8.0;
 
 fn legacy() -> Cfg {
-    Cfg { arrive_speed_keep: 1.0, cancel_keep: 1.0, mantle_height: 0.0, grapple_steer: 0.35, grapple_arrive_speed: 10.0, grapple_soft_dist: 6.0, ..Cfg::default() }
+    Cfg { grapple_arrive: 2.0, arrive_speed_keep: 1.0, cancel_keep: 1.0, mantle_height: 0.0, grapple_steer: 0.35, grapple_arrive_speed: 10.0, grapple_soft_dist: 6.0, ..Cfg::default() }
 }
 
-fn world(ramp: bool) -> PhysicsWorld {
+fn world(ramp: bool, dist: f32) -> PhysicsWorld {
     let mut w = PhysicsWorld { bodies: RigidBodySet::new(), colliders: ColliderSet::new(), islands: IslandManager::new(), queries: QueryPipeline::new() };
     let mut add = |c: [f32; 3], h: [f32; 3], rot: f32| {
         w.colliders.insert(ColliderBuilder::cuboid(h[0], h[1], h[2]).position(Isometry::new(vector![c[0], c[1], c[2]], vector![0.0, 0.0, rot])).build());
@@ -29,9 +29,7 @@ fn world(ramp: bool) -> PhysicsWorld {
         let (cx, cy) = (DECK_HALF + RAMP_HALF * RAMP_TILT.cos(), DECK_TOP - RAMP_HALF * RAMP_TILT.sin());
         add([cx, cy - 0.4, 0.0], [RAMP_HALF, 0.4, 6.0], -RAMP_TILT);
         // the player's start platform for the ramp scenarios: 6 m above the ramp's top end, far out along +x
-        for dist in [20.0f32, 60.0, 150.0] {
-            add([DECK_HALF + 2.0 * RAMP_HALF + dist, DECK_TOP + 6.0 - 3.0, 0.0], [6.0, 3.0, 6.0], 0.0);
-        }
+        add([DECK_HALF + 2.0 * RAMP_HALF + dist, DECK_TOP + 6.0 - 3.0, 0.0], [6.0, 3.0, 6.0], 0.0);
     }
     w.queries.update(&w.colliders);
     w
@@ -72,12 +70,12 @@ fn on_deck_near_edge(w: &PhysicsWorld, ch: &CharacterSystem, ramp: bool) -> bool
 /// along +x toward the ramp's top end) on the floor and hooks the aim point `below` metres under the lip (0 = the lip
 /// itself). Holds the stick toward the target while on the rope. Returns (hooks used, ended standing near the edge).
 fn attempt(cfg: Cfg, dist: f32, below: f32, ramp: bool) -> (u32, bool) {
-    let mut w = world(ramp);
+    let mut w = world(ramp, dist);
     let (start, toward, target) = if ramp {
         // along +x from a platform 6 m above the ramp's top end: hook the ramp surface `below` m (along it) under its top edge
         let t = RAMP_TILT.tan();
         let along = 0.5 + below; // metres of ramp below the top edge
-        ([DECK_HALF + 2.0 * RAMP_HALF + dist, DECK_TOP + 6.81, 0.0], vector![-1.0, 0.0, 0.0], vector![DECK_HALF + along * RAMP_TILT.cos(), DECK_TOP - along * RAMP_TILT.cos() * t, 0.0])
+        ([DECK_HALF + 2.0 * RAMP_HALF + dist - 5.0, DECK_TOP + 6.81, 0.0], vector![-1.0, 0.0, 0.0], vector![DECK_HALF + along * RAMP_TILT.cos(), DECK_TOP - along * RAMP_TILT.cos() * t, 0.0])
     } else {
         // from the floor, a face point `0.3 + below` m under the lip
         ([0.0, 0.81, DECK_HALF + dist], vector![0.0, 0.0, -1.0], vector![0.0, DECK_TOP - 0.3 - below, DECK_HALF])
@@ -129,39 +127,13 @@ fn sweep(cfg: Cfg, label: &str) -> (f32, usize, usize, usize) {
 }
 
 #[test]
-fn debug_one() {
-    let cfg = Cfg::default();
-    let mut w = world(false);
-    let mut ch = player(&mut w, cfg, [0.0, 0.81, DECK_HALF + 20.0]);
-    let eye = pos(&w, &ch) + Vector::y() * ch.eye_above();
-    let dir = (vector![0.0, DECK_TOP - 0.8, DECK_HALF] - eye).normalize();
-    tick(&mut ch, &mut w, &PlayerInput { grapple_aim: Some(dir), move_dir: vector![0.0, 0.0, -1.0], ..Default::default() });
-    eprintln!("attached {:?}", ch.grapple.map(|g| (g.anchor, g.len)));
-    for k in 0..400 {
-        tick(&mut ch, &mut w, &PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() });
-        if k % 10 == 0 || ch.grapple.is_none() {
-            eprintln!("k {k} p {:?} v {:?} st {:?} g {}", pos(&w, &ch), ch.vel, ch.state, ch.grapple.is_some());
-        }
-        if ch.grapple.is_none() && k > 5 {
-            break;
-        }
-    }
-    for k in 0..120 {
-        tick(&mut ch, &mut w, &PlayerInput::default());
-        if k % 20 == 0 {
-            eprintln!("settle {k} p {:?} v {:?} {:?}", pos(&w, &ch), ch.vel, ch.state);
-        }
-    }
-}
-
-#[test]
 fn ledge_hooks_land_on_the_deck_with_one_hook_now_and_took_several_before() {
     let (mean_old, ok_old, first_old, n) = sweep(legacy(), "legacy");
     let (mean_new, ok_new, first_new, _) = sweep(Cfg::default(), "new");
     eprintln!(
         "LEDGE HOOKS over {n} deck/ramp targets (20/60/150 m, lip and below): legacy {mean_old:.2} hooks on average, {first_old}/{n} on the first hook, {ok_old}/{n} ever; new {mean_new:.2} hooks, {first_new}/{n} on the first hook, {ok_new}/{n} ever"
     );
-    assert!(first_new >= n * 8 / 10, "new arrival: only {first_new}/{n} landed on the first hook");
+    assert_eq!(first_new, n, "new arrival: every ledge target lands standing on the first hook ({first_new}/{n})");
     assert!(ok_new == n, "every ledge target is reachable: {ok_new}/{n}");
     assert!(mean_new < mean_old || first_old == n, "the new arrival needs fewer hooks ({mean_new:.2} vs {mean_old:.2})");
 }
