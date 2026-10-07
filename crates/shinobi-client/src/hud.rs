@@ -449,6 +449,8 @@ pub struct HudState {
     pub guard_flash: Option<(u8, f32)>,
     /// Star-energy pool readout (`hud_energy`); `None` hides it.
     pub star: Option<crate::hud_energy::StarHud>,
+    /// Flash-star white-out 0..=1 (screen wash; `RenderView::blind`, already scaled by the settings' effect strength).
+    pub blind: f32,
     /// Contextual hint on screen: id and age (`hud_energy::HintState`).
     pub hint: Option<(crate::hud_energy::HintId, f32)>,
     /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
@@ -1201,6 +1203,10 @@ impl Hud {
         }
         if !s.dead {
             out.extend(crate::controls_card::prims(&s.controls, p)); // not over the respawn countdown
+        }
+        // flash star: the whole frame, crosshair included, washes to white
+        if s.blind > 0.01 {
+            out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(1.0, 1.0, 1.0, 0.96 * s.blind.min(1.0)), glow: 0.0 });
         }
         out
     }

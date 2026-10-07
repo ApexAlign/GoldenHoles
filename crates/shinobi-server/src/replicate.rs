@@ -224,6 +224,7 @@ impl Replicator {
     /// Star variant events of the last frame -> reliable `StarFx` / `StarBlind` (effects and sounds for everyone).
     fn sync_stars(&mut self, server: &Server, tick: u32) {
         use shinobi_sim::combat::stars::StarKind;
+        use shinobi_sim::combat::CombatEvent;
         use shinobi_sim::events::*;
         for (owner, e) in &server.events {
             let (what, pos) = match *e {

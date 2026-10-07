@@ -193,6 +193,8 @@ pub struct HudBridge {
     /// Star-pool edge tracking and the contextual hints (`hud_energy`); the shell syncs `hints.counts()` with the settings.
     star_fx: crate::hud_energy::StarFx,
     pub hints: crate::hud_energy::HintState,
+    /// Strength multiplier for the flash white-out (the shell sets it from the effect-strength / reduced-motion settings); None = 1.
+    pub blind_mult: Option<f32>,
     guard_low_prev: bool,
     killfeed: Vec<KillEntry>,
     time: f32,
@@ -351,8 +353,8 @@ impl HudBridge {
             let (yaw, pitch) = view.look_angles();
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             for (id, smp) in &view.remotes {
-                if *id == local_id {
-                    continue;
+                if *id == local_id || view.hidden_ids.contains(id) {
+                    continue; // smoke hides its occupants from tags and edge ticks
                 }
                 if let Some(t) = &teams {
                     if t.team_of.get(id).copied().map(|x| x != 0) == Some(t.my_team != 0) {
@@ -445,7 +447,7 @@ impl HudBridge {
             let (dx, dz) = (smp.pos[0] - me[0], smp.pos[2] - me[2]);
             let dist = (dx * dx + dz * dz).sqrt();
             // no wallhack: enemies appear only when close or just after we fired; allies always
-            if dist > RADAR_RANGE || (!ally && dist > RADAR_ENEMY_RANGE && !firing) {
+            if dist > RADAR_RANGE || (!ally && dist > RADAR_ENEMY_RANGE && !firing) || (!ally && view.hidden_ids.contains(id)) {
                 continue;
             }
             let pos = ((dx * right[0] + dz * right[1]) / RADAR_RANGE, (dx * fwd[0] + dz * fwd[1]) / RADAR_RANGE);
@@ -613,7 +615,17 @@ impl HudBridge {
         hs.guarding = view.blocking;
         hs.guard_flash = self.fx.guard_flash();
         // star energy readout, hints (out of stars, shield low; other ids are triggered by their owners via `hint`)
-        hs.star = self.star_fx.update(dt, view.star, view.charging, view.star_refused);
+        hs.star = self.star_fx.update(dt, view.star, view.charging, view.star_refused, view.star_sel);
+        // the first plain throws: tell the player the throwable can be switched (stops once they have, or after 3 showings)
+        if view.fx.threw.is_some() && view.star_sel == shinobi_sim::combat::stars::StarKind::Standard && view.star_throws >= 2 {
+            if view.star_cycled {
+                self.hints.mark_seen(crate::hud_energy::HintId::StarCycle);
+            } else {
+                self.hints.trigger(crate::hud_energy::HintId::StarCycle);
+            }
+        }
+        // a flash white-out washes the whole screen (the settings' effect strength scales it; reduced motion caps it)
+        hs.blind = (view.blind * self.blind_mult.unwrap_or(1.0)).clamp(0.0, 1.0);
         if view.star_refused {
             self.hints.trigger(crate::hud_energy::HintId::OutOfStars);
         }
