@@ -30,3 +30,10 @@ More `SHOT_FX` hooks: `print` (pieces appear at frame 108: scan-in mid-build), `
 
 ## HUD energy frames
 `hud_cpu_star_locked.png` (dry pool, RECHARGE, out-of-stars hint), `hud_cpu_guard_low.png` (red guard pulse, shield-low hint), `hud_cpu_star_mark_charge.png`, `hud_cpu_star_refill_flash.png`; `hud_cpu_spawn.png` / `hud_cpu_fight_lock.png` re-rendered (controls card block + star rows, pips). CPU-rendered, same as the other hud_cpu frames.
+
+## Star variants (docs/stars.md)
+World frames (lavapipe, `SHOT_FX=mine|smoke|flash|mineburst|starkinds|blind:0.7`, same recipe as above): `star_world_mine.png` (glyph rings
+of four mines: owners 2 and 5 armed and near = bright, owner 1 unarmed and 6 armed far = faint), `star_world_smoke.png` (the 4 m cloud),
+`star_world_flash.png` (burst shell mid-pop), `star_world_mineburst.png`, `star_world_starkinds.png` (flying mine / flash / smoke discs),
+`star_world_blind.png` (full white-out). HUD frames (CPU, `hud_dump`): `hud_cpu_star_sel_{mine,flash,smoke,mine_dry}.png` (selector, cost rings,
+unaffordable in magenta), `hud_cpu_star_cycle_hint.png`, `hud_cpu_star_blind.png`.

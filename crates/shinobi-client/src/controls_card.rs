@@ -34,7 +34,7 @@ const ROWS: [(Use, &str, &str); 11] = [
     (Use::Shuriken, "RMB", "THROW + LOCK"),
     (Use::Block, "CTRL F V", "BLOCK"),
     (Use::Stars, "6 STARS", "RECHARGE"),
-    (Use::StarCycle, "WHEEL R", "STAR TYPE"),
+    (Use::StarCycle, "R", "STAR TYPE"),
 ];
 
 /// One drawn row: key text, action text, opacity 0..1.

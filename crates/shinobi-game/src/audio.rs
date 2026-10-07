@@ -110,6 +110,10 @@ pub struct Frame {
     pub my_death: Option<u16>,
     pub respawned: bool,
     pub match_start: bool,
+    /// Star variant effects this frame (`events::STAR_FX_*`, position), and a flash white-out that just hit us.
+    pub star_fx: Vec<(u8, [f32; 3])>,
+    pub blinded: bool,
+    pub star_switched: bool,
     /// The match ended: did we win?
     pub match_end: Option<bool>,
     // -- UI --
@@ -170,6 +174,8 @@ impl Frame {
                 }
                 NetEvent::Respawn { player, .. } if *player as u16 == own_id => fr.respawned = true,
                 NetEvent::MatchStart { .. } => fr.match_start = true,
+                NetEvent::StarFx { what, pos, .. } => fr.star_fx.push((*what, shinobi_proto::quant::dq_pos3(*pos))),
+                NetEvent::StarBlind { victim, .. } if *victim == own_id => fr.blinded = true,
                 NetEvent::MatchEnd { winner, .. } => fr.match_end = Some(*winner as u16 == own_id && own_id != 0),
                 _ => {}
             }
@@ -243,6 +249,25 @@ impl Cuer {
         }
         if f.threw {
             cues.push(Cue::flat(Sound::Throw, 0.8));
+        }
+        // star variants: existing synth sounds, placed in the world where they happen
+        for (what, p) in &f.star_fx {
+            use shinobi_sim::events::*;
+            let (s, v) = match *what {
+                STAR_FX_MINE_STUCK => (Sound::Print, 0.5),
+                STAR_FX_SMOKE_LANDED => (Sound::Land, 0.7),
+                STAR_FX_MINE_BURST => (Sound::AirSlam, 1.0),
+                STAR_FX_FLASH_BURST => (Sound::CounterFlash, 1.0),
+                STAR_FX_MINE_GONE => (Sound::Whiff, 0.7),
+                _ => continue,
+            };
+            cues.push(Cue::at(s, *p, v));
+        }
+        if f.blinded {
+            cues.push(Cue::flat(Sound::LockBreak, 0.9));
+        }
+        if f.star_switched {
+            cues.push(Cue::flat(Sound::UiClick, 0.5));
         }
 
         // star energy: buzz when empty, ping when it is back
@@ -573,6 +598,7 @@ mod backend {
         saved: AudioSettings,
         save_in: f32,
         booted: bool,
+        prev_star_sel: u8,
     }
 
     impl Default for CueState {
@@ -591,6 +617,7 @@ mod backend {
                 saved: AudioSettings::default(),
                 save_in: 0.0,
                 booted: false,
+                prev_star_sel: 0,
             }
         }
     }
@@ -674,6 +701,8 @@ mod backend {
         let v = &view.0;
         let mut frame = Frame::from_view(v, net.0.own_id().unwrap_or(0), dt);
         let me = frame.own_id;
+        frame.star_switched = st.prev_star_sel != v.star_sel as u8;
+        st.prev_star_sel = v.star_sel as u8;
 
         // other players: ropes, walking speed, deaths
         let mut now_pos = HashMap::new();

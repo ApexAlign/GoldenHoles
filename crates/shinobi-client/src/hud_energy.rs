@@ -269,14 +269,14 @@ fn star_selector(out: &mut Vec<Prim>, st: &StarHud, p: &Palette, ax: f32) {
         }
     }
     let pulse = st.switched.map_or(0.0, |t| (1.0 - t / 0.5).clamp(0.0, 1.0));
-    let (lx, ly) = (0.5 + (PIP_R + 0.012) * ax, 0.5 + 0.082);
+    let (lx, ly) = (0.5 + (PIP_R - 0.01) * ax, 0.5 + 0.112);
     let label_col = if affordable || st.max <= 0.0 { col } else { p.magenta };
-    kind_icon(out, st.sel, (lx - 0.012 * ax, ly - 0.006), 0.0085 + 0.004 * pulse, label_col.a(0.95), ax);
+    kind_icon(out, st.sel, (lx - 0.022 * ax, ly - 0.006), 0.0085 + 0.004 * pulse, label_col.a(0.95), ax);
     out.push(Prim::Text { pos: (lx, ly), text: format!("{} {}", st.sel.name(), cost.round() as u32), size: 0.014 + 0.003 * pulse, color: label_col.a(0.95), align: Align::Left });
     if let Some(t) = st.switched {
         let fade = ((SWITCH_SECS - t) / 0.6).clamp(0.0, 1.0);
         out.push(Prim::Text { pos: (lx, ly + 0.024), text: kind_blurb(st.sel).into(), size: 0.0115, color: p.text.a(0.85 * fade), align: Align::Left });
-        out.push(Prim::Ring { c: (lx - 0.012 * ax, ly - 0.006), r: 0.016 + 0.03 * (t / SWITCH_SECS).min(1.0), color: col.a(0.6 * pulse), fill: false, glow: 0.006 });
+        out.push(Prim::Ring { c: (lx - 0.022 * ax, ly - 0.006), r: 0.016 + 0.03 * (t / SWITCH_SECS).min(1.0), color: col.a(0.6 * pulse), fill: false, glow: 0.006 });
     }
 }
 

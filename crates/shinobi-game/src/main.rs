@@ -33,6 +33,7 @@ mod play;
 mod record;
 mod shot;
 mod sky;
+mod star_fx;
 mod vm;
 
 use std::net::SocketAddr;
@@ -181,7 +182,7 @@ fn main() {
     }
     app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
     if !off("fx") {
-        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin));
+        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::star_fx::StarFxPlugin));
     }
     if !off("hud") {
         app.add_plugins(hud_view::HudPlugin);
