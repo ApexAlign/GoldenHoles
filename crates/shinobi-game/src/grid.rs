@@ -55,7 +55,7 @@ impl GridFloor {
 
 impl Material for GridFloor {
     fn alpha_mode(&self) -> AlphaMode {
-        if self.params.tint.w > 1.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
+        if self.params.tint.w > 1.5 && self.params.tint.w < 2.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
     }
 
     fn fragment_shader() -> ShaderRef {
