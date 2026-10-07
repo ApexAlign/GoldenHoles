@@ -39,6 +39,17 @@ pub fn is_floating(l: &LevelDesc) -> bool {
     !l.boxes.is_empty() && l.boxes.iter().all(|b| b.center[1] - b.half[1] > 4.0)
 }
 
+/// Decoration landmarks of the floating city (`scripts/gen_sky_level.py` emits them as ordinary boxes; the renderer
+/// recognises them by these exact half extents and dresses them: torii beams between post pairs, lantern caps on pylons).
+/// Both are full walls (>= `WALL_RISE` tall), so they never make a jump-only obstacle.
+pub const TORII_POST_HALF: [f32; 3] = [0.4, 2.75, 0.4];
+pub const PYLON_HALF: [f32; 3] = [0.35, 1.8, 0.35];
+
+/// Is `b` (within 1 cm) a box of exactly half extents `h`?
+pub fn is_landmark(b: &LevelBox, h: [f32; 3]) -> bool {
+    b.rot_z == 0.0 && (0..3).all(|i| (b.half[i] - h[i]).abs() < 0.01)
+}
+
 /// A rise (m) at or above which an obstacle counts as a full wall: nobody is expected to hop it (a jump + double jump
 /// reaches ~2.8 m, so anything under this is a "jump over it" block).
 pub const WALL_RISE: f32 = 3.0;

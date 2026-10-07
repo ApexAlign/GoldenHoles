@@ -87,6 +87,22 @@ class Rng:
 
 rng = Rng(0x534b59)
 
+# decoration landmarks: the renderer recognises these exact half extents (shinobi_sim::level::TORII_POST_HALF / PYLON_HALF)
+TORII_POST = (0.4, 2.75, 0.4)
+PYLON = (0.35, 1.8, 0.35)
+gate_sites = []  # (axis of walking, cx, cz, deck top): torii candidates on catwalks
+
+
+def occupied(cx, cz, y0, y1, hx, hz):
+    """Does any existing box overlap this footprint and height span? (rolled boxes by their bounding box)"""
+    for _, items in BOXES:
+        for (bx, by, bz, bhx, bhy, bhz, rot) in items:
+            ex = abs(math.cos(rot)) * bhx + abs(math.sin(rot)) * bhy
+            ey = abs(math.sin(rot)) * bhx + abs(math.cos(rot)) * bhy
+            if abs(bx - cx) < ex + hx - 0.01 and abs(bz - cz) < bhz + hz - 0.01 and abs(by - (y0 + y1) / 2) < ey + (y1 - y0) / 2 - 0.01:
+                return True
+    return False
+
 
 def tile(xa, xb, lens, gap=GAP):
     """Plates tiling [xa, xb] with `gap` between them; lens cycle, the last plate is stretched to end exactly at xb."""
@@ -148,6 +164,7 @@ def band(k):
             open_gap = r == "N" and i == 1 and k != 2
             if not open_gap:
                 slab(g0 - 0.5, g1 + 0.5, rz - BRIDGE_HW, rz + BRIDGE_HW, top, 1.0)
+                gate_sites.append(("x", (g0 + g1) / 2, rz, top))
     # cross-street catwalks: every N plate gets one to an overlapping S plate; plus every other overlap
     n = 0
     for (x0, x1) in row_plates["N"]:
@@ -159,6 +176,7 @@ def band(k):
         if best:
             cx = (best[0] + best[1]) / 2
             slab(cx - BRIDGE_HW, cx + BRIDGE_HW, zc - ROW_OFF + ROW_HD - 0.5, zc + ROW_OFF - ROW_HD + 0.5, top, 1.0)
+            gate_sites.append(("z", cx, zc, top))
             n += 1
     # five spawns per tier, spread along the band (every plate is on the walkable network)
     cand.sort()
@@ -279,6 +297,56 @@ for j, (cx, cz, top) in enumerate(islands):
     slab(cx + 9.0, cx + 14.0, cz - 3.0, cz + 3.0, top, 1.0)  # a walkable lip off the +x edge
     if j in (1, 4, 6):
         pickups.append((cx + (-3.0 if j % 2 else 3.0) + 5.0, top + 1.0, cz, 25))
+
+# --------------------------------------------------------------------------------------------- shinobi architecture
+section("pagoda daises (stepped 0.3 m: walkable) on tower tops, torii posts on catwalks and spawn decks, stone-lantern pylons")
+# 1. pagoda daises: two inset 0.3 m steps on every tower top (the renderer floats a curved-eave pavilion canopy above)
+towers = []
+for _, items in BOXES[:-1]:
+    for (bx, by, bz, bhx, bhy, bhz, rot) in items:
+        if rot == 0 and abs(bhx - bhz) < 0.01 and 2.4 <= bhx <= 6.1 and bhy * 2 >= 7.0:
+            towers.append((bx, by + bhy, bz, bhx, bhz))
+for (tx, ttop, tz, thx, thz) in towers:
+    if not occupied(tx, tz, ttop + 0.02, ttop + 0.6, thx - 0.5, thz - 0.5):
+        add(tx, ttop + 0.15, tz, thx - 0.5, 0.15, thz - 0.5)
+        add(tx, ttop + 0.45, tz, thx - 1.2, 0.15, thz - 1.2)
+
+# 2. torii gates over every third catwalk: a small shrine pad widens the deck (flush with it) and the posts stand on the pad
+#    OUTSIDE the 5 m walkway (3.1 m from the centre line), so the whole catwalk stays clear between them
+for i, (axis, cx, cz, top) in enumerate(gate_sites):
+    if i % 3 != 1:
+        continue
+    if axis == "x":
+        pad = (cx - 1.4, cx + 1.4, cz - 3.9, cz + 3.9)
+        posts = [(cx, cz - 3.1), (cx, cz + 3.1)]
+    else:
+        pad = (cx - 3.9, cx + 3.9, cz - 1.4, cz + 1.4)
+        posts = [(cx - 3.1, cz), (cx + 3.1, cz)]
+    slab(pad[0], pad[1], pad[2], pad[3], top, 1.0)
+    for (px, pz) in posts:
+        if not occupied(px, pz, top + 0.01, top + 5.5, TORII_POST[0], TORII_POST[2]):
+            add(px, top + TORII_POST[1], pz, *TORII_POST)
+
+# ... and framing every second spawn (posts 3.2 m either side along x)
+for i, (sx, sz, top) in enumerate(spawns):
+    if i % 2:
+        continue
+    for sgn in (-1, 1):
+        px = sx + sgn * 3.2
+        if not occupied(px, sz, top + 0.01, top + 5.5, TORII_POST[0], TORII_POST[2]):
+            add(px, top + TORII_POST[1], sz, *TORII_POST)
+
+# 3. stone-lantern pylons: one near the outer end of every third plate, on the outer rim
+pyl = 0
+for (k, r, i, x0, x1, rz) in plates_all:
+    if i % 3 != 1 or r != "N":
+        continue
+    top = H[k]
+    pz = rz + ROW_HD - 1.0
+    px = x1 - 1.6
+    if not occupied(px, pz, top + 0.01, top + 3.6, PYLON[0], PYLON[2]):
+        add(px, top + PYLON[1], pz, *PYLON)
+        pyl += 1
 
 # --------------------------------------------------------------------------------------------- pickups
 # on terrace roofs (reachable on foot by ramp): one per tier, the rest sit on the satellite ledges above
