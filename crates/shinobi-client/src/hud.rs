@@ -444,6 +444,10 @@ pub struct HudState {
     /// Guard feedback: (kind, age seconds). 0 parried (you blocked it just in time), 1 your cut was parried (staggered),
     /// 2 you hit inside a strike window (bonus damage).
     pub guard_flash: Option<(u8, f32)>,
+    /// Star-energy pool readout (`hud_energy`); `None` hides it.
+    pub star: Option<crate::hud_energy::StarHud>,
+    /// Contextual hint on screen: id and age (`hud_energy::HintState`).
+    pub hint: Option<(crate::hud_energy::HintId, f32)>,
     /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
     pub boot: Option<f32>,
     /// Kills that end a free-for-all match, when the server has a limit.
@@ -1156,6 +1160,7 @@ impl Hud {
             target_brackets(&mut out, t, p, s.time);
         }
         guard_cue(&mut out, s, p);
+        crate::hud_energy::draw(&mut out, s, p, ax());
         if let Some(t) = s.boot {
             boot_sequence(&mut out, t, p);
         }
@@ -1651,12 +1656,13 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             let (a0, a1) = (k as f32 * std::f32::consts::TAU / 8.0 + 0.2, (k as f32 + 0.8) * std::f32::consts::TAU / 8.0 + 0.2);
             out.push(Prim::Line { a: (cx + r * a0.cos() * ax(), cy + r * a0.sin()), b: (cx + r * a1.cos() * ax(), cy + r * a1.sin()), color: p.cyan.a(0.9), glow: 0.006 });
         }
-        let low = (1.0 - s.guard_spent) < 0.3;
+        let low = (1.0 - s.guard_spent) < crate::hud_energy::GUARD_LOW;
         if low {
-            // low guard: the ring and the label flash magenta so you know to back off before it breaks
-            let k = 0.5 + 0.5 * (s.time * 14.0).sin();
-            out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD LOW".into(), size: 0.02, color: p.magenta.a(0.55 + 0.45 * k), align: Align::Center });
-            out.push(Prim::Ring { c: (cx, cy), r: 0.06 + 0.004 * k, color: p.magenta.a(0.35 + 0.4 * k), fill: false, glow: 0.008 });
+            // low guard: the ring and the label pulse red so you know to back off before it breaks
+            let k = crate::hud_energy::guard_pulse(s.time);
+            let red = crate::hud_energy::LOW_RED;
+            out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD LOW".into(), size: 0.02, color: red.a(0.55 + 0.45 * k), align: Align::Center });
+            out.push(Prim::Ring { c: (cx, cy), r: 0.06 + 0.004 * k, color: red.a(0.35 + 0.5 * k), fill: false, glow: 0.008 });
         } else {
             out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center });
         }
@@ -1666,9 +1672,11 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         let e = (1.0 - s.guard_spent).clamp(0.0, 1.0);
         let (w, h, y) = (0.12, 0.007, cy + 0.108);
         let r = Rect::new(cx - w * 0.5, y, w, h);
-        let col = if e < 0.25 { p.magenta } else { p.cyan };
+        let low = e < crate::hud_energy::GUARD_LOW;
+        let col = if low { crate::hud_energy::LOW_RED } else { p.cyan };
+        let pulse = if low { 0.6 + 0.4 * crate::hud_energy::guard_pulse(s.time) } else { 1.0 };
         out.push(Prim::Rect { r, color: col.a(0.18), glow: 0.0 });
-        out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * e, r.h), color: col.a(if s.guarding { 0.95 } else { 0.55 }), glow: 0.004 });
+        out.push(Prim::Rect { r: Rect::new(r.x, r.y, r.w * e, r.h), color: col.a(if s.guarding { 0.95 } else { 0.55 } * pulse), glow: 0.004 });
     }
     if let Some((kind, t)) = s.guard_flash {
         let u = (t / GUARD_FLASH_TIME).clamp(0.0, 1.0);
@@ -2030,7 +2038,7 @@ thread_local! {
     static AX: std::cell::Cell<f32> = const { std::cell::Cell::new(0.5625) };
 }
 
-fn ax() -> f32 {
+pub(crate) fn ax() -> f32 {
     AX.with(|a| a.get())
 }
 

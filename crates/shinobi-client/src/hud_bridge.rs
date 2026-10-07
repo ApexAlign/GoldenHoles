@@ -183,11 +183,21 @@ pub struct HudBridge {
     /// Viewport width / height for projecting ally tags (<= 0 means 16:9).
     pub aspect: f32,
     pub fx: HudFx,
+    /// Star-pool edge tracking and the contextual hints (`hud_energy`); the shell syncs `hints.counts()` with the settings.
+    star_fx: crate::hud_energy::StarFx,
+    pub hints: crate::hud_energy::HintState,
+    guard_low_prev: bool,
     killfeed: Vec<KillEntry>,
     time: f32,
 }
 
 impl HudBridge {
+    /// Ask for a contextual hint (shown only the first `HINT_MAX_SHOWS` times). Other systems call this with
+    /// `HintId::HeavyCut` / `HintId::HookYank` when their trigger fires.
+    pub fn hint(&mut self, id: crate::hud_energy::HintId) -> bool {
+        self.hints.trigger(id)
+    }
+
     /// The kill log as the HUD holds it (newest last): for the console's `/log`.
     pub fn killfeed(&self) -> &[KillEntry] {
         &self.killfeed
@@ -586,6 +596,18 @@ impl HudBridge {
         hs.guard_spent = self.guard_spent;
         hs.guarding = view.blocking;
         hs.guard_flash = self.fx.guard_flash();
+        // star energy readout, hints (out of stars, shield low; other ids are triggered by their owners via `hint`)
+        hs.star = self.star_fx.update(dt, view.star, view.charging, view.star_refused);
+        if view.star_refused {
+            self.hints.trigger(crate::hud_energy::HintId::OutOfStars);
+        }
+        let low = view.blocking && (1.0 - self.guard_spent) < crate::hud_energy::GUARD_LOW;
+        if low && !self.guard_low_prev {
+            self.hints.trigger(crate::hud_energy::HintId::ShieldLow);
+        }
+        self.guard_low_prev = low;
+        self.hints.tick(dt);
+        hs.hint = self.hints.current();
         hs.audio = self.audio;
         hs.aspect = self.aspect;
         hs.ffa = teams.is_none();

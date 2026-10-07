@@ -14,6 +14,7 @@ pub mod fx;
 pub mod conn_watch;
 pub mod demo_script;
 pub mod hud_bridge;
+pub mod hud_energy;
 pub mod hud_geom;
 pub mod overlay;
 pub mod pointer_lock;
