@@ -7,7 +7,7 @@ overrides them). Zero turns a heightener off; the default `Balance` has them all
 
 | Input | Action |
 |---|---|
-| LMB | katana dash-slice (the lock triangle aims it) |
+| LMB | katana dash-slice (the lock triangle aims it); keep it down after a cut to charge the heavy cut |
 | RMB | shuriken (the poke) |
 | Ctrl / F / V / middle or back mouse (right bumper on a pad) | hold: block + parry, view locked |
 
@@ -53,7 +53,33 @@ no protocol change. The strike window (block.rs) multiplies on top of all of the
 Not done: client-side slow-motion on parry / kill, clash sparks, a finisher flash, dash-cancel / cooldown refund on a hit
 (the katana cooldown is predicted by the client, a server-side refund would desync the lunge decision).
 
+## Katana moves (`katana_moves.rs`, `combat/katana.rs`; `combat.katana.*` and `melee.*` keys)
+
+One button, five moves. The server decides every one; none refunds a cooldown (the cooldown is client-predicted).
+Order of choice: heavy (a charge released) > counter (parry window open) > whirl (sliding, or the shield came down within
+0.2 s) > air (airborne, no rope or wall strike) > the plain cut.
+
+| Move | How | Numbers (demo) | Keys |
+|---|---|---|---|
+| Heavy cut | press cuts as ever; keep holding, release after 0.5 s (full at 0.9 s) | up to 1.8x damage and +1.2 m blade, made in place (no lunge), 0.9 s recovery | `heavy_mult`, `heavy_reach`, `heavy_recover` |
+| Air cut | cut while airborne | +25 % damage, taller blade box; the victim is driven into the floor and the landing is a shock-wave that throws bystanders back (ring-out credit to the slammer) | `air_mult`, `air_half_height`, `melee.slam_speed`, `shock_radius`, `shock_knock` |
+| Counter cut | cut within 0.25 s of a parry | goes for the staggered attacker by itself (up to 7 m, no aim needed), hits for sure, damage x(1 + 0.5 x parried / base) | `counter_range`, `counter_scale`, `melee.counter_window_s` |
+| Whirl cut | cut while sliding or just after lowering the shield | 360 degrees, 12 damage to everyone within 3 m, 0.6 s recovery | `whirl_radius`, `whirl_damage`, `whirl_recover` |
+| Execute | any cut on a stunned (parried / splatted / guard-broken) player at or under 25 % hp | kills | `melee.exec_frac` |
+
+A held button no longer auto-repeats: chain cuts by clicking. Zero on a damage/radius key turns that move off.
+
+Client cues (`shinobi-client/src/katana_fx.rs`): a charge ring on the lock triangle (gold and labelled HEAVY when full),
+an expanding shock ring on the air cut, a whirl arc, a COUNTER flash (our cut within the parry window), an EXECUTE flash
+(a confirmed katana kill carrying the bonus flag). Screens: `docs/screens/katana_*.png`. The controls card reads
+`KATANA (HOLD: HEAVY)`. Hint ids for the hint system: `katana.heavy|air|counter|whirl|execute` (`hint_ids`, `HudBridge::katana_hints`;
+not wired to a display yet). Bots hold for heavy cuts (20 % of combo openers, at most one per 10 s), counter inside the window (50 %) and whirl
+after dropping the shield with someone within 3 m (40 %).
+
+Known gap: the client does not predict counter or post-shield whirl cuts (the client has no parry context); the server
+result and the HUD flash still arrive with the hit confirm.
+
 ## Tests
 
-`melee_duel.rs` (each heightener through the real `Server`), `melee_feel.rs` (accuracy), `guard_duel.rs` (block / parry /
+`melee_duel.rs` (each heightener through the real `Server`), `katana_moves_duel.rs` (heavy, air + slam, counter, whirl, execute), `katana_fx.rs` unit tests, bot heavy-cut test in `shinobi-ai/tests/behaviour.rs`, `melee_feel.rs` (accuracy), `guard_duel.rs` (block / parry /
 strike window), `full_loop_e2e.rs` (homing and block through `ClientGame <-> Server`).

@@ -48,6 +48,7 @@ const COMBO_REACH: f32 = 2.9;
 /// cut back inside a counter window, the chance and range of a whirl cut right after the shield comes down.
 const HEAVY_CHANCE: f32 = 0.2;
 const HEAVY_HOLD_TICKS: u32 = 50;
+const HEAVY_GAP_TICKS: u32 = 600;
 const COUNTER_CHANCE: f32 = 0.5;
 const WHIRL_CHANCE: f32 = 0.4;
 const WHIRL_RANGE: f32 = 3.0;
@@ -215,6 +216,8 @@ pub struct BotMem {
     block_ok: u32,
     /// Heavy cut: hold the katana button until this tick, then release (0 = not charging).
     heavy_until: u32,
+    /// Next tick a heavy cut may be started (a charge is a standstill: keep the bots moving).
+    heavy_ok: u32,
     /// The shield was up last tick (a whirl cut follows its coming down).
     was_blocking: bool,
     /// Last tick a counter cut was tried (one try per parry window).
@@ -267,6 +270,7 @@ impl BotMem {
             block_until: 0,
             block_ok: 0,
             heavy_until: 0,
+            heavy_ok: 0,
             was_blocking: false,
             counter_tried: 0,
             evade_ok: 0,
@@ -554,8 +558,9 @@ impl BotMem {
                                 self.set_phase(Phase::Strike { stage: StrikeStage::Recover }, tick);
                                 self.combo = 2;
                             }
-                        } else if in_reach && self.combo < 2 && tick == since + 4 && rng.chance(HEAVY_CHANCE) {
+                        } else if in_reach && self.combo < 2 && tick == since + 4 && tick >= self.heavy_ok && rng.chance(HEAVY_CHANCE) {
                             self.heavy_until = tick + HEAVY_HOLD_TICKS;
+                            self.heavy_ok = tick + HEAVY_GAP_TICKS;
                         } else if in_reach && self.combo < 2 {
                             if tick >= since + 26 {
                                 self.combo += 1;
