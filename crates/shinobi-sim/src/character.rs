@@ -198,7 +198,7 @@ impl Default for Cfg {
             gravity: 24.0,
             terminal: 36.0,
             ground_stick: -2.0,
-            jump_speed: 10.8,
+            jump_speed: 11.2,
             double_jump_speed: 8.4,
             peak_window: 3.0,
             rise_hold_mult: 0.75,
@@ -2623,6 +2623,24 @@ mod tests {
     }
 
     #[test]
+    fn sprint_ten_metres_is_fast() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let z0 = w.bodies[ch.body].translation().z;
+        let fwd = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        let mut n = 0;
+        while z0 - w.bodies[ch.body].translation().z < 10.0 && n < 600 {
+            tick(&mut ch, &mut w, &fwd, &mut now);
+            n += 1;
+        }
+        eprintln!("SPRINT10 {:.2} s", n as f32 * DT);
+        assert!(n as f32 * DT < 1.6, "10 m sprint took {} s", n as f32 * DT);
+    }
+
+    #[test]
     fn variable_jump_tap_hops_hold_floats_and_a_double_jump_crosses_a_gap() {
         let cfg = Cfg::default();
         let (tap_h, tap_t, tap_d) = run_jump(cfg, false, false);
@@ -2634,7 +2652,7 @@ mod tests {
         assert!((1.0..1.6).contains(&hold_t), "a held jump floats about a second: {hold_t}");
         assert!(hold_d >= 9.5, "a held run-in jump covers {hold_d} m");
         assert!((4.6..5.6).contains(&dbl_h), "double jump apex {dbl_h}");
-        assert!(dbl_d >= 17.0, "jump + double jump crosses {dbl_d} m with two inputs");
+        assert!(dbl_d >= 18.0, "jump + double jump crosses {dbl_d} m with two inputs");
         // the arc is a glide, not a moon jump: a double jump stays under ~2 s
         assert!(dbl_t < 2.4, "air time {dbl_t}");
         // cfg helpers agree with the simulation (bots plan with them)
