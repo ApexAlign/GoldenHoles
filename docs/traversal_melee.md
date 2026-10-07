@@ -59,6 +59,25 @@ The katana swing becomes a **launch along your flat aim** instead of the plain d
 
 Measured (`wall_clash.rs`, katana 20): at 7 m a plain slash misses, a hook-strike hits for 30.
 
+## Hook yank and rope slash
+
+**Hook yank** (hook key again while the rope is on a *player*): the rope is cut (same brake as a normal cancel, so the
+yanker's prediction is unchanged) and the server pulls that player toward you. The victim is lifted off the floor (ground
+friction would eat the pull), staggered (`yank_stagger` 0.7 s: cannot act, wide open, same stagger as a parry) and loses any
+rope / wall-run. Pull speed = `yank_gain` (2.0 m/s per m of gap) clamped to 30 %..100 % of `yank_speed` (46 m/s), plus
+`yank_hop` 6 m/s up. Cooldown `yank_cd` 1.6 s rides in `grapple_cd` (already predicted state, no new wire field; the
+hook-strike window ignores it). Teammates are not pulled. All `Cfg` keys. `GrappleEvent::Yank` carries it to the server
+(`Server::resolve_yanks`); the victim feels it as an ordinary reconciliation.
+Measured (`hook_yank.rs`): a target 29.7 m out is in your face (< 1 m) 0.83 s after the yank.
+
+**Rope slash** (katana while the rope is taut): every enemy whose centre is within `rope_radius` of the rope line, up to
+`rope_reach` from the eye, is cut for `rope_damage_mult` x katana damage (never below the hook-strike multiplier), box or no box.
+Balance keys `combat.katana.rope_damage_mult` (1.6), `rope_radius` (1.5 m), `rope_reach` (25 m). Measured: katana 20 ->
+32 on the line, 0 for an enemy 5 m off it.
+
+Cue: while the rope is on, the crosshair label reads `ROPE SLASH`, or `ROPE SLASH  -  E: YANK` when the rope is on a player
+(`fx.strike_armed` 3 / 4). Review frame: `docs/screens/traversal_yank_cue.png` (`SHOT_FX=yankrope`).
+
 ## Wall-run (hold Space or the cling key next to / into a face)
 
 | | before | now | key |
