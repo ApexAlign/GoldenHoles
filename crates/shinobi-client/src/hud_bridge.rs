@@ -570,7 +570,9 @@ impl HudBridge {
         }
         // guard energy mirrors the server (`Balance::demo().guard`): 2.5 s of hold, 3 s to refill, a blocked hit costs 20 %
         {
-            let g = shinobi_sim::balance::GuardBalance::default();
+            // the demo balance's guard (the server's `Balance::demo()`); a blocked 20 hp cut costs `hit_cost`
+            static DEMO_GUARD: std::sync::OnceLock<shinobi_sim::balance::GuardBalance> = std::sync::OnceLock::new();
+            let g = *DEMO_GUARD.get_or_init(|| shinobi_sim::balance::Balance::demo().guard);
             if view.blocking {
                 self.guard_spent = (self.guard_spent + dt / g.max_hold_s).min(1.0);
             } else {

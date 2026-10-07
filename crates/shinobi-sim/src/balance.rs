@@ -253,6 +253,11 @@ pub struct GuardBalance {
     pub counter_open_s: f32,
     /// Damage multiplier for a hit inside a strike window (1 = off).
     pub bonus_mult: f32,
+    /// A guard broken by a hit staggers its owner this long; for `mercy_s` after any break damage taken is scaled by
+    /// `mercy_mult` (a broken shield is not a free combo for the attacker).
+    pub break_stagger_s: f32,
+    pub mercy_s: f32,
+    pub mercy_mult: f32,
 }
 
 impl Default for GuardBalance {
@@ -269,6 +274,9 @@ impl Default for GuardBalance {
             swing_open_s: 0.0,
             counter_open_s: 0.0,
             bonus_mult: 1.0,
+            break_stagger_s: 0.0,
+            mercy_s: 0.0,
+            mercy_mult: 1.0,
         }
     }
 }
@@ -288,6 +296,9 @@ impl GuardBalance {
             swing_open_ticks: t(self.swing_open_s),
             counter_open_ticks: t(self.counter_open_s),
             bonus_mult: self.bonus_mult,
+            break_stagger_ticks: t(self.break_stagger_s),
+            mercy_ticks: t(self.mercy_s),
+            mercy_mult: self.mercy_mult,
         }
     }
 }
@@ -623,6 +634,20 @@ impl Balance {
         b.guard.swing_open_s = 0.25;
         b.guard.counter_open_s = 1.0;
         b.guard.bonus_mult = 1.5;
+        // a held shield must feel SAFE (it used to break in 1.5 s and leave you dead 1.5 s later): an 8 s guard, a blocked
+        // cut costs 6 % of it, a wide 200 degree arc, 3 % leak from the base cut (momentum / lunge bonuses never punch
+        // through), a forgiving 0.35 s parry, quick re-arm, and a broken guard staggers 0.3 s then takes only 35 % damage
+        // for 1.2 s so it never hands over a combo
+        b.guard.front_deg = 100.0;
+        b.guard.front_mult = 0.03;
+        b.guard.parry_s = 0.35;
+        b.guard.max_hold_s = 8.0;
+        b.guard.regen_s = 2.0;
+        b.guard.hit_cost = 0.06;
+        b.guard.rearm_s = 0.5;
+        b.guard.break_stagger_s = 0.3;
+        b.guard.mercy_s = 1.2;
+        b.guard.mercy_mult = 0.35;
         b.player.respawn_ticks = 150; // 2.5 s: the death animation fills ~1.6 s of it, then the countdown
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
         b.player.regen_per_s = 20.0; // 4 s out of the fight and you are whole again: attrition never ends a run
@@ -823,6 +848,9 @@ impl Balance {
         s!("guard.swing_open_s", F, self.guard.swing_open_s);
         s!("guard.counter_open_s", F, self.guard.counter_open_s);
         s!("guard.bonus_mult", F, self.guard.bonus_mult);
+        s!("guard.break_stagger_s", F, self.guard.break_stagger_s);
+        s!("guard.mercy_s", F, self.guard.mercy_s);
+        s!("guard.mercy_mult", F, self.guard.mercy_mult);
         s!("combat.knockback_slash", F, self.combat.knockback_slash);
         s!("combat.knockback_shuriken", F, self.combat.knockback_shuriken);
         s!("combat.knockback_ultimate", F, self.combat.knockback_ultimate);
@@ -986,6 +1014,9 @@ impl Balance {
         let g = &self.guard;
         if !(1.0..=180.0).contains(&g.front_deg) || !(0.0..=1.0).contains(&g.front_mult) || !(0.0..=1.0).contains(&g.hit_cost) {
             e.push("guard.front_deg must be 1..180, guard.front_mult and guard.hit_cost 0..1".into());
+        }
+        if !(0.0..=1.0).contains(&g.mercy_mult) || g.break_stagger_s < 0.0 || g.mercy_s < 0.0 {
+            e.push("guard.mercy_mult must be 0..1, guard.break_stagger_s and guard.mercy_s >= 0".into());
         }
         if g.max_hold_s <= 0.0 || g.regen_s <= 0.0 || [g.parry_s, g.rearm_s, g.stagger_s, g.swing_open_s, g.counter_open_s].iter().any(|v| *v < 0.0) || g.bonus_mult < 1.0 {
             e.push("guard times must be >= 0 (max_hold_s and regen_s > 0) and guard.bonus_mult >= 1".into());

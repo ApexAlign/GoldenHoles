@@ -295,15 +295,17 @@ pub fn apply_hits(
         // the victim's shield and strike window decide what this hit is worth (weapons only, never hazards)
         let (mut amount, mut bonus) = (h.amount, false);
         let mut guard_seen = crate::block::Guard::None;
+        let mut mom = 1.0f32;
         if let Cause::Weapon(kind) = h.cause {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
-            // momentum + kill streak: a fast, hot swordsman cuts harder
+            // momentum + kill streak: a fast, hot swordsman cuts harder (but only against an open target: a shield is
+            // judged on the BASE cut, so a lunge or a streak never punches through it)
             if kind == DamageKind::Slash {
                 if let Some(a) = players.iter().find(|p| p.id == h.attacker) {
                     let v = a.ch.vel;
                     let falling = if matches!(a.ch.state, crate::character::MoveState::Grounded) { 0.0 } else { (-v.y).max(0.0) * 0.5 };
                     let speed = (v.x * v.x + v.z * v.z).sqrt() + falling;
-                    amount *= melee.damage_mult(&a.melee, speed, tick);
+                    mom = melee.damage_mult(&a.melee, speed, tick);
                 }
             }
             let vp = &players[h.victim];
@@ -322,15 +324,22 @@ pub fn apply_hits(
                     }
                 }
                 crate::block::Guard::Blocked => {
-                    amount *= block.front_mult;
+                    amount = h.amount * block.front_mult; // base cut: no momentum, streak or window bonus
                     let v = &mut players[h.victim];
-                    v.blk.energy -= block.hit_cost;
+                    // a blocked hit costs guard in proportion to its raw damage (a 20 hp cut = `hit_cost`, a 7 hp star a third)
+                    v.blk.energy -= block.hit_cost * (h.amount / 20.0).min(2.5);
                     if v.blk.energy <= 0.0 {
                         v.blk.break_guard(tick, block);
+                        // the break staggers the owner briefly; the mercy window then protects them from a follow-up combo
+                        v.blk.stagger_until = tick + block.break_stagger_ticks;
                     }
                 }
                 crate::block::Guard::None => {
-                    if players[h.victim].blk.open(tick) && block.bonus_mult > 1.0 {
+                    amount *= mom;
+                    let v = &players[h.victim];
+                    if v.blk.mercy(tick) {
+                        amount *= block.mercy_mult;
+                    } else if v.blk.open(tick) && block.bonus_mult > 1.0 {
                         amount *= block.bonus_mult;
                         bonus = true;
                     }

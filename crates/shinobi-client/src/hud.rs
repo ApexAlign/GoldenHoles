@@ -1651,7 +1651,15 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
             let (a0, a1) = (k as f32 * std::f32::consts::TAU / 8.0 + 0.2, (k as f32 + 0.8) * std::f32::consts::TAU / 8.0 + 0.2);
             out.push(Prim::Line { a: (cx + r * a0.cos() * ax(), cy + r * a0.sin()), b: (cx + r * a1.cos() * ax(), cy + r * a1.sin()), color: p.cyan.a(0.9), glow: 0.006 });
         }
-        out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center });
+        let low = (1.0 - s.guard_spent) < 0.3;
+        if low {
+            // low guard: the ring and the label flash magenta so you know to back off before it breaks
+            let k = 0.5 + 0.5 * (s.time * 14.0).sin();
+            out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD LOW".into(), size: 0.02, color: p.magenta.a(0.55 + 0.45 * k), align: Align::Center });
+            out.push(Prim::Ring { c: (cx, cy), r: 0.06 + 0.004 * k, color: p.magenta.a(0.35 + 0.4 * k), fill: false, glow: 0.008 });
+        } else {
+            out.push(Prim::Text { pos: (cx, cy + 0.085), text: "GUARD".into(), size: 0.016, color: p.cyan.a(0.85), align: Align::Center });
+        }
     }
     // guard-energy bar under the crosshair while the shield is up or recharging
     if (s.guarding || s.guard_spent > 0.005) && !s.dead {
