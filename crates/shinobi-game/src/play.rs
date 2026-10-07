@@ -52,6 +52,8 @@ struct RemoteEnt {
     shield_bars: [Entity; 4],
     /// Tron x shinobi dressing on the body (hood, plates, katana edge, scarf, poses): `character_look.rs`.
     rig: crate::character_look::Rig,
+    /// Showing the white hit flash (`hit_feedback::HitFx`) instead of the player colour.
+    flashing: bool,
 }
 
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
@@ -161,6 +163,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Remotes>()
             .init_resource::<BodyMats>()
             .init_resource::<crate::character_look::LookMats>()
+            .init_resource::<crate::hit_feedback::HitFx>()
             .init_resource::<Lock>()
             .init_resource::<ModeRes>()
             .add_systems(Update, update_title)
@@ -613,6 +616,7 @@ fn sync_remotes(
     mut remotes: ResMut<Remotes>,
     mut body_mats: ResMut<BodyMats>,
     mut look_mats: ResMut<crate::character_look::LookMats>,
+    hitfx: Res<crate::hit_feedback::HitFx>,
     time: Res<Time>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut tf: Query<&mut Transform>,
@@ -665,12 +669,17 @@ fn sync_remotes(
                 commands.spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield))).id()
             });
             let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.cube);
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig }
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig, flashing: false }
         });
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
         let k = crate::team::key(hue);
-        if ent.colour != Some(k) {
+        let flashing = hitfx.flashing(*id);
+        if !flashing && ent.flashing {
+            ent.flashing = false;
+            ent.colour = None; // flash over: reskin below
+        }
+        if ent.colour != Some(k) && !flashing {
             ent.colour = Some(k);
             ent.rig.skin(&mut commands, &mut look_mats, &mut mats, hue, k);
             let m = body_mats.0.entry(k).or_insert_with(|| {
@@ -717,6 +726,14 @@ fn sync_remotes(
             for b in &ent.shield_bars {
                 commands.entity(*b).insert(MeshMaterial3d(bm.clone())); // the frame: the hot additive colour
             }
+        }
+        // hit flash: every body part and rig role goes bright white for a moment
+        if flashing && !ent.flashing {
+            ent.flashing = true;
+            for e in &ent.parts {
+                commands.entity(*e).insert(MeshMaterial3d(hitfx.white.clone()));
+            }
+            ent.rig.flash(&mut commands, &hitfx.white);
         }
         // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
@@ -771,7 +788,7 @@ fn sync_remotes(
         }
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
-            r.translation = Vec3::from(d.pos);
+            r.translation = Vec3::from(d.pos) + hitfx.shake(*id);
             r.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_z(d.roll);
         }
         let (bw, bh) = size_boost(dist);

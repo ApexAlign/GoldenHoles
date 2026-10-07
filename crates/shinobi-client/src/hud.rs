@@ -1004,6 +1004,11 @@ impl Hud {
             }
             if s.hit_kill {
                 out.push(Prim::Ring { c: (cx, cy), r: 0.03 + 0.02 * (1.0 - f), color: p.gold.a(0.7 * f), fill: false, glow: 0.008 });
+            } else if s.hit_kind == Some(DamageKind::Shuriken) && !s.hit_head {
+                // a star hit: short vertical ticks (a katana hit has horizontal ones), so the weapon reads by shape
+                for sy in [-1.0f32, 1.0] {
+                    out.push(Prim::Line { a: (cx, cy + sy * 0.014), b: (cx, cy + sy * 0.032), color: col.a(punch), glow: 0.006 });
+                }
             } else if s.hit_kind == Some(DamageKind::Slash) {
                 for sx in [-1.0f32, 1.0] {
                     out.push(Prim::Line { a: (cx + sx * 0.012, cy), b: (cx + sx * 0.03, cy), color: col.a(punch), glow: 0.006 });
@@ -1026,9 +1031,10 @@ impl Hud {
         if let Some((t, bearing)) = s.since_damage.filter(|(t, _)| *t < DAMAGE_TIME) {
             let f = 1.0 - t / DAMAGE_TIME;
             // red screen flash + a thick wedge of ticks pointing at the attacker (far outside the reticle)
-            out.push(Prim::Vignette { start: 0.35, max_a: DAMAGE_FLASH_A * f, tint: p.magenta.a(1.0) });
             // wedge width and tick count grow with the size of the hit (unknown size draws a mid-size wedge)
             let frac = if s.damage_frac > 0.0 { s.damage_frac } else { 0.3 };
+            // the pulse scales with the damage: a nick is a faint blush, a big hit is the full flash
+            out.push(Prim::Vignette { start: 0.35, max_a: DAMAGE_FLASH_A * f * (0.45 + 1.1 * frac).min(1.0), tint: p.magenta.a(1.0) });
             let half = 0.1 + 0.5 * frac; // radians either side of the bearing
             let (r0, r1) = (0.16, 0.24 + 0.04 * frac);
             let n = 3 + (frac * 8.0).round() as i32;

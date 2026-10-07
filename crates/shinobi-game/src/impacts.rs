@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 
 use crate::net::ViewRes;
-use crate::team::{key, LocalColour};
+use crate::team::key;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImpactKind {
@@ -86,10 +86,12 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
 }
 
 /// Server-confirmed hits dealt by us: flash on the victim (hit marker in the world, not just on the HUD).
-fn queue_hits(view: Res<ViewRes>, local: Res<LocalColour>, mut q: ResMut<ImpactQueue>) {
+fn queue_hits(view: Res<ViewRes>, net: Res<crate::net::Net>, mut q: ResMut<ImpactQueue>) {
     for h in view.0.hits.iter().filter(|h| !h.taken) {
         if let Some((_, s)) = view.0.remotes.iter().find(|(id, _)| *id == h.other) {
-            q.0.push(Impact { pos: Vec3::from(s.pos), color: local.0, kind: ImpactKind::Hit { kill: h.kill } });
+            // burst in the VICTIM's colour (team colour in team modes), at head height for headshots
+            let pos = Vec3::from(s.pos) + if h.head { Vec3::Y * 0.5 } else { Vec3::ZERO };
+            q.0.push(Impact { pos, color: crate::team::colour_of(&net, h.other), kind: ImpactKind::Hit { kill: h.kill } });
         }
     }
 }
