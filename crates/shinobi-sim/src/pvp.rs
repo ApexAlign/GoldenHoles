@@ -957,9 +957,9 @@ mod tests {
     #[test]
     fn rewound_slice_hits_a_target_that_has_since_moved_away() {
         let t0 = crossing_tick(-3.0);
-        // re-baselined for run 7.2 m/s (was 5.4, rewind 24): displayed B (30 ticks back) is at x ~ 0.7 (in the box); live B is ~4.3 m off
-        let fire = t0 + 36;
-        let rewound = duel(Buttons::SLICE, fire, 30, -3.0);
+        // re-baselined for run 7.2 m/s (was 5.4, fire t0+36): fire t0+28 so the displayed B (24 ticks back) is at x ~ 0.5 (in the box); live B is ~3.4 m off (outside box + aim assist)
+        let fire = t0 + 28;
+        let rewound = duel(Buttons::SLICE, fire, 24, -3.0);
         assert!(!rewound.player(B).vitals.alive() || rewound.player(B).vitals.deaths > 0, "rewound slice must hit");
         let live = duel(Buttons::SLICE, fire, 0, -3.0);
         assert_eq!(live.player(B).vitals.deaths, 0, "without lag compensation the slice misses");
