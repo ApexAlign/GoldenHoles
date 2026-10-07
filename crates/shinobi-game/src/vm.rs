@@ -127,6 +127,9 @@ pub struct VmEnts {
     streaks_mesh: Handle<Mesh>,
     streaks_mat: Handle<StandardMaterial>,
     shuriken: Entity,
+    /// Gloved left hand holding the star, and the wrist grapple launcher (rope origin), both on the viewmodel layer.
+    left_hand: Entity,
+    launcher: Entity,
     /// (material, base colour, gain) flared by hit confirmation
     glow: Vec<(Handle<StandardMaterial>, shinobi_client::hud::Rgba, f32)>,
 }
@@ -260,7 +263,33 @@ fn spawn(
         commands.spawn((Mesh3d(cube.clone()), MeshMaterial3d(mat), Transform::from_translation(p).with_scale(sc), ChildOf(shield), layer.clone()));
     }
 
-    commands.insert_resource(VmEnts { blade, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
+    // hands: the katana hand grips the hilt (glove + sleeve + lit bracer, parented to the blade so it swings with it); the
+    // left hand holds the star; the wrist launcher sits where the rope leaves (`rope::hand_from`: right, below, ahead of the eye)
+    let glove = mats.add(unlit(pal.cyan, 0.16));
+    let sleeve = mats.add(unlit(pal.cyan, 0.08));
+    let bracer = mats.add(unlit(pal.cyan, 1.8));
+    let muzzle = mats.add(unlit(pal.orange, 3.8));
+    let glow_extra = [(bracer.clone(), pal.cyan, 1.8), (muzzle.clone(), pal.orange, 3.8)];
+    let mut hand = |commands: &mut Commands, parent: Entity, p: [f32; 3], sc: [f32; 3], rot: Quat, m: &Handle<StandardMaterial>| {
+        commands.spawn((Mesh3d(cube.clone()), MeshMaterial3d(m.clone()), Transform { translation: Vec3::from(p), rotation: rot, scale: Vec3::from(sc) }, ChildOf(parent), layer.clone()));
+    };
+    let q = Quat::IDENTITY;
+    hand(&mut commands, blade, [0.0, -0.004, 0.07], [0.058, 0.062, 0.095], q, &glove); // fist on the grip
+    hand(&mut commands, blade, [0.0, -0.02, 0.07], [0.04, 0.03, 0.082], q, &glove); // knuckles
+    hand(&mut commands, blade, [0.02, -0.075, 0.33], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.25), &sleeve); // forearm back toward the shoulder
+    hand(&mut commands, blade, [0.02, -0.052, 0.17], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.25), &bracer); // lit cuff
+    let left_hand = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
+    hand(&mut commands, left_hand, [0.0, -0.045, 0.0], [0.07, 0.07, 0.07], q, &glove);
+    hand(&mut commands, left_hand, [-0.05, -0.16, 0.2], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &sleeve);
+    hand(&mut commands, left_hand, [-0.03, -0.11, 0.07], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &bracer);
+    let launcher = commands.spawn((Transform::from_xyz(0.22, -0.2, -0.4), Visibility::default(), layer.clone())).id();
+    hand(&mut commands, launcher, [0.0, 0.0, 0.04], [0.06, 0.04, 0.12], q, &glove);
+    hand(&mut commands, launcher, [0.0, 0.022, 0.04], [0.026, 0.006, 0.1], q, &bracer);
+    hand(&mut commands, launcher, [0.0, 0.0, -0.035], [0.024, 0.024, 0.03], q, &muzzle);
+    let mut glow = glow;
+    glow.extend(glow_extra);
+
+    commands.insert_resource(VmEnts { blade, left_hand, launcher, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
 }
 
 pub fn update(
@@ -438,6 +467,20 @@ pub fn update(
         st.translation = Vec3::new(s.pos[0], s.pos[1] - w.y_dip, s.pos[2] + w.back - 0.05 * pulse + recoil_kick(vm.recoil).0);
         st.rotation = Quat::from_rotation_x(w.pitch + s.tilt) * Quat::from_rotation_z(s.spin);
         st.scale = Vec3::splat((s.scale * (1.0 + 0.3 * pulse)).max(1e-4));
+    }
+    // left hand: holds the star at rest and follows it through the throw wind-up
+    if let Ok(mut h) = tf.get_mut(ents.left_hand) {
+        let rest = Vec3::from(ShurikenViewModel::REST);
+        let held = if s.scale <= 0.001 { rest } else { Vec3::from(s.pos).lerp(rest, 0.5) };
+        h.translation = Vec3::new(held.x, held.y - w.y_dip, held.z + w.back + recoil_kick(vm.recoil).0);
+        h.rotation = Quat::from_rotation_x(w.pitch);
+    }
+    // the wrist launcher rides the weapon sway; it is the rope origin while a hook is out
+    if let Ok(mut l) = tf.get_mut(ents.launcher) {
+        let k = if view.0.rope.is_some() { 1.3 } else { 1.0 };
+        l.translation = Vec3::new(0.22, -0.2 - w.y_dip, -0.42 + w.back);
+        l.rotation = Quat::from_rotation_x(w.pitch);
+        l.scale = Vec3::splat(k);
     }
     if let Ok(mut v) = vis.get_mut(ents.shuriken) {
         *v = if s.scale <= 0.001 { Visibility::Hidden } else { Visibility::Visible };
