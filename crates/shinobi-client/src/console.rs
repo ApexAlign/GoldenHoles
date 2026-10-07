@@ -17,6 +17,16 @@ pub enum AudioCmd {
     /// Master volume 0..=1.
     Volume(f32),
     Mute(bool),
+    /// Effects bus volume 0..=1 (`/sfx`).
+    Sfx(f32),
+    /// Ambient (wind / hum) bus volume 0..=1 (`/ambient`).
+    Ambient(f32),
+    /// Music bus volume 0..=1 (`/music vol <n>`).
+    MusicVol(f32),
+    /// `/music on` / `/music off`.
+    MusicOn(bool),
+    /// `/music next`: crossfade to the next track.
+    MusicNext,
 }
 
 /// What a submitted line asks the shell to do.
@@ -82,6 +92,7 @@ impl Console {
                 match *cmd {
                     AudioCmd::Volume(v) => self.audio.0 = v,
                     AudioCmd::Mute(m) => self.audio.1 = m,
+                    _ => {}
                 }
             }
             res.audio = cmds;
@@ -118,6 +129,29 @@ fn audio_cmd(line: &str, (vol, muted): (f32, bool)) -> Option<(Vec<AudioCmd>, Ve
                 (vec![AudioCmd::Volume(v)], vec![format!("volume = {:.0}", v * 100.0)])
             }
             None => (vec![], vec![format!("volume = {:.0}{} (use /vol 0-100)", vol * 100.0, if muted { ", muted" } else { "" })]),
+        }),
+        "sfx" | "ambient" => {
+            let ambient = cmd == "ambient";
+            Some(match it.next().and_then(|v| v.trim_end_matches('%').parse::<f32>().ok()).filter(|v| v.is_finite()) {
+                Some(v) => {
+                    let v = (v / 100.0).clamp(0.0, 1.0);
+                    (vec![if ambient { AudioCmd::Ambient(v) } else { AudioCmd::Sfx(v) }], vec![format!("{cmd} volume = {:.0}", v * 100.0)])
+                }
+                None => (vec![], vec![format!("use /{cmd} 0-100")]),
+            })
+        }
+        "music" => Some(match it.next().map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("next" | "skip") => (vec![AudioCmd::MusicNext], vec!["music: next track".into()]),
+            Some("off") => (vec![AudioCmd::MusicOn(false)], vec!["music off".into()]),
+            Some("on") => (vec![AudioCmd::MusicOn(true)], vec!["music on".into()]),
+            Some("vol" | "volume") => match it.next().and_then(|v| v.trim_end_matches('%').parse::<f32>().ok()).filter(|v| v.is_finite()) {
+                Some(v) => {
+                    let v = (v / 100.0).clamp(0.0, 1.0);
+                    (vec![AudioCmd::MusicVol(v)], vec![format!("music volume = {:.0}", v * 100.0)])
+                }
+                None => (vec![], vec!["use /music vol 0-100".into()]),
+            },
+            _ => (vec![], vec!["/music next | vol <0-100> | on | off  (drop files in music/)".into()]),
         }),
         "mute" => Some((vec![AudioCmd::Mute(true)], vec!["audio muted".into()])),
         "unmute" => Some((vec![AudioCmd::Mute(false)], vec!["audio on".into()])),
@@ -267,6 +301,19 @@ mod tests {
                 assert!(b.y >= 0.5 || b.y + b.h <= 0.5 - 0.04 || b.x > 0.6 || b.x + b.w < 0.4, "console covers the crosshair: {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn music_and_bus_commands() {
+        let (mut c, mut s) = (Console::default(), Settings::default());
+        assert_eq!(run_out(&mut c, &mut s, "/music next").audio, vec![AudioCmd::MusicNext]);
+        assert_eq!(run_out(&mut c, &mut s, "/music vol 30").audio, vec![AudioCmd::MusicVol(0.3)]);
+        assert_eq!(run_out(&mut c, &mut s, "/music off").audio, vec![AudioCmd::MusicOn(false)]);
+        assert_eq!(run_out(&mut c, &mut s, "/music on").audio, vec![AudioCmd::MusicOn(true)]);
+        assert_eq!(run_out(&mut c, &mut s, "/sfx 50").audio, vec![AudioCmd::Sfx(0.5)]);
+        assert_eq!(run_out(&mut c, &mut s, "/ambient 999").audio, vec![AudioCmd::Ambient(1.0)]);
+        assert!(run_out(&mut c, &mut s, "/music").audio.is_empty());
+        assert!(run_out(&mut c, &mut s, "/music vol x").audio.is_empty());
     }
 
     #[test]

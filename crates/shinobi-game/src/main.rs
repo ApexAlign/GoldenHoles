@@ -21,6 +21,7 @@ mod impacts;
 mod lock;
 mod rope;
 mod synth;
+mod mixer;
 mod team;
 mod grid;
 mod hud_view;
