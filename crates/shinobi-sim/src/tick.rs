@@ -92,6 +92,8 @@ pub struct Player {
     pub kmoves: crate::katana_moves::KatanaMoveState,
     /// Melee heighteners: last attacker (ring-out), knock in progress (wall-splat), kill streak (`melee.rs`).
     pub melee: crate::melee::MeleeState,
+    /// White-out from a flash star lasts until this tick: no lock-on forms and the lock breaks (`star_pass.rs`).
+    pub blind_until: u32,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -272,6 +274,7 @@ impl Server {
             blk: Default::default(),
             kmoves: Default::default(),
             melee: Default::default(),
+            blind_until: 0,
         });
     }
 
@@ -453,6 +456,10 @@ impl Server {
 
         let bcfg = self.balance.guard.cfg();
         let mcfg = self.balance.melee.cfg();
+        // star variants: who stands in smoke (hidden from every lock-on) and where this tick's combat events begin
+        let in_smoke = self.in_smoke();
+        let hidden_boxes: Vec<(usize, ColliderHandle)> = self.players.iter().enumerate().filter(|(j, _)| in_smoke[*j]).map(|(j, q)| (j, q.vitals.hitbox)).collect();
+        let ev_start = self.events.len();
         for i in 0..self.players.len() {
             let intent = self.players[i].queue.take_for_tick(tick);
             let before = self.players[i].pos(&self.world);
@@ -527,6 +534,8 @@ impl Server {
                 let just_unblocked = self.players[i].kmoves.just_unblocked(tick);
                 let p = &mut self.players[i];
                 p.combat.allies = allies;
+                p.combat.hidden = hidden_boxes.iter().filter(|(j, _)| *j != i).map(|(_, h)| *h).collect();
+                p.combat.suppress_lock = tick < p.blind_until;
                 p.combat.set_moves(crate::combat::MoveCtx { counter, just_unblocked });
                 p.combat.update(
                     dt,
@@ -536,6 +545,7 @@ impl Server {
                         slice: slice_in,
                         ultimate: ultimate_pressed(&it) && !shut,
                         mark: it.mark && fire_in,
+                        star: crate::combat::stars::StarKind::from_u8(it.star),
                     },
                     &aim,
                     &self.world,
@@ -717,6 +727,7 @@ impl Server {
         }
 
         self.resolve_clashes(tick, &clash_wins);
+        self.star_pass(tick, ev_start, &mut hits);
 
         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement
         crate::separation::separate(&self.players, &mut self.world, &self.cfg, &self.separation);

@@ -22,6 +22,7 @@ pub mod obstacle;
 pub mod pvp;
 pub mod separation;
 pub mod spawn;
+pub mod star_pass;
 pub mod team;
 pub mod own_state;
 pub mod pickups;

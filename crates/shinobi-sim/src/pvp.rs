@@ -627,6 +627,7 @@ mod tests {
         zip: false,
         block: false,
         mark: false,
+        star: 0,
     };
 
     #[test]

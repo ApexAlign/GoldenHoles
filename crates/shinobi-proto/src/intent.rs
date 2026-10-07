@@ -92,12 +92,15 @@ pub struct PlayerIntent {
     pub block: bool,
     /// With `FIRE`: a charged throw, the MARK star (a one-tick edge like `FIRE`, cleared on lost-packet repeat).
     pub mark: bool,
+    /// With `FIRE` (and no `mark`): the throwable, 0 standard / 1 mine / 2 flash / 3 smoke (`StarKind`). Two wire bits,
+    /// present only while `FIRE` is set; carried with a lost packet's FIRE edge.
+    pub star: u8,
 }
 
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0 }
     }
 }
 
@@ -132,6 +135,7 @@ impl PlayerIntent {
             && self.zip == o.zip
             && self.block == o.block
             && self.mark == o.mark
+            && self.star == o.star
     }
 
     fn write_body(&self, w: &mut BitWriter) {
@@ -150,6 +154,9 @@ impl PlayerIntent {
         w.write_bool(self.zip);
         w.write_bool(self.block);
         w.write_bool(self.mark);
+        if self.buttons.has(Buttons::FIRE) {
+            w.write_bits(self.star as u32 & 3, 2);
+        }
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
@@ -163,7 +170,9 @@ impl PlayerIntent {
         );
         let build = r.read_bool()?;
         let (build_wall, build_ramp) = if build { (r.read_bool()?, r.read_bool()?) } else { (false, false) };
-        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip: r.read_bool()?, block: r.read_bool()?, mark: r.read_bool()? })
+        let (zip, block, mark) = (r.read_bool()?, r.read_bool()?, r.read_bool()?);
+        let star = if buttons.has(Buttons::FIRE) { r.read_bits(2)? as u8 } else { 0 };
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star })
     }
 }
 
@@ -307,6 +316,7 @@ struct Carry {
     build_wall: bool,
     zip: bool,
     mark: bool,
+    star: u8,
 }
 
 impl Carry {
@@ -315,7 +325,7 @@ impl Carry {
     }
 
     fn of(it: &PlayerIntent) -> Carry {
-        Carry { buttons: it.buttons.0 & Buttons::EDGES, ultimate: it.ultimate, build: it.build, build_wall: it.build && it.build_wall, zip: it.zip, mark: it.mark && it.buttons.has(Buttons::FIRE) }
+        Carry { buttons: it.buttons.0 & Buttons::EDGES, ultimate: it.ultimate, build: it.build, build_wall: it.build && it.build_wall, zip: it.zip, mark: it.mark && it.buttons.has(Buttons::FIRE), star: if it.buttons.has(Buttons::FIRE) { it.star } else { 0 } }
     }
 
     fn merge(&mut self, o: Carry) {
@@ -327,6 +337,9 @@ impl Carry {
         }
         self.zip |= o.zip;
         self.mark |= o.mark;
+        if o.star != 0 {
+            self.star = o.star;
+        }
     }
 
     fn apply(&self, it: &mut PlayerIntent) {
@@ -338,6 +351,9 @@ impl Carry {
         }
         it.zip |= self.zip;
         it.mark |= self.mark;
+        if it.star == 0 {
+            it.star = self.star;
+        }
     }
 }
 
@@ -476,6 +492,7 @@ impl IntentQueue {
                 build: false, build_wall: false, build_ramp: false,
                 zip: false,
                 mark: false,
+                star: 0,
                 ..l
             })
         };
@@ -496,7 +513,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0 }
     }
 
     #[test]

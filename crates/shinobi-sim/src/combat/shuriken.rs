@@ -8,6 +8,7 @@ use rapier3d::prelude::*;
 
 use crate::character::PhysicsWorld;
 
+use super::stars::{StarCfg, StarKind};
 use super::{
     passes_projectile, projectile_groups, TARGETS,
     weapon::{FireCtx, TickCtx, Trigger, Weapon},
@@ -49,6 +50,8 @@ pub struct ShurikenCfg {
     pub energy_resume: f32,
     /// Charges a MARK star (hold to charge) costs: it does no damage and marks its target for the katana.
     pub mark_cost: f32,
+    /// The mine / flash / smoke variants (`combat.star.*`).
+    pub star: StarCfg,
     /// Collider groups this disc damages when it touches them.
     pub targets: Group,
     /// Collider groups it can touch at all (everything else is ignored).
@@ -79,13 +82,17 @@ impl Default for ShurikenCfg {
             energy_regen_s: 0.45,
             energy_resume: 2.0,
             mark_cost: 2.0,
+            star: StarCfg::default(),
             targets: TARGETS,
             mask: projectile_groups(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Radius of a mine / smoke star's flight ball: small, so it lands on the surface it was thrown at.
+const STICK_RADIUS: f32 = 0.3;
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Disc {
     pub pos: Point<Real>,
     pub dir: Vector<Real>,
@@ -97,11 +104,43 @@ pub struct Disc {
     pub homing: Option<ColliderHandle>,
     /// A mark star: no damage, it marks the player it strikes (`melee.rs`).
     pub mark: bool,
+    /// Which throwable this is (`Standard` unless thrown with a star variant selected).
+    pub kind: StarKind,
+    /// Landed (mines and smoke): it no longer flies, `stick_age` counts from the landing.
+    pub stuck: bool,
+    pub stick_age: f32,
+    /// Surface normal at the landing (glyph orientation).
+    pub normal: Vector<Real>,
+    /// Unique per launcher: lets the replicator keep a stable entity id for a stuck object.
+    pub uid: u16,
+}
+
+impl Disc {
+    /// A mine that is stuck and past its arming delay.
+    pub fn armed(&self, cfg: &StarCfg) -> bool {
+        self.kind == StarKind::Mine && self.stuck && self.stick_age >= cfg.mine_arm_s
+    }
+
+    /// Centre of a landed smoke cloud: a metre off the surface it hit, so the cloud stands in the air.
+    pub fn cloud_centre(&self) -> [f32; 3] {
+        let c = self.pos + self.normal;
+        [c.x, c.y, c.z]
+    }
+
+    /// Fraction of a landed object's life left, 1 = fresh (0 for flying discs).
+    pub fn life_left(&self, cfg: &StarCfg) -> f32 {
+        let life = cfg.life(self.kind);
+        if !self.stuck || life <= 0.0 {
+            return 0.0;
+        }
+        (1.0 - self.stick_age / life).clamp(0.0, 1.0)
+    }
 }
 
 pub struct ShurikenLauncher {
     pub cfg: ShurikenCfg,
     discs: Vec<Disc>,
+    next_uid: u16,
     /// Star energy in charges (only meaningful with `cfg.energy_max > 0`) and the empty-pool lockout.
     energy: f32,
     locked: bool,
@@ -115,7 +154,7 @@ impl Default for ShurikenLauncher {
 
 impl ShurikenLauncher {
     pub fn new(cfg: ShurikenCfg) -> Self {
-        Self { cfg, discs: Vec::new(), energy: cfg.energy_max, locked: false }
+        Self { cfg, discs: Vec::new(), next_uid: 0, energy: cfg.energy_max, locked: false }
     }
 
     /// (energy, max, locked) when a pool is in force.
@@ -126,6 +165,18 @@ impl ShurikenLauncher {
     /// For the renderer (spin the mesh by `age`).
     pub fn discs(&self) -> &[Disc] {
         &self.discs
+    }
+
+    /// The server's world pass removes mines it detonated / disarmed.
+    pub fn discs_mut(&mut self) -> &mut Vec<Disc> {
+        &mut self.discs
+    }
+
+    /// Client prediction: a landed mine / smoke is the server's to track from here on (it can detonate or be shot);
+    /// the predicted copy is only kept for `grace` seconds so the object does not blink out before the snapshot
+    /// brings the authoritative one.
+    pub fn drop_landed_after(&mut self, grace: f32) {
+        self.discs.retain(|d| !(d.stuck && d.stick_age > grace));
     }
 }
 
@@ -148,9 +199,10 @@ impl Weapon for ShurikenLauncher {
         if self.discs.len() >= self.cfg.max_discs {
             return false;
         }
+        let kind = if ctx.mark { StarKind::Standard } else { ctx.star };
         // star energy: a star (or a mark star) must be affordable and the pool must not be locked out
         if self.cfg.energy_max > 0.0 {
-            let cost = if ctx.mark { self.cfg.mark_cost } else { self.cfg.energy_cost };
+            let cost = if ctx.mark { self.cfg.mark_cost } else { self.cfg.star.cost(kind, self.cfg.energy_cost) };
             if self.locked || self.energy + 1e-4 < cost {
                 return false; // refused: the cooldown is not consumed either
             }
@@ -159,11 +211,23 @@ impl Weapon for ShurikenLauncher {
                 self.locked = true; // cannot afford another star: locked until `energy_resume` charges are back
             }
         }
-        let dir = assisted_dir(&self.cfg, ctx);
+        // the variants fly straight (no aim assist, no homing): a mine or smoke goes where the crosshair is
+        let plain = kind != StarKind::Standard;
+        let dir = if plain { ctx.aim.forward() } else { assisted_dir(&self.cfg, ctx) };
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
-        let homing = ctx.lock.filter(|h| h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
-        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark });
-        ctx.events.push(CombatEvent::ShurikenThrown { pos, dir });
+        let homing = ctx.lock.filter(|h| !plain && h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
+        if kind == StarKind::Mine {
+            // a new mine past the cap replaces the oldest (no refusal, so the client never mispredicts the pool)
+            while self.discs.iter().filter(|d| d.kind == StarKind::Mine).count() >= self.cfg.star.mine_max.max(1) as usize {
+                let Some(i) = self.discs.iter().enumerate().filter(|(_, d)| d.kind == StarKind::Mine).max_by(|a, b| a.1.age.total_cmp(&b.1.age)).map(|(i, _)| i) else { break };
+                let old = self.discs.remove(i);
+                ctx.events.push(CombatEvent::StarGone { kind: StarKind::Mine, pos: old.pos });
+            }
+        }
+        let uid = self.next_uid;
+        self.next_uid = self.next_uid.wrapping_add(1);
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark, kind, stuck: false, stick_age: 0.0, normal: Vector::y(), uid });
+        ctx.events.push(CombatEvent::ShurikenThrown { pos, dir, kind });
         ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
         true
     }
@@ -179,7 +243,12 @@ impl Weapon for ShurikenLauncher {
     }
 
     fn projectiles(&self, out: &mut Vec<([f32; 3], [f32; 3])>) {
-        out.extend(self.discs.iter().map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
+        // landed mines / smoke are world objects (`stars`), not flying discs
+        out.extend(self.discs.iter().filter(|d| !d.stuck).map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
+    }
+
+    fn discs_mut(&mut self) -> Option<&mut Vec<Disc>> {
+        Some(&mut self.discs)
     }
 
     fn reset(&mut self) {
@@ -200,7 +269,11 @@ impl Weapon for ShurikenLauncher {
                 self.locked = false;
             }
         }
-        self.discs.retain_mut(|d| match advance_disc_skipping(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.allies, ctx.events) {
+        self.discs.retain_mut(|d| {
+            if d.kind != StarKind::Standard {
+                return step_variant(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.allies, ctx.events);
+            }
+            match advance_disc_skipping(ctx.world, d, &cfg, dt, Some(ctx.body), ctx.allies, ctx.events) {
             DiscStep::Flying => true,
             DiscStep::Hit { collider, point } => {
                 let target = ctx.world.colliders.get(collider).map_or(0, |c| c.user_data);
@@ -216,7 +289,90 @@ impl Weapon for ShurikenLauncher {
                 false
             }
             DiscStep::Gone => false,
+            }
         });
+    }
+}
+
+/// One tick of a mine / flash / smoke star. Returns false when it is gone. Landing is a swept ball cast (no bounces):
+/// mines and smoke stop on the first solid and stay (`StarStuck`); a flash bursts there (`StarFlash`), or on a player's
+/// hitbox, or when its fuse runs out. A landed mine / smoke only ages (the server's `star_pass` watches it).
+fn step_variant(
+    world: &PhysicsWorld,
+    d: &mut Disc,
+    cfg: &ShurikenCfg,
+    dt: f32,
+    exclude: Option<RigidBodyHandle>,
+    skip: &[ColliderHandle],
+    events: &mut Vec<CombatEvent>,
+) -> bool {
+    d.age += dt;
+    let sc = &cfg.star;
+    if d.stuck {
+        d.stick_age += dt;
+        if d.stick_age > sc.life(d.kind) {
+            events.push(CombatEvent::StarGone { kind: d.kind, pos: d.pos });
+            return false;
+        }
+        return true;
+    }
+    if d.age > cfg.max_life {
+        return false;
+    }
+    if d.kind == StarKind::Flash && d.age >= sc.flash_fuse_s {
+        events.push(CombatEvent::StarFlash { pos: d.pos });
+        return false;
+    }
+    // flash bursts on a player too; mine and smoke fly through them and land on geometry
+    let mask = if d.kind == StarKind::Flash { cfg.mask } else { cfg.mask.difference(cfg.targets) };
+    let radius = if d.kind == StarKind::Flash { cfg.radius } else { STICK_RADIUS };
+    let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !skip.contains(&h);
+    let mut filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, mask));
+    if let Some(b) = exclude {
+        filter = filter.exclude_rigid_body(b);
+    }
+    let dist = cfg.speed * dt;
+    let hit = world.queries.cast_shape(
+        &world.bodies,
+        &world.colliders,
+        &Isometry::from(d.pos.coords),
+        &d.dir,
+        &Ball::new(radius),
+        ShapeCastOptions { max_time_of_impact: dist, target_distance: 0.0, stop_at_penetration: true, compute_impact_geometry_on_penetration: true },
+        filter,
+    );
+    let Some((handle, h)) = hit else {
+        d.pos += d.dir * dist;
+        return true;
+    };
+    d.pos += d.dir * h.time_of_impact;
+    let mut n = h.normal1.into_inner();
+    if !(n.iter().all(|c| c.is_finite()) && n.norm() > 0.5) {
+        n = -d.dir;
+    }
+    if d.dir.dot(&n) > 0.0 {
+        n = -n;
+    }
+    n = n.normalize();
+    if !d.pos.coords.iter().all(|c| c.is_finite()) {
+        return false; // never feed NaN to the query pipeline
+    }
+    let on_target = world.colliders.get(handle).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets));
+    match d.kind {
+        StarKind::Flash => {
+            // burst just off the surface so the line of sight check from the victims is not blocked by the wall itself
+            let at = if on_target { d.pos } else { d.pos + n * 0.1 };
+            events.push(CombatEvent::StarFlash { pos: at });
+            false
+        }
+        _ => {
+            d.pos += n * (0.02 - STICK_RADIUS); // the ball's centre met the surface a radius off: rest on the surface itself
+            d.stuck = true;
+            d.stick_age = 0.0;
+            d.normal = n;
+            events.push(CombatEvent::StarStuck { kind: d.kind, pos: d.pos, normal: n });
+            true
+        }
     }
 }
 
