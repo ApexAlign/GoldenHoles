@@ -380,6 +380,8 @@ pub fn edge_point(bearing: f32, aspect: f32, inset: f32) -> (f32, f32) {
 /// the local `HudFx`; `Hud` never reaches into sim or net state itself.
 #[derive(Clone, Debug, Default)]
 pub struct HudState {
+    /// Katana move cues (charge ring, shock ring, whirl arc, counter / execute flash); `None` = nothing going on.
+    pub katana: Option<crate::katana_fx::KatanaCue>,
     pub hp: f32,            // 0..=1
     pub dash_ready: f32,    // 0..=1 (1 = ready); katana lunge shares the dash cooldown
     pub shuriken_ready: f32, // 0..=1
@@ -1154,6 +1156,9 @@ impl Hud {
         }
         if let Some(t) = &s.target {
             target_brackets(&mut out, t, p, s.time);
+        }
+        if let Some(k) = &s.katana {
+            out.extend(crate::katana_fx::prims(k, p));
         }
         guard_cue(&mut out, s, p);
         if let Some(t) = s.boot {

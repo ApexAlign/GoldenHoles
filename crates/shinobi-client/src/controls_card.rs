@@ -28,7 +28,7 @@ const ROWS: [(Use, &str, &str); 9] = [
     (Use::Slide, "C", "SLIDE"),
     (Use::Grapple, "E", "GRAPPLE"),
     (Use::Build, "N M", "BUILD"),
-    (Use::Katana, "LMB", "KATANA"),
+    (Use::Katana, "LMB", "KATANA (HOLD: HEAVY)"),
     (Use::Shuriken, "RMB", "THROW + LOCK"),
     (Use::Block, "CTRL / F", "BLOCK + PARRY"),
 ];

@@ -334,6 +334,8 @@ pub struct PredictedSlash {
     pub lunge: bool,
     pub dir: [f32; 3],
     pub flip: bool,
+    /// Which katana move this was (light / heavy / air / whirl / counter).
+    pub kind: shinobi_sim::combat::SlashKind,
 }
 
 /// A predicted katana hit.
@@ -357,6 +359,8 @@ pub struct LocalFx {
     pub dash_ready: bool,
     /// Katana / shuriken cooldown remaining, 1.0 = just used, 0.0 = ready.
     pub slice_cooldown: f32,
+    /// Heavy-cut charge 0..1 (the katana button held after a cut).
+    pub slice_charge: f32,
     pub throw_cooldown: f32,
     // -- edges since the previous `view()`; a tick that falls between two views is never lost --
     pub jumped: bool,
@@ -1123,8 +1127,8 @@ impl ClientGame {
                 self.throw_cd_left = (self.throw_cd_left - TICK_DT).max(0.0);
                 for e in ev {
                     match e {
-                        CombatEvent::Slash { flip, dir, lunge, .. } => {
-                            self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip });
+                        CombatEvent::Slash { flip, dir, lunge, kind, .. } => {
+                            self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip, kind });
                             self.last_slash_dir = Some([dir.x, dir.y, dir.z]);
                         }
                         CombatEvent::ShurikenThrown { dir, .. } => {
@@ -1248,6 +1252,7 @@ impl ClientGame {
         }
         if let Some(p) = &self.pred {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);
+            fx.slice_charge = p.combat.slice_charge();
         }
         fx.throw_cooldown = (self.throw_cd_left / ShurikenCfg::default().cooldown.max(1e-3)).clamp(0.0, 1.0);
         let (build_ghost, blocks) = match (self.pred.as_mut(), own_id) {
