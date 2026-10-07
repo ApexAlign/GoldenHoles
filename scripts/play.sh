@@ -35,6 +35,7 @@ TELEMETRY="playtest/telemetry-$STAMP.txt"; SERVER_LOG="playtest/server-$STAMP.lo
 echo ">> building the server (release) ..."
 cargo build --release "${OFFLINE_ARG[@]}" -j "$JOBS" -p shinobi-server -q
 if [ "${1:-}" != "--server-only" ]; then
+  # sound: the game crate's default `audio` feature is on (docs/AUDIO.md); no audio device = silent, no crash
   if [ "${DEBUG:-0}" = "1" ]; then PROFILE=debug; PROFILE_ARG=(); else PROFILE=release; PROFILE_ARG=(--release); fi
   echo ">> building the game ($PROFILE; the first build takes several minutes) ..."
   (cd crates/shinobi-game && cargo build "${PROFILE_ARG[@]}" "${OFFLINE_ARG[@]}" -j "$JOBS" -q)
