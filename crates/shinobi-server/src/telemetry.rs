@@ -455,7 +455,7 @@ mod tests {
     }
 
     fn slash() -> CombatEvent {
-        CombatEvent::Slash { flip: false, dir: Vector::z(), lunge: true, hits: 1, origin: Point::origin(), reach: 2.0, half_width: 1.0, half_height: 1.0, damage: 60.0 }
+        CombatEvent::Slash { flip: false, dir: Vector::z(), lunge: true, hits: 1, origin: Point::origin(), reach: 2.0, half_width: 1.0, half_height: 1.0, damage: 60.0, kind: shinobi_sim::combat::SlashKind::Light }
     }
 
     #[test]

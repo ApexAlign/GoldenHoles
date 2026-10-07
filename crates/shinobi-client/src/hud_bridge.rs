@@ -159,6 +159,12 @@ pub struct HudBridge {
     /// Client estimate of the guard energy SPENT, 0 = full (see `HudState::guard_spent`).
     guard_spent: f32,
     grapple_flash: f32,
+    /// Katana move cues (charge ring, shock ring, whirl arc, counter / execute flashes) and the counter window we were
+    /// handed by a parry (seconds left).
+    katana: crate::katana_fx::KatanaFx,
+    counter_left: f32,
+    /// The hint ids the katana moves want shown right now (the hint system, once wired, picks from these).
+    pub katana_hints: Vec<&'static str>,
     /// The last kill that eliminated us (shown while dead).
     last_death: Option<KilledBy>,
     /// World position of the killer when the kill landed.
@@ -207,6 +213,7 @@ impl HudBridge {
     pub fn update(&mut self, dt: f32, view: &RenderView, net: &NetClient, tab_held: bool) -> HudState {
         self.time += dt;
         self.fx.tick(dt);
+        self.counter_left = (self.counter_left - dt).max(0.0);
         let colour_of = self.colour_of.unwrap_or(crate::colour::player_rgba);
         let teams = self.teams.clone().or_else(|| TeamInfo::from_net(net, view));
 
@@ -221,6 +228,7 @@ impl HudBridge {
             } else if h.taken && h.amount == 0 && !h.kill {
                 // a zero-damage hit on us is a parry: our shield took it (the attacker is staggered)
                 self.fx.on_guard(0);
+                self.counter_left = crate::katana_fx::COUNTER_WINDOW_S;
             } else if !h.taken && h.amount == 0 && !h.kill {
                 // our own cut did nothing: we were parried
                 self.fx.on_guard(1);
@@ -230,6 +238,13 @@ impl HudBridge {
                 self.fx.on_hurt_amount(src.map_or(0.0, |p| bearing_to(me, view.aim.yaw, p)), h.amount);
             } else {
                 self.fx.on_hit_full(damage_kind(h.kind), h.kill, h.amount, h.head);
+                if damage_kind(h.kind) == shinobi_sim::combat::DamageKind::Slash {
+                    self.katana.on_confirmed_hit(h.kill, h.bonus);
+                    if self.counter_left > 0.0 && !h.kill {
+                        self.katana.on_slash(shinobi_sim::combat::SlashKind::Counter);
+                        self.counter_left = 0.0;
+                    }
+                }
                 if h.bonus {
                     self.fx.on_guard(2);
                 }
@@ -649,6 +664,21 @@ impl HudBridge {
         enemy_tags.truncate(crate::hud::ENEMY_TAG_MAX);
         hs.enemy_tags = enemy_tags;
         hs.controls = view.controls.clone();
+        // katana move cues + hint ids
+        if let Some(sl) = gf.slash {
+            self.katana.on_slash(sl.kind);
+        }
+        self.katana.tick(dt, gf.slice_charge);
+        if self.katana.active() {
+            hs.katana = Some(crate::katana_fx::KatanaCue { fx: self.katana, at: hs.target.as_ref().map(|t| t.pos), aspect: self.aspect });
+        }
+        self.katana_hints = crate::katana_fx::hint_ids(&crate::katana_fx::HintCtx {
+            counter_open: self.counter_left > 0.0,
+            execute_ready: false,
+            airborne_target: !gf.grounded && hs.target.as_ref().map_or(false, |t| t.locked && t.dist < 8.0),
+            whirl_ready: gf.sliding && hs.target.as_ref().map_or(false, |t| t.dist < 3.5),
+            just_cut: gf.slash_hit.is_some(),
+        });
         hs
     }
 }

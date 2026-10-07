@@ -44,6 +44,14 @@ const HOOK_CHANCE: f32 = 0.012;
 const HOOK_COOLDOWN_TICKS: u32 = 420;
 /// A target this close after a cut gets the next cut of the combo (blade reach 2.4 m + a little).
 const COMBO_REACH: f32 = 2.9;
+/// Katana moves: the share of combo openers that turn into a heavy cut (hold ~0.83 s, then release), the chance to
+/// cut back inside a counter window, the chance and range of a whirl cut right after the shield comes down.
+const HEAVY_CHANCE: f32 = 0.2;
+const HEAVY_HOLD_TICKS: u32 = 50;
+const HEAVY_GAP_TICKS: u32 = 600;
+const COUNTER_CHANCE: f32 = 0.5;
+const WHIRL_CHANCE: f32 = 0.4;
+const WHIRL_RANGE: f32 = 3.0;
 /// No shuriken inside this range: point-blank is for the katana.
 const POKE_MIN_RANGE: f32 = 3.0;
 /// Bots ask for a ticket this far out so it is ready when they arrive.
@@ -206,6 +214,14 @@ pub struct BotMem {
     combo: u32,
     block_until: u32,
     block_ok: u32,
+    /// Heavy cut: hold the katana button until this tick, then release (0 = not charging).
+    heavy_until: u32,
+    /// Next tick a heavy cut may be started (a charge is a standstill: keep the bots moving).
+    heavy_ok: u32,
+    /// The shield was up last tick (a whirl cut follows its coming down).
+    was_blocking: bool,
+    /// Last tick a counter cut was tried (one try per parry window).
+    counter_tried: u32,
     evade_ok: u32,
     retreat_block: u32,
     strafe_sign: f32,
@@ -253,6 +269,10 @@ impl BotMem {
             combo: 0,
             block_until: 0,
             block_ok: 0,
+            heavy_until: 0,
+            heavy_ok: 0,
+            was_blocking: false,
+            counter_tried: 0,
             evade_ok: 0,
             retreat_block: 0,
             strafe_sign: if id % 2 == 0 { 1.0 } else { -1.0 },
@@ -400,10 +420,31 @@ impl BotMem {
                 self.block_until = tick + 14;
             }
         }
+        // 5c. katana moves (docs/melee.md): a parry opens the counter window (drop the shield and cut), and a cut right
+        // after the shield comes down is a whirl when someone is close
+        let counter_open = ctx
+            .world
+            .server
+            .players
+            .iter()
+            .find(|q| q.id == self.id)
+            .and_then(|q| q.kmoves.counter_at(tick))
+            .is_some();
+        if counter_open && tick > self.counter_tried + 20 && self.skill.move_scale > 0.0 && rng.chance(COUNTER_CHANCE) {
+            self.counter_tried = tick;
+            self.block_until = tick;
+            self.heavy_until = 0;
+            buttons |= Buttons::SLICE;
+            self.stats.strikes += 1;
+        }
         let blocking = tick < self.block_until && !matches!(self.phase, Phase::Strike { .. });
         if blocking {
             buttons &= !(Buttons::FIRE | Buttons::SLICE);
+        } else if self.was_blocking && !matches!(self.phase, Phase::Strike { .. }) && p.target.map_or(false, |t| t.dist <= WHIRL_RANGE && !t.view.spawn_protected) && rng.chance(WHIRL_CHANCE) {
+            buttons |= Buttons::SLICE;
+            self.stats.strikes += 1;
         }
+        self.was_blocking = blocking;
 
         // ---- 6. aim
         let (yaw, pitch) = self.aim(ctx, p, dir);
@@ -509,7 +550,18 @@ impl BotMem {
                         // swing cooldown (~0.42 s = 25 ticks) is over, up to three cuts; otherwise back out
                         // (an off-screen bot only keeps cutting while its attack ticket is still valid: the ticket cap guards the human)
                         let in_reach = t.dist <= COMBO_REACH && t.los && !t.view.spawn_protected && (ctx.has_ticket || !t.needs_ticket());
-                        if in_reach && self.combo < 2 {
+                        if self.heavy_until > 0 {
+                            // heavy cut: keep the button down while the target stays in reach, then let go (the release cuts)
+                            if tick >= self.heavy_until || !in_reach {
+                                self.heavy_until = 0;
+                                self.slice_ok = tick + 36;
+                                self.set_phase(Phase::Strike { stage: StrikeStage::Recover }, tick);
+                                self.combo = 2;
+                            }
+                        } else if in_reach && self.combo < 2 && tick == since + 4 && tick >= self.heavy_ok && rng.chance(HEAVY_CHANCE) {
+                            self.heavy_until = tick + HEAVY_HOLD_TICKS;
+                            self.heavy_ok = tick + HEAVY_GAP_TICKS;
+                        } else if in_reach && self.combo < 2 {
                             if tick >= since + 26 {
                                 self.combo += 1;
                                 self.stats.strikes += 1;
@@ -743,7 +795,10 @@ impl BotMem {
                     (to_t, 1.0)
                 }
                 StrikeStage::Recover => {
-                    if t.dist <= COMBO_REACH && self.combo < 2 {
+                    if self.heavy_until > tick {
+                        *buttons |= Buttons::SLICE;
+                        (to_t, 0.0)
+                    } else if t.dist <= COMBO_REACH && self.combo < 2 {
                         // stay on them for the next cut: close the last metre, do not circle off
                         (to_t, if t.dist > 1.4 { 0.5 } else { 0.0 })
                     } else {

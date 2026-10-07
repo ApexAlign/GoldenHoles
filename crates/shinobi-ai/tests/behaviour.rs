@@ -339,3 +339,21 @@ fn a_bot_boxed_in_by_printed_walls_backs_out_and_gets_to_its_target() {
     // bots hold at their zone radius (~19 m) from a human; getting that close means it walked out and around
     assert!(best < 24.0, "the walled-in bot never got near its target (closest {best:.1} m, it started 41 m away)");
 }
+
+#[test]
+fn bots_sometimes_hold_the_katana_for_a_heavy_cut() {
+    let mut s = flat_server(vec![[0.0, 0.81, 0.0]]);
+    s.add_player(1, [2.0, 0.81, 0.0]); // a dummy that soaks every cut
+    s.players[0].vitals.hp = 1e6;
+    s.players[0].vitals.max_hp = 1e6;
+    let mut h = host(42);
+    spawn_bot(&mut h, &mut s, 201, [0.0, 0.81, 0.0], Archetype::Heavy, BotSkill::Normal);
+    let mut max_charge = 0.0f32;
+    for _ in 0..4000 {
+        step(&mut h, &mut s);
+        if let Some(b) = s.players.iter().find(|p| p.id == 201) {
+            max_charge = max_charge.max(b.combat.slice_charge());
+        }
+    }
+    assert!(max_charge > 0.5, "the bot never charged a heavy cut (max charge {max_charge})");
+}

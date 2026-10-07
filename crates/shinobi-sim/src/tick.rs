@@ -88,6 +88,8 @@ pub struct Player {
     pub clash_ready_tick: u32,
     /// Block / parry shield, guard energy, stagger and strike-window state (`block.rs`).
     pub blk: crate::block::BlockState,
+    /// Katana moves: counter window, shield-lowered tick, air-cut slam (`katana_moves.rs`).
+    pub kmoves: crate::katana_moves::KatanaMoveState,
     /// Melee heighteners: last attacker (ring-out), knock in progress (wall-splat), kill streak (`melee.rs`).
     pub melee: crate::melee::MeleeState,
 }
@@ -268,6 +270,7 @@ impl Server {
             clash: None,
             clash_ready_tick: 0,
             blk: Default::default(),
+            kmoves: Default::default(),
             melee: Default::default(),
         });
     }
@@ -442,6 +445,8 @@ impl Server {
         let mut wall_runners: Vec<u16> = Vec::new();
         let mut clash_wins: Vec<(u16, u16)> = Vec::new();
         let mut yanks: Vec<(usize, Vector<Real>, Vector<Real>)> = Vec::new();
+        // air-cut landings this tick: (centre, slammer, slammed): the shock-wave goes off after every player has moved
+        let mut shocks: Vec<([f32; 3], u16, u16)> = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
@@ -453,7 +458,11 @@ impl Server {
             let before = self.players[i].pos(&self.world);
             // the shield: raised only by a living player in a live match who is not staggered (see `block.rs`)
             let can_act = !frozen && self.players[i].vitals.alive();
+            let was_up = self.players[i].blk.held;
             self.players[i].blk.update(intent.as_ref().map_or(false, |it| it.block), tick, &bcfg, can_act);
+            if was_up && !self.players[i].blk.held {
+                self.players[i].kmoves.lowered_shield(tick);
+            }
 
             // aim: clamp claimed slew, then derive everything from the server copy
             if let Some(it) = &intent {
@@ -510,8 +519,15 @@ impl Server {
                 // teammates AND the owner's own hitbox: never assisted toward, locked onto, hit or bounced off
                 let allies: Vec<ColliderHandle> =
                     self.players.iter().enumerate().filter(|(j, q)| *j == i || allied(team, q.team)).map(|(_, q)| q.vitals.hitbox).collect();
+                // katana moves: the parried attacker's hitbox (counter cut), the shield just lowered (whirl cut)
+                let counter = self.players[i]
+                    .kmoves
+                    .counter_at(tick)
+                    .and_then(|(foe, parried)| self.players.iter().find(|q| q.id == foe && q.vitals.alive()).map(|q| (q.vitals.hitbox, parried)));
+                let just_unblocked = self.players[i].kmoves.just_unblocked(tick);
                 let p = &mut self.players[i];
                 p.combat.allies = allies;
+                p.combat.set_moves(crate::combat::MoveCtx { counter, just_unblocked });
                 p.combat.update(
                     dt,
                     now,
@@ -532,6 +548,16 @@ impl Server {
             // a swing leaves the swordsman open for a moment (the strike window the lock triangle shows)
             if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
                 self.players[i].blk.open_for(tick, bcfg.swing_open_ticks);
+            }
+            // katana moves: an air cut slams what it hits (settled in `apply_hits`), a counter cut spends the window
+            for e in &ev {
+                if let CombatEvent::Slash { kind, .. } = *e {
+                    match kind {
+                        crate::combat::SlashKind::Air => self.players[i].kmoves.air_cut_tick = Some(tick),
+                        crate::combat::SlashKind::Counter => self.players[i].kmoves.counter = None,
+                        _ => {}
+                    }
+                }
             }
             let mut synthesized = Vec::new();
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
@@ -641,6 +667,13 @@ impl Server {
                     hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false });
                 }
             }
+            // air-cut slam: when the slammed player lands, a shock-wave goes off (applied once everyone has moved)
+            {
+                let grounded = matches!(p.ch.state, crate::character::MoveState::Grounded);
+                if let Some(by) = p.kmoves.slam_landed(grounded, tick) {
+                    shocks.push((p.pos(&self.world), by, p.id));
+                }
+            }
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
             // rope and strike momentum: a far hook reels at up to `grapple_far_speed` and the release keeps it; allow what the
@@ -662,6 +695,27 @@ impl Server {
         }
 
         self.resolve_yanks(tick, &yanks);
+        // air-cut shock-waves: bystanders near a landing are thrown back (and credit the slammer if they go over the edge)
+        for (centre, by, victim) in shocks {
+            let by_team = self.players.iter().find(|q| q.id == by).map(|q| q.team);
+            for q in self.players.iter_mut() {
+                if q.id == victim || q.id == by || !q.vitals.alive() || by_team.map_or(false, |bt| allied(bt, q.team)) {
+                    continue;
+                }
+                let pos = q.pos(&self.world);
+                if let Some(v) = crate::katana_moves::shock_push(centre, pos, mcfg.shock_radius, mcfg.shock_knock) {
+                    q.ch.vel = Vector::new(v[0], v[1], v[2]);
+                    if matches!(q.ch.state, crate::character::MoveState::Grounded) {
+                        q.ch.state = crate::character::MoveState::Airborne;
+                    }
+                    q.melee.knock_until = tick + mcfg.splat_ticks;
+                    q.melee.knock_speed = mcfg.shock_knock;
+                    q.melee.knock_by = by;
+                    q.melee.last_hit = Some((by, tick));
+                }
+            }
+        }
+
         self.resolve_clashes(tick, &clash_wins);
 
         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement

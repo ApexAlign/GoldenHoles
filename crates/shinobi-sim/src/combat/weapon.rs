@@ -23,6 +23,8 @@ pub struct FireCtx<'a> {
     pub allies: &'a [ColliderHandle],
     /// Current lock-on target and pull strength (None while searching / breaking).
     pub lock: Option<super::aim_assist::LockHint>,
+    /// Server-side facts for the katana moves (counter target, shield just lowered); empty on the client.
+    pub moves: super::MoveCtx,
     /// The press carried the MARK flag (a charged throw): the shuriken launcher throws a mark star instead.
     pub mark: bool,
 }
@@ -40,6 +42,19 @@ pub trait Weapon: Send + Sync {
     fn trigger(&self) -> Trigger;
     /// Seconds between uses.
     fn cooldown(&self) -> f32;
+    /// Seconds of recovery for the use that was just made (a heavy cut recovers slower than a light one).
+    fn cooldown_after(&self) -> f32 {
+        self.cooldown()
+    }
+    /// Does the trigger fire this tick? `pressed` is the raw button level, `ready` = the cooldown is over. The default is
+    /// "held and ready" (auto-repeat); the katana overrides it with press / hold-and-release logic.
+    fn gate(&mut self, pressed: bool, _dt: f32, ready: bool) -> bool {
+        pressed && ready
+    }
+    /// 0..1 charge of a held trigger (HUD ring); 0 for weapons that do not charge.
+    fn charge(&self) -> f32 {
+        0.0
+    }
     /// Return false to refuse (cooldown not consumed).
     fn fire(&mut self, ctx: &mut FireCtx) -> bool;
     /// Re-read tunables (called when the server loads a `Balance`).
@@ -70,6 +85,8 @@ struct Slot {
 #[derive(Default)]
 pub struct Loadout {
     slots: Vec<Slot>,
+    /// Handed to every weapon's `FireCtx` (set by the server each tick).
+    pub moves: super::MoveCtx,
 }
 
 impl Loadout {
@@ -90,6 +107,11 @@ impl Loadout {
     /// Remaining cooldown (seconds) of the first weapon on `t`; 0 = ready.
     pub fn cooldown_left(&self, t: Trigger) -> f32 {
         self.slots.iter().find(|s| s.weapon.trigger() == t).map_or(0.0, |s| s.cooldown_left)
+    }
+
+    /// Charge (0..1) of the first weapon on `t`.
+    pub fn charge(&self, t: Trigger) -> f32 {
+        self.slots.iter().find(|s| s.weapon.trigger() == t).map_or(0.0, |s| s.weapon.charge())
     }
 
     /// Overwrite that cooldown (client replay restores it from the server's own-state).
@@ -149,10 +171,10 @@ impl Loadout {
                 Trigger::Primary => input.fire,
                 Trigger::Secondary => input.slice,
             };
-            if pressed && s.cooldown_left <= 0.0 {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, mark: input.mark && s.weapon.trigger() == Trigger::Primary };
+            if s.weapon.gate(pressed, dt, s.cooldown_left <= 0.0) {
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, moves: self.moves, mark: input.mark && s.weapon.trigger() == Trigger::Primary };
                 if s.weapon.fire(&mut ctx) {
-                    s.cooldown_left = s.weapon.cooldown();
+                    s.cooldown_left = s.weapon.cooldown_after();
                 }
             }
         }

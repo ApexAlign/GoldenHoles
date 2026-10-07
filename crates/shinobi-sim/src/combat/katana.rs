@@ -4,7 +4,7 @@ use rapier3d::prelude::*;
 use super::{
     solid_groups, TARGETS,
     weapon::{FireCtx, Trigger, Weapon},
-    CombatEvent, DamageKind, GROUP_MELEE,
+    CombatEvent, DamageKind, SlashKind, GROUP_MELEE,
 };
 use crate::character::Cfg;
 
@@ -47,6 +47,21 @@ pub struct KatanaCfg {
     pub cone_deg: f32,
     /// Extra reach (m) of the cone beyond the blade box: generous at the start of a swing.
     pub cone_extra: f32,
+    /// Heavy cut (hold after a cut, release): damage multiplier and extra blade length at full charge, and its recovery (s).
+    pub heavy_mult: f32,
+    pub heavy_reach: f32,
+    pub heavy_recover: f32,
+    /// Air cut: damage multiplier and the blade box's vertical half-extent (it reaches down at the victim).
+    pub air_mult: f32,
+    pub air_half_height: f32,
+    /// Whirl cut: radius (m) and flat damage per enemy it catches, and its recovery (s).
+    pub whirl_radius: f32,
+    pub whirl_damage: f32,
+    pub whirl_recover: f32,
+    /// Counter cut: how far (m) the staggered attacker may be, and how much of the parried hit adds to the damage
+    /// (multiplier = 1 + scale x parried / base damage, parried capped at 2 x base).
+    pub counter_range: f32,
+    pub counter_scale: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -89,6 +104,16 @@ impl KatanaCfg {
             finisher_reach: 0.0,
             cone_deg: 0.0,
             cone_extra: 0.0,
+            heavy_mult: 1.8,
+            heavy_reach: 1.2,
+            heavy_recover: 0.9,
+            air_mult: 1.25,
+            air_half_height: 2.2,
+            whirl_radius: 3.0,
+            whirl_damage: 12.0,
+            whirl_recover: 0.6,
+            counter_range: 7.0,
+            counter_scale: 0.5,
         }
     }
 }
@@ -185,6 +210,26 @@ fn rope_line_hits(world: &crate::character::PhysicsWorld, eye: Vector<Real>, anc
     out
 }
 
+/// Seconds the button must stay down after a cut before releasing it throws a heavy cut, and the hold that is a full charge.
+/// Code constants (not Balance): the client's own `Katana` runs the same gate on the same buttons, so the press / hold /
+/// release timeline (and with it the cooldown mirror) must be identical on both sides without sharing a `Balance`.
+pub const HEAVY_MIN_S: f32 = 0.5;
+pub const HEAVY_FULL_S: f32 = 0.9;
+/// A hold shorter than this is a click, not a charge (the HUD ring stays away).
+pub const CHARGE_SHOW_S: f32 = 0.15;
+
+/// The move one katana trigger pull turns into (decided in `Katana::fire`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mode {
+    Light,
+    /// Charged 0..1 by the length of the hold.
+    Heavy(f32),
+    Air,
+    Whirl,
+    /// The staggered attacker's hitbox, the damage that was parried.
+    Counter(ColliderHandle, f32),
+}
+
 pub struct Katana {
     pub cfg: KatanaCfg,
     flip: bool,
@@ -192,11 +237,18 @@ pub struct Katana {
     combo: u32,
     /// `now` of the last swing (the combo window runs from it).
     last_swing: f32,
+    /// The button was down last tick, and for how long it has been (seconds): the press / hold / release gate.
+    prev: bool,
+    held: f32,
+    /// A heavy cut released this tick: its charge (0..1), consumed by `fire`.
+    heavy: Option<f32>,
+    /// Recovery of the swing that just happened (`Weapon::cooldown_after`).
+    recover: f32,
 }
 
 impl Katana {
     pub fn new(cfg: KatanaCfg) -> Self {
-        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY }
+        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY, prev: false, held: 0.0, heavy: None, recover: cfg.cooldown }
     }
 }
 
@@ -215,50 +267,128 @@ impl Weapon for Katana {
     fn cooldown(&self) -> f32 {
         self.cfg.cooldown
     }
+    fn cooldown_after(&self) -> f32 {
+        self.recover
+    }
+
+    /// Press = a cut right now (as ever). Keep holding after it and the blade charges; releasing after `HEAVY_MIN_S`
+    /// throws the heavy cut. A held button no longer auto-repeats: chain cuts by clicking.
+    fn gate(&mut self, pressed: bool, dt: f32, ready: bool) -> bool {
+        let edge = pressed && !self.prev;
+        let release = !pressed && self.prev;
+        if edge {
+            self.held = 0.0;
+        } else if pressed {
+            self.held += dt;
+        }
+        let held = self.held;
+        self.prev = pressed;
+        if !pressed {
+            self.held = 0.0;
+        }
+        if edge && ready {
+            return true;
+        }
+        if release && held >= HEAVY_MIN_S && ready {
+            self.heavy = Some(((held - HEAVY_MIN_S) / (HEAVY_FULL_S - HEAVY_MIN_S)).clamp(0.0, 1.0));
+            return true;
+        }
+        false
+    }
+
+    fn charge(&self) -> f32 {
+        if self.prev && self.held >= CHARGE_SHOW_S {
+            (self.held / HEAVY_FULL_S).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
 
     fn reset(&mut self) {
         self.combo = 0;
         self.last_swing = f32::NEG_INFINITY;
+        self.prev = false;
+        self.held = 0.0;
+        self.heavy = None;
     }
 
     fn fire(&mut self, ctx: &mut FireCtx) -> bool {
         let mut c = self.cfg;
+        let origin = ctx.aim.origin;
+        let has_strike = ctx.ch.strike_kind().is_some();
+
+        // ---- which move is this? heavy (released charge) > counter (just parried) > whirl (sliding / shield just down)
+        // > air cut (airborne, no rope or wall) > the plain cut
+        let counter = ctx.moves.counter.and_then(|(h, parried)| {
+            let t = *ctx.world.colliders.get(h)?.translation();
+            let to = t - origin;
+            let flat = (to.x * to.x + to.z * to.z).sqrt();
+            (flat <= c.counter_range && !crate::spawn::blocked(ctx.world, [origin.x, origin.y, origin.z], [t.x, t.y, t.z])).then_some((h, parried))
+        });
+        let mode = if let Some(ch) = self.heavy.take() {
+            Mode::Heavy(ch)
+        } else if let Some((h, parried)) = counter {
+            Mode::Counter(h, parried)
+        } else if ctx.ch.sliding() || ctx.moves.just_unblocked {
+            Mode::Whirl
+        } else if !has_strike && matches!(ctx.ch.state, crate::character::MoveState::Airborne) {
+            Mode::Air
+        } else {
+            Mode::Light
+        };
+        let kind = match mode {
+            Mode::Light => SlashKind::Light,
+            Mode::Heavy(_) => SlashKind::Heavy,
+            Mode::Air => SlashKind::Air,
+            Mode::Whirl => SlashKind::Whirl,
+            Mode::Counter(..) => SlashKind::Counter,
+        };
+        let chains = matches!(mode, Mode::Light | Mode::Air);
+
         // combo: every swing that connected within the window brings the finisher closer; it hits harder and reaches further
         if ctx.now - self.last_swing > c.combo_window {
             self.combo = 0;
         }
-        let finisher = self.combo + 1 >= COMBO_LEN;
+        let finisher = chains && self.combo + 1 >= COMBO_LEN;
         if finisher {
             c.damage *= c.finisher_mult;
             c.blade_len += c.finisher_reach;
         }
-        let dir = ctx.aim.flat_forward();
-        let origin = ctx.aim.origin;
+        self.recover = c.cooldown;
+        let mut move_mult = 1.0f32;
+        match mode {
+            Mode::Heavy(ch) => {
+                move_mult = 1.0 + (c.heavy_mult - 1.0) * ch;
+                c.blade_len += c.heavy_reach * ch;
+                self.recover = c.heavy_recover;
+            }
+            Mode::Air => {
+                move_mult = c.air_mult;
+                c.half_height = c.air_half_height;
+            }
+            Mode::Whirl => self.recover = c.whirl_recover,
+            Mode::Counter(_, parried) => move_mult = 1.0 + c.counter_scale * (parried / c.damage.max(1.0)).clamp(0.0, 2.0),
+            Mode::Light => {}
+        }
+        let mut dir = ctx.aim.flat_forward();
 
         // Walls stop both lunge and blade: truncate the longest possible reach at the first solid.
         let solid = QueryFilter::default()
             .exclude_rigid_body(ctx.ch.body)
             .exclude_sensors()
             .groups(InteractionGroups::new(GROUP_MELEE, solid_groups()));
-        let ray = Ray::new(Point::from(origin), dir);
-        // hook-strike / wall slash: the launch carries the blade further and hits harder (docs/traversal_melee.md)
-        let strike = ctx.ch.strike_kind();
+        // hook-strike / wall slash: the launch carries the blade further and hits harder (docs/traversal_melee.md); only the
+        // plain cut launches
+        let strike = if mode == Mode::Light { ctx.ch.strike_kind() } else { None };
         let (strike_dmg, strike_reach) = match strike {
             Some(crate::character::StrikeKind::Hook) => (c.hook_damage_mult, c.hook_reach),
             Some(crate::character::StrikeKind::Wall) => (c.wall_damage_mult, c.wall_reach),
             None => (1.0, 0.0),
         };
         let strike_reach = if strike.is_some() { strike_reach + STRIKE_REACH_PER_MPS * ctx.ch.vel.norm().min(60.0) } else { 0.0 };
-        let max_reach = c.blade_len + if strike.is_some() { strike_reach } else { c.lunge_distance };
-        let wall = ctx
-            .world
-            .queries
-            .cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, max_reach, true, solid);
-        // the solid that truncates the blade may itself be a printed piece: it is struck by the swing
-        let wall_piece = wall.and_then(|(h, _)| ctx.world.colliders.get(h)).and_then(|col| crate::blocks::piece_cell(col.user_data));
-        let wall = wall.map(|(_, toi)| toi.max(0.3));
-        let full = wall.unwrap_or(max_reach).min(max_reach);
-        let short = c.blade_len.min(full);
+        // heavy, whirl and counter cuts are made in place (no dash): the lunge is for the plain and the air cut
+        let may_lunge = matches!(mode, Mode::Light | Mode::Air);
+        let max_reach = c.blade_len + if strike.is_some() { strike_reach } else if may_lunge { c.lunge_distance } else { 0.0 };
 
         // Short-lived hit boxes: query-only, they exist for exactly this call.
         let not_ally = |h: ColliderHandle, _: &Collider| !ctx.allies.contains(&h);
@@ -266,86 +396,127 @@ impl Weapon for Katana {
             .exclude_rigid_body(ctx.ch.body)
             .predicate(&not_ally)
             .groups(InteractionGroups::new(GROUP_MELEE, TARGETS));
-        let boxhits_at = |dir: Vector<Real>, reach: f32| -> Vec<ColliderHandle> {
-            let rot = UnitQuaternion::face_towards(&dir, &Vector::y());
-            let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
-            let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), rot);
-            let mut hits = Vec::new();
-            ctx.world.queries.intersections_with_shape(&ctx.world.bodies, &ctx.world.colliders, &pos, &shape, filter, |h| {
-                hits.push(h);
-                true
-            });
-            hits
-        };
-        // Melee aim assist: a swing that misses dead-ahead re-sweeps a few degrees to either side and takes the
-        // first sweep that connects. Hit boxes only: the lunge keeps the aimed direction (client prediction).
-        // magnetism: with a lock, sweep first along the aim bent toward the target (horizontally: the blade is flat)
-        let magnet_dir = ctx.lock.map(|h| {
-            let flat = vector![h.dir.x, 0.0, h.dir.z];
-            let n = flat.norm();
-            if n > 1e-4 { super::aim_assist::bend(dir, flat / n, c.magnet * h.pull) } else { dir }
-        });
-        let boxhits = |reach: f32| -> Vec<ColliderHandle> {
-            if let Some(m) = magnet_dir {
-                let h = boxhits_at(m, reach);
-                if !h.is_empty() {
-                    return h;
+
+        let mut lunge = false;
+        let mut reach;
+        let mut hits: Vec<ColliderHandle>;
+        let (mut ev_reach, mut ev_half) = (0.0f32, c.half_width);
+        let mut wall_piece: Option<[i32; 3]> = None;
+        if matches!(mode, Mode::Whirl | Mode::Counter(..)) {
+            // no blade box: whirl hits everyone close all round, a counter cut goes straight for the staggered attacker
+            match mode {
+                Mode::Whirl => {
+                    reach = c.whirl_radius;
+                    hits = cone_hits(ctx.world, origin, dir, reach, 180.0, ctx.ch.body, ctx.allies, None);
+                    ev_half = c.whirl_radius;
                 }
+                Mode::Counter(h, _) => {
+                    let t = ctx.world.colliders.get(h).map(|col| *col.translation()).unwrap_or(origin);
+                    let to = vector![t.x - origin.x, 0.0, t.z - origin.z];
+                    let n = to.norm();
+                    if n > 1e-4 {
+                        dir = to / n;
+                    }
+                    reach = n + 0.5;
+                    hits = vec![h];
+                    ev_half = c.half_width;
+                }
+                _ => unreachable!(),
             }
-            let straight = boxhits_at(dir, reach);
-            if !straight.is_empty() {
-                return straight;
-            }
-            for deg in ASSIST_STEPS_DEG {
-                for sign in [1.0f32, -1.0] {
-                    let r = UnitQuaternion::from_axis_angle(&Vector::y_axis(), (deg * sign).to_radians());
-                    let h = boxhits_at(r * dir, reach);
+            ev_reach = reach;
+        } else {
+            let ray = Ray::new(Point::from(origin), dir);
+            let wall = ctx
+                .world
+                .queries
+                .cast_ray(&ctx.world.bodies, &ctx.world.colliders, &ray, max_reach, true, solid);
+            // the solid that truncates the blade may itself be a printed piece: it is struck by the swing
+            wall_piece = wall.and_then(|(h, _)| ctx.world.colliders.get(h)).and_then(|col| crate::blocks::piece_cell(col.user_data));
+            let wall = wall.map(|(_, toi)| toi.max(0.3));
+            let full = wall.unwrap_or(max_reach).min(max_reach);
+            let short = c.blade_len.min(full);
+
+            let boxhits_at = |dir: Vector<Real>, reach: f32| -> Vec<ColliderHandle> {
+                let rot = UnitQuaternion::face_towards(&dir, &Vector::y());
+                let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
+                let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), rot);
+                let mut hits = Vec::new();
+                ctx.world.queries.intersections_with_shape(&ctx.world.bodies, &ctx.world.colliders, &pos, &shape, filter, |h| {
+                    hits.push(h);
+                    true
+                });
+                hits
+            };
+            // Melee aim assist: a swing that misses dead-ahead re-sweeps a few degrees to either side and takes the
+            // first sweep that connects. Hit boxes only: the lunge keeps the aimed direction (client prediction).
+            // magnetism: with a lock, sweep first along the aim bent toward the target (horizontally: the blade is flat)
+            let magnet_dir = ctx.lock.map(|h| {
+                let flat = vector![h.dir.x, 0.0, h.dir.z];
+                let n = flat.norm();
+                if n > 1e-4 { super::aim_assist::bend(dir, flat / n, c.magnet * h.pull) } else { dir }
+            });
+            let boxhits = |reach: f32| -> Vec<ColliderHandle> {
+                if let Some(m) = magnet_dir {
+                    let h = boxhits_at(m, reach);
                     if !h.is_empty() {
                         return h;
                     }
                 }
-            }
-            straight
-        };
+                let straight = boxhits_at(dir, reach);
+                if !straight.is_empty() {
+                    return straight;
+                }
+                for deg in ASSIST_STEPS_DEG {
+                    for sign in [1.0f32, -1.0] {
+                        let r = UnitQuaternion::from_axis_angle(&Vector::y_axis(), (deg * sign).to_radians());
+                        let h = boxhits_at(r * dir, reach);
+                        if !h.is_empty() {
+                            return h;
+                        }
+                    }
+                }
+                straight
+            };
 
-        // Lunge = the character's own dash, aimed along the slash. If the dash is still on cooldown the
-        // slash still lands (blade reach only, no lunge) rather than eating the input. If someone is already
-        // inside blade reach we cut in place: dashing would carry you through them and out the other side.
-        let mut lunge = strike.is_some() || ctx.ch.dash_ready();
-        let mut reach = if lunge { full } else { short };
-        let mut hits = boxhits(reach);
-        if lunge {
-            let near = boxhits(short);
-            if !near.is_empty() {
-                lunge = false;
-                reach = short;
-                hits = near;
-            }
-        }
-        if lunge {
-            if strike.is_some() {
-                ctx.input.strike = true;
-            } else {
-                ctx.input.dash_pressed = true;
-            }
-            ctx.input.move_dir = dir;
-        }
-
-        // target-centred cone: anything roughly where the swing points and near enough is hit, whatever the box did
-        let (mut ev_reach, mut ev_half) = (reach, c.half_width);
-        if c.cone_deg > 0.0 {
-            ev_reach = reach + c.cone_extra;
-            for h in cone_hits(ctx.world, origin, dir, ev_reach, c.cone_deg, ctx.ch.body, ctx.allies, ctx.lock.map(|l| l.collider)) {
-                if !hits.contains(&h) {
-                    hits.push(h);
+            // Lunge = the character's own dash, aimed along the slash. If the dash is still on cooldown the
+            // slash still lands (blade reach only, no lunge) rather than eating the input. If someone is already
+            // inside blade reach we cut in place: dashing would carry you through them and out the other side.
+            lunge = may_lunge && (strike.is_some() || ctx.ch.dash_ready());
+            reach = if lunge { full } else { short };
+            hits = boxhits(reach);
+            if lunge {
+                let near = boxhits(short);
+                if !near.is_empty() {
+                    lunge = false;
+                    reach = short;
+                    hits = near;
                 }
             }
-            // the lag-compensated re-test in pvp.rs sweeps a cylinder of this half-width: match the cone at full reach
-            ev_half = ev_half.max((ev_reach * c.cone_deg.to_radians().tan()).min(2.2));
+            if lunge {
+                if strike.is_some() {
+                    ctx.input.strike = true;
+                } else {
+                    ctx.input.dash_pressed = true;
+                }
+                ctx.input.move_dir = dir;
+            }
+
+            // target-centred cone: anything roughly where the swing points and near enough is hit, whatever the box did
+            ev_reach = reach;
+            if c.cone_deg > 0.0 {
+                ev_reach = reach + c.cone_extra;
+                for h in cone_hits(ctx.world, origin, dir, ev_reach, c.cone_deg, ctx.ch.body, ctx.allies, ctx.lock.map(|l| l.collider)) {
+                    if !hits.contains(&h) {
+                        hits.push(h);
+                    }
+                }
+                // the lag-compensated re-test in pvp.rs sweeps a cylinder of this half-width: match the cone at full reach
+                ev_half = ev_half.max((ev_reach * c.cone_deg.to_radians().tan()).min(2.2));
+            }
         }
 
         // player-built pieces in the blade box take damage too (the server decides if they de-rez)
-        {
+        if !matches!(mode, Mode::Whirl | Mode::Counter(..)) {
             let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
             let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), UnitQuaternion::face_towards(&dir, &Vector::y()));
             let piece_filter = QueryFilter::default().groups(InteractionGroups::new(GROUP_MELEE, super::GROUP_WORLD));
@@ -364,7 +535,10 @@ impl Weapon for Katana {
         }
 
         self.last_swing = ctx.now;
-        self.combo = if hits.is_empty() || finisher { 0 } else { self.combo + 1 };
+        self.combo = if hits.is_empty() || finisher || !chains { 0 } else { self.combo + 1 };
+
+        // what one connecting blow is worth
+        let amount = if matches!(mode, Mode::Whirl) { c.whirl_damage } else { c.damage * strike_dmg * move_mult };
 
         if hits.is_empty() {
             ctx.events.push(CombatEvent::SlashMiss { origin: Point::from(origin), dir });
@@ -383,7 +557,7 @@ impl Weapon for Katana {
             ctx.events.push(CombatEvent::Damage {
                 target: col.user_data,
                 collider: *h,
-                amount: c.damage * mult,
+                amount: if matches!(mode, Mode::Whirl) { amount } else { c.damage * mult * move_mult }, // rope slash bonus rides in `mult`
                 kind: DamageKind::Slash,
                 point: Point::from(*col.translation()),
             });
@@ -399,7 +573,8 @@ impl Weapon for Katana {
             reach: ev_reach,
             half_width: ev_half,
             half_height: c.half_height,
-            damage: c.damage * strike_dmg,
+            damage: amount,
+            kind,
         });
         true
     }
@@ -478,7 +653,8 @@ mod tests {
     }
 
     /// Drives the demo katana against a standing target: returns `(time, damage)` of every hit while the slice button
-    /// is held down for `secs`; the target is out of reach during `away` (a whiff).
+    /// is clicked as fast as it will go (a press every other tick; a held button no longer auto-repeats) for `secs`; the
+    /// target is out of reach during `away` (a whiff).
     fn hold_slice(secs: f32, away: Option<(f32, f32)>) -> Vec<(f32, f32)> {
         let cfg = Cfg::default();
         let mut w = PhysicsWorld {
@@ -496,13 +672,15 @@ mod tests {
                 .build()
         };
         let tgt = w.colliders.insert(target(-1.6));
-        let ch = CharacterSystem::new(body, cfg);
+        let mut ch = CharacterSystem::new(body, cfg);
+        ch.state = crate::character::MoveState::Grounded; // a floating test body would be airborne: every cut an air cut
         let mut combat = CombatSystem::ninja(&cfg);
         combat.apply_balance(&crate::balance::Balance::demo(), &cfg);
         let aim = Aim { origin: vector![0.0, 0.81, 0.0], yaw: 0.0, pitch: 0.0 };
         let mut hits = Vec::new();
         let (mut tgt, mut gone) = (tgt, false);
         let mut now = 0.0f32;
+        let mut step = 0u32;
         while now < secs {
             let want_gone = away.map_or(false, |(a, b)| now >= a && now < b);
             if want_gone && !gone {
@@ -515,7 +693,8 @@ mod tests {
             w.queries.update(&w.colliders);
             let mut input = PlayerInput::default();
             let mut ev = Vec::new();
-            combat.update(DT, now, &CombatInput::new(false, true), &aim, &w, &ch, &mut input, &mut ev);
+            combat.update(DT, now, &CombatInput::new(false, step % 2 == 0), &aim, &w, &ch, &mut input, &mut ev);
+            step += 1;
             for e in &ev {
                 if let CombatEvent::Damage { amount, kind: DamageKind::Slash, .. } = e {
                     hits.push((now, *amount));
@@ -531,7 +710,7 @@ mod tests {
     fn the_third_connected_cut_is_the_finisher_and_a_whiff_resets_the_combo() {
         let hits = hold_slice(2.4, None);
         let dmg: Vec<f32> = hits.iter().map(|h| h.1).collect();
-        assert!(dmg.len() >= 5, "a held slice button keeps cutting: {hits:?}");
+        assert!(dmg.len() >= 5, "clicking keeps cutting: {hits:?}");
         assert_eq!(dmg[..5], [20.0, 20.0, 30.0, 20.0, 20.0], "combo: two cuts, a 30 hp finisher, then it starts over");
         let gaps: Vec<f32> = hits.windows(2).map(|w| w[1].0 - w[0].0).collect();
         assert!(gaps.iter().all(|g| (0.38..0.47).contains(g)), "swings come round every ~0.42 s: {gaps:?}");

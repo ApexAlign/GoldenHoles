@@ -38,6 +38,13 @@ pub struct MeleeCfg {
     pub streak_bonus: f32,
     pub streak_cap: u32,
     pub streak_heal: f32,
+    /// Execute threshold (fraction of max hp; 0 = off), air-cut slam speed and shock-wave radius / knock (0 = off), and the
+    /// counter-cut window in ticks after a parry (0 = off). See `katana_moves.rs`.
+    pub exec_frac: f32,
+    pub slam_speed: f32,
+    pub shock_radius: f32,
+    pub shock_knock: f32,
+    pub counter_ticks: u32,
 }
 
 /// Per-player melee state.
@@ -74,6 +81,12 @@ impl MeleeCfg {
         let momentum = (speed * self.momentum_per_mps).clamp(0.0, self.momentum_cap);
         let streak = if tick < att.streak_until { att.streak.min(self.streak_cap) as f32 * self.streak_bonus } else { 0.0 };
         1.0 + momentum + streak
+    }
+
+    /// Is a blow on a victim with `hp` of `max_hp` an execution? Only a stunned victim (parried or splatted) at or under
+    /// `exec_frac` of max hp (0 = off).
+    pub fn executes(&self, hp: f32, max_hp: f32, stunned: bool) -> bool {
+        self.exec_frac > 0.0 && stunned && hp > 0.0 && hp <= self.exec_frac * max_hp
     }
 
     /// The attacker's kill: stack the streak, return the hp to heal.
@@ -126,7 +139,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> MeleeCfg {
-        MeleeCfg { momentum_per_mps: 0.04, momentum_cap: 0.6, knock_speed: 8.0, knock_pop: 3.0, juggle_up: 5.0, splat_ticks: 30, splat_damage: 15.0, splat_stagger_ticks: 36, ring_ticks: 180, mark_ticks: 240, mark_bonus: 0.4, streak_ticks: 480, streak_bonus: 0.08, streak_cap: 4, streak_heal: 20.0 }
+        MeleeCfg { momentum_per_mps: 0.04, momentum_cap: 0.6, knock_speed: 8.0, knock_pop: 3.0, juggle_up: 5.0, splat_ticks: 30, splat_damage: 15.0, splat_stagger_ticks: 36, ring_ticks: 180, mark_ticks: 240, mark_bonus: 0.4, streak_ticks: 480, streak_bonus: 0.08, streak_cap: 4, streak_heal: 20.0, ..Default::default() }
     }
 
     #[test]
@@ -143,6 +156,16 @@ mod tests {
         assert_eq!(c.damage_mult(&a, 0.0, 700), 1.0, "the streak lapses");
         c.on_kill(&mut a, 800);
         assert_eq!(a.streak, 1, "and starts over");
+    }
+
+    #[test]
+    fn only_a_stunned_victim_at_low_hp_is_executed() {
+        let c = MeleeCfg { exec_frac: 0.25, ..cfg() };
+        assert!(c.executes(25.0, 100.0, true), "on the line");
+        assert!(!c.executes(26.0, 100.0, true), "too healthy");
+        assert!(!c.executes(10.0, 100.0, false), "not stunned: a normal fight");
+        assert!(!c.executes(0.0, 100.0, true), "already dead");
+        assert!(!cfg().executes(10.0, 100.0, true), "off by default");
     }
 
     #[test]

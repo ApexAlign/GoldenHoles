@@ -186,6 +186,24 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let mut prims = Hud::build_with(&base(), &p);
     prims.extend(radial::draw_with(Some(BuildSlot::Ramp), BuildSlot::Floor, &p, if ASPECT.with(|a| a.get()) > 0.1 { ASPECT.with(|a| a.get()) } else { 16.0 / 9.0 }));
     out.push(("radial", prims));
+    // katana moves: each cue on a quiet HUD with a locked target (docs/melee.md)
+    {
+        use crate::katana_fx::{KatanaCue, KatanaFx};
+        let target = TargetHud { pos: (0.55, 0.45), name: callsign(1), colour: player_rgba(1), hp: Some(0.2), dist: 3.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: None, strike: 1 };
+        let asp = if ASPECT.with(|a| a.get()) > 0.1 { ASPECT.with(|a| a.get()) } else { 16.0 / 9.0 };
+        let cues = [
+            ("katana_charge", KatanaFx { charge: 0.65, ..Default::default() }),
+            ("katana_charge_full", KatanaFx { charge: 1.0, ..Default::default() }),
+            ("katana_whirl", KatanaFx { whirl: Some(0.15), ..Default::default() }),
+            ("katana_shock", KatanaFx { shock: Some(0.2), ..Default::default() }),
+            ("katana_counter", KatanaFx { counter: Some(0.08), ..Default::default() }),
+            ("katana_execute", KatanaFx { execute: Some(0.1), ..Default::default() }),
+        ];
+        for (name, fx) in cues {
+            let s = HudState { hp: 0.7, boot: None, scoreboard: vec![], killfeed: vec![], target: Some(target.clone()), katana: Some(KatanaCue { fx, at: Some(target.pos), aspect: asp }), ..base() };
+            out.push((name, Hud::build_with(&s, &p)));
+        }
+    }
     out
 }
 

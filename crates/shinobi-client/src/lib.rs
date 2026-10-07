@@ -23,6 +23,7 @@ pub mod death_cam;
 pub mod display_clock;
 pub mod gamepad;
 pub mod hud;
+pub mod katana_fx;
 pub mod input;
 pub mod input_mode;
 pub mod interp;

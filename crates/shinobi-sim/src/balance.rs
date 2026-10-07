@@ -95,6 +95,17 @@ pub struct KatanaBalance {
     /// Half-angle (degrees) of the target-centred hit cone (0 = box only) and its extra reach (m).
     pub cone_deg: f32,
     pub cone_extra: f32,
+    /// Katana moves (docs/melee.md "Katana moves"): heavy cut (hold after a cut, release), air cut, whirl cut, counter cut.
+    pub heavy_mult: f32,
+    pub heavy_reach: f32,
+    pub heavy_recover: f32,
+    pub air_mult: f32,
+    pub air_half_height: f32,
+    pub whirl_radius: f32,
+    pub whirl_damage: f32,
+    pub whirl_recover: f32,
+    pub counter_range: f32,
+    pub counter_scale: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -218,6 +229,15 @@ pub struct MeleeBalance {
     pub streak_bonus: f32,
     pub streak_cap: u32,
     pub streak_heal: f32,
+    /// Execute: a katana blow on a stunned (parried / splatted) player at or under this fraction of max hp is a kill (0 = off).
+    pub exec_frac: f32,
+    /// Air cut slam: the downward speed a slashed victim is driven at, and on landing the shock-wave radius (m) and the
+    /// outward speed (m/s) it throws bystanders at (0 = no slam).
+    pub slam_speed: f32,
+    pub shock_radius: f32,
+    pub shock_knock: f32,
+    /// A cut within this many seconds after landing a parry is a counter cut (0 = off).
+    pub counter_window_s: f32,
 }
 
 impl MeleeBalance {
@@ -239,6 +259,11 @@ impl MeleeBalance {
             streak_bonus: self.streak_bonus,
             streak_cap: self.streak_cap,
             streak_heal: self.streak_heal,
+            exec_frac: self.exec_frac,
+            slam_speed: self.slam_speed,
+            shock_radius: self.shock_radius,
+            shock_knock: self.shock_knock,
+            counter_ticks: t(self.counter_window_s),
         }
     }
 }
@@ -479,7 +504,7 @@ impl Default for Balance {
                     energy_resume: s.energy_resume,
                     mark_cost: s.mark_cost,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -653,6 +678,11 @@ impl Balance {
             streak_bonus: 0.08,
             streak_cap: 4,
             streak_heal: 20.0,
+            exec_frac: 0.25,
+            slam_speed: 14.0,
+            shock_radius: 3.5,
+            shock_knock: 7.0,
+            counter_window_s: 0.25,
         };
         b.guard.swing_open_s = 0.25;
         b.guard.counter_open_s = 1.0;
@@ -758,6 +788,16 @@ impl Balance {
         k.finisher_reach = b.finisher_reach;
         k.cone_deg = b.cone_deg;
         k.cone_extra = b.cone_extra;
+        k.heavy_mult = b.heavy_mult;
+        k.heavy_reach = b.heavy_reach;
+        k.heavy_recover = b.heavy_recover;
+        k.air_mult = b.air_mult;
+        k.air_half_height = b.air_half_height;
+        k.whirl_radius = b.whirl_radius;
+        k.whirl_damage = b.whirl_damage;
+        k.whirl_recover = b.whirl_recover;
+        k.counter_range = b.counter_range;
+        k.counter_scale = b.counter_scale;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -855,6 +895,16 @@ impl Balance {
         s!("combat.katana.finisher_reach", F, self.combat.katana.finisher_reach);
         s!("combat.katana.cone_deg", F, self.combat.katana.cone_deg);
         s!("combat.katana.cone_extra", F, self.combat.katana.cone_extra);
+        s!("combat.katana.heavy_mult", F, self.combat.katana.heavy_mult);
+        s!("combat.katana.heavy_reach", F, self.combat.katana.heavy_reach);
+        s!("combat.katana.heavy_recover", F, self.combat.katana.heavy_recover);
+        s!("combat.katana.air_mult", F, self.combat.katana.air_mult);
+        s!("combat.katana.air_half_height", F, self.combat.katana.air_half_height);
+        s!("combat.katana.whirl_radius", F, self.combat.katana.whirl_radius);
+        s!("combat.katana.whirl_damage", F, self.combat.katana.whirl_damage);
+        s!("combat.katana.whirl_recover", F, self.combat.katana.whirl_recover);
+        s!("combat.katana.counter_range", F, self.combat.katana.counter_range);
+        s!("combat.katana.counter_scale", F, self.combat.katana.counter_scale);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.shuriken.energy_max", F, self.combat.shuriken.energy_max);
         s!("combat.shuriken.energy_cost", F, self.combat.shuriken.energy_cost);
@@ -886,6 +936,11 @@ impl Balance {
         s!("melee.streak_bonus", F, self.melee.streak_bonus);
         s!("melee.streak_cap", U, self.melee.streak_cap);
         s!("melee.streak_heal", F, self.melee.streak_heal);
+        s!("melee.exec_frac", F, self.melee.exec_frac);
+        s!("melee.slam_speed", F, self.melee.slam_speed);
+        s!("melee.shock_radius", F, self.melee.shock_radius);
+        s!("melee.shock_knock", F, self.melee.shock_knock);
+        s!("melee.counter_window_s", F, self.melee.counter_window_s);
         s!("guard.front_deg", F, self.guard.front_deg);
         s!("guard.front_mult", F, self.guard.front_mult);
         s!("guard.parry_s", F, self.guard.parry_s);
@@ -1064,7 +1119,7 @@ impl Balance {
             e.push("combat.shuriken.energy_max must cover at least one star and one mark star".into());
         }
         let m = &self.melee;
-        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal].iter().any(|v| *v < 0.0) {
+        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal, m.exec_frac, m.slam_speed, m.shock_radius, m.shock_knock, m.counter_window_s].iter().any(|v| *v < 0.0) {
             e.push("melee.* values must be >= 0".into());
         }
         let g = &self.guard;

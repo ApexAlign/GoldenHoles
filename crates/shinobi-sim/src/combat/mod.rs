@@ -109,6 +109,33 @@ pub enum DamageKind {
     GridBeam,
 }
 
+/// Which katana move a `CombatEvent::Slash` was (docs/melee.md, "Katana moves").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SlashKind {
+    /// The plain cut / combo / hook-strike / wall slash.
+    #[default]
+    Light,
+    /// Charged cut (hold after a cut, release): more damage and reach, slower recovery.
+    Heavy,
+    /// Cut while airborne: a downward dive-slash that slams the victim.
+    Air,
+    /// 360 degree cut (slide, or just after lowering the shield): everyone close.
+    Whirl,
+    /// Cut right after a parry: finds the staggered attacker by itself.
+    Counter,
+}
+
+/// Server-side facts the katana moves need but the weapon cannot see (the shield state lives on the server). The server
+/// fills it before every `CombatSystem::update`; the client leaves it empty (these moves only change who is hit and how
+/// hard, which the server decides).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoveCtx {
+    /// A parry just landed: the staggered attacker's hitbox and the damage that was negated.
+    pub counter: Option<(ColliderHandle, f32)>,
+    /// The shield came down this very moment (a press now is a whirl cut).
+    pub just_unblocked: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CombatEvent {
     /// `target` = enemy collider `user_data`.
@@ -125,6 +152,7 @@ pub enum CombatEvent {
         half_width: f32,
         half_height: f32,
         damage: f32,
+        kind: SlashKind,
     },
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real> },
     /// A MARK star struck `target` (`collider` = its hitbox): no damage, the server marks that player for the katana.
@@ -210,6 +238,16 @@ impl CombatSystem {
             max_radius: b.combat.ultimate_max_radius,
             damage: b.combat.ultimate_damage,
         };
+    }
+
+    /// Server-side move context for this tick (see `MoveCtx`); call before `update`.
+    pub fn set_moves(&mut self, c: MoveCtx) {
+        self.loadout.moves = c;
+    }
+
+    /// Heavy-cut charge, 0 (idle) .. 1 (full): drives the charge ring on the HUD.
+    pub fn slice_charge(&self) -> f32 {
+        self.loadout.charge(weapon::Trigger::Secondary)
     }
 
     /// Star energy as (charges, pool size, locked out); `None` when the balance has no pool.
