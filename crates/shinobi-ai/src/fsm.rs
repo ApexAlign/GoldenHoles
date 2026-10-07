@@ -462,6 +462,7 @@ impl BotMem {
             build: false, build_wall: false, build_ramp: false,
             zip,
             block: blocking,
+            mark: false,
         };
         // leaving Strike hands the ticket back
         if released {

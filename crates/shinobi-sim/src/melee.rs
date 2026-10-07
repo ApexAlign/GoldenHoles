@@ -30,6 +30,9 @@ pub struct MeleeCfg {
     pub splat_stagger_ticks: u32,
     /// Ticks after being hit in which falling into the void credits the attacker (0 = no ring-out credit).
     pub ring_ticks: u32,
+    /// How long a MARK star's mark lasts (0 = marks do nothing) and the bonus of the marker's next katana hit.
+    pub mark_ticks: u32,
+    pub mark_bonus: f32,
     /// Kill-streak window ticks, bonus per stacked kill, cap on stacks, heal per kill (hp).
     pub streak_ticks: u32,
     pub streak_bonus: f32,
@@ -46,6 +49,9 @@ pub struct MeleeState {
     pub knock_until: u32,
     pub knock_speed: f32,
     pub knock_by: u16,
+    /// Marked by `marked_by` until `marked_until` (a MARK star): that player's next katana hit does bonus damage.
+    pub marked_by: u16,
+    pub marked_until: u32,
     /// Katana kills stacked in the streak window, and when it lapses.
     pub streak: u32,
     pub streak_until: u32,
@@ -54,6 +60,11 @@ pub struct MeleeState {
 impl MeleeState {
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Currently marked (by anyone).
+    pub fn marked(&self, tick: u32) -> bool {
+        tick < self.marked_until
     }
 }
 
@@ -115,7 +126,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> MeleeCfg {
-        MeleeCfg { momentum_per_mps: 0.04, momentum_cap: 0.6, knock_speed: 8.0, knock_pop: 3.0, juggle_up: 5.0, splat_ticks: 30, splat_damage: 15.0, splat_stagger_ticks: 36, ring_ticks: 180, streak_ticks: 480, streak_bonus: 0.08, streak_cap: 4, streak_heal: 20.0 }
+        MeleeCfg { momentum_per_mps: 0.04, momentum_cap: 0.6, knock_speed: 8.0, knock_pop: 3.0, juggle_up: 5.0, splat_ticks: 30, splat_damage: 15.0, splat_stagger_ticks: 36, ring_ticks: 180, mark_ticks: 240, mark_bonus: 0.4, streak_ticks: 480, streak_bonus: 0.08, streak_cap: 4, streak_heal: 20.0 }
     }
 
     #[test]

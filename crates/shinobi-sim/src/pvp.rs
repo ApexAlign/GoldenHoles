@@ -336,12 +336,24 @@ pub fn apply_hits(
                 }
                 crate::block::Guard::None => {
                     amount *= mom;
-                    let v = &players[h.victim];
-                    if v.blk.mercy(tick) {
+                    let (mercy, open) = {
+                        let v = &players[h.victim];
+                        (v.blk.mercy(tick), v.blk.open(tick))
+                    };
+                    if mercy {
                         amount *= block.mercy_mult;
-                    } else if v.blk.open(tick) && block.bonus_mult > 1.0 {
+                    } else if open && block.bonus_mult > 1.0 {
                         amount *= block.bonus_mult;
                         bonus = true;
+                    }
+                    // a MARK star on the victim, thrown by this attacker: the katana cut lands harder, once
+                    if kind == DamageKind::Slash && melee.mark_ticks > 0 && melee.mark_bonus > 0.0 {
+                        let v = &mut players[h.victim];
+                        if v.melee.marked(tick) && v.melee.marked_by == h.attacker {
+                            amount *= 1.0 + melee.mark_bonus;
+                            v.melee.marked_until = 0;
+                            bonus = true;
+                        }
                     }
                 }
             }
@@ -424,6 +436,7 @@ pub fn apply_hits(
         p.ch.clear_grapple();
         p.combat.reset_projectiles();
         p.blk.reset();
+        p.melee.marked_until = 0;
         p.melee.knock_speed = 0.0; // a corpse splats nothing (the kill streak and last-hit survive: ring-outs after death are over)
         if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
             col.set_collision_groups(InteractionGroups::none());
@@ -595,6 +608,7 @@ mod tests {
         build: false, build_wall: false, build_ramp: false,
         zip: false,
         block: false,
+        mark: false,
     };
 
     #[test]

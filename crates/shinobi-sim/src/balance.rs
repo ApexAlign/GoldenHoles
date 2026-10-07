@@ -57,6 +57,13 @@ pub struct ShurikenBalance {
     pub assist_range: f32,
     /// Damage a bounce does to a player-built piece (see `blocks.hp`).
     pub piece_damage: f32,
+    /// Star energy pool (charges; 0 = no pool), cost of one star, seconds per recovered charge, charges needed to throw
+    /// again after the pool ran dry, and the cost of a charged MARK star (`combat/shuriken.rs`).
+    pub energy_max: f32,
+    pub energy_cost: f32,
+    pub energy_regen_s: f32,
+    pub energy_resume: f32,
+    pub mark_cost: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,6 +206,9 @@ pub struct MeleeBalance {
     pub splat_stun_s: f32,
     /// Seconds after being hit in which a fall into the void credits the attacker (0 = no ring-out credit).
     pub ring_window_s: f32,
+    /// How long a MARK star's mark lasts and the bonus it gives the marker's next katana hit (0 = marks do nothing).
+    pub mark_window_s: f32,
+    pub mark_bonus: f32,
     /// Kill-streak window, damage bonus per stacked kill, the stack cap and the hp healed per kill (0 window = off).
     pub streak_window_s: f32,
     pub streak_bonus: f32,
@@ -219,6 +229,8 @@ impl MeleeBalance {
             splat_damage: self.splat_damage,
             splat_stagger_ticks: t(self.splat_stun_s),
             ring_ticks: t(self.ring_window_s),
+            mark_ticks: t(self.mark_window_s),
+            mark_bonus: self.mark_bonus,
             streak_ticks: t(self.streak_window_s),
             streak_bonus: self.streak_bonus,
             streak_cap: self.streak_cap,
@@ -457,6 +469,11 @@ impl Default for Balance {
                     bounce_retention: s.bounce_retention,
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
+                    energy_max: s.energy_max,
+                    energy_cost: s.energy_cost,
+                    energy_regen_s: s.energy_regen_s,
+                    energy_resume: s.energy_resume,
+                    mark_cost: s.mark_cost,
                 },
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
                 knockback_slash: 9.0,
@@ -626,6 +643,8 @@ impl Balance {
             splat_damage: 15.0,
             splat_stun_s: 0.6,
             ring_window_s: 3.0,
+            mark_window_s: 4.0,
+            mark_bonus: 0.4,
             streak_window_s: 8.0,
             streak_bonus: 0.08,
             streak_cap: 4,
@@ -655,6 +674,14 @@ impl Balance {
         b.combat.shuriken.speed = 70.0;
         b.combat.shuriken.damage = 7.0; // a poke: ~2.8 s of clean fire for a kill (headshots 10.5), so it softens a target for the blade
         b.combat.shuriken.cooldown = 0.20;
+        // STAR ENERGY: 6 charges, one per star, a charge back every 0.45 s; running dry locks throwing until 2 charges are back.
+        // A volley is 6 x 7 = 42 hp at best, so a star-only kill takes more than two volleys and the stars are a poke / zoning
+        // tool (the katana is the kill). Hold the throw ~0.4 s for a MARK star: 2 charges, no damage, +40 % on your next cut.
+        b.combat.shuriken.energy_max = 6.0;
+        b.combat.shuriken.energy_cost = 1.0;
+        b.combat.shuriken.energy_regen_s = 0.45;
+        b.combat.shuriken.energy_resume = 2.0;
+        b.combat.shuriken.mark_cost = 2.0;
         b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
         // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
@@ -697,6 +724,11 @@ impl Balance {
             bounce_retention: b.bounce_retention,
             assist_range: b.assist_range,
             piece_damage: b.piece_damage,
+            energy_max: b.energy_max,
+            energy_cost: b.energy_cost,
+            energy_regen_s: b.energy_regen_s,
+            energy_resume: b.energy_resume,
+            mark_cost: b.mark_cost,
             ..ShurikenCfg::default()
         }
     }
@@ -814,6 +846,11 @@ impl Balance {
         s!("combat.katana.cone_deg", F, self.combat.katana.cone_deg);
         s!("combat.katana.cone_extra", F, self.combat.katana.cone_extra);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
+        s!("combat.shuriken.energy_max", F, self.combat.shuriken.energy_max);
+        s!("combat.shuriken.energy_cost", F, self.combat.shuriken.energy_cost);
+        s!("combat.shuriken.energy_regen_s", F, self.combat.shuriken.energy_regen_s);
+        s!("combat.shuriken.energy_resume", F, self.combat.shuriken.energy_resume);
+        s!("combat.shuriken.mark_cost", F, self.combat.shuriken.mark_cost);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
@@ -833,6 +870,8 @@ impl Balance {
         s!("melee.splat_damage", F, self.melee.splat_damage);
         s!("melee.splat_stun_s", F, self.melee.splat_stun_s);
         s!("melee.ring_window_s", F, self.melee.ring_window_s);
+        s!("melee.mark_window_s", F, self.melee.mark_window_s);
+        s!("melee.mark_bonus", F, self.melee.mark_bonus);
         s!("melee.streak_window_s", F, self.melee.streak_window_s);
         s!("melee.streak_bonus", F, self.melee.streak_bonus);
         s!("melee.streak_cap", U, self.melee.streak_cap);
@@ -1007,8 +1046,15 @@ impl Balance {
                 self.player.first_spawn_invuln_ticks
             ));
         }
+        let sh = &self.combat.shuriken;
+        if sh.energy_max < 0.0 || sh.energy_cost <= 0.0 || sh.energy_regen_s <= 0.0 || sh.energy_resume < 0.0 || sh.mark_cost < 0.0 {
+            e.push("combat.shuriken.energy_*: energy_max >= 0, energy_cost and energy_regen_s > 0, energy_resume and mark_cost >= 0".into());
+        }
+        if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < sh.energy_cost.max(sh.mark_cost) {
+            e.push("combat.shuriken.energy_max must cover at least one star and one mark star".into());
+        }
         let m = &self.melee;
-        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.streak_window_s, m.streak_bonus, m.streak_heal].iter().any(|v| *v < 0.0) {
+        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal].iter().any(|v| *v < 0.0) {
             e.push("melee.* values must be >= 0".into());
         }
         let g = &self.guard;
@@ -1160,6 +1206,15 @@ mod tests {
         // stars are a poke: a clean stream takes ~2.8 s, so it is slower than the ~1.7 s of cutting (melee wins fights)
         assert!((2.4..3.4).contains(&ttk), "a clean body-shot stream takes 2.4-3.4 s to kill ({dps} dps, {ttk:.2} s)");
         assert!(ttk / d.combat.headshot_mult > 1.2, "headshots speed it up without making it instant");
+        // star energy: the pool caps a volley well under the player's hp and the regen trickle makes a star-only kill a
+        // long job, so stars are a poke / zoning tool and the katana is the kill
+        let sh = &d.combat.shuriken;
+        assert!(sh.energy_max >= 4.0 && sh.energy_max <= 8.0, "a pool of a handful of charges");
+        let volley = sh.energy_max.floor() * sh.damage;
+        assert!(volley < d.player.max_hp * 0.5, "a full volley ({volley} hp) is under half a life: stars are not a kill button");
+        let star_only_kill_s = sh.energy_max.floor() * sh.cooldown + (d.player.max_hp - volley).max(0.0) / (sh.damage / sh.energy_regen_s);
+        assert!(star_only_kill_s >= 4.0, "a star-only kill (volley, then the regen trickle) takes {star_only_kill_s:.1} s of clean hits");
+        assert!(sh.mark_cost >= 2.0 * sh.energy_cost && d.melee.mark_bonus > 0.0 && d.melee.mark_window_s >= 3.0, "the mark star is a 2-charge, multi-second setup for the katana");
         assert!(d.combat.shuriken.speed >= 60.0, "fast stars");
         assert_eq!((d.player.max_hp, d.player.respawn_ticks), (100.0, 150), "2.5 s: the death animation fills it");
         // hazards: not instant kills, one pass = one hit, own trail harmless

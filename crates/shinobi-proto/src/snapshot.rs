@@ -40,6 +40,8 @@ pub const FX_BLOCK: u8 = 1 << 0;
 pub const FX_OPEN: u8 = 1 << 1;
 /// Staggered: this player's attack was just parried; they cannot act for a moment.
 pub const FX_STAGGER: u8 = 1 << 2;
+/// Marked by a MARK star: the thrower's next katana hit on this player does bonus damage.
+pub const FX_MARK: u8 = 1 << 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct EntityState {
@@ -50,7 +52,7 @@ pub struct EntityState {
     pub yaw: u16,
     pub kind: MoveKind,
     pub flags: u8,
-    /// `FX_*` combat-state bits (3).
+    /// `FX_*` combat-state bits (4).
     pub fx: u8,
 }
 
@@ -76,7 +78,7 @@ pub fn with_hp_frac(flags: u8, frac: f32) -> u8 {
 impl EntityState {
     /// kind (2 bits) + flags (8 bits) + fx (3 bits), see `FLAG_*`, `hp_lost5` and `FX_*`.
     fn status_bits(&self) -> u32 {
-        self.kind as u32 | ((self.flags as u32) << 2) | (((self.fx & 7) as u32) << 10)
+        self.kind as u32 | ((self.flags as u32) << 2) | (((self.fx & 15) as u32) << 10)
     }
 }
 
@@ -180,7 +182,7 @@ pub fn encode_delta(baseline: Option<&Snapshot>, cur: &Snapshot) -> Vec<u8> {
             w.write_zigzag(st.yaw.wrapping_sub(base_st.yaw) as i16 as i32);
         }
         if mask & M_STATUS != 0 {
-            w.write_bits(st.status_bits(), 13);
+            w.write_bits(st.status_bits(), 14);
         }
     }
     w.finish()
@@ -249,10 +251,10 @@ pub fn decode_delta<'a>(
             st.yaw = st.yaw.wrapping_add(r.read_zigzag()? as u16);
         }
         if mask & M_STATUS != 0 {
-            let b = r.read_bits(13)?;
+            let b = r.read_bits(14)?;
             st.kind = MoveKind::from_bits(b);
             st.flags = (b >> 2) as u8;
-            st.fx = ((b >> 10) & 7) as u8;
+            st.fx = ((b >> 10) & 15) as u8;
         }
         entities.push((id as EntityId, st));
     }
