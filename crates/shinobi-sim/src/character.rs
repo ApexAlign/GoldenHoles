@@ -198,7 +198,7 @@ impl Default for Cfg {
             gravity: 24.0,
             terminal: 36.0,
             ground_stick: -2.0,
-            jump_speed: 11.2,
+            jump_speed: 11.0,
             double_jump_speed: 8.4,
             peak_window: 3.0,
             rise_hold_mult: 0.75,

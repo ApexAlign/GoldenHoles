@@ -11,10 +11,10 @@ All movement lives in `shinobi_sim::character` and is shared bit-for-bit by the 
 
 ## Move-faster round (user: "sluggish")
 Run 5.4 -> 7.2 m/s; ground accel 45 -> 72 (top speed in 0.10 s), decel 72 -> 100, air accel 18 -> 28; gravity 20 -> 24
-(quicker apex), jump 10 -> 11.2 m/s, double jump 7.2 -> 8.4, `air_speed_cap` 9.5 -> 11.5, dash 15.5 -> 19, roll 7.5 -> 9,
+(quicker apex), jump 10 -> 11.0 m/s, double jump 7.2 -> 8.4, `air_speed_cap` 9.5 -> 11.5, dash 15.5 -> 19, roll 7.5 -> 9,
 slide boost 7.6 -> 9.5, wall-run 9.5 -> 11, terminal 32 -> 36. Anti-cheat `max_step` and bot hop planning read `Cfg`.
-Measured (run-in jump): 10 m sprint 1.91 s -> 1.43 s; tap 1.92 m / 0.85 s / 6.5 m -> 2.00 m / 0.77 s / 7.8 m;
-held 3.25 m / 1.23 s / 9.0 m -> 3.39 m / 1.15 s / 11.1 m; held + double 4.91 m / 2.03 s / 15.9 m -> 5.28 m / 1.93 s / 19.8 m.
+Measured (run-in jump): 10 m sprint 1.91 s -> 1.43 s; tap 1.92 m / 0.85 s / 6.5 m -> 1.92 m / 0.78 s / 7.9 m;
+held 3.25 m / 1.23 s / 9.0 m -> 3.27 m / 1.13 s / 11.0 m; held + double 4.91 m / 2.03 s / 15.9 m -> 5.16 m / 1.88 s / 19.3 m.
 The table below is the older round (5.4 m/s era).
 
 ## Before / after (run-in jump, stick held forward; pinned by `feel_tests` in `character.rs`)
