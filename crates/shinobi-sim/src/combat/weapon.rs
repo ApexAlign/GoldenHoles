@@ -27,6 +27,8 @@ pub struct FireCtx<'a> {
     pub moves: super::MoveCtx,
     /// The press carried the MARK flag (a charged throw): the shuriken launcher throws a mark star instead.
     pub mark: bool,
+    /// Which throwable a plain press sends (`StarKind::Standard` unless the player cycled to a variant).
+    pub star: super::stars::StarKind,
 }
 
 pub struct TickCtx<'a> {
@@ -73,6 +75,10 @@ pub trait Weapon: Send + Sync {
     fn reset(&mut self) {}
     /// Append in-flight discs (for snapshots / rendering).
     fn collect_discs(&self, _out: &mut Vec<super::shuriken::Disc>) {}
+    /// Mutable access to the in-flight discs (the server's star pass detonates / disarms landed mines).
+    fn discs_mut(&mut self) -> Option<&mut Vec<super::shuriken::Disc>> {
+        None
+    }
     /// Advance in-flight state (projectiles). Runs every tick.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx) {}
 }
@@ -127,6 +133,11 @@ impl Loadout {
         }
     }
 
+    /// The star launcher's discs, mutable (server star pass).
+    pub fn discs_mut(&mut self) -> Option<&mut Vec<super::shuriken::Disc>> {
+        self.slots.iter_mut().find_map(|s| s.weapon.discs_mut())
+    }
+
     /// Every in-flight disc of this loadout.
     pub fn discs(&self) -> Vec<super::shuriken::Disc> {
         let mut v = Vec::new();
@@ -172,7 +183,7 @@ impl Loadout {
                 Trigger::Secondary => input.slice,
             };
             if s.weapon.gate(pressed, dt, s.cooldown_left <= 0.0) {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, moves: self.moves, mark: input.mark && s.weapon.trigger() == Trigger::Primary };
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, moves: self.moves, mark: input.mark && s.weapon.trigger() == Trigger::Primary, star: input.star };
                 if s.weapon.fire(&mut ctx) {
                     s.cooldown_left = s.weapon.cooldown_after();
                 }

@@ -270,6 +270,13 @@ fn update(
 
 /// Colour of disc `i`: its owner's player / team colour (cyan if the owner is unknown).
 fn disc_colour(net: &Net, view: &shinobi_client::client_game::RenderView, i: usize) -> [f32; 3] {
+    // star variants fly in their own colour: mine orange, flash white, smoke grey-blue
+    match view.disc_kinds.get(i) {
+        Some(shinobi_sim::combat::stars::StarKind::Mine) => return [1.0, 0.45, 0.08],
+        Some(shinobi_sim::combat::stars::StarKind::Flash) => return [1.0, 1.0, 1.0],
+        Some(shinobi_sim::combat::stars::StarKind::Smoke) => return [0.62, 0.72, 0.85],
+        _ => {}
+    }
     match view.disc_owners.get(i).copied().filter(|o| *o != 0) {
         Some(o) => colour_of(net, o),
         None => crate::team::neon(0),

@@ -69,7 +69,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
     .add_plugins(sky::SkyPlugin)
     .add_plugins(PlayPlugin)
     .add_plugins(crate::env_look::EnvLookPlugin)
-    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin))
+    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin))
     .add_plugins(hud_view::HudPlugin)
     .insert_resource(ShotRequest { width: dims.0, height: dims.1 });
     app
@@ -249,6 +249,37 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.hits.push(if name == "hitkill" { m(4, 60, KIND_SLASH, false, true, false, true) } else { m(4, 24, KIND_SHURIKEN, false, false, true, false) });
                     v.hits.push(m(2, 35, KIND_SLASH, true, false, false, false));
                 }
+            }
+            // star variants (docs/stars.md): `mine` (one armed enemy mine near, one faint far one), `smoke` (a cloud),
+            // `flash` (burst at frame 112), `mineburst` (frame 112), `blind:X` (white-out strength X on the HUD)
+            "mine" => {
+                use shinobi_client::client_game::StarObj;
+                let fl = by - 0.8;
+                for (owner, dx, dz, armed) in [(2u16, -1.2f32, -4.0f32, true), (5, 2.5, -6.5, true), (1, 0.0, -14.0, false), (6, -4.0, -22.0, true)] {
+                    v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Mine, pos: [bx + dx, fl, bz + dz], normal: [0.0, 1.0, 0.0], owner, armed, life_left: 0.8 });
+                }
+            }
+            "smoke" => {
+                use shinobi_client::client_game::StarObj;
+                v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Smoke, pos: [bx + 1.0, by - 0.8, bz - 9.0], normal: [0.0, 1.0, 0.0], owner: 2, armed: false, life_left: 0.7 });
+            }
+            "flash" | "mineburst" => {
+                if frame == 112 {
+                    let what = if name == "flash" { shinobi_sim::events::STAR_FX_FLASH_BURST } else { shinobi_sim::events::STAR_FX_MINE_BURST };
+                    v.events.push(shinobi_sim::events::NetEvent::StarFx { tick: 0, what, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by + 0.6, bz - 7.0]) });
+                }
+            }
+            "blind" => v.blind = p,
+            "starkinds" => {
+                v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.disc_owners.push(2);
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Mine);
+                v.discs.push(([bx, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.disc_owners.push(2);
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Flash);
+                v.discs.push(([bx + 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.disc_owners.push(2);
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Smoke);
             }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));

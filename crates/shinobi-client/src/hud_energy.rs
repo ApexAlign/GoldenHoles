@@ -2,6 +2,7 @@
 //! `HudBridge` owns a `StarFx` and a `HintState` and fills `HudState::star` / `HudState::hint` from them.
 
 use crate::hud::{Align, HudState, Palette, Prim, Rgba};
+use shinobi_sim::combat::stars::{StarCfg, StarKind};
 
 /// Guard energy fraction under which the guard ring / bar pulse red.
 pub const GUARD_LOW: f32 = 0.25;
@@ -34,7 +35,13 @@ pub struct StarHud {
     pub refused: Option<f32>,
     /// Seconds since the pool last dropped or filled (a full pool dims after a while).
     pub idle: f32,
+    /// The throwable selected (wheel / R) and seconds since it changed (None = not recently).
+    pub sel: StarKind,
+    pub switched: Option<f32>,
 }
+
+/// Seconds the "you switched to X" blurb stays under the selector.
+pub const SWITCH_SECS: f32 = 2.4;
 
 /// Tracks the edges of the predicted pool: refill flash, refusal flash, idle time.
 #[derive(Clone, Copy, Debug, Default)]
@@ -43,14 +50,21 @@ pub struct StarFx {
     flash: Option<f32>,
     refused: Option<f32>,
     idle: f32,
+    sel: StarKind,
+    switched: Option<f32>,
 }
 
 impl StarFx {
-    /// Once per frame with the client's predicted pool (`RenderView::star`).
-    pub fn update(&mut self, dt: f32, star: Option<(f32, f32, bool)>, charging: f32, refused: bool) -> Option<StarHud> {
+    /// Once per frame with the client's predicted pool (`RenderView::star`) and the selected throwable.
+    pub fn update(&mut self, dt: f32, star: Option<(f32, f32, bool)>, charging: f32, refused: bool, sel: StarKind) -> Option<StarHud> {
         let age = |a: &mut Option<f32>, lim: f32| *a = a.map(|t| t + dt).filter(|t| *t < lim);
         age(&mut self.flash, REFILL_FLASH);
         age(&mut self.refused, REFUSE_FLASH);
+        age(&mut self.switched, SWITCH_SECS);
+        if sel != self.sel {
+            self.sel = sel;
+            self.switched = Some(0.0);
+        }
         self.idle += dt;
         if refused {
             self.refused = Some(0.0);
@@ -74,7 +88,7 @@ impl StarFx {
             }
         }
         self.prev = Some((c, locked));
-        Some(StarHud { charges: c, max, locked, charging, flash: self.flash, refused: self.refused, idle: self.idle })
+        Some(StarHud { charges: c, max, locked, charging, flash: self.flash, refused: self.refused, idle: self.idle, sel: self.sel, switched: self.switched })
     }
 }
 
@@ -86,12 +100,14 @@ pub enum HintId {
     HeavyCut,
     /// Placeholder: the grapple agent calls `HudBridge::hint(HintId::HookYank)`.
     HookYank,
+    /// The first plain throws: the throwable can be switched (docs/stars.md).
+    StarCycle,
 }
 
-pub const HINT_COUNT: usize = 4;
+pub const HINT_COUNT: usize = 5;
 
 impl HintId {
-    pub const ALL: [HintId; HINT_COUNT] = [HintId::OutOfStars, HintId::ShieldLow, HintId::HeavyCut, HintId::HookYank];
+    pub const ALL: [HintId; HINT_COUNT] = [HintId::OutOfStars, HintId::ShieldLow, HintId::HeavyCut, HintId::HookYank, HintId::StarCycle];
     pub fn index(self) -> usize {
         self as usize
     }
@@ -101,6 +117,8 @@ impl HintId {
             HintId::ShieldLow => "SHIELD LOW - LOWER IT TO RECOVER",
             HintId::HeavyCut => "HOLD KATANA FOR A HEAVY CUT",
             HintId::HookYank => "HOOK A TARGET AND PULL IN TO YANK",
+            HintId::StarCycle => "MOUSE WHEEL OR R SWITCHES STAR: MINE / FLASH / SMOKE",
+
         }
     }
 }
@@ -142,6 +160,10 @@ impl HintState {
         self.active = Some((id, 0.0));
         true
     }
+    /// The player has found the thing the hint teaches: never show it again.
+    pub fn mark_seen(&mut self, id: HintId) {
+        self.counts[id.index()] = HINT_MAX_SHOWS;
+    }
     pub fn tick(&mut self, dt: f32) {
         self.active = self.active.map(|(i, t)| (i, t + dt)).filter(|(_, t)| *t < HINT_SECS);
     }
@@ -173,7 +195,93 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
     }
 }
 
+/// Tint of each throwable (selector label, icon, cost rings).
+pub fn kind_colour(k: StarKind, p: &Palette) -> Rgba {
+    match k {
+        StarKind::Standard => p.cyan,
+        StarKind::Mine => p.orange,
+        StarKind::Flash => Rgba(1.0, 1.0, 1.0, 1.0),
+        StarKind::Smoke => Rgba(0.62, 0.72, 0.85, 1.0),
+    }
+}
+
+/// One-line description shown right after switching.
+pub fn kind_blurb(k: StarKind) -> &'static str {
+    match k {
+        StarKind::Standard => "FAST POKE - RICOCHETS",
+        StarKind::Mine => "STICKS, ARMS, BURSTS NEAR FOES",
+        StarKind::Flash => "BLINDS FOES WHO FACE IT",
+        StarKind::Smoke => "CLOUD BREAKS LOCK-ON",
+    }
+}
+
+/// Little icon for each throwable, centred on `c`, `r` = radius in screen-height fractions.
+fn kind_icon(out: &mut Vec<Prim>, k: StarKind, c: (f32, f32), r: f32, col: Rgba, ax: f32) {
+    let pt = |a: f32, rr: f32| (c.0 + a.cos() * rr * ax, c.1 + a.sin() * rr);
+    match k {
+        // a four-bladed star
+        StarKind::Standard => {
+            for i in 0..4 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_2 + 0.4;
+                out.push(Prim::Line { a: pt(a, r), b: pt(a + 2.4, r * 0.55), color: col, glow: 0.003 });
+                out.push(Prim::Line { a: pt(a, r), b: pt(a - 2.4, r * 0.55), color: col, glow: 0.003 });
+            }
+        }
+        // a glyph ring with a dot: the mine
+        StarKind::Mine => {
+            out.push(Prim::Ring { c, r, color: col, fill: false, glow: 0.003 });
+            out.push(Prim::Ring { c, r: r * 0.35, color: col, fill: true, glow: 0.003 });
+            for i in 0..4 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_2;
+                out.push(Prim::Line { a: pt(a, r), b: pt(a, r * 1.45), color: col, glow: 0.0 });
+            }
+        }
+        // a burst
+        StarKind::Flash => {
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                out.push(Prim::Line { a: pt(a, r * 0.3), b: pt(a, if i % 2 == 0 { r * 1.3 } else { r * 0.85 }), color: col, glow: 0.004 });
+            }
+        }
+        // three soft puffs
+        StarKind::Smoke => {
+            for (dx, dy, rr) in [(-0.5, 0.25, 0.55), (0.45, 0.2, 0.6), (0.0, -0.35, 0.65)] {
+                out.push(Prim::Ring { c: (c.0 + dx * r * ax, c.1 + dy * r), r: r * rr, color: col.a(col.3 * 0.8), fill: false, glow: 0.0 });
+            }
+        }
+    }
+}
+
+/// Selected throwable under the pips: icon, name and cost, rings on the pips it will spend, and a short blurb right
+/// after a switch.
+fn star_selector(out: &mut Vec<Prim>, st: &StarHud, p: &Palette, ax: f32) {
+    let cost = StarCfg::default().cost(st.sel, 1.0);
+    let col = kind_colour(st.sel, p);
+    let affordable = !st.locked && st.charges + 1e-3 >= cost;
+    let n = (st.max.round() as usize).clamp(1, PIPS);
+    // pips that the throw will take: the top `cost` of the full ones
+    if st.sel != StarKind::Standard {
+        let full = (st.charges + 1e-3).floor() as usize;
+        let take = (cost.round() as usize).min(full);
+        for i in full.saturating_sub(take)..full.min(n) {
+            let (x, y) = pip_pos(i, n, ax);
+            out.push(Prim::Ring { c: (x, y), r: PIP_SIZE * 1.55, color: col.a(if affordable { 0.9 } else { 0.35 }), fill: false, glow: 0.004 });
+        }
+    }
+    let pulse = st.switched.map_or(0.0, |t| (1.0 - t / 0.5).clamp(0.0, 1.0));
+    let (lx, ly) = (0.5 + (PIP_R - 0.01) * ax, 0.5 + 0.112);
+    let label_col = if affordable || st.max <= 0.0 { col } else { p.magenta };
+    kind_icon(out, st.sel, (lx - 0.022 * ax, ly - 0.006), 0.0085 + 0.004 * pulse, label_col.a(0.95), ax);
+    out.push(Prim::Text { pos: (lx, ly), text: format!("{} {}", st.sel.name(), cost.round() as u32), size: 0.014 + 0.003 * pulse, color: label_col.a(0.95), align: Align::Left });
+    if let Some(t) = st.switched {
+        let fade = ((SWITCH_SECS - t) / 0.6).clamp(0.0, 1.0);
+        out.push(Prim::Text { pos: (lx, ly + 0.024), text: kind_blurb(st.sel).into(), size: 0.0115, color: p.text.a(0.85 * fade), align: Align::Left });
+        out.push(Prim::Ring { c: (lx - 0.022 * ax, ly - 0.006), r: 0.016 + 0.03 * (t / SWITCH_SECS).min(1.0), color: col.a(0.6 * pulse), fill: false, glow: 0.006 });
+    }
+}
+
 fn star_pips(out: &mut Vec<Prim>, st: &StarHud, p: &Palette, ax: f32) {
+    star_selector(out, st, p, ax);
     let n = (st.max.round() as usize).clamp(1, PIPS);
     let idle_full = st.charges + 0.01 >= st.max && st.charging <= 0.0 && st.idle > 1.5 && st.flash.is_none();
     let dim = if idle_full { 0.5 } else { 1.0 };
@@ -234,7 +342,7 @@ mod tests {
         }
         assert!(!h.trigger(HintId::OutOfStars), "shown N times already");
         assert!(h.trigger(HintId::ShieldLow));
-        assert_eq!(h.counts(), [HINT_MAX_SHOWS, 1, 0, 0]);
+        assert_eq!(h.counts(), [HINT_MAX_SHOWS, 1, 0, 0, 0]);
     }
 
     #[test]
@@ -250,17 +358,17 @@ mod tests {
     #[test]
     fn refill_flashes_and_a_full_idle_pool_dims() {
         let mut fx = StarFx::default();
-        let s = fx.update(0.016, Some((5.5, 6.0, false)), 0.0, false).unwrap();
+        let s = fx.update(0.016, Some((5.5, 6.0, false)), 0.0, false, StarKind::Standard).unwrap();
         assert!(s.flash.is_none());
-        let s = fx.update(0.016, Some((6.0, 6.0, false)), 0.0, false).unwrap();
+        let s = fx.update(0.016, Some((6.0, 6.0, false)), 0.0, false, StarKind::Standard).unwrap();
         assert_eq!(s.flash, Some(0.0));
-        let s = fx.update(2.0, Some((6.0, 6.0, false)), 0.0, false).unwrap();
+        let s = fx.update(2.0, Some((6.0, 6.0, false)), 0.0, false, StarKind::Standard).unwrap();
         assert!(s.flash.is_none() && s.idle > 1.5);
-        let s = fx.update(0.016, Some((2.0, 6.0, true)), 0.0, true).unwrap();
+        let s = fx.update(0.016, Some((2.0, 6.0, true)), 0.0, true, StarKind::Standard).unwrap();
         assert!(s.refused.is_some() && s.locked);
-        let s = fx.update(0.016, Some((2.0, 6.0, false)), 0.0, false).unwrap();
+        let s = fx.update(0.016, Some((2.0, 6.0, false)), 0.0, false, StarKind::Standard).unwrap();
         assert!(s.flash.is_some(), "unlock flashes");
-        assert!(fx.update(0.016, None, 0.0, false).is_none());
+        assert!(fx.update(0.016, None, 0.0, false, StarKind::Standard).is_none());
     }
 
     #[test]
@@ -272,8 +380,31 @@ mod tests {
             draw(&mut out, &s, &p, 1.0);
             out.len()
         };
-        assert_eq!(n(6.0, false), 12);
-        assert!(n(0.0, true) < 12 && n(0.0, true) >= 6);
+        // 12 for the pips + the selector (icon, label)
+        let base = n(6.0, false) - 12;
+        assert!(base >= 2, "the selector draws an icon and a label");
+        assert!(n(0.0, true) < 12 + base && n(0.0, true) >= 6);
         assert!(n(3.5, false) > n(0.0, false));
+    }
+
+    #[test]
+    fn the_selector_names_the_throwable_and_its_cost_and_marks_the_pips_it_spends() {
+        let p = Palette::TRON;
+        let texts = |sel: StarKind, c: f32| {
+            let mut out = Vec::new();
+            let s = HudState { star: Some(StarHud { charges: c, max: 6.0, sel, ..Default::default() }), ..Default::default() };
+            draw(&mut out, &s, &p, 1.0);
+            out
+        };
+        for (k, want) in [(StarKind::Standard, "STAR 1"), (StarKind::Mine, "MINE 3"), (StarKind::Flash, "FLASH 2"), (StarKind::Smoke, "SMOKE 2")] {
+            assert!(texts(k, 6.0).iter().any(|pr| matches!(pr, Prim::Text { text, .. } if text == want)), "{want}");
+        }
+        // a mine with 6 charges rings 3 pips; with 2 charges it rings the 2 it cannot afford in a dim colour
+        let rings = |out: &[Prim]| out.iter().filter(|pr| matches!(pr, Prim::Ring { r, .. } if (*r - PIP_SIZE * 1.55).abs() < 1e-6)).count();
+        assert_eq!(rings(&texts(StarKind::Mine, 6.0)), 3);
+        assert_eq!(rings(&texts(StarKind::Standard, 6.0)), 0, "a plain star needs no cost rings");
+        // unaffordable: the label turns magenta
+        let dry = texts(StarKind::Mine, 2.0);
+        assert!(dry.iter().any(|pr| matches!(pr, Prim::Text { text, color, .. } if text == "MINE 3" && color.0 > 0.9 && color.1 < 0.5)));
     }
 }

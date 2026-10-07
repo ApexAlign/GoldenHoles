@@ -24,6 +24,7 @@ pub mod aim_assist;
 pub mod katana;
 pub mod powerup;
 pub mod shuriken;
+pub mod stars;
 pub mod weapon;
 
 pub const GROUP_WORLD: Group = Group::GROUP_1;
@@ -93,12 +94,14 @@ pub struct CombatInput {
     pub ultimate: bool,
     /// With `fire`: a charged throw, the MARK star (see `ShurikenCfg::mark_cost`).
     pub mark: bool,
+    /// With `fire` (and no `mark`): which throwable leaves the hand (`stars::StarKind`).
+    pub star: stars::StarKind,
 }
 
 impl CombatInput {
     /// From a network intent: `CombatInput::new(b.has(Buttons::FIRE), b.has(Buttons::SLICE))`.
     pub fn new(fire: bool, slice: bool) -> Self {
-        Self { fire, slice, ultimate: false, mark: false }
+        Self { fire, slice, ultimate: false, mark: false, star: stars::StarKind::Standard }
     }
 }
 
@@ -107,6 +110,8 @@ pub enum DamageKind {
     Shuriken,
     Slash,
     GridBeam,
+    /// A mine star's burst.
+    Mine,
 }
 
 /// Which katana move a `CombatEvent::Slash` was (docs/melee.md, "Katana moves").
@@ -154,7 +159,17 @@ pub enum CombatEvent {
         damage: f32,
         kind: SlashKind,
     },
-    ShurikenThrown { pos: Point<Real>, dir: Vector<Real> },
+    ShurikenThrown { pos: Point<Real>, dir: Vector<Real>, kind: stars::StarKind },
+    /// A mine or smoke star landed and stuck at `pos` (surface `normal`).
+    StarStuck { kind: stars::StarKind, pos: Point<Real>, normal: Vector<Real> },
+    /// A flash star burst at `pos` (impact or fuse). The server turns it into white-outs (`StarBlind`).
+    StarFlash { pos: Point<Real> },
+    /// A mine went off at `pos` (server only).
+    StarBurst { pos: Point<Real> },
+    /// A mine was shot, cut or replaced and is gone without exploding (server only); a smoke cloud ran out.
+    StarGone { kind: stars::StarKind, pos: Point<Real> },
+    /// Server only: `victim` is white-out blind for `ticks` at `strength_q` / 255 (events of the thrower).
+    StarBlind { victim: u16, strength_q: u8, ticks: u16 },
     /// A MARK star struck `target` (`collider` = its hitbox): no damage, the server marks that player for the katana.
     MarkHit { target: u128, collider: ColliderHandle },
     ShurikenBounce { pos: Point<Real>, normal: Vector<Real> },
@@ -194,6 +209,10 @@ pub struct CombatSystem {
     pub assist_range: f32,
     /// Edge of the lock state machine during the most recent `update` (cleared at the start of the next one).
     pub lock_edge: Option<aim_assist::LockEdge>,
+    /// Blinded (flash star): no lock-on can form and the lock that was held breaks; set every tick by the owner of the sim.
+    pub suppress_lock: bool,
+    /// Hitboxes inside a smoke cloud: never acquired as a lock-on target (they still take hits).
+    pub hidden: Vec<ColliderHandle>,
 }
 
 impl CombatSystem {
@@ -215,6 +234,8 @@ impl CombatSystem {
             assist_cone_deg: s.assist_cone_deg,
             assist_range: s.assist_range,
             lock_edge: None,
+            suppress_lock: false,
+            hidden: Vec::new(),
         }
     }
 
@@ -271,6 +292,13 @@ impl CombatSystem {
         self.loadout.active() || !self.powerups.bursts().is_empty()
     }
 
+    /// Client prediction: forget landed mines / smoke older than `grace` seconds (the server's copy takes over).
+    pub fn drop_landed_stars(&mut self, grace: f32) {
+        if let Some(d) = self.loadout.discs_mut() {
+            d.retain(|d| !(d.stuck && d.stick_age > grace));
+        }
+    }
+
     /// Owner died: drop everything in flight.
     pub fn reset_projectiles(&mut self) {
         self.loadout.reset();
@@ -291,7 +319,10 @@ impl CombatSystem {
         // lock first: one best_target per tick feeds the lock state and every weapon fired this tick
         let (eye, fwd) = (aim.origin, aim.forward());
         let held = self.lock.target.filter(|_| self.lock.holding());
-        let found = aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &self.allies, ch.body, held);
+        // smoke hides players from the lock (not from shots): lock candidates skip them like allies
+        let mut skip = self.allies.clone();
+        skip.extend(self.hidden.iter().copied());
+        let found = if self.suppress_lock { None } else { aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &skip, ch.body, held) };
         self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
         let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.target_vel });
         self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);

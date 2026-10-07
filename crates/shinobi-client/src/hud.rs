@@ -9,7 +9,7 @@
 
 use shinobi_proto::snapshot::{FLAG_DEAD, FLAG_INVULN, MoveKind};
 use shinobi_sim::combat::{CombatEvent, DamageKind};
-use shinobi_proto::gameplay::{KIND_GRID_BEAM, KIND_SHURIKEN, KIND_SLASH, PHASE_INTERMISSION, PHASE_LIVE};
+use shinobi_proto::gameplay::{KIND_GRID_BEAM, KIND_MINE, KIND_SHURIKEN, KIND_SLASH, PHASE_INTERMISSION, PHASE_LIVE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind, ScoreEntry};
 use shinobi_sim::pvp::{PvpEvent, Vitals};
@@ -74,6 +74,7 @@ impl Palette {
             DamageKind::Shuriken => self.cyan,
             DamageKind::Slash => self.orange,
             DamageKind::GridBeam => self.magenta,
+            DamageKind::Mine => self.magenta,
         }
     }
 }
@@ -448,6 +449,8 @@ pub struct HudState {
     pub guard_flash: Option<(u8, f32)>,
     /// Star-energy pool readout (`hud_energy`); `None` hides it.
     pub star: Option<crate::hud_energy::StarHud>,
+    /// Flash-star white-out 0..=1 (screen wash; `RenderView::blind`, already scaled by the settings' effect strength).
+    pub blind: f32,
     /// Contextual hint on screen: id and age (`hud_energy::HintState`).
     pub hint: Option<(crate::hud_energy::HintId, f32)>,
     /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
@@ -770,6 +773,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
     match k {
         KIND_SHURIKEN => DamageKind::Shuriken,
         KIND_GRID_BEAM => DamageKind::GridBeam,
+        KIND_MINE => DamageKind::Mine,
         _ => DamageKind::Slash,
     }
 }
@@ -777,7 +781,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
 /// Environmental damage source: anything that is not a weapon kind (obstacles, and any retired kind an old
 /// server might still send, e.g. light walls).
 pub fn is_void(k: u8) -> bool {
-    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM)
+    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_MINE)
 }
 
 impl KillEntry {
@@ -1206,6 +1210,10 @@ impl Hud {
         if !s.dead {
             out.extend(crate::controls_card::prims(&s.controls, p)); // not over the respawn countdown
         }
+        // flash star: the whole frame, crosshair included, washes to white
+        if s.blind > 0.01 {
+            out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(1.0, 1.0, 1.0, 0.96 * s.blind.min(1.0)), glow: 0.0 });
+        }
         out
     }
 }
@@ -1534,6 +1542,7 @@ pub fn weapon_name(k: DamageKind) -> &'static str {
         DamageKind::Shuriken => "SHURIKEN",
         DamageKind::Slash => "KATANA",
         DamageKind::GridBeam => "GRID BEAM",
+        DamageKind::Mine => "MINE STAR",
     }
 }
 
@@ -2043,6 +2052,7 @@ impl Glyph {
             DamageKind::Slash => Glyph::Katana,
             DamageKind::Shuriken => Glyph::Shuriken,
             DamageKind::GridBeam => Glyph::Beam,
+            DamageKind::Mine => Glyph::Shuriken,
         }
     }
 }

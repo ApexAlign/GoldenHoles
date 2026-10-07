@@ -245,7 +245,7 @@ impl Telemetry {
                         s.headshots += (amount >= head_threshold && head_threshold > balance.shuriken.damage) as u32;
                     }
                     DamageKind::Slash => self.stat(attacker).katana_hits += 1,
-                    DamageKind::GridBeam => {}
+                    DamageKind::GridBeam | DamageKind::Mine => {}
                 },
                 PvpEvent::Kill { killer, victim, kind, .. } => {
                     self.stat(killer).kills += 1;
@@ -253,6 +253,7 @@ impl Telemetry {
                         DamageKind::Shuriken => 0,
                         DamageKind::Slash => 1,
                         DamageKind::GridBeam => 2,
+                        DamageKind::Mine => 0,
                     };
                     self.died(victim, cause, now);
                 }
@@ -451,7 +452,7 @@ mod tests {
     }
 
     fn thrown() -> CombatEvent {
-        CombatEvent::ShurikenThrown { pos: Point::origin(), dir: Vector::z() }
+        CombatEvent::ShurikenThrown { pos: Point::origin(), dir: Vector::z(), kind: Default::default() }
     }
 
     fn slash() -> CombatEvent {

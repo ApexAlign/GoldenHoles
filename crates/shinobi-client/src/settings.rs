@@ -36,7 +36,7 @@ pub struct Settings {
     /// HUD size multiplier (`HUD_SCALE` range). The shell multiplies it by 1.15 on windows 800 px tall or less.
     pub hud_scale: f32,
     /// Times each contextual hint was shown (`hud_energy::HintId` order); a hint stops after `HINT_MAX_SHOWS`.
-    pub hints_seen: [u8; 4],
+    pub hints_seen: [u8; 5],
 }
 
 pub const MOUSE_SENS: (f32, f32, f32) = (0.0002, 0.02, 0.0012); // (min, max, default)
@@ -81,7 +81,7 @@ impl Default for Settings {
             crt_warp: CRT_WARP.2,
             head_bob: false,
             hud_scale: HUD_SCALE.2,
-            hints_seen: [0; 4],
+            hints_seen: [0; 5],
         }
     }
 }
@@ -117,10 +117,10 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let s = self.clamped();
         format!(
-            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\nhud_scale={}\nhints_seen={},{},{},{}\n",
+            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\nhud_scale={}\nhints_seen={},{},{},{},{}\n",
             s.mouse_sens, s.aim_pad_sens, s.stick_radius_frac, s.stick_deadzone, s.fov_deg, s.invert_y, s.left_handed,
             s.fx_intensity, s.reduced_motion, s.crt_warp, s.head_bob, s.hud_scale,
-            s.hints_seen[0], s.hints_seen[1], s.hints_seen[2], s.hints_seen[3]
+            s.hints_seen[0], s.hints_seen[1], s.hints_seen[2], s.hints_seen[3], s.hints_seen[4]
         )
     }
 
@@ -160,7 +160,8 @@ impl Settings {
                 "hud_scale" => num().map(|f| s.hud_scale = f).is_some(),
                 "hints_seen" => {
                     let v: Vec<u8> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                    (v.len() == 4).then(|| s.hints_seen.copy_from_slice(&v)).is_some()
+                    // 4 values = a file from before the star-type hint existed
+                    (v.len() == 5).then(|| s.hints_seen.copy_from_slice(&v)).is_some() || (v.len() == 4).then(|| s.hints_seen[..4].copy_from_slice(&v)).is_some()
                 }
                 _ => {
                     warn.push(format!("line {}: unknown key '{k}'", i + 1));
@@ -310,7 +311,7 @@ mod tests {
             crt_warp: 0.65,
             head_bob: true,
             hud_scale: 1.2,
-            hints_seen: [3, 1, 0, 2],
+            hints_seen: [3, 1, 0, 2, 1],
         };
         let (back, warn) = Settings::from_text(&s.to_text());
         assert_eq!(back, s);

@@ -111,6 +111,8 @@ pub struct KatanaBalance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatBalance {
     pub shuriken: ShurikenBalance,
+    /// Star variants: mine, flash, smoke (`combat/stars.rs`).
+    pub star: crate::combat::stars::StarCfg,
     pub katana: KatanaBalance,
     /// Horizontal speed (m/s) a hit gives an enemy, before its own `knockback_scale`.
     pub knockback_slash: f32,
@@ -504,6 +506,7 @@ impl Default for Balance {
                     energy_resume: s.energy_resume,
                     mark_cost: s.mark_cost,
                 },
+                star: s.star,
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
@@ -763,6 +766,7 @@ impl Balance {
             energy_regen_s: b.energy_regen_s,
             energy_resume: b.energy_resume,
             mark_cost: b.mark_cost,
+            star: self.combat.star,
             ..ShurikenCfg::default()
         }
     }
@@ -911,6 +915,23 @@ impl Balance {
         s!("combat.shuriken.energy_regen_s", F, self.combat.shuriken.energy_regen_s);
         s!("combat.shuriken.energy_resume", F, self.combat.shuriken.energy_resume);
         s!("combat.shuriken.mark_cost", F, self.combat.shuriken.mark_cost);
+        s!("combat.star.mine_cost", F, self.combat.star.mine_cost);
+        s!("combat.star.mine_arm_s", F, self.combat.star.mine_arm_s);
+        s!("combat.star.mine_trigger_radius", F, self.combat.star.mine_trigger_radius);
+        s!("combat.star.mine_burst_radius", F, self.combat.star.mine_burst_radius);
+        s!("combat.star.mine_damage", F, self.combat.star.mine_damage);
+        s!("combat.star.mine_knock", F, self.combat.star.mine_knock);
+        s!("combat.star.mine_max", U, self.combat.star.mine_max);
+        s!("combat.star.mine_life_s", F, self.combat.star.mine_life_s);
+        s!("combat.star.mine_disarm_radius", F, self.combat.star.mine_disarm_radius);
+        s!("combat.star.flash_cost", F, self.combat.star.flash_cost);
+        s!("combat.star.flash_fuse_s", F, self.combat.star.flash_fuse_s);
+        s!("combat.star.flash_radius", F, self.combat.star.flash_radius);
+        s!("combat.star.flash_secs", F, self.combat.star.flash_secs);
+        s!("combat.star.flash_cone_deg", F, self.combat.star.flash_cone_deg);
+        s!("combat.star.smoke_cost", F, self.combat.star.smoke_cost);
+        s!("combat.star.smoke_secs", F, self.combat.star.smoke_secs);
+        s!("combat.star.smoke_radius", F, self.combat.star.smoke_radius);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
@@ -1117,6 +1138,14 @@ impl Balance {
         }
         if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < sh.energy_cost.max(sh.mark_cost) {
             e.push("combat.shuriken.energy_max must cover at least one star and one mark star".into());
+        }
+        let st = &self.combat.star;
+        let costs = [st.mine_cost, st.flash_cost, st.smoke_cost];
+        if costs.iter().any(|c| *c <= 0.0) || [st.mine_arm_s, st.mine_trigger_radius, st.mine_burst_radius, st.mine_damage, st.mine_knock, st.mine_life_s, st.mine_disarm_radius, st.flash_fuse_s, st.flash_radius, st.flash_secs, st.smoke_secs, st.smoke_radius].iter().any(|v| *v < 0.0) || st.mine_max == 0 || !(0.0..=180.0).contains(&st.flash_cone_deg) {
+            e.push("combat.star.*: costs > 0, times / radii / damage >= 0, mine_max >= 1, flash_cone_deg in 0..=180".into());
+        }
+        if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < costs.iter().cloned().fold(0.0, f32::max) {
+            e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
         }
         let m = &self.melee;
         if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal, m.exec_frac, m.slam_speed, m.shock_radius, m.shock_knock, m.counter_window_s].iter().any(|v| *v < 0.0) {

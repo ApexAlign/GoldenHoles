@@ -214,7 +214,7 @@ impl EmitterSystem {
                     self.push_dash(tick);
                 }
             }
-            CombatEvent::ShurikenThrown { pos, dir } => {
+            CombatEvent::ShurikenThrown { pos, dir, .. } => {
                 let mut em = self.mk(EmitterKind::ShurikenTrail, p.cyan, 4.0);
                 em.origin = [pos.x, pos.y, pos.z];
                 em.dir = norm3([dir.x, dir.y, dir.z], [0.0, 0.0, -1.0]);
@@ -272,6 +272,29 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
+            // a mine / smoke star landed (ours, predicted): a small grey-white puff off the surface
+            CombatEvent::StarStuck { pos, normal, .. } => {
+                let mut em = self.mk(EmitterKind::HitSpark, p.text, 2.0);
+                em.origin = [pos.x, pos.y, pos.z];
+                em.dir = norm3([normal.x, normal.y, normal.z], [0.0, 1.0, 0.0]);
+                em.count = 8;
+                em.spread = 0.7;
+                em.seed = tick;
+                self.out.push(em);
+            }
+            // flash burst (predicted for our own throws): white sparks in every direction; the volume FX is the world layer's
+            CombatEvent::StarFlash { pos } => {
+                let mut em = self.mk(EmitterKind::HitSpark, p.text, 6.0);
+                em.origin = [pos.x, pos.y, pos.z];
+                em.count = 32;
+                em.spread = std::f32::consts::PI;
+                em.speed = 12.0;
+                em.life = 0.35;
+                em.seed = tick;
+                self.out.push(em);
+            }
+            // server-side outcomes: the world FX layer draws them from `NetEvent::StarFx`
+            CombatEvent::StarBurst { .. } | CombatEvent::StarGone { .. } | CombatEvent::StarBlind { .. } => {}
             CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } => {}
         }
     }
@@ -410,7 +433,7 @@ mod tests {
     #[test]
     fn shuriken_thrown_makes_follow_trail_with_no_burst() {
         let mut s = sys();
-        s.on_event(&CombatEvent::ShurikenThrown { pos: Point::new(0.0, 1.0, 0.0), dir: Vector::new(0.0, 0.0, -2.0) }, 5);
+        s.on_event(&CombatEvent::ShurikenThrown { pos: Point::new(0.0, 1.0, 0.0), dir: Vector::new(0.0, 0.0, -2.0), kind: shinobi_sim::combat::stars::StarKind::Standard }, 5);
         assert_eq!(s.out[0].kind, EmitterKind::ShurikenTrail);
         assert!(s.out[0].instances(0.0).is_empty());
         assert!((s.out[0].dir[2] + 1.0).abs() < 1e-5, "dir normalized");
