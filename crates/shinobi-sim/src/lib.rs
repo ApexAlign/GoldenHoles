@@ -13,6 +13,7 @@ pub mod enemies;
 pub mod events;
 pub mod hazards;
 pub mod lagcomp;
+pub mod melee;
 pub mod match_state;
 pub mod level;
 pub mod movement;

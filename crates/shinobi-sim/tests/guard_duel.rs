@@ -19,7 +19,9 @@ fn server() -> Server {
     let mut s = Server::new(Cfg::default());
     lv.apply_to_server(&mut s);
     s.set_spawns(lv.spawns.clone());
-    s.set_balance(Balance::demo()).unwrap();
+    let mut b = Balance::demo();
+    b.melee = shinobi_sim::balance::MeleeBalance::default(); // these tests pin the base damage numbers
+    s.set_balance(b).unwrap();
     s.match_state.cfg.frag_limit = u16::MAX;
     s.match_state.cfg.time_limit_ticks = u32::MAX / 2;
     s.add_player(A, [0.0, 0.81, 0.0]);

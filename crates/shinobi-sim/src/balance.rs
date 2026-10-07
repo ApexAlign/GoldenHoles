@@ -81,6 +81,9 @@ pub struct KatanaBalance {
     pub finisher_mult: f32,
     /// Extra blade length (m) of the finishing swing.
     pub finisher_reach: f32,
+    /// Half-angle (degrees) of the target-centred hit cone (0 = box only) and its extra reach (m).
+    pub cone_deg: f32,
+    pub cone_extra: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +178,52 @@ pub struct AssistBalance {
 impl Default for AssistBalance {
     fn default() -> Self {
         Self { friction: 0.2, magnet: 0.9, centre: 4.0, touch_mult: 1.6 }
+    }
+}
+
+/// Melee action heighteners (`melee.rs`), in seconds / m / m/s. All zero in the default balance (off); the demo turns
+/// them on.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct MeleeBalance {
+    /// Slash damage bonus per m/s of attacker speed, capped at `momentum_cap` (0.6 = +60 %).
+    pub momentum_per_mps: f32,
+    pub momentum_cap: f32,
+    /// Launch speed a slash gives its victim (0 = no knockback), the upward pop for a grounded victim, the vertical
+    /// floor that keeps an already airborne victim up (the juggle).
+    pub knock_speed: f32,
+    pub knock_pop: f32,
+    pub juggle_up: f32,
+    /// Window in which a wall stop counts as a splat, the bonus damage of one and the stun it causes (0 = off).
+    pub splat_window_s: f32,
+    pub splat_damage: f32,
+    pub splat_stun_s: f32,
+    /// Seconds after being hit in which a fall into the void credits the attacker (0 = no ring-out credit).
+    pub ring_window_s: f32,
+    /// Kill-streak window, damage bonus per stacked kill, the stack cap and the hp healed per kill (0 window = off).
+    pub streak_window_s: f32,
+    pub streak_bonus: f32,
+    pub streak_cap: u32,
+    pub streak_heal: f32,
+}
+
+impl MeleeBalance {
+    pub fn cfg(&self) -> crate::melee::MeleeCfg {
+        let t = |s: f32| (s * crate::match_state::TICK_HZ as f32).round().max(0.0) as u32;
+        crate::melee::MeleeCfg {
+            momentum_per_mps: self.momentum_per_mps,
+            momentum_cap: self.momentum_cap,
+            knock_speed: self.knock_speed,
+            knock_pop: self.knock_pop,
+            juggle_up: self.juggle_up,
+            splat_ticks: t(self.splat_window_s),
+            splat_damage: self.splat_damage,
+            splat_stagger_ticks: t(self.splat_stun_s),
+            ring_ticks: t(self.ring_window_s),
+            streak_ticks: t(self.streak_window_s),
+            streak_bonus: self.streak_bonus,
+            streak_cap: self.streak_cap,
+            streak_heal: self.streak_heal,
+        }
     }
 }
 
@@ -349,6 +398,7 @@ pub struct Balance {
     pub feedback: FeedbackBalance,
     pub assist: AssistBalance,
     pub guard: GuardBalance,
+    pub melee: MeleeBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
@@ -397,7 +447,7 @@ impl Default for Balance {
                     assist_range: s.assist_range,
                     piece_damage: s.piece_damage,
                 },
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -416,6 +466,7 @@ impl Default for Balance {
             feedback: FeedbackBalance::default(),
             assist: AssistBalance::default(),
             guard: GuardBalance::default(),
+            melee: MeleeBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
                 warmup_ticks: m.warmup_ticks,
@@ -542,11 +593,33 @@ impl Balance {
         b.combat.katana.finisher_mult = 1.5; // the third connected swing of a combo cuts for 30
         b.combat.katana.finisher_reach = 0.6; // and reaches 0.6 m further
         b.combat.katana.combo_window = 1.0;
+        // forgiving blade: any enemy within 38 degrees of the swing and 1.0 m past the blade's reach is hit (target-centred)
+        b.combat.katana.cone_deg = 38.0;
+        b.combat.katana.cone_extra = 1.0;
         b.combat.katana.magnet = 1.0; // a locked target pulls the whole blade sweep onto it
         b.player.max_hp = 100.0;
         // block / parry: a held shield cuts frontal hits to 15 %, a block raised just before the hit parries it (negated,
         // a melee attacker staggers 0.8 s); the strike window (0.25 s after your own swing, 1 s after being parried)
         // makes hits on you worth 1.5x, which the lock triangle shows
+        // melee heighteners: +4 % slash damage per m/s of your speed (cap +60 %), a slash launches its victim 8 m/s with a pop
+        // (an airborne victim is kept up for the next cut), a launched victim stopped by a wall takes 15 and is stunned
+        // 0.6 s, a fall into the void within 3 s of a hit is the attacker's kill, katana kills inside 8 s stack +8 % damage
+        // (cap 4) and heal 20 hp
+        b.melee = MeleeBalance {
+            momentum_per_mps: 0.04,
+            momentum_cap: 0.6,
+            knock_speed: 8.0,
+            knock_pop: 4.0,
+            juggle_up: 5.0,
+            splat_window_s: 0.5,
+            splat_damage: 15.0,
+            splat_stun_s: 0.6,
+            ring_window_s: 3.0,
+            streak_window_s: 8.0,
+            streak_bonus: 0.08,
+            streak_cap: 4,
+            streak_heal: 20.0,
+        };
         b.guard.swing_open_s = 0.25;
         b.guard.counter_open_s = 1.0;
         b.guard.bonus_mult = 1.5;
@@ -619,6 +692,8 @@ impl Balance {
         k.combo_window = b.combo_window;
         k.finisher_mult = b.finisher_mult;
         k.finisher_reach = b.finisher_reach;
+        k.cone_deg = b.cone_deg;
+        k.cone_extra = b.cone_extra;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -711,6 +786,8 @@ impl Balance {
         s!("combat.katana.combo_window", F, self.combat.katana.combo_window);
         s!("combat.katana.finisher_mult", F, self.combat.katana.finisher_mult);
         s!("combat.katana.finisher_reach", F, self.combat.katana.finisher_reach);
+        s!("combat.katana.cone_deg", F, self.combat.katana.cone_deg);
+        s!("combat.katana.cone_extra", F, self.combat.katana.cone_extra);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
@@ -722,6 +799,19 @@ impl Balance {
         s!("assist.magnet", F, self.assist.magnet);
         s!("assist.centre", F, self.assist.centre);
         s!("assist.touch_mult", F, self.assist.touch_mult);
+        s!("melee.momentum_per_mps", F, self.melee.momentum_per_mps);
+        s!("melee.momentum_cap", F, self.melee.momentum_cap);
+        s!("melee.knock_speed", F, self.melee.knock_speed);
+        s!("melee.knock_pop", F, self.melee.knock_pop);
+        s!("melee.juggle_up", F, self.melee.juggle_up);
+        s!("melee.splat_window_s", F, self.melee.splat_window_s);
+        s!("melee.splat_damage", F, self.melee.splat_damage);
+        s!("melee.splat_stun_s", F, self.melee.splat_stun_s);
+        s!("melee.ring_window_s", F, self.melee.ring_window_s);
+        s!("melee.streak_window_s", F, self.melee.streak_window_s);
+        s!("melee.streak_bonus", F, self.melee.streak_bonus);
+        s!("melee.streak_cap", U, self.melee.streak_cap);
+        s!("melee.streak_heal", F, self.melee.streak_heal);
         s!("guard.front_deg", F, self.guard.front_deg);
         s!("guard.front_mult", F, self.guard.front_mult);
         s!("guard.parry_s", F, self.guard.parry_s);
@@ -888,6 +978,10 @@ impl Balance {
                 "player.first_spawn_invuln_ticks must be 0 or >= {MAX_REWIND_TICKS} (lag-compensation window), got {}",
                 self.player.first_spawn_invuln_ticks
             ));
+        }
+        let m = &self.melee;
+        if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.streak_window_s, m.streak_bonus, m.streak_heal].iter().any(|v| *v < 0.0) {
+            e.push("melee.* values must be >= 0".into());
         }
         let g = &self.guard;
         if !(1.0..=180.0).contains(&g.front_deg) || !(0.0..=1.0).contains(&g.front_mult) || !(0.0..=1.0).contains(&g.hit_cost) {

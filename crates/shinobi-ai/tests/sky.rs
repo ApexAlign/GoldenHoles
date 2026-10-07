@@ -114,8 +114,8 @@ fn sky_bots_fight_without_freezing_or_walking_off_the_roofs() {
         let Some(r) = run(12, 240, seed) else { return };
         println!("seed {seed}: kills {} void deaths {} stuck {} max roam {} cells, tiers walked {}", r.kills, r.void_deaths, r.stuck.len(), r.max_roam, r.tiers_seen);
         assert!(r.stuck.is_empty(), "seed {seed}: stuck stretches (bot, tick, x, z, phase): {:?}", &r.stuck[..r.stuck.len().min(10)]);
-        // 12 bots x 4 minutes: a roof is not a cliff. A handful of falls is fight chaos (knockback), a stream of them is a bug.
-        assert!(r.void_deaths <= 6, "seed {seed}: {} bots walked or got shoved off the roofs in 240 s", r.void_deaths);
+        // 12 bots x 4 minutes: a roof is not a cliff. Slashes now launch their victims and a ring-out is a kill (melee heighteners), so shoves off the roofs are part of the fight; a flood of them is a bug.
+        assert!(r.void_deaths <= 20, "seed {seed}: {} bots walked or got shoved off the roofs in 240 s", r.void_deaths);
         assert!(r.tiers_seen >= 3, "seed {seed}: bots only stood on {} tier(s): they are not using the ramps", r.tiers_seen);
         assert!(r.kills >= 20, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
     }

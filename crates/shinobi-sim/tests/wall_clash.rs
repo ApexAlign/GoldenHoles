@@ -16,6 +16,7 @@ const FRAME: Duration = Duration::from_nanos(16_666_667);
 fn balance() -> Balance {
     let mut b = Balance::demo();
     b.combat.katana.damage = 20.0;
+    b.melee = shinobi_sim::balance::MeleeBalance::default(); // these tests pin exact damage: no momentum / knockback
     b
 }
 

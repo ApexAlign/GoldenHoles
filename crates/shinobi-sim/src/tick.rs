@@ -88,6 +88,8 @@ pub struct Player {
     pub clash_ready_tick: u32,
     /// Block / parry shield, guard energy, stagger and strike-window state (`block.rs`).
     pub blk: crate::block::BlockState,
+    /// Melee heighteners: last attacker (ring-out), knock in progress (wall-splat), kill streak (`melee.rs`).
+    pub melee: crate::melee::MeleeState,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -266,6 +268,7 @@ impl Server {
             clash: None,
             clash_ready_tick: 0,
             blk: Default::default(),
+            melee: Default::default(),
         });
     }
 
@@ -443,6 +446,7 @@ impl Server {
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
 
         let bcfg = self.balance.guard.cfg();
+        let mcfg = self.balance.melee.cfg();
         for i in 0..self.players.len() {
             let intent = self.players[i].queue.take_for_tick(tick);
             let before = self.players[i].pos(&self.world);
@@ -606,6 +610,18 @@ impl Server {
                 crate::character::GrappleEvent::None => {}
             }
 
+            // wall-splat: a launched player stopped dead in the air by a wall takes bonus damage and is stunned
+            {
+                // measured, not the stored velocity: a wall stops the body but the controller keeps its velocity
+                let now_pos = p.pos(&self.world);
+                let moved = ((now_pos[0] - before[0]).powi(2) + (now_pos[2] - before[2]).powi(2)).sqrt() / dt;
+                let airborne = !matches!(p.ch.state, crate::character::MoveState::Grounded);
+                if let Some(by) = mcfg.splat(&mut p.melee, moved, airborne, tick) {
+                    p.blk.stagger_until = tick + mcfg.splat_stagger_ticks;
+                    p.blk.open_for(tick, mcfg.splat_stagger_ticks);
+                    hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false });
+                }
+            }
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
             // rope and strike momentum: a far hook reels at up to `grapple_far_speed` and the release keeps it; allow what the
@@ -634,13 +650,13 @@ impl Server {
         // environment: obstacles and light-walls (positions after this tick's movement)
         self.world.queries.update(&self.world.colliders);
         if !frozen {
-            hits.extend(pvp::void_hits(&self.players, &self.world, self.kill_plane_y));
+            hits.extend(pvp::void_hits(&self.players, &self.world, self.kill_plane_y, tick, &mcfg));
             hits.extend(self.hazards.hits(&self.world, &self.players, tick, &self.cfg, &mut self.pvp_events));
         }
 
         // every attacker has run: settle damage once, then record the tick
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {

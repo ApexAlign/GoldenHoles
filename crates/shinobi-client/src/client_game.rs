@@ -105,6 +105,8 @@ pub struct ClientGameCfg {
     /// Ticks of headroom the intent clock gets over the server-clock estimate. It must cover RTT plus jitter
     /// (the estimate lags the real server tick by one one-way trip), and stay under `MAX_FUTURE_TICKS` (24).
     pub lead_ticks: u32,
+    /// Katana homing: a slice press with a lock turns the view onto the target (see `sim_tick`).
+    pub melee_home: bool,
     /// Look sensitivity, radians per device unit.
     pub rad_per_unit: f32,
     /// Hit-stop after a katana hit / kill, seconds (Balance `feedback.hitstop_*`). Client-only: the sim never pauses.
@@ -120,6 +122,7 @@ impl Default for ClientGameCfg {
             sim: Cfg::default(),
             camera: FpsCameraCfg::default(),
             lead_ticks: 8,
+            melee_home: true,
             rad_per_unit: 0.0022,
             hitstop_slash: FeedbackBalance::default().hitstop_slash_ms / 1000.0,
             hitstop_kill: FeedbackBalance::default().hitstop_kill_ms / 1000.0,
@@ -516,6 +519,13 @@ impl RenderView {
         (self.aim.yaw, self.aim.pitch)
     }
 }
+
+/// Katana homing (see `sim_tick`): range (m) and half-cone (rad) in which a slice press turns the view onto the lock,
+/// the range / per-tick step of the slow tracking turn during the swing cadence.
+const HOME_RANGE: f32 = 9.0;
+const HOME_CONE: f32 = 0.9;
+const HOME_TRACK_RANGE: f32 = 5.0;
+const HOME_TRACK_STEP: f32 = 0.04;
 
 pub struct ClientGame {
     pub cfg: ClientGameCfg,
@@ -918,6 +928,28 @@ impl ClientGame {
         if blocking {
             // a raised shield shuts throwing and cutting (the server drops them too), dash / jump / grapple stay live
             held = Buttons(held.0 & !(Buttons::FIRE | Buttons::SLICE));
+        }
+        // melee homing: the lunge goes where the AIM points (client prediction and server both use it), so the aim is
+        // what gets bent. Pressing slice with a lock turns the view onto the locked target (within range and a generous
+        // cone); in the swing cadence after it the view keeps turning toward the target, slowly, and only while the
+        // player is not turning it themselves, so it never fights the look.
+        if !dead && !blocking && self.cfg.melee_home {
+            if let Some(p) = &self.pred {
+                if p.combat.lock.holding() {
+                    let eye = vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]];
+                    let t = p.combat.lock.pos_now();
+                    let to = vector![t[0], t[1], t[2]] - eye;
+                    let dist = (to.x * to.x + to.z * to.z).sqrt();
+                    let (ty, _) = shinobi_sim::combat::aim_assist::angles_of(vector![to.x, 0.0, to.z]);
+                    let err = (ty - self.aim.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    let cooling = p.combat.slice_cooldown_left() > 0.0;
+                    if held.has(Buttons::SLICE) && dist <= HOME_RANGE && err.abs() <= HOME_CONE {
+                        self.aim.yaw = ty.rem_euclid(std::f32::consts::TAU);
+                    } else if cooling && dist <= HOME_TRACK_RANGE && err.abs() <= HOME_CONE && frame.look == (0.0, 0.0) {
+                        self.aim.yaw = (self.aim.yaw + err.clamp(-HOME_TRACK_STEP, HOME_TRACK_STEP)).rem_euclid(std::f32::consts::TAU);
+                    }
+                }
+            }
         }
         let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
