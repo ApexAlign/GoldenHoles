@@ -107,12 +107,13 @@ fn a_block_raised_just_before_the_cut_is_a_parry_that_staggers_the_attacker() {
     assert!(loss < 0.01, "a parry negates the cut ({loss})");
     assert!(ev.iter().any(|e| matches!(e, PvpEvent::Hit { attacker: A, victim: B, amount, .. } if *amount == 0.0)), "the parried hit is still reported: {ev:?}");
 
+    // (B waits until the shield has been down a while: a cut right after lowering it is a whirl cut, see katana_moves.rs)
     // A is now staggered and open: B's counter-cut deals the bonus (20 x 1.5 = 30) and A cannot cut back meanwhile
     let mut s = server();
     let mut dealt = Vec::new();
     for t in 0..120u32 {
         let a = PlayerIntent { buttons: Buttons(if t == 5 || t == 30 { Buttons::SLICE } else { 0 }), ..idle(0, A_YAW) };
-        let b = PlayerIntent { block: (4..12).contains(&t), buttons: Buttons(if t == 20 { Buttons::SLICE } else { 0 }), ..idle(0, B_YAW) };
+        let b = PlayerIntent { block: (4..12).contains(&t), buttons: Buttons(if t == 40 { Buttons::SLICE } else { 0 }), ..idle(0, B_YAW) };
         for e in feed(&mut s, [a, b]) {
             if let PvpEvent::Hit { attacker, victim, amount, bonus, .. } = e {
                 dealt.push((t, attacker, victim, amount, bonus));

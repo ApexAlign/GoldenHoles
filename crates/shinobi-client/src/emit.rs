@@ -369,6 +369,7 @@ mod tests {
             half_width: 1.0,
             half_height: 1.0,
             damage: 120.0,
+            kind: shinobi_sim::combat::SlashKind::Light,
         };
         s.on_event(&ev(false), 1);
         assert_eq!(s.out.len(), 1);

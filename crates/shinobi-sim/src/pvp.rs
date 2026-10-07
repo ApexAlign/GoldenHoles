@@ -312,12 +312,17 @@ pub fn apply_hits(
             guard_seen = guard;
             match guard {
                 crate::block::Guard::Parried => {
+                    let parried = amount;
                     amount = 0.0;
                     // a parried melee attacker is staggered and wide open to the counter
                     if kind == DamageKind::Slash {
                         if let Some(a) = players.iter_mut().find(|p| p.id == h.attacker) {
                             a.blk.stagger_until = tick + block.stagger_ticks;
                             a.blk.open_for(tick, block.counter_open_ticks.max(block.stagger_ticks));
+                        }
+                        // the parrier's next cut inside the window is a counter cut (katana_moves.rs)
+                        if melee.counter_ticks > 0 && h.attacker != NO_ATTACKER {
+                            players[h.victim].kmoves.counter = Some((h.attacker, tick + melee.counter_ticks, parried));
                         }
                     }
                 }
@@ -330,7 +335,12 @@ pub fn apply_hits(
                     }
                 }
                 crate::block::Guard::None => {
-                    if players[h.victim].blk.open(tick) && block.bonus_mult > 1.0 {
+                    let v = &players[h.victim];
+                    if kind == DamageKind::Slash && melee.executes(v.vitals.hp, v.vitals.max_hp, v.blk.staggered(tick)) {
+                        // execute: a stunned player at low hp does not survive a blow
+                        amount = amount.max(v.vitals.hp);
+                        bonus = true;
+                    } else if v.blk.open(tick) && block.bonus_mult > 1.0 {
                         amount *= block.bonus_mult;
                         bonus = true;
                     }
@@ -381,10 +391,18 @@ pub fn apply_hits(
             }
             if kind == DamageKind::Slash && !dead && amount > 0.0 && guard_seen != crate::block::Guard::Blocked && guard_seen != crate::block::Guard::Parried {
                 if let Some(a) = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world)) {
+                    // an air cut drives its victim into the ground (the landing is a shock-wave) instead of launching them
+                    let slam = melee.slam_speed > 0.0 && players.iter().find(|p| p.id == h.attacker).map_or(false, |p| p.kmoves.slams(tick));
                     let vp = &mut players[h.victim];
                     let airborne = !matches!(vp.ch.state, crate::character::MoveState::Grounded);
                     let vel = [vp.ch.vel.x, vp.ch.vel.y, vp.ch.vel.z];
-                    if let Some(nv) = melee.knock(vp.pos(world), a, vel, airborne) {
+                    if slam {
+                        vp.ch.vel = Vector::new(0.0, -melee.slam_speed, 0.0);
+                        if matches!(vp.ch.state, crate::character::MoveState::Grounded) {
+                            vp.ch.state = crate::character::MoveState::Airborne;
+                        }
+                        vp.kmoves.slammed(h.attacker, tick);
+                    } else if let Some(nv) = melee.knock(vp.pos(world), a, vel, airborne) {
                         vp.ch.vel = Vector::new(nv[0], nv[1], nv[2]);
                         if matches!(vp.ch.state, crate::character::MoveState::Grounded) {
                             vp.ch.state = crate::character::MoveState::Airborne; // the controller keeps a grounded body stuck to the floor
@@ -415,6 +433,7 @@ pub fn apply_hits(
         p.ch.clear_grapple();
         p.combat.reset_projectiles();
         p.blk.reset();
+        p.kmoves.reset();
         p.melee.knock_speed = 0.0; // a corpse splats nothing (the kill streak and last-hit survive: ring-outs after death are over)
         if let Some(col) = world.colliders.get_mut(p.vitals.hitbox) {
             col.set_collision_groups(InteractionGroups::none());
@@ -607,6 +626,7 @@ mod tests {
             half_width: 1.0,
             half_height: 1.0,
             damage: 60.0,
+            kind: crate::combat::SlashKind::Light,
         };
         let mut synth = Vec::new();
         let hits = player_hits(&sim.s.world, &sim.s.players, 0, &[slash], tick, &Cfg::default(), HeadCfg::default(), &mut synth);
