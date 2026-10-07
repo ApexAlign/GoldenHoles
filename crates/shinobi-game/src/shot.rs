@@ -308,6 +308,32 @@ fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
         ],
     };
     let mut snap = snap;
+    // SHOT_FX=lineup (distance from SHOT_LINE=metres, default 5): eight players facing us, one pose each:
+    // idle, run, air, wall-run, dash, roll, block, strike. Used for the character-look review frames.
+    if has("lineup") {
+        use shinobi_proto::snapshot::{FLAG_ROLL, FX_BLOCK, FX_OPEN};
+        let d: f32 = std::env::var("SHOT_LINE").ok().and_then(|v| v.parse().ok()).unwrap_or(5.0);
+        let sp = d * 0.3;
+        let rows: [(MoveKind, u8, u8, f32); 8] = [
+            (MoveKind::Grounded, 0, 0, 0.0),
+            (MoveKind::Grounded, 0, 0, 9.0),
+            (MoveKind::Airborne, 0, 0, 5.0),
+            (MoveKind::WallRun, 0, 0, 9.0),
+            (MoveKind::Evading, 0, 0, 20.0),
+            (MoveKind::Evading, FLAG_ROLL, 0, 8.0),
+            (MoveKind::Grounded, 0, FX_BLOCK, 0.0),
+            (MoveKind::Grounded, 0, FX_OPEN, 0.0),
+        ];
+        // SHOT_LINE_PICK=0,1,6 keeps only those poses (spaced evenly) for close-up review frames
+        let pick: Vec<usize> = std::env::var("SHOT_LINE_PICK").ok().map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_else(|| (0..8).collect());
+        for (slot, i) in pick.iter().copied().enumerate() {
+            let (kind, flags, fxb, v) = rows[i];
+            let x = (slot as f32 - (pick.len() as f32 - 1.0) * 0.5) * sp;
+            let along = -d;
+            let up = if kind == MoveKind::Airborne { 0.8 } else { 0.0 };
+            snap.entities.push((20 + i as u16, EntityState { yaw: 32768, flags, fx: fxb, ..ent(at(x, up, along), [0.0, 0.0, v], kind) }));
+        }
+    }
     snap.entities.extend(rguard);
     snap.entities.extend(ropen);
     // SHOT_FX=guard: our own shield up (first-person blade + shield + HUD ring)

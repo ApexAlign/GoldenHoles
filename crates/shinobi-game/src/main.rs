@@ -14,6 +14,7 @@ mod crt;
 mod demo;
 mod audio;
 mod blocks;
+mod character_look;
 mod death;
 mod discs;
 mod env_look;
