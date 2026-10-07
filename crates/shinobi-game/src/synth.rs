@@ -40,10 +40,85 @@ pub enum Sound {
     Reel,
     /// Loop: wall-run rush.
     WallRun,
+    /// Bright bell: a parried hit.
+    Parry,
+    /// Dull clang: the shield took a hit.
+    Block,
+    /// Buzz: star energy empty.
+    Lockout,
+    /// Soft ping: star energy is back.
+    Refill,
+    /// Rising whine while the heavy cut charges.
+    HeavyCharge,
+    HeavyRelease,
+    /// Low boom: dive slash.
+    AirSlam,
+    Whirl,
+    /// Slice + chime: a katana kill.
+    Execute,
+    /// Zap: the counter cut after a parry.
+    CounterFlash,
+    GrappleYank,
+    /// Soft tick while reeling in.
+    RopePulse,
+    Step,
+    Jump,
+    DoubleJump,
+    Land,
+    LandHard,
+    Slide,
+    WallSlash,
+    GuardLow,
+    /// Kill streak note (played at a rising speed).
+    Streak,
+    /// Falling whoosh into the void.
+    VoidFall,
+    DeathSting,
+    Respawn,
+    MatchStart,
+    Victory,
+    Defeat,
+    UiClick,
+    UiBack,
+    /// Loop (ambient bus): wind bed, 3 s.
+    Wind,
+    /// Loop (ambient bus): city hum, 1 s.
+    Hum,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 22] = [
+    pub const ALL: [Sound; 53] = [
+        Sound::Parry,
+        Sound::Block,
+        Sound::Lockout,
+        Sound::Refill,
+        Sound::HeavyCharge,
+        Sound::HeavyRelease,
+        Sound::AirSlam,
+        Sound::Whirl,
+        Sound::Execute,
+        Sound::CounterFlash,
+        Sound::GrappleYank,
+        Sound::RopePulse,
+        Sound::Step,
+        Sound::Jump,
+        Sound::DoubleJump,
+        Sound::Land,
+        Sound::LandHard,
+        Sound::Slide,
+        Sound::WallSlash,
+        Sound::GuardLow,
+        Sound::Streak,
+        Sound::VoidFall,
+        Sound::DeathSting,
+        Sound::Respawn,
+        Sound::MatchStart,
+        Sound::Victory,
+        Sound::Defeat,
+        Sound::UiClick,
+        Sound::UiBack,
+        Sound::Wind,
+        Sound::Hum,
         Sound::LockTone,
         Sound::LockChirp,
         Sound::LockBreak,
@@ -69,7 +144,7 @@ impl Sound {
     ];
 
     pub fn looped(self) -> bool {
-        matches!(self, Sound::Reel | Sound::WallRun)
+        matches!(self, Sound::Reel | Sound::WallRun | Sound::Wind | Sound::Hum)
     }
 }
 
@@ -142,6 +217,25 @@ fn place(parts: &[(f32, Vec<f32>)]) -> Vec<f32> {
         }
     }
     out
+}
+
+/// Decaying sine note.
+fn tone(f: f32, d: f32, pow: f32, g: f32) -> Vec<f32> {
+    sweep(d, f, f, 0, |t| env(t, d, 0.003, pow) * g)
+}
+
+/// Several decaying sines at once.
+fn chord(fs: &[f32], d: f32, pow: f32, g: f32) -> Vec<f32> {
+    mix(&fs.iter().map(|f| (tone(*f, d, pow, 1.0), g)).collect::<Vec<_>>())
+}
+
+fn scaled(v: Vec<f32>, g: f32) -> Vec<f32> {
+    v.into_iter().map(|x| x * g).collect()
+}
+
+/// Noise minus its low-passed self: the airy part (slices, ticks).
+fn highpass(x: &[f32], k: f32) -> Vec<f32> {
+    lowpass(x, k).iter().zip(x).map(|(l, v)| v - l).collect()
 }
 
 /// Render one sound to mono f32 samples in -1..1.
@@ -230,7 +324,145 @@ pub fn render(s: Sound) -> Vec<f32> {
             let blip = |f: f32| sweep(0.07, f, f, 0, |t| env(t, 0.07, 0.003, 1.0) * 0.3);
             place(&[(0.0, blip(1046.0)), (0.1, blip(1568.0))])
         }
+        Sound::Parry => {
+            let bell = |f: f32| chord(&[f, f * 1.5, f * 2.0], 0.5, 2.5, 0.2);
+            place(&[(0.0, scaled(noise_burst(0.02, 61, |t| env(t, 0.02, 0.0, 1.0)), 0.5)), (0.0, bell(1568.0)), (0.08, bell(2093.0))])
+        }
+        Sound::Block => mix(&[
+            (noise_burst(0.04, 63, |t| env(t, 0.04, 0.0, 1.5)), 0.5),
+            (sweep(0.22, 520.0, 495.0, 0, |t| env(t, 0.22, 0.001, 3.0)), 0.45),
+            (sweep(0.15, 780.0, 760.0, 0, |t| env(t, 0.15, 0.001, 3.0)), 0.2),
+        ]),
+        Sound::Lockout => {
+            let d = 0.28;
+            sweep(d, 110.0, 105.0, 2, |t| env(t, d, 0.004, 0.4) * if (t * 36.0).fract() < 0.5 { 0.32 } else { 0.1 })
+        }
+        Sound::Refill => place(&[(0.0, tone(1318.0, 0.16, 1.8, 0.3)), (0.07, tone(1760.0, 0.3, 2.0, 0.3))]),
+        Sound::HeavyCharge => {
+            let d = 0.7;
+            mix(&[
+                (sweep(d, 120.0, 720.0, 1, |t| { let u = t / d; u.powf(1.5) * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.22 }), 1.0),
+                (sweep(d, 240.0, 1440.0, 0, |t| { let u = t / d; u * u * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.12 }), 1.0),
+            ])
+        }
+        Sound::HeavyRelease => {
+            let d = 0.38;
+            mix(&[
+                (lowpass(&noise_burst(d, 71, |t| env(t, d, 0.03, 1.2)), 0.3), 2.0),
+                (sweep(0.3, 95.0, 38.0, 0, |t| env(t, 0.3, 0.002, 2.0)), 0.8),
+                (noise_burst(0.025, 73, |t| env(t, 0.025, 0.0, 1.0)), 0.5),
+            ])
+        }
+        Sound::AirSlam => mix(&[
+            (sweep(0.5, 75.0, 28.0, 0, |t| env(t, 0.5, 0.002, 1.8)), 1.0),
+            (lowpass(&noise_burst(0.35, 79, |t| env(t, 0.35, 0.0, 1.5)), 0.25), 1.4),
+            (noise_burst(0.03, 81, |t| env(t, 0.03, 0.0, 1.0)), 0.5),
+        ]),
+        Sound::Whirl => {
+            let d = 0.5;
+            let w = lowpass(&noise_burst(d, 83, |t| env(t, d, 0.06, 0.8) * (0.55 + 0.45 * (TAU * 5.0 * t).sin())), 0.3);
+            mix(&[(w, 2.0), (sweep(d, 300.0, 1100.0, 1, |t| env(t, d, 0.05, 1.2) * 0.1), 1.0)])
+        }
+        Sound::Execute => place(&[
+            (0.0, scaled(highpass(&noise_burst(0.07, 85, |t| env(t, 0.07, 0.0, 1.5)), 0.2), 1.2)),
+            (0.0, sweep(0.2, 120.0, 45.0, 0, |t| env(t, 0.2, 0.002, 2.0) * 0.8)),
+            (0.07, chord(&[1760.0, 2349.0], 0.4, 2.0, 0.18)),
+        ]),
+        Sound::CounterFlash => mix(&[
+            (sweep(0.14, 3200.0, 700.0, 2, |t| env(t, 0.14, 0.001, 2.0)), 0.2),
+            (tone(2400.0, 0.2, 3.0, 1.0), 0.25),
+            (noise_burst(0.03, 87, |t| env(t, 0.03, 0.0, 1.0)), 0.4),
+        ]),
+        Sound::GrappleYank => mix(&[
+            (sweep(0.22, 700.0, 110.0, 1, |t| env(t, 0.22, 0.002, 2.0)), 0.22),
+            (sweep(0.2, 160.0, 70.0, 0, |t| env(t, 0.2, 0.002, 2.0)), 0.6),
+            (noise_burst(0.02, 89, |t| env(t, 0.02, 0.0, 1.0)), 0.4),
+        ]),
+        Sound::RopePulse => mix(&[(tone(140.0, 0.07, 2.0, 1.0), 0.45), (tone(280.0, 0.05, 2.0, 1.0), 0.15)]),
+        Sound::Step => mix(&[(lowpass(&noise_burst(0.07, 91, |t| env(t, 0.07, 0.003, 2.0)), 0.3), 1.4), (sweep(0.06, 95.0, 55.0, 0, |t| env(t, 0.06, 0.002, 2.0)), 0.5)]),
+        Sound::Jump => mix(&[(sweep(0.11, 180.0, 380.0, 0, |t| env(t, 0.11, 0.005, 1.5)), 0.35), (lowpass(&noise_burst(0.1, 93, |t| env(t, 0.1, 0.02, 1.5)), 0.3), 0.8)]),
+        Sound::DoubleJump => mix(&[
+            (sweep(0.15, 300.0, 760.0, 0, |t| env(t, 0.15, 0.005, 1.4)), 0.35),
+            (tone(1500.0, 0.2, 2.5, 1.0), 0.14),
+            (lowpass(&noise_burst(0.12, 95, |t| env(t, 0.12, 0.02, 1.5)), 0.4), 0.8),
+        ]),
+        Sound::Land => mix(&[(sweep(0.12, 110.0, 55.0, 0, |t| env(t, 0.12, 0.002, 2.0)), 0.7), (lowpass(&noise_burst(0.08, 97, |t| env(t, 0.08, 0.0, 2.0)), 0.3), 1.0)]),
+        Sound::LandHard => mix(&[(sweep(0.24, 80.0, 34.0, 0, |t| env(t, 0.24, 0.002, 1.8)), 1.0), (lowpass(&noise_burst(0.14, 99, |t| env(t, 0.14, 0.0, 1.8)), 0.25), 1.5)]),
+        Sound::Slide => {
+            let d = 0.42;
+            scaled(lowpass(&noise_burst(d, 101, |t| env(t, d, 0.1, 1.0)), 0.18), 2.0)
+        }
+        Sound::WallSlash => mix(&[
+            (highpass(&noise_burst(0.18, 103, |t| env(t, 0.18, 0.01, 1.5)), 0.25), 1.1),
+            (sweep(0.18, 2300.0, 900.0, 0, |t| env(t, 0.18, 0.005, 2.0)), 0.18),
+        ]),
+        Sound::GuardLow => {
+            let b = || sweep(0.07, 1000.0, 1000.0, 2, |t| env(t, 0.07, 0.003, 0.8) * 0.2);
+            place(&[(0.0, b()), (0.11, b())])
+        }
+        Sound::Streak => place(&[(0.0, tone(988.0, 0.12, 1.5, 0.3)), (0.06, tone(1319.0, 0.22, 2.0, 0.3))]),
+        Sound::VoidFall => {
+            let d = 1.0;
+            mix(&[
+                (sweep(d, 900.0, 90.0, 0, |t| env(t, d, 0.12, 0.8) * 0.3), 1.0),
+                (lowpass(&noise_burst(d, 105, |t| env(t, d, 0.1, 0.8)), 0.12), 2.0),
+            ])
+        }
+        Sound::DeathSting => {
+            let n = |f: f32| mix(&[(tone(f, 0.4, 1.8, 0.3), 1.0), (sweep(0.4, f, f, 1, |t| env(t, 0.4, 0.005, 2.5) * 0.08), 1.0)]);
+            place(&[(0.0, n(392.0)), (0.2, n(311.0)), (0.4, n(262.0)), (0.0, sweep(0.6, 90.0, 40.0, 0, |t| env(t, 0.6, 0.003, 1.6) * 0.8))])
+        }
+        Sound::Respawn => {
+            let n = |f: f32| mix(&[(tone(f, 0.3, 2.0, 0.3), 1.0), (tone(f * 2.0, 0.2, 3.0, 0.1), 1.0)]);
+            place(&[(0.0, n(523.0)), (0.07, n(659.0)), (0.14, n(784.0)), (0.21, n(1047.0))])
+        }
+        Sound::MatchStart => place(&[
+            (0.0, chord(&[330.0, 495.0], 0.3, 1.5, 0.25)),
+            (0.2, chord(&[440.0, 660.0], 0.3, 1.5, 0.25)),
+            (0.4, chord(&[660.0, 990.0, 1320.0], 0.7, 1.8, 0.2)),
+        ]),
+        Sound::Victory => place(&[
+            (0.0, tone(523.0, 0.3, 1.5, 0.3)),
+            (0.12, tone(659.0, 0.3, 1.5, 0.3)),
+            (0.24, tone(784.0, 0.3, 1.5, 0.3)),
+            (0.36, chord(&[1047.0, 1319.0, 1568.0], 0.95, 1.8, 0.2)),
+        ]),
+        Sound::Defeat => place(&[
+            (0.0, tone(392.0, 0.4, 1.5, 0.3)),
+            (0.25, tone(349.0, 0.4, 1.5, 0.3)),
+            (0.5, tone(311.0, 0.4, 1.5, 0.3)),
+            (0.75, chord(&[262.0, 247.0], 0.45, 1.8, 0.25)),
+        ]),
+        Sound::UiClick => mix(&[(sweep(0.035, 1800.0, 1800.0, 2, |t| env(t, 0.035, 0.001, 1.5)), 0.15), (tone(900.0, 0.07, 2.0, 1.0), 0.2)]),
+        Sound::UiBack => sweep(0.06, 1200.0, 700.0, 0, |t| env(t, 0.06, 0.002, 1.5) * 0.3),
         // loops: integer-Hz partials so the 1 s buffer is seamless
+        Sound::Hum => {
+            let n = len(1.0);
+            (0..n)
+                .map(|i| {
+                    let t = i as f32 / SR as f32;
+                    ((TAU * 55.0 * t).sin() * 0.22 + (TAU * 110.0 * t).sin() * 0.1 + (TAU * 165.0 * t + 1.0).sin() * 0.04) * (0.85 + 0.15 * (TAU * t).sin())
+                })
+                .collect()
+        }
+        Sound::Wind => {
+            let (n, x) = (len(3.0), len(0.1));
+            let mut nz = Noise(131);
+            let raw: Vec<f32> = (0..n + x).map(|_| nz.next()).collect();
+            let low = lowpass(&raw, 0.05);
+            (0..n)
+                .map(|i| {
+                    let v = if i < x {
+                        let k = i as f32 / x as f32;
+                        low[i] * k + low[n + i] * (1.0 - k)
+                    } else {
+                        low[i]
+                    };
+                    let t = i as f32 / SR as f32;
+                    v * 2.4 * (0.8 + 0.2 * (TAU * t / 3.0).sin())
+                })
+                .collect()
+        }
         Sound::Reel => {
             let n = len(1.0);
             (0..n)
@@ -298,7 +530,7 @@ mod tests {
         for s in Sound::ALL {
             let v = render(s);
             assert!(v.len() > len(0.05), "{s:?} too short");
-            assert!(v.len() < len(2.0), "{s:?} too long");
+            assert!(v.len() < len(3.5), "{s:?} too long");
             assert!(v.iter().all(|x| x.is_finite() && x.abs() <= 1.0), "{s:?} out of range");
             assert!(peak(&v) > 0.05, "{s:?} is silent (peak {})", peak(&v));
         }
@@ -312,11 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn one_shots_end_quietly_and_loops_are_one_second() {
+    fn one_shots_end_quietly_and_loops_are_whole_seconds() {
         for s in Sound::ALL {
             let v = render(s);
             if s.looped() {
-                assert_eq!(v.len(), SR as usize, "{s:?}");
+                assert_eq!(v.len() % SR as usize, 0, "{s:?} loops are whole seconds");
             } else {
                 let tail = &v[v.len() - 8..];
                 assert!(peak(tail) < 0.05, "{s:?} ends with a click ({})", peak(tail));
@@ -326,7 +558,7 @@ mod tests {
 
     #[test]
     fn loops_have_no_click_at_the_seam() {
-        for s in [Sound::Reel, Sound::WallRun] {
+        for s in Sound::ALL.into_iter().filter(|s| s.looped()) {
             let v = render(s);
             let jump = (v[0] - v[v.len() - 1]).abs();
             assert!(jump < 0.08, "{s:?} seam jump {jump}");
@@ -341,6 +573,45 @@ mod tests {
         assert_eq!(w.len(), 44 + 8);
         assert_eq!(u32::from_le_bytes(w[40..44].try_into().unwrap()), 8);
         assert_eq!(i16::from_le_bytes(w[50..52].try_into().unwrap()), 32767);
+    }
+
+    #[test]
+    fn envelope_attacks_monotonically_then_decays_to_zero() {
+        let (d, a) = (0.5, 0.1);
+        let mut last = -1.0;
+        for i in 0..10 {
+            let v = env(i as f32 * 0.01, d, a, 1.0);
+            assert!(v >= last, "attack rises");
+            last = v;
+        }
+        assert!((env(a, d, a, 1.0) - 0.8).abs() < 1e-5, "peak just after the attack: (1 - 0.1/0.5)");
+        let mut last = 2.0;
+        for i in 10..50 {
+            let v = env(i as f32 * 0.01, d, a, 2.0);
+            assert!(v <= last, "decay falls");
+            last = v;
+        }
+        assert_eq!(env(d, d, a, 1.0), 0.0);
+        assert_eq!(env(-0.1, d, a, 1.0), 0.0);
+    }
+
+    #[test]
+    fn one_shots_are_balanced_not_clipping_and_not_buried() {
+        for s in Sound::ALL.into_iter().filter(|s| !s.looped()) {
+            let p = peak(&render(s));
+            assert!(p <= 1.0 && p > 0.1, "{s:?} peak {p}");
+        }
+        for s in [Sound::Wind, Sound::Hum, Sound::Reel, Sound::WallRun] {
+            let p = peak(&render(s));
+            assert!(p < 0.95, "{s:?} loop is too hot ({p})");
+        }
+    }
+
+    #[test]
+    fn stingers_differ_and_wind_loop_is_longer_than_hum() {
+        assert_ne!(render(Sound::Victory), render(Sound::Defeat));
+        assert_ne!(render(Sound::Parry), render(Sound::Block));
+        assert!(render(Sound::Wind).len() > render(Sound::Hum).len());
     }
 
     #[test]
