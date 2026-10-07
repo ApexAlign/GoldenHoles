@@ -23,6 +23,8 @@ pub struct FireCtx<'a> {
     pub allies: &'a [ColliderHandle],
     /// Current lock-on target and pull strength (None while searching / breaking).
     pub lock: Option<super::aim_assist::LockHint>,
+    /// The press carried the MARK flag (a charged throw): the shuriken launcher throws a mark star instead.
+    pub mark: bool,
 }
 
 pub struct TickCtx<'a> {
@@ -42,6 +44,10 @@ pub trait Weapon: Send + Sync {
     fn fire(&mut self, ctx: &mut FireCtx) -> bool;
     /// Re-read tunables (called when the server loads a `Balance`).
     fn apply_balance(&mut self, _b: &crate::balance::Balance, _ch: &crate::character::Cfg) {}
+    /// Star energy as (charges, pool size, locked out), for weapons that have a pool.
+    fn energy(&self) -> Option<(f32, f32, bool)> {
+        None
+    }
     /// Anything in flight that will query the world on later ticks?
     fn active(&self) -> bool {
         false
@@ -74,6 +80,11 @@ impl Loadout {
 
     pub fn active(&self) -> bool {
         self.slots.iter().any(|s| s.weapon.active())
+    }
+
+    /// The first weapon's energy pool, if any.
+    pub fn energy(&self) -> Option<(f32, f32, bool)> {
+        self.slots.iter().find_map(|s| s.weapon.energy())
     }
 
     /// Remaining cooldown (seconds) of the first weapon on `t`; 0 = ready.
@@ -139,7 +150,7 @@ impl Loadout {
                 Trigger::Secondary => input.slice,
             };
             if pressed && s.cooldown_left <= 0.0 {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock };
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, mark: input.mark && s.weapon.trigger() == Trigger::Primary };
                 if s.weapon.fire(&mut ctx) {
                     s.cooldown_left = s.weapon.cooldown();
                 }

@@ -91,12 +91,14 @@ pub struct CombatInput {
     pub slice: bool,
     /// No wire bit yet (Buttons uses all 8 bits); the game maps a key here.
     pub ultimate: bool,
+    /// With `fire`: a charged throw, the MARK star (see `ShurikenCfg::mark_cost`).
+    pub mark: bool,
 }
 
 impl CombatInput {
     /// From a network intent: `CombatInput::new(b.has(Buttons::FIRE), b.has(Buttons::SLICE))`.
     pub fn new(fire: bool, slice: bool) -> Self {
-        Self { fire, slice, ultimate: false }
+        Self { fire, slice, ultimate: false, mark: false }
     }
 }
 
@@ -125,6 +127,8 @@ pub enum CombatEvent {
         damage: f32,
     },
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real> },
+    /// A MARK star struck `target` (`collider` = its hitbox): no damage, the server marks that player for the katana.
+    MarkHit { target: u128, collider: ColliderHandle },
     ShurikenBounce { pos: Point<Real>, normal: Vector<Real> },
     ShurikenGone { pos: Point<Real> },
     /// Pushed just before the `Damage` of a disc that had already bounced when it hit `collider` (ricochet).
@@ -206,6 +210,11 @@ impl CombatSystem {
             max_radius: b.combat.ultimate_max_radius,
             damage: b.combat.ultimate_damage,
         };
+    }
+
+    /// Star energy as (charges, pool size, locked out); `None` when the balance has no pool.
+    pub fn shuriken_energy(&self) -> Option<(f32, f32, bool)> {
+        self.loadout.energy()
     }
 
     /// Katana (secondary trigger) cooldown left, seconds. Mirrored into `CharacterSystem::slice_cooldown`

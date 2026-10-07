@@ -395,9 +395,9 @@ impl BotMem {
 
         // ---- 5b. guard: a star flying at me gets a short raised shield now and then (never mid-strike)
         if tick >= self.block_ok && incoming_disc(ctx) && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
-            self.block_ok = tick + 90;
-            if rng.chance(self.skill.evade_chance * 0.6) {
-                self.block_until = tick + 22;
+            self.block_ok = tick + 150;
+            if rng.chance(self.skill.evade_chance * 0.3) {
+                self.block_until = tick + 14;
             }
         }
         let blocking = tick < self.block_until && !matches!(self.phase, Phase::Strike { .. });
@@ -462,6 +462,7 @@ impl BotMem {
             build: false, build_wall: false, build_ramp: false,
             zip,
             block: blocking,
+            mark: false,
         };
         // leaving Strike hands the ticket back
         if released {

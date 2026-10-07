@@ -518,6 +518,7 @@ impl Server {
                         fire: fire_in,
                         slice: slice_in,
                         ultimate: ultimate_pressed(&it) && !shut,
+                        mark: it.mark && fire_in,
                     },
                     &aim,
                     &self.world,
@@ -559,6 +560,18 @@ impl Server {
             }
             ev.extend(synthesized);
             let id = self.players[i].id;
+            // a MARK star struck a player: mark them for the thrower's next katana hit
+            if mcfg.mark_ticks > 0 {
+                for e in &ev {
+                    if let CombatEvent::MarkHit { collider, .. } = *e {
+                        let team = self.players[i].team;
+                        if let Some(v) = self.players.iter().position(|q| q.vitals.hitbox == collider && q.id != id && !allied(team, q.team)) {
+                            self.players[v].melee.marked_by = id;
+                            self.players[v].melee.marked_until = tick + mcfg.mark_ticks;
+                        }
+                    }
+                }
+            }
             let mut ric = false;
             for e in &ev {
                 match *e {

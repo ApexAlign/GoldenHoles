@@ -54,6 +54,7 @@ fn snapshot_datagram(srv: &Server) -> Vec<u8> {
         lead_margin: 8,
         echo_seq: srv.players[0].last_pkt.map_or(0, |(s, _)| s),
         echo_age: srv.players[0].last_pkt.map_or(0, |(_, t)| srv.tick.saturating_sub(t).min(255) as u8),
+        ..Default::default()
     };
     extras.write(&mut own, |w| OwnState::from_snapshot(&p.ch.snapshot(&srv.world)).write(w));
     frame_snapshot_v3(&ev.finish(), &own.finish(), &[], &encode_delta(None, &snap))

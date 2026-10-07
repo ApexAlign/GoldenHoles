@@ -39,6 +39,12 @@ pub struct BlockCfg {
     pub counter_open_ticks: u32,
     /// Damage multiplier inside the window (1 = no bonus).
     pub bonus_mult: f32,
+    /// A guard broken by a hit staggers its owner this long (they cannot act), then...
+    pub break_stagger_ticks: u32,
+    /// ...for `mercy_ticks` after any guard break, damage taken is scaled by `mercy_mult`: a broken guard must not
+    /// hand the attacker a free combo.
+    pub mercy_ticks: u32,
+    pub mercy_mult: f32,
 }
 
 impl Default for BlockCfg {
@@ -61,11 +67,13 @@ pub struct BlockState {
     pub stagger_until: u32,
     /// Strike window open until this tick.
     pub open_until: u32,
+    /// Damage is scaled down (`BlockCfg::mercy_mult`) until this tick: the grace after a guard break.
+    pub mercy_until: u32,
 }
 
 impl Default for BlockState {
     fn default() -> Self {
-        Self { held: false, since: 0, energy: 1.0, rearm_until: 0, stagger_until: 0, open_until: 0 }
+        Self { held: false, since: 0, energy: 1.0, rearm_until: 0, stagger_until: 0, open_until: 0, mercy_until: 0 }
     }
 }
 
@@ -95,6 +103,12 @@ impl BlockState {
         self.held = false;
         self.energy = 0.0;
         self.rearm_until = tick + cfg.rearm_ticks;
+        self.mercy_until = tick + cfg.mercy_ticks;
+    }
+
+    /// Inside the grace after a guard break.
+    pub fn mercy(&self, tick: u32) -> bool {
+        tick < self.mercy_until
     }
 
     /// First tick of a hold: the aim is accepted here and frozen afterwards.

@@ -686,7 +686,7 @@ impl Enemies {
         } else {
             let d = vector![dir[0], 0.0, dir[1]];
             let start = Point::new(pos[0], pos[1], pos[2]) + d * 0.8;
-            self.discs.push((id, Disc { pos: start, dir: d, bounces: 0, age: 0.0, speed_scale: 1.0, homing: None }));
+            self.discs.push((id, Disc { pos: start, dir: d, bounces: 0, age: 0.0, speed_scale: 1.0, homing: None, mark: false }));
             events.push(EnemyEvent::DiscThrown { tick, id, pos: [start.x, start.y, start.z], dir: [d.x, d.y, d.z] });
         }
         let e = &mut self.list[idx];
