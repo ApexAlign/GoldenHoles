@@ -12,8 +12,9 @@ cargo run --release --offline -p shinobi-server -- --bind 0.0.0.0 --bots 7
 
 # 2. game     (a window; on another machine use the LAN address the server banner prints)
 cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777
-# with sound (procedural synth, no asset files; needs alsa dev headers on Linux): add `--features audio`
-#   cd crates/shinobi-game && cargo run --offline --features audio -- --server 127.0.0.1:7777
+# sound is ON by default (procedural synth, no asset files; Linux needs alsa dev headers to build)
+#   silent build: cargo run --offline --no-default-features --features wayland -- ...  (no audio device = silent, no crash)
+#   music: drop .wav files into music/ (docs/AUDIO.md); /vol /mute /music in the in-game console
 
 # 3. extra scripted players (optional load / company; no window)
 cargo run --release --offline -p shinobi-bot -- --addr 127.0.0.1:7777 --count 4 --secs 120
@@ -54,7 +55,7 @@ cd crates/shinobi-game && cargo run --release -- --server 127.0.0.1:7777
 
 Variants (same on every OS, flags instead of env vars): fewer bots `--bots 3`; bigger map `--level levels/ffa_xl.lvl` on BOTH
 server and game; 8v8 `--team-size 8 --level levels/8v8.lvl` on both; LAN: server `--bind 0.0.0.0`, game `--server <server LAN IP>:7777`
-(open UDP 7777 in the firewall). Sound: add `--features audio` to the game command (Linux needs alsa headers).
+(open UDP 7777 in the firewall). Sound is on by default (Linux needs alsa headers to build; see docs/AUDIO.md).
 
 **Mouse / pointer lock:** click the window to grab the mouse (that click only grabs, it does not slash). Esc releases it
 (and opens the pause screen); click again to resume. Losing focus (Alt-Tab, clicking another window) also releases it and

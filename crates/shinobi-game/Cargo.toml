@@ -12,7 +12,7 @@ publish = false
 shinobi-proto = { path = "../shinobi-proto" }
 shinobi-sim = { path = "../shinobi-sim" }
 shinobi-client = { path = "../shinobi-client" }
-# Audio is opt-in (`--features audio`): alsa + libudev dev headers are not installed on this box.
+# Audio is on by default (alsa dev headers needed on Linux); `--no-default-features --features wayland` builds silent.
 bevy = { version = "=0.19.1", default-features = false, features = [
     "bevy_winit", "x11", "bevy_window", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_log", "multi_threaded",
     "bevy_post_process", # bloom
@@ -25,8 +25,8 @@ ctrlc = { version = "3.5", features = ["termination"] }
 winit = { version = "0.30", default-features = false, features = ["wayland-dlopen"], optional = true }
 
 [features]
-default = ["wayland"]
-# Procedural synth sound via bevy_audio (needs alsa headers on Linux). No asset files.
+default = ["wayland", "audio"]
+# Procedural synth + music slot via bevy_audio (needs alsa headers on Linux). No asset files required. Opt out with --no-default-features.
 audio = ["bevy/bevy_audio", "bevy/wav"]
 # Controller support (bevy_gilrs; on Linux it needs libudev dev headers, absent on the CI box). The mapping itself
 # (shinobi_client::gamepad) is always compiled; without this feature no pad ever reports input.

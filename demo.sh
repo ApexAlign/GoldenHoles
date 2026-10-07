@@ -49,6 +49,7 @@ sleep 1
 if [ "${1:-}" = "--server-only" ]; then wait $SRV; exit 0; fi
 
 # Release by default: the debug build runs at ~10 fps. DEBUG=1 ./demo.sh for a debug build.
+# sound: the game crate's default `audio` feature is on (docs/AUDIO.md); no audio device = silent, no crash
 if [ "${DEBUG:-0}" = "1" ]; then PROFILE=debug; REL=(); else PROFILE=release; REL=(--release); fi
 echo ">> building game ($PROFILE; first time takes several minutes) ..."
 (cd crates/shinobi-game && cargo build "${REL[@]}" --offline -j "$JOBS" -q)

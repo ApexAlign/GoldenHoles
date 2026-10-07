@@ -15,6 +15,7 @@ HOST_ARG="${1:-}"; PORT="${2:-7777}"; LEVEL="${3:-${LEVEL:-levels/ffa_small.lvl}
 [ -f "$LEVEL" ] || { echo "level $LEVEL not found (run from the repo)"; exit 1; }
 OFFLINE_ARG=(); [ "${OFFLINE:-0}" = "1" ] && OFFLINE_ARG=(--offline)
 echo ">> building the game (release) ..."
+# sound: the game crate's default `audio` feature is on (docs/AUDIO.md); no audio device = silent, no crash
 (cd crates/shinobi-game && cargo build --release "${OFFLINE_ARG[@]}" -j "${JOBS:-8}" -q)
 # no vsync by default: vsync runs ~11 fps on NVIDIA + Wayland hybrid laptops (SHINOBI_PRESENT=auto restores it)
 export SHINOBI_PRESENT="${SHINOBI_PRESENT:-immediate}"

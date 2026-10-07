@@ -367,6 +367,7 @@ fn mode_ui(
     ctl: Res<HudCtl>,
     mut net: ResMut<Net>,
     mut audio: Option<ResMut<crate::audio::AudioSettings>>,
+    mut music: Option<ResMut<crate::audio::MusicCmds>>,
 ) {
     // F1: bring the first-30-seconds controls strip back (or put it away)
     if keys.just_pressed(KeyCode::F1) {
@@ -415,6 +416,15 @@ fn mode_ui(
                         match cmd {
                             console::AudioCmd::Volume(vol) => a.volume = vol,
                             console::AudioCmd::Mute(m) => a.muted = m,
+                            console::AudioCmd::Sfx(v) => a.set_bus(crate::mixer::Bus::Sfx, v),
+                            console::AudioCmd::Ambient(v) => a.set_bus(crate::mixer::Bus::Ambient, v),
+                            console::AudioCmd::MusicVol(v) => a.set_bus(crate::mixer::Bus::Music, v),
+                            console::AudioCmd::MusicOn(on) => a.music_on = on,
+                            console::AudioCmd::MusicNext => {
+                                if let Some(m) = music.as_deref_mut() {
+                                    m.next = true;
+                                }
+                            }
                         }
                     }
                 }
