@@ -247,6 +247,13 @@ pub struct BotMem {
     stuck_check: ([f32; 2], u32),
     unstick_until: u32,
     unstick_dir: V3,
+    /// Star variants (docs/stars.md): which throwable this tick's FIRE sends (0 = standard), when each kind may be
+    /// thrown again, and the window in which a hurt bot looks down to drop smoke at its own feet.
+    star_pick: u8,
+    mine_ok: u32,
+    flash_ok: u32,
+    smoke_ok: u32,
+    smoke_aim_until: u32,
 }
 
 impl BotMem {
@@ -293,6 +300,11 @@ impl BotMem {
             stuck_check: ([0.0; 2], 0),
             unstick_until: 0,
             unstick_dir: Vector::zeros(),
+            star_pick: 0,
+            mine_ok: 0,
+            flash_ok: 0,
+            smoke_ok: 0,
+            smoke_aim_until: 0,
         }
     }
 
@@ -411,6 +423,8 @@ impl BotMem {
         mag = m2;
 
         // ---- 5. attacks (never from inside a hop or hold that would be disturbed)
+        self.star_pick = 0;
+        self.star_variants(ctx, p, &mut buttons, &mut rng);
         self.attacks(ctx, p, dir, &mut buttons, &mut rng);
 
         // ---- 5b. guard: a star flying at me gets a short raised shield now and then (never mid-strike)
@@ -505,6 +519,7 @@ impl BotMem {
             zip,
             block: blocking,
             mark: false,
+            star: if buttons & Buttons::FIRE != 0 { self.star_pick } else { 0 },
         };
         // leaving Strike hands the ticket back
         if released {
@@ -1106,8 +1121,62 @@ impl BotMem {
 
     // ------------------------------------------------------------------ attacks & aim
 
+    /// Now and then a bot throws something other than a plain star: a mine at a target it is closing on, a flash at one that
+    /// is looking at it, smoke (dropped at its own feet) when it is hurt. Only with the energy to spare, and never faster
+    /// than the per-kind gaps below, so the variants stay seasoning and the plain star stays the bot's poke.
+    fn star_variants(&mut self, ctx: &ThinkCtx, p: &Perception, buttons: &mut u8, rng: &mut Rng) {
+        let (tick, me) = (ctx.world.tick, ctx.me);
+        let Some((energy, _, locked)) = ctx.world.server.players.iter().find(|q| q.id == me.id).and_then(|q| q.combat.shuriken_energy()) else { return };
+        let sc = ctx.world.server.balance.combat.star;
+        if locked || tick < self.fire_ok || matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
+            return;
+        }
+        // smoke: hurt or backing off, look down and drop it where we stand
+        let hurt = me.hp_frac < 0.45 || self.phase == Phase::Retreat;
+        if hurt && energy >= sc.smoke_cost + 0.5 && tick >= self.smoke_ok {
+            if tick >= self.smoke_aim_until && rng.chance(0.06) {
+                self.smoke_aim_until = tick + 40;
+            }
+            if tick < self.smoke_aim_until && me.pitch < -0.6 {
+                *buttons |= Buttons::FIRE;
+                self.star_pick = 3;
+                self.smoke_ok = tick + 900;
+                self.smoke_aim_until = 0;
+                self.stats.shurikens += 1;
+                self.fire_ok = tick + self.skill.fire_gap_ticks;
+                return;
+            }
+        } else if !hurt {
+            self.smoke_aim_until = 0;
+        }
+        let Some(t) = p.target else { return };
+        if !t.los || t.view.spawn_protected || !matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone | Phase::Perch) {
+            return;
+        }
+        let (want_yaw, _) = self.aim_angles(ctx, &t);
+        if wrap_pi(want_yaw - me.yaw).abs() >= 0.10 + self.skill.aim_error {
+            return;
+        }
+        let pick = if t.on_screen && (7.0..=16.0).contains(&t.dist) && energy >= sc.flash_cost + 1.0 && tick >= self.flash_ok && rng.chance(0.03) {
+            self.flash_ok = tick + 420;
+            2
+        } else if (8.0..=22.0).contains(&t.dist) && energy >= sc.mine_cost + 1.5 && tick >= self.mine_ok && rng.chance(0.02) {
+            self.mine_ok = tick + 600;
+            1
+        } else {
+            return;
+        };
+        *buttons |= Buttons::FIRE;
+        self.star_pick = pick;
+        self.stats.shurikens += 1;
+        self.fire_ok = tick + self.skill.fire_gap_ticks + (rng.unit() * 5.0) as u32;
+    }
+
     fn attacks(&mut self, ctx: &ThinkCtx, p: &Perception, dir: V3, buttons: &mut u8, rng: &mut Rng) {
         let (tick, me) = (ctx.world.tick, ctx.me);
+        if *buttons & Buttons::FIRE != 0 {
+            return; // a variant went out this tick
+        }
         let Some(t) = p.target else { return };
         let can_throw = matches!(
             self.phase,
@@ -1143,7 +1212,10 @@ impl BotMem {
 
     fn aim(&mut self, ctx: &ThinkCtx, p: &Perception, dir: V3) -> (f32, f32) {
         let me = ctx.me;
+        let smoke_down = ctx.world.tick < self.smoke_aim_until;
         let (want_yaw, want_pitch) = match (p.target, self.phase) {
+            // dropping smoke at our own feet: keep the heading, look down
+            _ if smoke_down => (me.yaw, -0.95),
             // strikes lock on cleanly: the lunge goes where the aim points
             (Some(t), Phase::Strike { .. }) => {
                 let d = flat(t.view.pos - me.pos);

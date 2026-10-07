@@ -292,6 +292,13 @@ impl CombatSystem {
         self.loadout.active() || !self.powerups.bursts().is_empty()
     }
 
+    /// Client prediction: forget landed mines / smoke older than `grace` seconds (the server's copy takes over).
+    pub fn drop_landed_stars(&mut self, grace: f32) {
+        if let Some(d) = self.loadout.discs_mut() {
+            d.retain(|d| !(d.stuck && d.stick_age > grace));
+        }
+    }
+
     /// Owner died: drop everything in flight.
     pub fn reset_projectiles(&mut self) {
         self.loadout.reset();

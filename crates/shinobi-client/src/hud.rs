@@ -9,7 +9,7 @@
 
 use shinobi_proto::snapshot::{FLAG_DEAD, FLAG_INVULN, MoveKind};
 use shinobi_sim::combat::{CombatEvent, DamageKind};
-use shinobi_proto::gameplay::{KIND_GRID_BEAM, KIND_SHURIKEN, KIND_SLASH, PHASE_INTERMISSION, PHASE_LIVE};
+use shinobi_proto::gameplay::{KIND_GRID_BEAM, KIND_MINE, KIND_SHURIKEN, KIND_SLASH, PHASE_INTERMISSION, PHASE_LIVE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind, ScoreEntry};
 use shinobi_sim::pvp::{PvpEvent, Vitals};
@@ -74,6 +74,7 @@ impl Palette {
             DamageKind::Shuriken => self.cyan,
             DamageKind::Slash => self.orange,
             DamageKind::GridBeam => self.magenta,
+            DamageKind::Mine => self.magenta,
         }
     }
 }
@@ -770,6 +771,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
     match k {
         KIND_SHURIKEN => DamageKind::Shuriken,
         KIND_GRID_BEAM => DamageKind::GridBeam,
+        KIND_MINE => DamageKind::Mine,
         _ => DamageKind::Slash,
     }
 }
@@ -777,7 +779,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
 /// Environmental damage source: anything that is not a weapon kind (obstacles, and any retired kind an old
 /// server might still send, e.g. light walls).
 pub fn is_void(k: u8) -> bool {
-    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM)
+    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_MINE)
 }
 
 impl KillEntry {
@@ -1528,6 +1530,7 @@ pub fn weapon_name(k: DamageKind) -> &'static str {
         DamageKind::Shuriken => "SHURIKEN",
         DamageKind::Slash => "KATANA",
         DamageKind::GridBeam => "GRID BEAM",
+        DamageKind::Mine => "MINE STAR",
     }
 }
 
@@ -2037,6 +2040,7 @@ impl Glyph {
             DamageKind::Slash => Glyph::Katana,
             DamageKind::Shuriken => Glyph::Shuriken,
             DamageKind::GridBeam => Glyph::Beam,
+            DamageKind::Mine => Glyph::Shuriken,
         }
     }
 }

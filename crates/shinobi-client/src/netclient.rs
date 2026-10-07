@@ -96,6 +96,8 @@ pub struct NetClient {
     /// Wrapping seq of the newest hit already surfaced; hits are resent by the server, so dedup by seq.
     last_hit_seq: Option<u8>,
     hp_x10: Option<u16>,
+    /// White-outs aimed at us (`NetEvent::StarBlind`), not yet taken by the client game: (strength / 255, ticks).
+    blind_in: Vec<(u8, u16)>,
     /// Star energy as the server last reported it: (pool size, energy in 1/16 charge, locked out).
     star: Option<(u8, u8, bool)>,
     hits: Vec<HitMsg>,
@@ -155,6 +157,7 @@ impl Default for NetClient {
             last_extras_tick: None,
             last_hit_seq: None,
             hp_x10: None,
+            blind_in: Vec::new(),
             star: None,
             hits: Vec::new(),
             board: None,
@@ -306,6 +309,9 @@ impl NetClient {
                     self.team_score = score;
                     self.team_result = result;
                 }
+                NetEvent::StarBlind { victim, strength_q, ticks, .. } if Some(victim) == self.player_id() => {
+                    self.blind_in.push((strength_q, ticks));
+                }
                 _ => {}
             }
         }
@@ -349,6 +355,11 @@ impl NetClient {
     /// Star energy as (charges, pool size, locked out) from the newest owner block; `None` = no pool in this match.
     pub fn star_energy(&self) -> Option<(f32, f32, bool)> {
         self.star.map(|(max, e, locked)| (e as f32 / 16.0, max as f32, locked))
+    }
+
+    /// Flash white-outs aimed at us since the last call: (strength 0..=255, sim ticks).
+    pub fn take_blind(&mut self) -> Vec<(u8, u16)> {
+        std::mem::take(&mut self.blind_in)
     }
 
     pub fn hp(&self) -> Option<f32> {

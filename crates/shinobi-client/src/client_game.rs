@@ -22,8 +22,8 @@ use shinobi_proto::datagram::KickReason;
 use shinobi_proto::gameplay::{Board, HitMsg};
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{dq_pitch, dq_yaw};
-use shinobi_proto::quant::{dq_pos, dq_vel};
-use shinobi_proto::snapshot::{EntityId, PROJECTILE_ID_BASE};
+use shinobi_proto::quant::{dq_pos, dq_pos3, dq_vel};
+use shinobi_proto::snapshot::{disc_kind, EntityId, DISC_ARMED, DISC_STUCK, PROJECTILE_ID_BASE, STUCK_NORMAL_SPEED};
 use shinobi_proto::TICK_DT;
 use shinobi_sim::balance::FeedbackBalance;
 use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
@@ -31,6 +31,7 @@ use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceK
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
+use shinobi_sim::combat::stars::{within, StarCfg, StarKind};
 use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_HITBOX, GROUP_MELEE, GROUP_PLAYER, GROUP_PROJECTILE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::level::LevelDesc;
@@ -69,6 +70,9 @@ pub enum Action {
     /// Held: the block / parry shield. The view is locked where it was when the hold began (look input is ignored) while
     /// movement, jump, dash, grapple and wall-run keep working; throwing and cutting are shut while it is up.
     Block,
+    /// Cycle the throwable the throw button sends (mouse wheel / `R`): star, mine, flash, smoke. One-tick edges.
+    StarNext,
+    StarPrev,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -509,6 +513,18 @@ pub struct RenderView {
     pub blocking: bool,
     /// Star energy (charges, pool size, locked out): the client's estimate, synced to the server's. `None` = no pool.
     pub star: Option<(f32, f32, bool)>,
+    /// The throwable the throw button sends now, whether the player ever cycled it, and plain throws made so far
+    /// (the "WHEEL / R switches star" hint keys off the last two).
+    pub star_sel: StarKind,
+    pub star_cycled: bool,
+    pub star_throws: u32,
+    /// Landed mines and smoke clouds (all players'), and the kind of each flying disc in `discs`.
+    pub star_objs: Vec<StarObj>,
+    pub disc_kinds: Vec<StarKind>,
+    /// Flash white-out right now, 0..=1 (screen flash strength, decays with the server's blind time).
+    pub blind: f32,
+    /// Enemies standing in smoke: no lock, radar blip or tag for them.
+    pub hidden_ids: Vec<EntityId>,
     /// How far the throw button has charged toward a MARK star, 0..=1 (0 when up or after a tap).
     pub charging: f32,
     /// A throw was refused this tick for lack of energy.
@@ -523,6 +539,19 @@ pub struct RenderView {
     pub block_size: f32,
     /// Slab thickness, metres.
     pub block_thickness: f32,
+}
+
+/// A landed star object (mine or smoke cloud) for the renderer.
+#[derive(Clone, Copy, Debug)]
+pub struct StarObj {
+    pub kind: StarKind,
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub owner: u16,
+    /// Mines: past the arming delay.
+    pub armed: bool,
+    /// Fraction of its life left, 1 = fresh.
+    pub life_left: f32,
 }
 
 impl RenderView {
@@ -576,6 +605,16 @@ pub struct ClientGame {
     star_seen: Option<(f32, f32, bool)>,
     /// This tick a throw was refused for lack of energy (the HUD flashes the empty readout).
     star_refused: bool,
+    /// Selected throwable (mouse wheel / R), whether it was ever changed, plain throws so far.
+    star_sel: StarKind,
+    star_cycled: bool,
+    star_throws: u32,
+    /// White-out from a flash star: ticks left / at start, and its strength.
+    blind_left: u32,
+    blind_total: u32,
+    blind_strength: f32,
+    /// Enemies inside a smoke cloud as of the last tick.
+    hidden_ids: Vec<EntityId>,
     /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
     build_edge: Option<PieceKind>,
     /// Direction of the newest predicted katana swing (the hit kick opposes it).
@@ -648,6 +687,13 @@ impl ClientGame {
             star_est: None,
             star_seen: None,
             star_refused: false,
+            star_sel: StarKind::Standard,
+            star_cycled: false,
+            star_throws: 0,
+            blind_left: 0,
+            blind_total: 0,
+            blind_strength: 0.0,
+            hidden_ids: Vec::new(),
             build_edge: None,
             last_slash_dir: None,
             controls: ControlsCard::default(),
@@ -698,6 +744,7 @@ impl ClientGame {
                     self.controls.mark(Use::Stars);
                 }
                 Action::Block => self.controls.mark(Use::Block),
+                Action::StarNext | Action::StarPrev => self.controls.mark(Use::StarCycle),
                 _ => {}
             }
         }
@@ -718,6 +765,15 @@ impl ClientGame {
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
             Action::Block => self.block_held = e.down,
+            Action::StarNext if e.down => {
+                self.star_sel = self.star_sel.next();
+                self.star_cycled = true;
+            }
+            Action::StarPrev if e.down => {
+                self.star_sel = self.star_sel.prev();
+                self.star_cycled = true;
+            }
+            Action::StarNext | Action::StarPrev => {}
             Action::BuildFloor if e.down => {
                 let cd = self.pred.as_ref().map_or(BlockCfg::default().cooldown_ticks, |p| p.blocks.cfg.cooldown_ticks);
                 let again = self.n_press_tick.map_or(false, |t| self.last_input_tick.wrapping_sub(t) < cd);
@@ -1007,7 +1063,7 @@ impl ClientGame {
         }
         if held.has(Buttons::FIRE) {
             if let Some((e, _, locked)) = &mut self.star_est {
-                let cost = if mark_now { MARK_COST } else { 1.0 };
+                let cost = if mark_now { MARK_COST } else { StarCfg::default().cost(self.star_sel, 1.0) };
                 if *locked || *e + 1e-3 < cost {
                     held = Buttons(held.0 & !Buttons::FIRE);
                     mark_now = false;
@@ -1048,7 +1104,23 @@ impl ClientGame {
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
         intent.block = blocking;
         intent.mark = mark_now;
+        // the throwable a plain press sends rides with the FIRE edge (a MARK star ignores it)
+        intent.star = if intent.buttons.has(Buttons::FIRE) && !mark_now { self.star_sel as u8 } else { 0 };
+        if intent.buttons.has(Buttons::FIRE) && !mark_now {
+            self.star_throws += 1;
+        }
         self.blocking = blocking;
+        // flash white-out from the server (events of this tick); it also keeps lock-on from forming in our prediction
+        for (q, ticks) in self.net.take_blind() {
+            if ticks as u32 >= self.blind_left {
+                self.blind_left = ticks as u32;
+                self.blind_total = (ticks as u32).max(1);
+                self.blind_strength = q as f32 / 255.0;
+            }
+        }
+        if dead {
+            self.blind_left = 0;
+        }
         let press = self.build_edge.take().filter(|_| !dead);
         intent.build = press.is_some();
         intent.build_wall = press == Some(PieceKind::Wall);
@@ -1090,6 +1162,13 @@ impl ClientGame {
                     _ => Vec::new(),
                 };
                 p.combat.allies = p.sync_proxies(&self.cfg.sim, &remotes);
+                // smoke: enemies inside a cloud (ours or anyone's, from the snapshot) cannot be locked onto; a white-out
+                // forms no lock at all. The server applies the same two rules, so the predicted throw bends the same way.
+                let smoke = StarCfg::default().smoke_radius;
+                let clouds: Vec<[f32; 3]> = Self::star_objects_of(&self.net, Some(&*p), own_id).into_iter().filter(|o| o.kind == StarKind::Smoke).map(|o| [o.pos[0] + o.normal[0], o.pos[1] + o.normal[1], o.pos[2] + o.normal[2]]).collect();
+                self.hidden_ids = remotes.iter().filter(|(_, pos, ally, dead)| !*ally && !*dead && clouds.iter().any(|c| within(*pos, *c, smoke))).map(|r| r.0).collect();
+                p.combat.hidden = self.hidden_ids.iter().filter_map(|id| p.proxies.get(id).map(|(h, _)| *h)).collect();
+                p.combat.suppress_lock = self.blind_left > 0;
                 p.world.queries.update(&p.world.colliders); // combat now runs every tick (lock-on tracks the cone continuously)
                 let aim = CombatAim {
                     origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]],
@@ -1104,6 +1183,7 @@ impl ClientGame {
                         slice: intent.buttons.has(Buttons::SLICE),
                         ultimate: intent.ultimate,
                         mark: intent.mark,
+                        star: StarKind::from_u8(intent.star),
                     },
                     &aim,
                     &p.world,
@@ -1112,6 +1192,8 @@ impl ClientGame {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
+                // a landed mine / smoke is the server's from here on (it can burst or be shot): our copy only bridges the gap
+                p.combat.drop_landed_stars(0.5);
                 if let Some(edge) = p.combat.lock_edge {
                     self.lock_edges.push(edge);
                 }
@@ -1197,8 +1279,33 @@ impl ClientGame {
             }
         }
         self.pose_t = local_tick + 1.0;
+        self.blind_left = self.blind_left.saturating_sub(1);
         self.net.set_corrections(self.corrections);
         self.net.next_packet(intent, local_tick)
+    }
+
+    /// Landed mines / smoke: our own predicted ones (until the snapshot brings the authoritative copy) plus every one in the
+    /// newest snapshot. Pure of `self` borrows so the tick can call it while `pred` is held.
+    fn star_objects_of(net: &NetClient, pred: Option<&Predicted>, own: Option<EntityId>) -> Vec<StarObj> {
+        let sc = StarCfg::default();
+        let mut out: Vec<StarObj> = Vec::new();
+        if let (Some(p), Some(me)) = (pred, own) {
+            for d in p.combat.loadout.discs().into_iter().filter(|d| d.stuck) {
+                out.push(StarObj { kind: d.kind, pos: [d.pos.x, d.pos.y, d.pos.z], normal: [d.normal.x, d.normal.y, d.normal.z], owner: me, armed: d.armed(&sc), life_left: d.life_left(&sc) });
+            }
+        }
+        if let Some(newest) = net.interp.newest_tick().and_then(|t| net.interp.get(t)) {
+            for (_, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && st.flags & DISC_STUCK != 0) {
+                let (pos, kind) = (dq_pos3(st.pos), StarKind::from_u8(disc_kind(st.flags)));
+                // our own copy of it (landed a moment ago, not yet dropped) already covers it
+                if out.iter().any(|o| o.owner == st.yaw && o.kind == kind && within(o.pos, pos, 0.6)) {
+                    out.retain(|o| !(o.owner == st.yaw && o.kind == kind && within(o.pos, pos, 0.6)));
+                }
+                let n = [dq_vel(st.vel[0]) / STUCK_NORMAL_SPEED, dq_vel(st.vel[1]) / STUCK_NORMAL_SPEED, dq_vel(st.vel[2]) / STUCK_NORMAL_SPEED];
+                out.push(StarObj { kind, pos, normal: n, owner: st.yaw, armed: st.flags & DISC_ARMED != 0, life_left: (st.fx & 15) as f32 / 15.0 });
+            }
+        }
+        out
     }
 
     // ---- render ----
@@ -1217,12 +1324,15 @@ impl ClientGame {
         // other players' shurikens ride in the snapshot; our own are drawn from the prediction (no latency)
         let mut discs: Vec<([f32; 3], [f32; 3])> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles());
         let mut disc_owners: Vec<u16> = vec![own_id.unwrap_or(0); discs.len()];
+        let mut disc_kinds: Vec<StarKind> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.loadout.discs().iter().filter(|d| !d.stuck).map(|d| d.kind).collect());
+        disc_kinds.resize(discs.len(), StarKind::Standard);
         if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
-            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && Some(st.yaw) != own_id) {
+            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && st.flags & DISC_STUCK == 0 && Some(st.yaw) != own_id) {
                 if let Some(s) = self.net.interp.sample(*id, rt) {
                     let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
                     discs.push((s.pos, v));
                     disc_owners.push(st.yaw);
+                    disc_kinds.push(StarKind::from_u8(disc_kind(st.flags)));
                 }
             }
         }
@@ -1366,6 +1476,13 @@ impl ClientGame {
         RenderView {
             blocking: self.blocking,
             star: self.star_est,
+            star_sel: self.star_sel,
+            star_cycled: self.star_cycled,
+            star_throws: self.star_throws,
+            star_objs: Self::star_objects_of(&self.net, self.pred.as_ref(), own_id),
+            disc_kinds,
+            blind: if self.blind_left == 0 || self.blind_total == 0 { 0.0 } else { self.blind_strength * ((self.blind_left as f32 / self.blind_total as f32) / 0.35).min(1.0) },
+            hidden_ids: self.hidden_ids.clone(),
             charging: self.fire_hold.map_or(0.0, |h| (h as f32 / MARK_CHARGE_TICKS as f32).min(1.0)),
             star_refused: self.star_refused,
             fx,

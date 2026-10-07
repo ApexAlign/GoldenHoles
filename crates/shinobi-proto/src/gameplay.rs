@@ -14,6 +14,8 @@ pub const KIND_SLASH: u8 = 1;
 pub const KIND_GRID_BEAM: u8 = 2;
 pub const KIND_OBSTACLE: u8 = 3;
 pub const KIND_WALL: u8 = 4;
+/// A mine star's burst.
+pub const KIND_MINE: u8 = 5;
 
 /// One hit, owner-only and unreliable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

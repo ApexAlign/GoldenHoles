@@ -72,6 +72,8 @@ pub struct Replicator {
     last_team_score: Option<([u16; 2], u8)>,
     /// Shurikens replicated per snapshot right now (shrinks under load, see `build_round`).
     disc_cap: usize,
+    /// Stable snapshot entity id of every landed mine / smoke star, keyed by (owner, launcher uid).
+    stuck_ids: HashMap<(u16, u16), u16>,
     /// Smallest intent arrival margin per player since the last snapshot round (taken from the intent queues every
     /// frame, reported in the owner block so clients can size their intent lead).
     margins: HashMap<u16, i32>,
@@ -95,6 +97,7 @@ impl Replicator {
             teams: HashMap::new(),
             last_team_score: None,
             disc_cap: PROJECTILE_ID_MAX,
+            stuck_ids: HashMap::new(),
             margins: HashMap::new(),
             telemetry: Default::default(),
         }
@@ -215,6 +218,28 @@ impl Replicator {
             }
             self.obstacles.prune(tick);
             server.hazards.obstacles.prune(tick);
+        }
+    }
+
+    /// Star variant events of the last frame -> reliable `StarFx` / `StarBlind` (effects and sounds for everyone).
+    fn sync_stars(&mut self, server: &Server, tick: u32) {
+        use shinobi_sim::combat::stars::StarKind;
+        use shinobi_sim::events::*;
+        for (owner, e) in &server.events {
+            let (what, pos) = match *e {
+                CombatEvent::StarStuck { kind: StarKind::Mine, pos, .. } => (STAR_FX_MINE_STUCK, pos),
+                CombatEvent::StarStuck { kind: StarKind::Smoke, pos, .. } => (STAR_FX_SMOKE_LANDED, pos),
+                CombatEvent::StarBurst { pos } => (STAR_FX_MINE_BURST, pos),
+                CombatEvent::StarFlash { pos } => (STAR_FX_FLASH_BURST, pos),
+                CombatEvent::StarGone { kind: StarKind::Mine, pos } => (STAR_FX_MINE_GONE, pos),
+                CombatEvent::StarGone { kind: StarKind::Smoke, pos } => (STAR_FX_SMOKE_GONE, pos),
+                CombatEvent::StarBlind { victim, strength_q, ticks } => {
+                    self.broadcast(NetEvent::StarBlind { tick, victim, strength_q, ticks });
+                    continue;
+                }
+                _ => continue,
+            };
+            self.broadcast(NetEvent::StarFx { tick, what, owner: *owner, pos: q_pos3([pos.x, pos.y, pos.z]) });
         }
     }
 
@@ -355,6 +380,7 @@ impl Replicator {
         let matches = std::mem::take(&mut server.match_events);
         let pickups = std::mem::take(&mut server.pickup_events);
         let who = |id: u16| if id == NO_ATTACKER { 0 } else { id };
+        self.sync_stars(server, tick);
         for ev in pvp {
             match ev {
                 PvpEvent::Hit { attacker, victim, amount, kind, head, bonus, .. } => {
@@ -450,6 +476,43 @@ impl Replicator {
         self.broadcast(NetEvent::MapChange { tick, map });
     }
 
+    /// Landed mines / smoke as snapshot entities with ids that stay with the object (see `STUCK_ID_BASE`), sorted by id.
+    fn stuck_entities(&mut self, server: &Server) -> Vec<(u16, EntityState)> {
+        use shinobi_proto::snapshot::{disc_flags, STUCK_ID_BASE, STUCK_NORMAL_SPEED};
+        let sc = server.balance.combat.star;
+        let mut seen: Vec<(u16, u16)> = Vec::new();
+        let mut out = Vec::new();
+        for (owner, d) in server.projectiles().into_iter().filter(|(_, d)| d.stuck) {
+            let key = (owner, d.uid);
+            seen.push(key);
+            let id = match self.stuck_ids.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let used: std::collections::HashSet<u16> = self.stuck_ids.values().copied().collect();
+                    let id = (STUCK_ID_BASE..STUCK_ID_BASE + 0x400).find(|i| !used.contains(i)).unwrap_or(STUCK_ID_BASE);
+                    self.stuck_ids.insert(key, id);
+                    id
+                }
+            };
+            let n = d.normal * STUCK_NORMAL_SPEED;
+            out.push((
+                id,
+                EntityState {
+                    pos: q_pos3(d.pos.into()),
+                    vel: [q_vel(n.x), q_vel(n.y), q_vel(n.z)],
+                    yaw: owner,
+                    kind: MoveKind::Airborne,
+                    flags: disc_flags(0, d.kind as u8, true, d.armed(&sc)),
+                    fx: (d.life_left(&sc) * 15.0).round() as u8,
+                },
+            ));
+        }
+        self.stuck_ids.retain(|k, _| seen.contains(k));
+        out.sort_by_key(|e| e.0);
+        out.dedup_by_key(|e| e.0);
+        out
+    }
+
     /// True when a snapshot round is due (every `divisor` ticks, robust to multi-tick frames).
     pub fn due(&self, server_tick: u32, divisor: u32) -> bool {
         match (server_tick.checked_sub(1), self.last_sent) {
@@ -465,8 +528,9 @@ impl Replicator {
         // Fit the snapshot into its byte budget: when a firefight puts too many discs on screen, every peer gets
         // the same smaller disc set (one shared snapshot / baseline history), and the cap recovers when it calms.
         let mut cap = self.disc_cap;
+        let stuck = self.stuck_entities(server);
         let (snap, mut encoded, worst) = loop {
-            let snap = build_snapshot(tick, server, cap);
+            let snap = build_snapshot(tick, server, cap, &stuck);
             let encoded: HashMap<u16, Vec<u8>> = self
                 .peers
                 .iter()
@@ -559,6 +623,7 @@ fn weapon_code(k: DamageKind) -> u8 {
         DamageKind::Shuriken => gameplay::KIND_SHURIKEN,
         DamageKind::Slash => gameplay::KIND_SLASH,
         DamageKind::GridBeam => gameplay::KIND_GRID_BEAM,
+        DamageKind::Mine => gameplay::KIND_MINE,
     }
 }
 
@@ -575,6 +640,7 @@ fn kind_verb(kind: u8) -> &'static str {
         gameplay::KIND_SHURIKEN => "shuriken'd",
         gameplay::KIND_SLASH => "sliced",
         gameplay::KIND_GRID_BEAM => "grid-beamed",
+        gameplay::KIND_MINE => "stepped on a mine star",
         gameplay::KIND_OBSTACLE => "hit a neon obstacle",
         _ => "ran into a light wall",
     }
@@ -615,7 +681,7 @@ const PROJECTILE_ID_MAX: usize = 128;
 const SNAPSHOT_BUDGET: usize = 700;
 const MIN_SNAPSHOT_DISCS: usize = 16;
 
-fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
+fn build_snapshot(tick: u32, server: &Server, disc_cap: usize, stuck: &[(u16, EntityState)]) -> Snapshot {
     let mut entities: Vec<_> = server
         .players
         .iter()
@@ -646,7 +712,7 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
     entities.sort_by_key(|e| e.0);
     // shurikens: ids PROJECTILE_ID_BASE.., yaw = owner id, flags = bounce count, vel = dir * speed
     let speed = server.balance.shuriken_cfg().speed;
-    for (i, (owner, d)) in server.projectiles().into_iter().take(disc_cap).enumerate() {
+    for (i, (owner, d)) in server.projectiles().into_iter().filter(|(_, d)| !d.stuck).take(disc_cap).enumerate() {
         let v = d.dir * speed;
         entities.push((
             PROJECTILE_ID_BASE + i as u16,
@@ -655,11 +721,12 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
                 vel: [q_vel(v.x), q_vel(v.y), q_vel(v.z)],
                 yaw: owner,
                 kind: MoveKind::Airborne,
-                flags: d.bounces,
+                flags: shinobi_proto::snapshot::disc_flags(d.bounces, d.kind as u8, false, false),
                 fx: 0,
             },
         ));
     }
+    entities.extend_from_slice(stuck);
     Snapshot { tick, entities }
 }
 
@@ -1206,7 +1273,7 @@ mod tests {
             s.frame(Duration::from_millis(17));
         }
         assert!(!s.projectiles().is_empty(), "player 1 threw a disc");
-        let snap = build_snapshot(s.tick, &s, PROJECTILE_ID_MAX);
+        let snap = build_snapshot(s.tick, &s, PROJECTILE_ID_MAX, &[]);
         let discs: Vec<_> = snap.entities.iter().filter(|e| e.0 >= PROJECTILE_ID_BASE).collect();
         assert_eq!(discs.len(), s.projectiles().len());
         assert!(discs.iter().all(|(_, e)| e.yaw == 1));

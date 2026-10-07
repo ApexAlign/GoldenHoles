@@ -56,7 +56,21 @@ pub enum NetEvent {
     /// the time limit in seconds, so the HUD can show "FIRST TO n" without guessing the server's config, and the
     /// respawn delay in ticks (the death sequence and its countdown fill exactly that).
     MatchRules { frag_limit: u16, team_frag_limit: u16, time_limit_secs: u16, respawn_ticks: u16 },
+    /// A star variant did something worth an effect and a sound at `pos` (docs/stars.md): `what` = `STAR_FX_*`, thrown by
+    /// `owner`. The landed objects themselves ride in the snapshot.
+    StarFx { tick: u32, what: u8, owner: u16, pos: [i32; 3] },
+    /// A flash star whited `victim` out: `strength_q` / 255, for `ticks` sim ticks. Everyone gets it (cheap, rare); only
+    /// the victim's client draws the white-out.
+    StarBlind { tick: u32, victim: u16, strength_q: u8, ticks: u16 },
 }
+
+/// `NetEvent::StarFx::what`.
+pub const STAR_FX_MINE_STUCK: u8 = 0;
+pub const STAR_FX_SMOKE_LANDED: u8 = 1;
+pub const STAR_FX_MINE_BURST: u8 = 2;
+pub const STAR_FX_FLASH_BURST: u8 = 3;
+pub const STAR_FX_MINE_GONE: u8 = 4;
+pub const STAR_FX_SMOKE_GONE: u8 = 5;
 
 pub const BLOCK_REFUSED_OCCUPIED: u8 = 0;
 pub const BLOCK_REFUSED_BLOCKED: u8 = 1;
@@ -237,6 +251,20 @@ impl NetEvent {
                 w.write_bits(18, 5);
                 w.write_bits(*why as u32 & 3, 2);
             }
+            Self::StarFx { tick, what, owner, pos } => {
+                w.write_bits(23, 5);
+                w.write_varint(*tick);
+                w.write_bits(*what as u32 & 7, 3);
+                w.write_bits(*owner as u32, 16);
+                write_v3(w, *pos, [0; 3]);
+            }
+            Self::StarBlind { tick, victim, strength_q, ticks } => {
+                w.write_bits(24, 5);
+                w.write_varint(*tick);
+                w.write_bits(*victim as u32, 16);
+                w.write_bits(*strength_q as u32, 8);
+                w.write_bits(*ticks as u32, 16);
+            }
         }
     }
 
@@ -335,6 +363,8 @@ impl NetEvent {
                 Self::MatchRules { frag_limit: v[0], team_frag_limit: v[1], time_limit_secs: v[2], respawn_ticks: v[3] }
             }
             21 => Self::BlockDamaged { cell: read_v3(r, [0; 3])?, hp_q: r.read_bits(8)? as u8 },
+            23 => Self::StarFx { tick: r.read_varint()?, what: r.read_bits(3)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
+            24 => Self::StarBlind { tick: r.read_varint()?, victim: r.read_bits(16)? as u16, strength_q: r.read_bits(8)? as u8, ticks: r.read_bits(16)? as u16 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -560,6 +590,24 @@ mod tests {
         w.write_bits(3, 2);
         w.write_bits(5, 8);
         assert!(NetEvent::read(&mut BitReader::new(&w.finish())).is_err());
+    }
+
+    #[test]
+    fn star_events_roundtrip() {
+        let evs = [
+            NetEvent::StarFx { tick: 70_000, what: STAR_FX_MINE_BURST, owner: 9, pos: [-20_000, 512, 33_333] },
+            NetEvent::StarFx { tick: 70_001, what: STAR_FX_SMOKE_GONE, owner: 65_535, pos: [0, 0, 0] },
+            NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
+        ];
+        let mut w = BitWriter::new();
+        for e in &evs {
+            e.write(&mut w);
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for e in &evs {
+            assert_eq!(&NetEvent::read(&mut r).unwrap(), e);
+        }
     }
 
     #[test]
