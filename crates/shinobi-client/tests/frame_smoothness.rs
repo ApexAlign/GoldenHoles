@@ -19,7 +19,7 @@ use shinobi_proto::snapshot::{encode_delta, EntityState, MoveKind, Snapshot};
 use shinobi_proto::TICK_DT;
 
 /// Run speed the scripted players move at (the sim default).
-const RUN: f64 = 5.4;
+const RUN: f64 = 7.2;
 
 #[test]
 fn run_constant_matches_the_sim_default() {

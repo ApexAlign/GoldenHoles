@@ -14,7 +14,7 @@ pub struct Cfg {
     pub half_height: f32,
     pub radius: f32,
     pub run_speed: f32,
-    /// Ground acceleration toward the stick (m/s^2): ~0.12 s to full run speed.
+    /// Ground acceleration toward the stick (m/s^2): ~0.10 s to full run speed.
     pub ground_accel: f32,
     /// Ground braking when the stick is released or reversed (m/s^2): a ~0.25 m stop from a full run, no skating.
     pub ground_decel: f32,
@@ -191,37 +191,37 @@ impl Default for Cfg {
         Self {
             half_height: 0.5,
             radius: 0.3,
-            run_speed: 5.4,
-            ground_accel: 45.0,
-            ground_decel: 72.0,
-            air_accel: 18.0,
-            gravity: 20.0,
-            terminal: 32.0,
+            run_speed: 7.2,
+            ground_accel: 72.0,
+            ground_decel: 100.0,
+            air_accel: 28.0,
+            gravity: 24.0,
+            terminal: 36.0,
             ground_stick: -2.0,
-            jump_speed: 10.0,
-            double_jump_speed: 7.2,
+            jump_speed: 10.8,
+            double_jump_speed: 8.4,
             peak_window: 3.0,
             rise_hold_mult: 0.75,
             rise_cut_mult: 1.25,
             fall_glide_mult: 0.6,
-            jump_carry: 3.0,
-            double_jump_carry: 2.0,
-            air_speed_cap: 9.5,
+            jump_carry: 3.5,
+            double_jump_carry: 2.5,
+            air_speed_cap: 11.5,
             air_drag: 2.0,
             wall_jump_keep: 1.15,
             coyote: 0.14,
             jump_buffer: 0.15,
-            dash_speed: 15.5,
+            dash_speed: 19.0,
             dash_time: 0.3,
             dash_cd: 1.2,
-            roll_speed: 7.5,
+            roll_speed: 9.0,
             roll_time: 0.35,
             wall_probe: 0.35,
-            wall_min_speed: 3.5,
-            wall_speed: 9.5,
+            wall_min_speed: 4.2,
+            wall_speed: 11.0,
             wall_stick: 1.5,
             wall_max_time: 4.0,
-            wall_jump_push: 8.5,
+            wall_jump_push: 10.0,
             snap_dist: 0.25,
             slope_limit: 45f32.to_radians(),
             step_height: 0.35, // a knob (KCC autostep + bot nav). Tried 0.38-0.55: each value broke a different parity/grapple/e2e test (chaotic, not monotonic): grapple_ffa edge clip, e2e_prediction drift, guard_duel foot-riding, full_loop_e2e builds. Maps are designed around 0.35.
@@ -229,10 +229,10 @@ impl Default for Cfg {
             trail_life: 4.0,
             trail_height: 1.6,
             trail_thick: 0.15,
-            slide_start_speed: 4.4,
-            slide_boost: 7.6,
-            slide_friction: 10.0,
-            slide_min_speed: 3.0,
+            slide_start_speed: 5.8,
+            slide_boost: 9.5,
+            slide_friction: 12.0,
+            slide_min_speed: 3.8,
             slide_max_time: 1.2,
             slide_cd: 0.5,
             kcc_offset: 0.01,
@@ -264,7 +264,7 @@ impl Default for Cfg {
             wall_coast_burn: 5.0,
             overspeed_bleed: 0.8,
             grapple_hop: 4.5,
-            wall_climb_speed: 8.0,
+            wall_climb_speed: 9.5,
             wall_steer: 45.0,
             wall_front_min_speed: 2.5,
             wall_up_enter: 6.0,
@@ -2613,12 +2613,13 @@ mod tests {
     }
 
     #[test]
-    fn run_speed_is_about_a_sixth_slower_than_the_old_6_5() {
+    fn run_speed_is_the_faster_7_2_retune() {
         let cfg = Cfg::default();
-        assert!((5.2..5.7).contains(&cfg.run_speed), "run {}", cfg.run_speed);
-        assert!(cfg.dash_speed < 16.5 && cfg.roll_speed < 8.0 && cfg.slide_boost < 8.0);
+        // "move faster" round: run 5.4 -> 7.2 m/s, dash/roll/slide/wall-run scaled with it
+        assert!((7.0..7.5).contains(&cfg.run_speed), "run {}", cfg.run_speed);
+        assert!(cfg.dash_speed < 20.0 && cfg.roll_speed < 10.0 && cfg.slide_boost < 10.0);
         // wall-runs were made deliberately stronger than the old 7.0 m/s (traversal/melee round): fast, but still under a dash
-        assert!((8.0..11.0).contains(&cfg.wall_speed) && cfg.wall_speed < 2.0 * cfg.dash_speed);
+        assert!((9.5..12.0).contains(&cfg.wall_speed) && cfg.wall_speed < 2.0 * cfg.dash_speed);
     }
 
     #[test]
@@ -2630,10 +2631,10 @@ mod tests {
         eprintln!("FEEL tap {tap_h:.2} m {tap_t:.2} s {tap_d:.1} m | hold {hold_h:.2} m {hold_t:.2} s {hold_d:.1} m | hold+double {dbl_h:.2} m {dbl_t:.2} s {dbl_d:.1} m");
         assert!((1.7..2.2).contains(&tap_h), "tap hop {tap_h} (an ordinary press must be a real jump: the first retune left it at the old ~1.5 m)");
         assert!((2.9..3.6).contains(&hold_h), "held jump {hold_h}");
-        assert!((1.0..1.5).contains(&hold_t), "a held jump floats about a second: {hold_t}");
-        assert!(hold_d >= 8.0, "a held run-in jump covers {hold_d} m");
-        assert!((4.4..5.4).contains(&dbl_h), "double jump apex {dbl_h}");
-        assert!(dbl_d >= 14.5, "jump + double jump crosses {dbl_d} m with two inputs");
+        assert!((1.0..1.6).contains(&hold_t), "a held jump floats about a second: {hold_t}");
+        assert!(hold_d >= 9.5, "a held run-in jump covers {hold_d} m");
+        assert!((4.6..5.6).contains(&dbl_h), "double jump apex {dbl_h}");
+        assert!(dbl_d >= 17.0, "jump + double jump crosses {dbl_d} m with two inputs");
         // the arc is a glide, not a moon jump: a double jump stays under ~2 s
         assert!(dbl_t < 2.4, "air time {dbl_t}");
         // cfg helpers agree with the simulation (bots plan with them)
