@@ -279,8 +279,8 @@ impl Default for Cfg {
             mantle_height: 6.5,
             mantle_window: 0.45,
             mantle_carry: 3.2,
-            yank_speed: 34.0,
-            yank_hop: 5.0,
+            yank_speed: 46.0,
+            yank_hop: 6.0,
             yank_cd: 1.6,
             yank_stagger: 0.7,
             yank_gain: 2.0,
@@ -536,6 +536,8 @@ impl CharacterSystem {
             self.state = MoveState::Airborne;
         }
         self.slide = None;
+        self.state = MoveState::Airborne; // the hop lifts them off the floor (ground friction would eat the pull)
+        self.coyote = 0.0;
         self.wall_cd = 0.4;
         if self.grapple.is_some() {
             self.grapple_release();
