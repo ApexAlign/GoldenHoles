@@ -132,6 +132,9 @@ fn players_on_different_faces_do_not_clash() {
     assert!(s.players[0].clash.is_none() && s.players[1].clash.is_none());
 }
 
+// Far gap re-baselined 7 -> 9 m: the plain-slice lunge (0.7 x dash_speed x dash_time) grew 2.7 -> 4.0 m with dash 15.5 -> 19.
+const GAP_FAR: f32 = 9.0;
+
 /// Hook-strike: a swing while hooked reaches further and hits harder than a plain slash at the same range.
 #[test]
 fn hook_strike_reaches_further_and_hits_harder_than_a_plain_slash() {
@@ -171,13 +174,13 @@ fn hook_strike_reaches_further_and_hits_harder_than_a_plain_slash() {
         s.frame(FRAME);
         before - hp(&s, 2)
     };
-    let (plain_near, hook_far, plain_far) = (run(false, 2.5), run(true, 7.0), run(false, 7.0));
+    let (plain_near, hook_far, plain_far) = (run(false, 2.5), run(true, GAP_FAR), run(false, GAP_FAR));
     eprintln!(
-        "hook-strike: plain slash at 2.5 m deals {plain_near:.1}; at 7 m a plain slash deals {plain_far:.1}, a hook-strike deals {hook_far:.1} (katana {} x hook {})",
+        "hook-strike: plain slash at 2.5 m deals {plain_near:.1}; at {GAP_FAR} m a plain slash deals {plain_far:.1}, a hook-strike deals {hook_far:.1} (katana {} x hook {})",
         b.combat.katana.damage, b.combat.katana.hook_damage_mult
     );
     assert!((plain_near - b.combat.katana.damage).abs() < 0.5, "plain slash damage {plain_near}");
-    assert_eq!(plain_far, 0.0, "7 m is out of a plain slash's reach");
+    assert_eq!(plain_far, 0.0, "{GAP_FAR} m is out of a plain slash's reach");
     assert!((hook_far - b.combat.katana.damage * b.combat.katana.hook_damage_mult).abs() < 0.5, "hook-strike damage {hook_far}");
 }
 
