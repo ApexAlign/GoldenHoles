@@ -464,7 +464,7 @@ impl CharacterSpec {
         0.90 + 0.01 * self.bulk_q as f32
     }
     pub fn shoulders(&self) -> f32 {
-        0.90 + 0.02 * self.shoulders_q as f32
+        (90 + 2 * self.shoulders_q as u32) as f32 / 100.0
     }
     pub fn scarf_len(&self) -> f32 {
         self.scarf_len_q as f32 / 7.0
