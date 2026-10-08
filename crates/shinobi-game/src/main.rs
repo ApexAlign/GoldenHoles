@@ -31,6 +31,7 @@ mod mobile;
 mod headless;
 mod net;
 mod play;
+mod power_fx;
 mod record;
 mod shot;
 mod sky;
@@ -183,7 +184,7 @@ fn main() {
     }
     app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
     if !off("fx") {
-        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin));
+        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
     }
     if !off("hud") {
         app.add_plugins(hud_view::HudPlugin);

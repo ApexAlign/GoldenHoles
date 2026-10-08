@@ -112,6 +112,11 @@ pub struct Frame {
     pub match_start: bool,
     /// Star variant effects this frame (`events::STAR_FX_*`, position), and a flash white-out that just hit us.
     pub star_fx: Vec<(u8, [f32; 3])>,
+    /// Power-weapon moments (`power_pass::FX_*`, position, who) and our own predicted ones, and the seconds left on a fuda tag
+    /// stuck to us (the countdown beeps).
+    pub power_fx: Vec<(u8, [f32; 3], u16)>,
+    pub power_own: Vec<shinobi_sim::power::PowerEvent>,
+    pub tag_on_me: Option<f32>,
     pub blinded: bool,
     pub star_switched: bool,
     /// The match ended: did we win?
@@ -158,6 +163,8 @@ impl Frame {
             taken: v.hits.iter().filter(|h| h.taken && h.amount > 0 && !v.blocking).map(|h| h.amount).collect(),
             absorbed: v.hits.iter().filter(|h| h.taken && h.amount > 0 && v.blocking).count() as u32,
             parried: v.hits.iter().filter(|h| h.taken && h.amount == 0 && !h.kill && h.other != 0).count() as u32,
+            power_own: v.power_events.clone(),
+            tag_on_me: v.power_world.tag_on(own_id).map(|t| t.fuse_left * shinobi_sim::power::TagCfg::default().fuse_s),
             discs: v.discs.iter().enumerate().map(|(i, (p, _))| (*p, v.disc_owners.get(i).copied().unwrap_or(0))).collect(),
             blocks: v.blocks.iter().map(|b| (b.owner, b.cell)).collect(),
             block_size: v.block_size,
@@ -176,6 +183,7 @@ impl Frame {
                 NetEvent::MatchStart { .. } => fr.match_start = true,
                 NetEvent::StarFx { what, pos, .. } => fr.star_fx.push((*what, shinobi_proto::quant::dq_pos3(*pos))),
                 NetEvent::StarBlind { victim, .. } if *victim == own_id => fr.blinded = true,
+                NetEvent::PowerFx { what, pos, owner, .. } => fr.power_fx.push((*what, shinobi_proto::quant::dq_pos3(*pos), *owner)),
                 NetEvent::MatchEnd { winner, .. } => fr.match_end = Some(*winner as u16 == own_id && own_id != 0),
                 _ => {}
             }
@@ -219,6 +227,7 @@ pub struct Cuer {
     step_alt: bool,
     remote_steps: HashMap<u16, f32>,
     pulse_t: f32,
+    tag_beep: f32,
     guard_spent: f32,
     guard_beep: f32,
     /// How hard this frame's events should push the music down (0..=1); read after `update`.
@@ -265,6 +274,60 @@ impl Cuer {
         }
         if f.blinded {
             cues.push(Cue::flat(Sound::LockBreak, 0.9));
+        }
+        // power weapons (docs/powerups.md): existing synth sounds. Our own draw / loose / throw come from the prediction (no
+        // latency), the server copies of them are skipped for us.
+        for e in &f.power_own {
+            use shinobi_sim::power::PowerEvent::*;
+            match e {
+                DrawStart => cues.push(Cue::flat(Sound::HeavyCharge, 0.5)),
+                DrawCancel { .. } => cues.push(Cue::flat(Sound::Whiff, 0.4)),
+                Loose => {
+                    cues.push(Cue::flat(Sound::Throw, 1.0).pitched(0.55));
+                    cues.push(Cue::flat(Sound::HeavyRelease, 0.5));
+                    duck = duck.max(0.2);
+                }
+                TagThrow => cues.push(Cue::flat(Sound::Throw, 0.6).pitched(1.4)),
+                TagDetonate => cues.push(Cue::flat(Sound::UiClick, 0.7)),
+                Expired => cues.push(Cue::flat(Sound::Lockout, 0.5)),
+                Spent => {}
+            }
+        }
+        for (what, p, owner) in &f.power_fx {
+            use shinobi_sim::power_pass::*;
+            let mine = *owner == f.own_id;
+            let (s, v, pitch) = match *what {
+                FX_PICKUP_YUMI | FX_PICKUP_TAG => {
+                    cues.push(if mine { Cue::flat(Sound::Refill, 0.8) } else { Cue::flat(Sound::Execute, 0.45).pitched(1.3) });
+                    continue;
+                }
+                FX_DRAW if !mine => (Sound::HeavyCharge, 0.45, 1.0),
+                FX_LOOSE if !mine => (Sound::Throw, 0.9, 0.55),
+                FX_TAG_THROW if !mine => (Sound::Throw, 0.5, 1.4),
+                FX_ARROW_HIT => (Sound::HitBody, 1.0, 1.0),
+                FX_ARROW_HEAD => (Sound::HitHard, 1.0, 1.0),
+                FX_ARROW_BLOCKED => (Sound::Block, 0.9, 1.0),
+                FX_ARROW_PARRIED => (Sound::Parry, 1.0, 1.0),
+                FX_ARROW_CUT | FX_TAG_CUT => (Sound::Clash, 0.8, 1.2),
+                FX_ARROW_WALL => (Sound::Ricochet, 0.6, 0.8),
+                FX_TAG_STUCK => (Sound::Print, 0.7, 1.2),
+                FX_TAG_ARMED => (Sound::Refill, 0.45, 1.8),
+                FX_TAG_BLAST => (Sound::AirSlam, 1.1, 0.8),
+                FX_DROP => (Sound::Land, 0.6, 1.0),
+                _ => continue,
+            };
+            cues.push(Cue::at(s, *p, v).pitched(pitch));
+        }
+        // a fuda tag stuck to us beeps faster and faster
+        match f.tag_on_me {
+            Some(secs) => {
+                self.tag_beep -= f.dt;
+                if self.tag_beep <= 0.0 {
+                    cues.push(Cue::flat(Sound::RopePulse, 0.9).pitched(1.6));
+                    self.tag_beep = 0.1 + 0.35 * (secs / 2.0).clamp(0.0, 1.0);
+                }
+            }
+            None => self.tag_beep = 0.0,
         }
         if f.star_switched {
             cues.push(Cue::flat(Sound::UiClick, 0.5));

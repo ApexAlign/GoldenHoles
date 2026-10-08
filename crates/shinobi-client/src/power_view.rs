@@ -58,6 +58,8 @@ pub struct ArrowObj {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TagObj {
     pub pos: [f32; 3],
+    /// Flight velocity (a tag in the air; zero once it is stuck).
+    pub vel: [f32; 3],
     /// Surface normal (a tag stuck to a player: pointing back at where it came from).
     pub normal: [f32; 3],
     pub owner: u16,
@@ -102,7 +104,7 @@ impl PowerWorld {
                     let flying = st.flags & TAG_FLYING != 0;
                     let on_player = (st.flags & TAG_ON_PLAYER != 0).then_some(st.vel[0] as u16);
                     let normal = if flying || on_player.is_some() { [0.0, 1.0, 0.0] } else { [v[0] / STUCK_NORMAL_SPEED, v[1] / STUCK_NORMAL_SPEED, v[2] / STUCK_NORMAL_SPEED] };
-                    w.tags.push(TagObj { pos, normal, owner: st.yaw, flying, on_player, armed: st.flags & TAG_ARMED != 0, fuse_left: (st.fx & 15) as f32 / 15.0 });
+                    w.tags.push(TagObj { pos, vel: if flying { v } else { [0.0; 3] }, normal, owner: st.yaw, flying, on_player, armed: st.flags & TAG_ARMED != 0, fuse_left: (st.fx & 15) as f32 / 15.0 });
                 }
                 _ => w.draws.push(DrawObj { pos, dir: [v[0] / STUCK_NORMAL_SPEED, v[1] / STUCK_NORMAL_SPEED, v[2] / STUCK_NORMAL_SPEED], owner: st.yaw, frac: (st.fx & 15) as f32 / 15.0 }),
             }
