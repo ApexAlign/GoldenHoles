@@ -9,6 +9,7 @@
 pub mod fsm;
 pub mod host;
 pub mod nav;
+pub mod power_bot;
 pub mod rng;
 pub mod skill;
 pub mod tickets;

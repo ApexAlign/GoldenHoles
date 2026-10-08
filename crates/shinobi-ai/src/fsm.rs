@@ -254,6 +254,9 @@ pub struct BotMem {
     flash_ok: u32,
     smoke_ok: u32,
     smoke_aim_until: u32,
+    /// Power weapons (docs/powerups.md, `power_bot.rs`): the brain and the look it wants this tick.
+    power: crate::power_bot::PowerBrain,
+    power_aim: Option<(f32, f32)>,
 }
 
 impl BotMem {
@@ -305,6 +308,8 @@ impl BotMem {
             flash_ok: 0,
             smoke_ok: 0,
             smoke_aim_until: 0,
+            power: Default::default(),
+            power_aim: None,
         }
     }
 
@@ -413,9 +418,22 @@ impl BotMem {
         self.select_phase(ctx, p, &mut rng, &mut released);
         out.release_ticket |= released;
 
+        // ---- 2b. power weapons: pedestal detours, the bow and the tags, a shield for an arrow, a swing at a tag on my back
+        let pout = self.power.think(ctx, p, &mut rng, self.seed, self.phase, self.skill.aim_error, self.aim_noise);
+        self.power_aim = pout.aim;
+
         // ---- 3. tactical movement + buttons
         let mut buttons = 0u8;
         let (mut dir, mut mag) = self.tactical_move(ctx, p, &mut buttons);
+        if let Some(goal) = pout.goal {
+            // a pedestal: plan a way there on maps with a path grid, else walk straight at it
+            let to = unit_or_zero(flat(goal - me.pos));
+            dir = match ctx.nav {
+                Some(nav) if !nav.straight_walkable([me.pos.x, me.pos.z], [goal.x, goal.z]) => self.path_dir(world, nav, me.pos, goal, tick, 0, ctx.plan_budget).unwrap_or(to),
+                _ => to,
+            };
+            mag = 1.0;
+        }
 
         // ---- 4. traversal: sweep walls / hop / hold. May rewrite dir, mag and buttons.
         let (d2, m2) = self.traverse(ctx, p, dir, mag, &mut buttons);
@@ -426,6 +444,25 @@ impl BotMem {
         self.star_pick = 0;
         self.star_variants(ctx, p, &mut buttons, &mut rng);
         self.attacks(ctx, p, dir, &mut buttons, &mut rng);
+        // the right button belongs to the weapon in hand: tags take every press (so no stray star turns into a tag throw),
+        // a drawn bow throws nothing, and the throw / detonate / swing the power layer decided goes out now
+        let tags_in_hand = ctx.world.server.players.iter().find(|q| q.id == me.id).map_or(false, |q| q.power.kind == shinobi_sim::power::PowerKind::Tag);
+        if tags_in_hand || pout.draw {
+            buttons &= !Buttons::FIRE;
+        }
+        if pout.fire {
+            self.star_pick = 0;
+        }
+        buttons |= crate::power_bot::buttons_of(&pout);
+        if pout.cut {
+            self.stats.strikes += 1;
+        }
+        if pout.block && tick >= self.block_ok && !matches!(self.phase, Phase::Strike { .. }) {
+            self.block_ok = tick + 60;
+            if rng.chance((self.skill.evade_chance * 0.7).min(0.9)) {
+                self.block_until = tick + 14;
+            }
+        }
 
         // ---- 5b. guard: a star flying at me gets a short raised shield now and then (never mid-strike)
         if tick >= self.block_ok && incoming_disc(ctx) && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
@@ -520,7 +557,7 @@ impl BotMem {
             block: blocking,
             mark: false,
             star: if buttons & Buttons::FIRE != 0 { self.star_pick } else { 0 },
-            draw: false,
+            draw: pout.draw && !blocking,
         };
         // leaving Strike hands the ticket back
         if released {
@@ -1222,6 +1259,8 @@ impl BotMem {
                 let d = flat(t.view.pos - me.pos);
                 (yaw_of(d) + self.slice_off, 0.0)
             }
+            // a drawn bow / a thrown tag aims with lead and drop (`power_bot.rs`)
+            _ if self.power_aim.is_some() => self.power_aim.unwrap(),
             (Some(t), _) => self.aim_angles(ctx, &t),
             (None, _) => {
                 if flat(dir).norm() > 0.1 { (yaw_of(dir), 0.0) } else { (me.yaw, 0.0) }
