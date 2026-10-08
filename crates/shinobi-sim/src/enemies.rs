@@ -729,7 +729,8 @@ impl Enemies {
                         DamageKind::Slash => bal.combat.knockback_slash,
                         DamageKind::Shuriken => bal.combat.knockback_shuriken,
                         DamageKind::GridBeam => bal.combat.knockback_ultimate,
-                        DamageKind::Mine => bal.combat.knockback_shuriken * 3.0,
+                        DamageKind::Mine | DamageKind::Tag => bal.combat.knockback_shuriken * 3.0,
+                        DamageKind::Arrow => bal.combat.knockback_shuriken * 2.0,
                     };
                     out.push(EnemyDamage { enemy: en.id, attacker: Some(attacker), attacker_pos: Some(attacker_pos), amount, knockback });
                 }
@@ -821,6 +822,8 @@ impl Enemies {
                         kind: crate::combat::powerup::PowerupKind::GridBeam,
                         respawn_ticks: 0,
                         charge_secs: bal.combat.pickup_charge_secs,
+                        weapon: crate::power::PowerKind::None,
+                        ammo: 0,
                     },
                     tick.wrapping_add(bal.enemy.drop_ttl_ticks),
                 );

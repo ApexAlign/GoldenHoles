@@ -296,7 +296,9 @@ pub fn apply_hits(
         let (mut amount, mut bonus) = (h.amount, false);
         let mut guard_seen = crate::block::Guard::None;
         let mut mom = 1.0f32;
-        if let Cause::Weapon(kind) = h.cause {
+        // arrows and tag blasts are resolved against shield, parry and cut-down by `power_pass.rs` before they get here
+        let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag));
+        if let (Cause::Weapon(kind), false) = (h.cause, pre_resolved) {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
             // momentum + kill streak: a fast, hot swordsman cuts harder (but only against an open target: a shield is
             // judged on the BASE cut, so a lunge or a streak never punches through it)
@@ -521,6 +523,7 @@ pub fn revive(p: &mut Player, world: &mut PhysicsWorld, s: [f32; 3], tick: u32, 
     p.vitals.dead_until_tick = None;
     p.vitals.invuln_until_tick = tick + invuln_ticks;
     p.combat.reset_projectiles();
+    p.power.clear();
     p.history.record(tick.wrapping_sub(1), s);
 }
 
@@ -628,6 +631,7 @@ mod tests {
         block: false,
         mark: false,
         star: 0,
+        draw: false,
     };
 
     #[test]

@@ -95,12 +95,15 @@ pub struct PlayerIntent {
     /// With `FIRE` (and no `mark`): the throwable, 0 standard / 1 mine / 2 flash / 3 smoke (`StarKind`). Two wire bits,
     /// present only while `FIRE` is set; carried with a lost packet's FIRE edge.
     pub star: u8,
+    /// Held (a level, repeated with the last intent): the bow is being drawn (right button while a yumi is in hand,
+    /// `shinobi_sim::power`). The walk slows while it is set; releasing it after a full draw looses the arrow.
+    pub draw: bool,
 }
 
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0 }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false }
     }
 }
 
@@ -136,6 +139,7 @@ impl PlayerIntent {
             && self.block == o.block
             && self.mark == o.mark
             && self.star == o.star
+            && self.draw == o.draw
     }
 
     fn write_body(&self, w: &mut BitWriter) {
@@ -157,6 +161,7 @@ impl PlayerIntent {
         if self.buttons.has(Buttons::FIRE) {
             w.write_bits(self.star as u32 & 3, 2);
         }
+        w.write_bool(self.draw);
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
@@ -172,7 +177,8 @@ impl PlayerIntent {
         let (build_wall, build_ramp) = if build { (r.read_bool()?, r.read_bool()?) } else { (false, false) };
         let (zip, block, mark) = (r.read_bool()?, r.read_bool()?, r.read_bool()?);
         let star = if buttons.has(Buttons::FIRE) { r.read_bits(2)? as u8 } else { 0 };
-        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star })
+        let draw = r.read_bool()?;
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star, draw })
     }
 }
 
@@ -513,7 +519,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0 }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false }
     }
 
     #[test]

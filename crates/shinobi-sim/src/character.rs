@@ -304,6 +304,8 @@ pub struct PlayerInput {
     /// One-tick edge set by the katana (and mirrored by `predict_slice`) when a swing starts while `strike_kind()` is
     /// some: launch along `move_dir` (flat aim) instead of the plain dash. See docs/traversal_melee.md.
     pub strike: bool,
+    /// Fraction of the run speed taken away (0 = none): a drawn yumi walks at `1 - walk_slow` (`power.rs`).
+    pub walk_slow: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -807,7 +809,7 @@ impl CharacterSystem {
                 self.vel.z = sl.dir.z * sl.speed;
             } else {
                 // horizontal accel: weighty on the ground (ramp up, hard brake on release / reversal), steering-only in the air
-                let target = dir_in * cfg.run_speed;
+                let target = dir_in * cfg.run_speed * (1.0 - input.walk_slow.clamp(0.0, 0.9));
                 let h = flat(self.vel);
                 let delta = target - h;
                 let max = if grounded_state {

@@ -94,6 +94,8 @@ pub struct Player {
     pub melee: crate::melee::MeleeState,
     /// White-out from a flash star lasts until this tick: no lock-on forms and the lock breaks (`star_pass.rs`).
     pub blind_until: u32,
+    /// The power weapon in hand: yumi or fuda tags (`power.rs`).
+    pub power: crate::power::PowerState,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -170,6 +172,13 @@ pub struct Server {
     pending_block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
     pub pickup_events: Vec<PickupEvent>,
+    /// Arrows in flight and fuda tags (flying, stuck, counting down), see `power_pass.rs`.
+    pub arrows: Vec<crate::power_pass::Arrow>,
+    pub tags: Vec<crate::power_pass::Tag>,
+    /// Owners that pressed detonate this tick, and the counter that names arrows / tags / floor drops.
+    pub(crate) power_launch: Vec<crate::power_pass::Launch>,
+    pub(crate) power_uid: u16,
+    pub(crate) drop_seq: u32,
     /// Movement-only broad phase (solid colliders), rebuilt once per tick before the player loop.
     solid_queries: QueryPipeline,
     cfg: Cfg,
@@ -212,6 +221,11 @@ impl Server {
             block_events: Vec::new(),
             pending_block_events: Vec::new(),
             pickup_events: Vec::new(),
+            arrows: Vec::new(),
+            tags: Vec::new(),
+            power_launch: Vec::new(),
+            power_uid: 0,
+            drop_seq: 0,
             solid_queries: QueryPipeline::new(),
             ac: AntiCheatCfg::standard(&cfg),
             cfg,
@@ -275,6 +289,7 @@ impl Server {
             kmoves: Default::default(),
             melee: Default::default(),
             blind_until: 0,
+            power: Default::default(),
         });
     }
 
@@ -346,6 +361,21 @@ impl Server {
             kind,
             respawn_ticks: (respawn_secs * TICK_HZ as f32).round() as u32,
             charge_secs: 20.0,
+            weapon: crate::power::PowerKind::None,
+            ammo: 0,
+        });
+    }
+
+    /// Fixed power-weapon pedestal (the yumi or a fuda tag, `power.rs`): up at tick 0, `respawn_secs` after each pickup.
+    pub fn add_weapon_pickup(&mut self, id: u32, pos: [f32; 3], weapon: crate::power::PowerKind, respawn_secs: f32) {
+        self.pickups.add_point(crate::pickups::PickupPoint {
+            id,
+            pos,
+            kind: crate::combat::powerup::PowerupKind::GridBeam,
+            respawn_ticks: (respawn_secs * TICK_HZ as f32).round() as u32,
+            charge_secs: 0.0,
+            weapon,
+            ammo: 0,
         });
     }
 
@@ -500,9 +530,11 @@ impl Server {
             if frozen || !self.players[i].vitals.alive() {
                 continue;
             }
-            let it = intent.unwrap_or_default();
+            let mut it = intent.unwrap_or_default();
+            // the bow slows the walk only while it is in the hands (the client sets the same bit only then)
+            it.draw = it.draw && self.players[i].power.kind == crate::power::PowerKind::Yumi;
             let (aim_yaw, aim_pitch) = (self.players[i].yaw, self.players[i].pitch);
-            let mut input = to_player_input(&PlayerIntent { aim_yaw, ..it });
+            let mut input = to_player_input_scaled(&PlayerIntent { aim_yaw, ..it }, self.balance.combat.power.yumi.move_mult);
             // shots and slashes start at the EYE (`CharacterSystem::eye_above`, the height the client camera uses), so the
             // crosshair and the projectile agree; hitboxes stay centred on the capsule
             let origin = vector![before[0], before[1] + self.players[i].ch.eye_above(), before[2]];
@@ -512,7 +544,24 @@ impl Server {
             // (skipped when nothing can query: the rebuild is the expensive part with many players)
             // a raised shield or a stagger (parried) means no throwing, cutting or dashing
             let shut = self.players[i].blk.held || self.players[i].blk.staggered(tick);
-            let (fire_in, slice_in) = (it.buttons.has(Buttons::FIRE) && !shut, it.buttons.has(Buttons::SLICE) && !shut);
+            let slice_in = it.buttons.has(Buttons::SLICE) && !shut;
+            // power weapons (docs/powerups.md): the bow and the tags take the right button over while they are in hand
+            let mut fire_in = it.buttons.has(Buttons::FIRE) && !shut;
+            {
+                let pcfg = self.balance.combat.power;
+                let (armed, live) = (self.armed_tags(self.players[i].id), self.live_tags(self.players[i].id));
+                let pid = self.players[i].id;
+                let p = &mut self.players[i];
+                let mut pev = Vec::new();
+                p.power.update(dt, &crate::power::PowerInput { draw: it.draw && !shut, fire: fire_in, live_tags: live, armed_tags: armed, can_act: !shut }, &pcfg, &mut pev);
+                if p.power.blocks_star() {
+                    fire_in = false;
+                }
+                let dir = aim.forward();
+                for ev in pev {
+                    self.power_launch.push(crate::power_pass::Launch { owner: pid, ev, eye: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] });
+                }
+            }
             if self.players[i].blk.staggered(tick) {
                 input.dash_pressed = false;
             }
@@ -728,6 +777,13 @@ impl Server {
 
         self.resolve_clashes(tick, &clash_wins);
         self.star_pass(tick, ev_start, &mut hits);
+        if frozen {
+            self.arrows.clear();
+            self.tags.clear();
+            self.power_launch.clear();
+        } else {
+            self.power_pass(tick, ev_start, &mut hits);
+        }
 
         // soft push-out: server-authoritative correction, after anti-cheat so it never counts as movement
         crate::separation::separate(&self.players, &mut self.world, &self.cfg, &self.separation);
@@ -761,9 +817,15 @@ impl Server {
                 }
             }
         }
+        // a dead player's power weapon lies where they fell
+        for k in 0..self.players.len() {
+            if !self.players[k].vitals.alive() && self.players[k].power.held() {
+                self.drop_power_weapon(k, tick);
+            }
+        }
         self.match_state.end_tick(tick, &self.players, &mut self.match_events);
         if !frozen {
-            self.pickups.update(tick, &self.world, &mut self.players, &self.cfg, &mut self.pickup_events);
+            self.pickups.update(tick, &self.world, &mut self.players, &self.cfg, &self.balance.combat.power, &mut self.pickup_events);
         }
         if !frozen {
             let pb = &self.balance.player;
@@ -883,6 +945,11 @@ pub fn view_dir(aim_yaw: u16, aim_pitch: u16) -> Vector<Real> {
 
 /// Wire intent -> sim input. View-frame stick is rotated by the *server's* yaw here.
 pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
+    to_player_input_scaled(it, crate::power::YumiCfg::default().move_mult)
+}
+
+/// As `to_player_input`, with the walk multiplier of a drawn bow (`combat.yumi.move_mult`) applied while `it.draw` is set.
+pub fn to_player_input_scaled(it: &PlayerIntent, draw_mult: f32) -> PlayerInput {
     let (x, z) = it.world_move();
     PlayerInput {
         move_dir: Vector::new(x, 0.0, z),
@@ -894,6 +961,7 @@ pub fn to_player_input(it: &PlayerIntent) -> PlayerInput {
         slide: it.buttons.has(Buttons::SLIDE),
         grapple_aim: if it.zip { Some(view_dir(it.aim_yaw, it.aim_pitch)) } else { None },
         strike: false, // set by the katana (server) / predict_slice (client) when a swing launches
+        walk_slow: if it.draw { 1.0 - draw_mult } else { 0.0 },
     }
 }
 

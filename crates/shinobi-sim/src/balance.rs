@@ -113,6 +113,8 @@ pub struct CombatBalance {
     pub shuriken: ShurikenBalance,
     /// Star variants: mine, flash, smoke (`combat/stars.rs`).
     pub star: crate::combat::stars::StarCfg,
+    /// Pickup-only power weapons: the yumi and the explosive tag (`power.rs`, docs/powerups.md).
+    pub power: crate::power::PowerCfg,
     pub katana: KatanaBalance,
     /// Horizontal speed (m/s) a hit gives an enemy, before its own `knockback_scale`.
     pub knockback_slash: f32,
@@ -507,6 +509,7 @@ impl Default for Balance {
                     mark_cost: s.mark_cost,
                 },
                 star: s.star,
+                power: crate::power::PowerCfg::default(),
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
@@ -985,6 +988,39 @@ impl Balance {
         s!("combat.ultimate_max_radius", F, self.combat.ultimate_max_radius);
         s!("combat.ultimate_damage", F, self.combat.ultimate_damage);
         s!("combat.pickup_charge_secs", F, self.combat.pickup_charge_secs);
+        s!("combat.yumi.carry_s", F, self.combat.power.yumi.carry_s);
+        s!("combat.yumi.arrows", U, self.combat.power.yumi.arrows);
+        s!("combat.yumi.draw_s", F, self.combat.power.yumi.draw_s);
+        s!("combat.yumi.tap_s", F, self.combat.power.yumi.tap_s);
+        s!("combat.yumi.move_mult", F, self.combat.power.yumi.move_mult);
+        s!("combat.yumi.turn_mult", F, self.combat.power.yumi.turn_mult);
+        s!("combat.yumi.speed", F, self.combat.power.yumi.speed);
+        s!("combat.yumi.gravity", F, self.combat.power.yumi.gravity);
+        s!("combat.yumi.range", F, self.combat.power.yumi.range);
+        s!("combat.yumi.radius", F, self.combat.power.yumi.radius);
+        s!("combat.yumi.damage", F, self.combat.power.yumi.damage);
+        s!("combat.yumi.head_mult", F, self.combat.power.yumi.head_mult);
+        s!("combat.yumi.block_drain", F, self.combat.power.yumi.block_drain);
+        s!("combat.yumi.cut_pad", F, self.combat.power.yumi.cut_pad);
+        s!("combat.yumi.cooldown_s", F, self.combat.power.yumi.cooldown_s);
+        s!("combat.yumi.drop_life_s", F, self.combat.power.yumi.drop_life_s);
+        s!("combat.tag.carry_s", F, self.combat.power.tag.carry_s);
+        s!("combat.tag.count", U, self.combat.power.tag.count);
+        s!("combat.tag.max_live", U, self.combat.power.tag.max_live);
+        s!("combat.tag.throw_speed", F, self.combat.power.tag.throw_speed);
+        s!("combat.tag.gravity", F, self.combat.power.tag.gravity);
+        s!("combat.tag.flight_s", F, self.combat.power.tag.flight_s);
+        s!("combat.tag.arm_s", F, self.combat.power.tag.arm_s);
+        s!("combat.tag.fuse_s", F, self.combat.power.tag.fuse_s);
+        s!("combat.tag.radius", F, self.combat.power.tag.radius);
+        s!("combat.tag.damage", F, self.combat.power.tag.damage);
+        s!("combat.tag.edge_frac", F, self.combat.power.tag.edge_frac);
+        s!("combat.tag.knock", F, self.combat.power.tag.knock);
+        s!("combat.tag.self_mult", F, self.combat.power.tag.self_mult);
+        s!("combat.tag.cut_pad", F, self.combat.power.tag.cut_pad);
+        s!("combat.tag.cooldown_s", F, self.combat.power.tag.cooldown_s);
+        s!("combat.tag.stick_radius", F, self.combat.power.tag.stick_radius);
+        s!("combat.tag.drop_life_s", F, self.combat.power.tag.drop_life_s);
 
         s!("blocks.thickness", F, self.blocks.thickness);
         s!("blocks.max_per_owner", U, self.blocks.max_per_owner);
@@ -1146,6 +1182,13 @@ impl Balance {
         }
         if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < costs.iter().cloned().fold(0.0, f32::max) {
             e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
+        }
+        let (y, t) = (&self.combat.power.yumi, &self.combat.power.tag);
+        if y.arrows == 0 || y.arrows > 9 || y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.carry_s <= 0.0 || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || [y.gravity, y.radius, y.damage, y.cut_pad, y.cooldown_s, y.drop_life_s].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) {
+            e.push("combat.yumi.*: arrows 1..9, draw_s > tap_s >= 0, carry_s / speed / range > 0, move_mult and turn_mult 0.05..1, head_mult >= 1, block_drain 0..1, the rest >= 0".into());
+        }
+        if t.count == 0 || t.count > 9 || t.max_live == 0 || t.carry_s <= 0.0 || t.throw_speed <= 0.0 || t.radius <= 0.0 || t.fuse_s <= t.arm_s || t.arm_s < 0.0 || !(0.0..=1.0).contains(&t.edge_frac) || !(0.0..=1.0).contains(&t.self_mult) || [t.gravity, t.flight_s, t.damage, t.knock, t.cut_pad, t.cooldown_s, t.stick_radius, t.drop_life_s].iter().any(|v| *v < 0.0) {
+            e.push("combat.tag.*: count 1..9, max_live >= 1, fuse_s > arm_s >= 0, radius / throw_speed / carry_s > 0, edge_frac and self_mult 0..1, the rest >= 0".into());
         }
         let m = &self.melee;
         if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal, m.exec_frac, m.slam_speed, m.shock_radius, m.shock_knock, m.counter_window_s].iter().any(|v| *v < 0.0) {
