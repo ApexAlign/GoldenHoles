@@ -90,8 +90,13 @@ impl MyLook {
     pub fn startup() -> MyLook {
         let mut look = STARTUP_LOOK.get().cloned().flatten();
         if let Ok(p) = std::env::var("SHOT_CHAR").map(|p| p.trim().to_string()).and_then(|p| if p == "presets" { Err(std::env::VarError::NotPresent) } else { Ok(p) }) {
-            match shinobi_client::character_file::load(std::path::Path::new(&p)) {
-                Ok(s) => look = Some(s),
+            match shinobi_client::character_file::load_noted(std::path::Path::new(&p)) {
+                Ok((s, warn)) => {
+                    for w in warn {
+                        eprintln!("SHOT_CHAR: {w}");
+                    }
+                    look = Some(s)
+                }
                 Err(e) => eprintln!("SHOT_CHAR: {e}"),
             }
         }
@@ -179,6 +184,11 @@ pub struct Rig {
     katana: Entity,
     glyph: Entity,
     scarf: [Entity; SCARF_SEGS],
+    /// v1.1 idle-sway pivots: ears (pivot, rest rotation, phase) under the head, tail under the torso.
+    ears: Vec<(Entity, Quat, f32)>,
+    tail: Option<Entity>,
+    /// Shoulder width factor (1.0 = stock).
+    shoulders: f32,
     /// Materials are applied per (role, colour source), so remember who has which.
     roles: Vec<(Entity, Role, Src)>,
     /// Entities hidden beyond `DARK_MAX`.
@@ -353,6 +363,10 @@ impl Spawner<'_, '_, '_> {
     fn pivot(&mut self, parent: Entity) -> Entity {
         self.commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent))).id()
     }
+
+    fn pivot_at(&mut self, parent: Entity, pos: [f32; 3], rot: Quat) -> Entity {
+        self.commands.spawn((Transform { translation: Vec3::from(pos), rotation: rot, ..default() }, Visibility::default(), ChildOf(parent))).id()
+    }
 }
 
 impl Rig {
@@ -365,6 +379,7 @@ impl Rig {
         let id = Quat::IDENTITY;
         let rz = Quat::from_rotation_z;
         let rx = Quat::from_rotation_x;
+        let sh = sp.shoulders();
         let tabi = if sp.has_acc(ACC_TABI) { Src::Glow } else { Src::Match };
 
         // ---- torso (nominal half extents 0.22 x 0.357 x 0.12, front is -Z) ----
@@ -419,10 +434,10 @@ impl Rig {
         // shoulder plates with a lit edge (heavy: a second layer and an abdomen guard)
         if sp.plates >= 1 {
             for sx in [-1.0f32, 1.0] {
-                s.part_s(torso, Role::Dark, Src::Base, [0.27 * sx, 0.30, 0.0], [0.17, 0.05, 0.24], rz(-0.25 * sx));
-                s.part_s(torso, Role::Glow, Src::Glow, [0.335 * sx, 0.275, 0.0], [0.016, 0.02, 0.24], rz(-0.25 * sx));
+                s.part_s(torso, Role::Dark, Src::Base, [0.27 * sx * sh, 0.30, 0.0], [0.17, 0.05, 0.24], rz(-0.25 * sx));
+                s.part_s(torso, Role::Glow, Src::Glow, [0.335 * sx * sh, 0.275, 0.0], [0.016, 0.02, 0.24], rz(-0.25 * sx));
                 if sp.plates == 2 {
-                    s.part_s(torso, Role::Dark, Src::Base, [0.285 * sx, 0.345, 0.0], [0.2, 0.05, 0.3], rz(-0.25 * sx));
+                    s.part_s(torso, Role::Dark, Src::Base, [0.285 * sx * sh, 0.345, 0.0], [0.2, 0.05, 0.3], rz(-0.25 * sx));
                 }
             }
             if sp.plates == 2 {
@@ -432,7 +447,7 @@ impl Rig {
         }
         if sp.has_acc(ACC_FINS) {
             for sx in [-1.0f32, 1.0] {
-                s.part_s(torso, Role::Glow, Src::Glow, [0.40 * sx, 0.40, 0.04], [0.02, 0.26, 0.14], rz(0.5 * sx));
+                s.part_s(torso, Role::Glow, Src::Glow, [0.40 * sx * sh, 0.40, 0.04], [0.02, 0.26, 0.14], rz(0.5 * sx));
             }
         }
         // sash: waist band + knot + hanging tail
@@ -471,6 +486,34 @@ impl Rig {
             }
             _ => {}
         }
+
+        // v1.1 tail on the lower back (sways in `update`)
+        let tail = (sp.tail != 0).then(|| {
+            let t = s.pivot_at(torso, [0.0, -0.28, 0.15], id);
+            let rx = Quat::from_rotation_x;
+            match sp.tail {
+                1 => {
+                    // fox: bushy, rising, pale tip
+                    s.part_far(t, Role::Plain, Src::Hair, [0.0, 0.0, 0.13], [0.11, 0.11, 0.24], rx(-0.15));
+                    s.part_far(t, Role::Plain, Src::Hair, [0.0, 0.06, 0.34], [0.17, 0.17, 0.24], rx(-0.45));
+                    s.part_far(t, Role::Accent, Src::Trim, [0.0, 0.15, 0.52], [0.12, 0.12, 0.14], rx(-0.7));
+                }
+                2 => {
+                    // cat: thin and long, curling up
+                    s.part_far(t, Role::Plain, Src::Hair, [0.0, 0.0, 0.12], [0.05, 0.05, 0.24], id);
+                    s.part_far(t, Role::Plain, Src::Hair, [0.0, 0.05, 0.3], [0.05, 0.05, 0.22], rx(-0.5));
+                    s.part_far(t, Role::Plain, Src::Hair, [0.0, 0.17, 0.4], [0.05, 0.05, 0.22], rx(-1.1));
+                }
+                _ => {
+                    // lizard: tapered, low, lit ridge
+                    s.part_far(t, Role::Plain, Src::Skin, [0.0, -0.02, 0.13], [0.13, 0.1, 0.24], rx(0.1));
+                    s.part_far(t, Role::Plain, Src::Skin, [0.0, -0.05, 0.34], [0.09, 0.07, 0.24], rx(0.15));
+                    s.part_far(t, Role::Plain, Src::Skin, [0.0, -0.08, 0.54], [0.05, 0.045, 0.2], rx(0.2));
+                    s.part_far(t, Role::Glow, Src::Glow, [0.0, 0.035, 0.3], [0.02, 0.02, 0.5], rx(0.1));
+                }
+            }
+            t
+        });
 
         // ---- head: hood shell, mask, glowing visor (nominal half 0.11 x 0.12 x 0.11) ----
         let head = s.pivot(root);
@@ -540,6 +583,26 @@ impl Rig {
                     s.part_s(head, Role::Hot, Src::Visor, [0.055 * sx, 0.03, -0.124], [0.075, 0.03, 0.02], id);
                 }
             }
+            3 => {
+                // cat: big slanted eyes with a dark vertical pupil
+                for sx in [-1.0f32, 1.0] {
+                    s.part_s(head, Role::Hot, Src::Visor, [0.058 * sx, 0.035, -0.126], [0.085, 0.07, 0.02], rz(0.25 * sx));
+                    s.part_s(head, Role::Dark, Src::Base, [0.058 * sx, 0.035, -0.139], [0.014, 0.06, 0.008], id);
+                }
+            }
+            4 => {
+                // round: two big square eyes with a dark dot
+                for sx in [-1.0f32, 1.0] {
+                    s.part_s(head, Role::Hot, Src::Visor, [0.056 * sx, 0.035, -0.126], [0.07, 0.07, 0.02], id);
+                    s.part_s(head, Role::Dark, Src::Base, [0.056 * sx, 0.035, -0.139], [0.026, 0.026, 0.008], id);
+                }
+            }
+            5 => {
+                // angry: slits tilted down toward the nose
+                for sx in [-1.0f32, 1.0] {
+                    s.part_s(head, Role::Hot, Src::Visor, [0.058 * sx, 0.03, -0.126], [0.095, 0.032, 0.02], rz(0.4 * sx));
+                }
+            }
             _ => {
                 s.part_s(head, Role::Hot, Src::Visor, [0.0, 0.03, -0.126], [0.225, 0.05, 0.02], id);
             }
@@ -601,6 +664,116 @@ impl Rig {
                 s.part_s(head, Role::Glow, Src::Glow, [0.058 * sx, 0.035, -0.14], [0.09, 0.06, 0.012], id);
             }
             s.part_s(head, Role::Glow, Src::Glow, [0.0, 0.045, -0.14], [0.04, 0.012, 0.012], id);
+        }
+        // v1.1 head parts (far LOD hides them all: the bright core carries the read)
+        let mut ears = Vec::new();
+        if sp.ears != 0 {
+            for (i, sx) in [-1.0f32, 1.0].into_iter().enumerate() {
+                let (pos, tilt) = match sp.ears {
+                    1 => ([0.135 * sx, 0.06, 0.02], 1.0),
+                    2 => ([0.135 * sx, 0.03, 0.02], 0.55),
+                    3 => ([0.07 * sx, 0.11, 0.03], 0.18),
+                    4 => ([0.085 * sx, 0.12, 0.02], 0.3),
+                    _ => ([0.075 * sx, 0.12, 0.0], 0.28),
+                };
+                let rest = rz(-tilt * sx);
+                let e = s.pivot_at(head, pos, rest);
+                match sp.ears {
+                    1 => {
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.07, 0.0], [0.045, 0.14, 0.07], id);
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.17, 0.0], [0.025, 0.08, 0.05], id);
+                    }
+                    2 => {
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.1, 0.0], [0.04, 0.2, 0.17], id);
+                        s.part_far(e, Role::Accent, Src::Trim, [-0.012 * sx, 0.1, -0.005], [0.014, 0.14, 0.11], id);
+                    }
+                    3 => {
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.17, 0.0], [0.05, 0.34, 0.07], id);
+                        s.part_far(e, Role::Accent, Src::Trim, [0.0, 0.17, -0.03], [0.022, 0.26, 0.016], id);
+                    }
+                    4 => {
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.03, 0.0], [0.09, 0.09, 0.05], id);
+                        s.part_far(e, Role::Accent, Src::Trim, [0.0, 0.03, -0.022], [0.05, 0.05, 0.012], id);
+                    }
+                    _ => {
+                        // cat: a diamond with a lit inner
+                        s.part_far(e, Role::Plain, Src::Skin, [0.0, 0.05, 0.0], [0.085, 0.085, 0.05], rz(0.785));
+                        s.part_far(e, Role::Glow, Src::Glow, [0.0, 0.045, -0.026], [0.04, 0.04, 0.01], rz(0.785));
+                    }
+                }
+                ears.push((e, rest, i as f32 * 1.7));
+            }
+        }
+        match sp.horns {
+            1 => {
+                for sx in [-1.0f32, 1.0] {
+                    s.part_far(head, Role::Accent, Src::Trim, [0.07 * sx, 0.17, -0.02], [0.04, 0.1, 0.04], rz(-0.3 * sx));
+                }
+            }
+            2 => {
+                for sx in [-1.0f32, 1.0] {
+                    s.part_far(head, Role::Accent, Src::Trim, [0.08 * sx, 0.18, -0.02], [0.065, 0.13, 0.065], rz(-0.25 * sx));
+                    s.part_far(head, Role::Glow, Src::Glow, [0.125 * sx, 0.275, -0.02], [0.04, 0.12, 0.04], rz(-0.5 * sx));
+                }
+            }
+            3 => {
+                for sx in [-1.0f32, 1.0] {
+                    s.part_far(head, Role::Accent, Src::Trim, [0.09 * sx, 0.27, 0.0], [0.03, 0.26, 0.03], rz(-0.3 * sx));
+                    s.part_far(head, Role::Accent, Src::Trim, [0.15 * sx, 0.34, 0.0], [0.025, 0.12, 0.025], rz(-0.8 * sx));
+                    s.part_far(head, Role::Accent, Src::Trim, [0.075 * sx, 0.3, 0.0], [0.025, 0.12, 0.025], rz(0.7 * sx));
+                }
+            }
+            _ => {}
+        }
+        match sp.nose {
+            1 => {
+                s.part_far(head, Role::Plain, Src::Skin, [0.0, -0.02, -0.15], [0.075, 0.085, 0.07], id);
+            }
+            2 => {
+                s.part_far(head, Role::Plain, Src::Skin, [0.0, -0.055, -0.19], [0.1, 0.075, 0.14], id);
+                s.part_far(head, Role::Dark, Src::Base, [0.0, -0.04, -0.262], [0.05, 0.04, 0.03], id);
+            }
+            _ => {}
+        }
+        // expression: small lit marks on the face, only where a face is actually visible
+        if (sp.hood != 0 || sp.mask <= 1) && sp.expression != 0 {
+            let z = -0.143;
+            let mut mark = |p: [f32; 2], size: [f32; 2], rot: f32| {
+                s.part_far(head, Role::Glow, Src::Glow, [p[0], p[1], z], [size[0], size[1], 0.01], rz(rot));
+            };
+            match sp.expression {
+                1 => {
+                    mark([0.0, -0.085, ], [0.06, 0.014], 0.0);
+                    for sx in [-1.0f32, 1.0] {
+                        mark([0.045 * sx, -0.072], [0.03, 0.014], -0.6 * sx);
+                    }
+                }
+                2 => {
+                    mark([0.0, -0.08], [0.15, 0.04], 0.0);
+                    mark([0.0, -0.08], [0.012, 0.04], 0.0);
+                    for sx in [-1.0f32, 1.0] {
+                        mark([0.085 * sx, -0.062], [0.025, 0.014], -0.7 * sx);
+                    }
+                }
+                3 => {
+                    for sx in [-1.0f32, 1.0] {
+                        mark([0.058 * sx, 0.085], [0.09, 0.016], 0.4 * sx);
+                    }
+                    mark([0.0, -0.085], [0.07, 0.014], 0.0);
+                }
+                4 => {
+                    mark([0.0, -0.085], [0.04, 0.05], 0.0);
+                    for sx in [-1.0f32, 1.0] {
+                        mark([0.058 * sx, 0.09], [0.07, 0.014], 0.0);
+                    }
+                }
+                _ => {
+                    for sx in [-1.0f32, 1.0] {
+                        mark([0.058 * sx, 0.065], [0.09, 0.016], 0.0);
+                    }
+                    mark([0.0, -0.085], [0.04, 0.012], 0.0);
+                }
+            }
         }
 
         // ---- arms: pivot at the shoulder (torso space is applied at update time) ----
@@ -680,6 +853,9 @@ impl Rig {
             katana,
             glyph,
             scarf,
+            ears,
+            tail,
+            shoulders: sh,
             roles,
             dark,
             pivots,
@@ -804,7 +980,7 @@ impl Rig {
             }
         }
         // arms hang from the shoulders in torso space
-        let sx = 0.29 * bw;
+        let sx = 0.29 * bw * self.shoulders;
         let shoulder = |side: f32| torso_xf.translation + torso_xf.rotation * Vec3::new(sx * side, shoulder_y, 0.0);
         let arm_rot = |a: Arm, side: f32| torso_xf.rotation * Quat::from_rotation_z(-a.splay * side) * Quat::from_rotation_x(a.swing);
         // right arm is +X (the katana side), left is -X (launcher side)
@@ -824,6 +1000,19 @@ impl Rig {
             t.translation = Vec3::new(-0.36 * bw, 0.9 * bh + 0.03 * (c.t * 3.0).sin(), 0.05);
             t.rotation = Quat::from_rotation_x(1.4) * Quat::from_rotation_z(c.t * 7.0);
             t.scale = Vec3::splat(bw.min(2.0));
+        }
+
+        // idle sway: ears and tail wag slowly and trail back with speed
+        let run = (speed / 9.0).clamp(0.0, 1.0);
+        for (e, rest, ph) in &self.ears {
+            if let Ok(mut t) = tf.get_mut(*e) {
+                t.rotation = *rest * Quat::from_rotation_z(0.07 * (c.t * 2.3 + ph).sin()) * Quat::from_rotation_x(0.35 * run + 0.03 * (c.t * 1.3 + ph).sin());
+            }
+        }
+        if let Some(tail) = self.tail {
+            if let Ok(mut t) = tf.get_mut(tail) {
+                t.rotation = Quat::from_rotation_y(0.28 * (c.t * 1.7).sin() * (1.0 - 0.6 * run)) * Quat::from_rotation_x(-0.05 + 0.3 * run + 0.04 * (c.t * 1.1).sin());
+            }
         }
 
         // scarf: spring chain in world space, drawn in root space

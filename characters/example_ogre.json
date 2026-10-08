@@ -1,0 +1,18 @@
+{
+  "schema": "shinobi-character/1.1",
+  "name": "Ogre",
+  "build": { "height": 1.08, "bulk": 1.15, "shoulders": 1.2 },
+  "colors": {
+    "suit_base": "#2a2418", "suit_trim": "#5a4a2a", "glow": "#9dff3a", "visor": "#ffe14d",
+    "glove": "#3f7a2a", "scarf": "#8a3a1a", "hair": "#2b1a12", "skin": "#6fbf3a"
+  },
+  "head": {
+    "hood": "none", "mask": "none", "hair_style": "none", "headband": false,
+    "visor_style": "cat", "ears": "big", "expression": "grin", "horns": "small", "nose": "big"
+  },
+  "torso": { "plates": "heavy", "sash": true, "back_item": "pack", "emblem": 9, "tail": "none" },
+  "scarf": { "style": "short", "length": 0.4 },
+  "pattern": { "type": "hex", "density": 0.6 },
+  "weapons": { "edge": "#9dff3a", "star": "#ffe14d" },
+  "accessories": ["shoulder_fins"]
+}

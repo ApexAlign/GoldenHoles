@@ -12,6 +12,7 @@
 //! * v18: custom characters (v17) and power weapons (yumi / fuda tag: snapshot entities, `NetEvent::PowerFx` = event 26) merged; both changed the wire.
 //! * v17: `ClientPacket.look` (custom character, `character.rs`) rides the first packets after WELCOME until the server's
 //!   `NetEvent::CharacterLook` echo arrives; the server re-validates it and replicates it to everyone.
+//! * v18: the character blob grew 39 -> 41 bytes (`shinobi-character/1.1`: ears, expression, horns, nose, tail, shoulders).
 //! * After WELCOME the client sends `ClientPacket`s (see `intent.rs`) and acks `snapshot_tick` / `event_seq`.
 //!
 //! # SNAPSHOT datagram (server -> client)

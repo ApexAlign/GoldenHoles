@@ -1,0 +1,18 @@
+{
+  "schema": "shinobi-character/1.1",
+  "name": "Fox",
+  "build": { "height": 1.0, "bulk": 0.92, "shoulders": 0.94 },
+  "colors": {
+    "suit_base": "#1a1410", "suit_trim": "#c0501a", "glow": "#ff8a2a", "visor": "#7ff0ff",
+    "glove": "#2a1a10", "scarf": "#e8e8f0", "hair": "#c0501a", "skin": "#e0b494"
+  },
+  "head": {
+    "hood": "open", "mask": "lower", "hair_style": "none", "headband": true,
+    "visor_style": "angry", "ears": "pointy", "expression": "smile", "horns": "none", "nose": "snout"
+  },
+  "torso": { "plates": "light", "sash": true, "back_item": "sheath", "emblem": 5, "tail": "fox" },
+  "scarf": { "style": "long", "length": 0.7 },
+  "pattern": { "type": "lines", "density": 0.5 },
+  "weapons": { "edge": "#ff8a2a", "star": "#7ff0ff" },
+  "accessories": ["kunai_belt", "tabi_glow"]
+}
