@@ -96,6 +96,22 @@ grapple attaches seen). `SECS=20 CLIENTS=4 scripts/demo_8v8_headless.sh` for a q
 cache is already populated (the scripts use it by default; `OFFLINE=0 scripts/demo_8v8_headless.sh` turns it off). The
 very first Bevy game build compiles hundreds of crates and takes several minutes; later builds are incremental.
 
+## Custom character (your own look, from a photo)
+
+Give an AI chatbot a photo and the prompt in `docs/CHARACTER_SPEC.md`; it answers with one small JSON file. Save it as
+`characters/me.json` (see `characters/example_kitsune.json`), then:
+
+```bash
+cd crates/shinobi-game && cargo run --offline -- --server 127.0.0.1:7777 --character ../../characters/me.json
+CHARACTER=characters/me.json ./demo.sh          # demo.sh / scripts/play.sh / scripts/join.sh take CHARACTER (or SHINOBI_CHARACTER)
+```
+
+or type `/character characters/me.json` in the in-game console (`/character off` goes back to the stock ninja). The path
+is remembered for the next start. Everyone in the match sees the validated look; hitbox, speed and weapons are the same
+for all characters, the glow is kept bright and the suit dark, and the match colour still tints your distance marker.
+The file is never trusted: unknown fields are ignored, bad values fall back to the default, and the server re-checks
+the compact copy (39 bytes) it receives. AI bots wear a few built-in presets.
+
 ## Controls
 
 | Input | Action |
@@ -142,7 +158,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v15, for client authors)
+## Network events (protocol v17, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
@@ -155,6 +171,7 @@ flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`
 | `BlockPlaced { owner, cell, kind, axis, scale_q }` / `BlockRemoved { cell }` / `BlockDerez { cell }` | player-built piece appeared / vanished / was destroyed and should de-rez (cell = grid cell; kind 0 floor 1 wall 2 ramp; axis = wall normal 0 X 1 Z, or the direction a ramp rises toward 0 +X 1 +Z 2 -X 3 -Z; scale_q in 1/16ths; geometry via `Blocks::slab`) | `blocks()` / `block_pieces()` |
 | `BlockDamaged { cell, hp_q }` | a piece is hurt but standing: remaining health in 1/255ths (255 untouched), at most one per cell per frame, replayed to late joiners; client `block_hp_q(cell)` | `block_hp_q()` |
 | `MatchRules { frag_limit, team_frag_limit, time_limit_secs, respawn_ticks }` | match limits + respawn delay, sent to every joiner; client `frag_limit()` / `team_frag_limit()` / `time_limit_secs()` / `respawn_secs()` (all `Option`, `None` until catch-up) | `frag_limit()` |
+| `CharacterLook { player, wire }` | the player's validated custom look (`shinobi_proto::character`, 39 bytes, quantised; docs/CHARACTER_SPEC.md). Sent to everyone when it changes and replayed to late joiners; stock ninjas send nothing. The client sends its own in `ClientPacket.look` (v17) until it sees its echo | `look_of(id)`, `set_look()` |
 | `BlockRefused { why }` | your build press failed: 0 occupied, 1 body in the way, 2 cooldown (builder only) | via `take_events()` |
 
 Shurikens are snapshot entities with ids `PROJECTILE_ID_BASE` (0x4000) and up: `yaw` = owner id, `flags` = bounce

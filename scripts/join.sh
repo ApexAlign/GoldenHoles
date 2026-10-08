@@ -6,6 +6,9 @@
 # LEVEL=levels/ffa.lvl scripts/join.sh <ip> when the host runs another map). Environment passes through
 # (WGPU_ADAPTER_NAME=... etc). The game's log (PERF frame-time lines) is playtest/game-<time>.log.
 set -euo pipefail
+# custom character: CHARACTER=<file> (or SHINOBI_CHARACTER) is made absolute before we change directory; the game reads it
+_CH="${CHARACTER:-${SHINOBI_CHARACTER:-}}"
+if [ -n "$_CH" ] && [ -f "$_CH" ]; then export SHINOBI_CHARACTER="$(cd "$(dirname "$_CH")" && pwd)/$(basename "$_CH")"; fi
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 # MAP=sky|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)

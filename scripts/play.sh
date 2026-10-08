@@ -20,6 +20,9 @@
 # match ends, and appended to playtest/telemetry-<time>.txt (+ JSON lines for scripts). The full server log is
 # playtest/server-<time>.log. Both are plain text: send them with your feedback (docs/PLAYTEST.md).
 set -euo pipefail
+# custom character: CHARACTER=<file> (or SHINOBI_CHARACTER) is made absolute before we change directory; the game reads it
+_CH="${CHARACTER:-${SHINOBI_CHARACTER:-}}"
+if [ -n "$_CH" ] && [ -f "$_CH" ]; then export SHINOBI_CHARACTER="$(cd "$(dirname "$_CH")" && pwd)/$(basename "$_CH")"; fi
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"; BOTS="${BOTS:-5}"; BOT_SKILL="${BOT_SKILL:-normal}"; JOBS="${JOBS:-8}"

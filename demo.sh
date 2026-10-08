@@ -8,6 +8,9 @@
 #   ./demo.sh --server-only   just run the server (connect the game yourself)
 # Quit: close the window or press Ctrl-C; the server is stopped automatically. Game log: playtest/game-<time>.log
 set -euo pipefail
+# custom character: CHARACTER=<file> (or SHINOBI_CHARACTER) is made absolute before we change directory; the game reads it
+_CH="${CHARACTER:-${SHINOBI_CHARACTER:-}}"
+if [ -n "$_CH" ] && [ -f "$_CH" ]; then export SHINOBI_CHARACTER="$(cd "$(dirname "$_CH")" && pwd)/$(basename "$_CH")"; fi
 cd "$(dirname "$0")"
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"
