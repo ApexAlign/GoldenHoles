@@ -90,8 +90,13 @@ impl MyLook {
     pub fn startup() -> MyLook {
         let mut look = STARTUP_LOOK.get().cloned().flatten();
         if let Ok(p) = std::env::var("SHOT_CHAR").map(|p| p.trim().to_string()).and_then(|p| if p == "presets" { Err(std::env::VarError::NotPresent) } else { Ok(p) }) {
-            match shinobi_client::character_file::load(std::path::Path::new(&p)) {
-                Ok(s) => look = Some(s),
+            match shinobi_client::character_file::load_noted(std::path::Path::new(&p)) {
+                Ok((s, warn)) => {
+                    for w in warn {
+                        eprintln!("SHOT_CHAR: {w}");
+                    }
+                    look = Some(s)
+                }
                 Err(e) => eprintln!("SHOT_CHAR: {e}"),
             }
         }

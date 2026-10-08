@@ -418,8 +418,11 @@ fn mode_ui(
                             my_look.0 = None;
                             shinobi_client::character_file::remember(None);
                         }
-                        Some(file) => match shinobi_client::character_file::load(std::path::Path::new(&file)) {
-                            Ok(spec) => {
+                        Some(file) => match shinobi_client::character_file::load_noted(std::path::Path::new(&file)) {
+                            Ok((spec, warn)) => {
+                                for w in warn.iter().take(6) {
+                                    console.0.push(format!("character: {w}"));
+                                }
                                 console.0.push(format!("character: {}", if spec.name.is_empty() { "loaded" } else { &spec.name }));
                                 my_look.0 = Some(spec);
                                 shinobi_client::character_file::remember(Some(std::path::Path::new(&file)));

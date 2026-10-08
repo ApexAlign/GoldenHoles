@@ -9,18 +9,23 @@ use shinobi_proto::character::{CharError, CharacterSpec, MAX_JSON_BYTES};
 
 /// Read and validate a character file. Never reads more than `MAX_JSON_BYTES + 1` bytes.
 pub fn load(path: &Path) -> Result<CharacterSpec, String> {
+    load_noted(path).map(|(s, _)| s)
+}
+
+/// Like `load`, plus one line per thing that was ignored or reinterpreted ("ignored head.x: unknown field").
+pub fn load_noted(path: &Path) -> Result<(CharacterSpec, Vec<String>), String> {
     let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut buf = Vec::new();
     f.take(MAX_JSON_BYTES as u64 + 1).read_to_end(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
     let text = String::from_utf8(buf).map_err(|_| format!("{}: not UTF-8 text", path.display()))?;
-    CharacterSpec::parse(&text).map_err(|e| {
+    CharacterSpec::parse_noted(&text).map_err(|e| {
         format!(
             "{}: {}",
             path.display(),
             match e {
                 CharError::TooBig => "file too big or too deeply nested",
                 CharError::Syntax => "not valid JSON",
-                CharError::WrongSchema => "missing \"schema\": \"shinobi-character/1\"",
+                CharError::WrongSchema => "not a JSON object with a \"schema\" text, use \"schema\": \"shinobi-character/1.1\"",
             }
         )
     })
@@ -55,8 +60,11 @@ pub fn startup(cli: Option<String>, env: Option<String>, use_saved: bool) -> (Op
     let mut notes = Vec::new();
     for (src, explicit) in [(cli, true), (env, true), (if use_saved { saved_path_file().and_then(|f| std::fs::read_to_string(f).ok()) } else { None }, false)] {
         let Some(p) = src.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
-        match load(Path::new(&p)) {
-            Ok(spec) => return (Some((PathBuf::from(p), spec)), notes),
+        match load_noted(Path::new(&p)) {
+            Ok((spec, warn)) => {
+                notes.extend(warn.into_iter().map(|w| format!("character: {w}")));
+                return (Some((PathBuf::from(p), spec)), notes);
+            }
             Err(e) if explicit => {
                 notes.push(format!("character: {e} (using the stock ninja)"));
                 return (None, notes);
