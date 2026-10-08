@@ -30,12 +30,12 @@ const PIPS: usize = 12;
 const BOW_SEGS: usize = 8;
 /// Length of the laser line of a drawn bow (m).
 const LASER_LEN: f32 = 90.0;
-const TAG_RING_R: f32 = 0.3;
+const TAG_RING_R: f32 = 0.55;
 /// Floor drops vanish unseen after this long (the server removes them silently).
 const DROP_LIFE: f32 = 25.0;
 const DROP_ID: u32 = POWER_DROP_ID_BASE;
 const GOLD: [f32; 3] = [1.0, 0.82, 0.25];
-const ORANGE: [f32; 3] = [1.0, 0.5, 0.08];
+const ORANGE: [f32; 3] = [1.0, 0.34, 0.04];
 
 struct ArrowSlot {
     shaft: Entity,
@@ -118,7 +118,7 @@ fn hidden(commands: &mut Commands, mesh: &Handle<Mesh>, mat: &Handle<StandardMat
 /// A streak ribbon: head at z = 0 (hot), tail at z = 1 (dark), two crossed strips so it reads from any angle.
 pub fn trail_mesh() -> Mesh {
     let (mut pos, mut col, mut idx): (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) = (Vec::new(), Vec::new(), Vec::new());
-    let w = 0.06;
+    let w = 0.11;
     for axis in 0..2 {
         let b = pos.len() as u32;
         let (a, c) = if axis == 0 { ([w, 0.0], [-w, 0.0]) } else { ([0.0, w], [0.0, -w]) };
@@ -284,7 +284,7 @@ fn update_pedestals(time: Res<Time>, peds: Res<Pedestals>, look: Option<Res<Look
         };
         let col = if p.weapon == PowerKind::Yumi as u8 { GOLD } else { ORANGE };
         let gain = pedestal_gain(p.up, t + i as f32, t - p.born);
-        tint(&mut mats, &slot.mat, col, gain * 1.6);
+        tint(&mut mats, &slot.mat, col, gain * 1.1);
         let floor = p.pos - Vec3::Y * 0.95;
         let spin = Quat::from_rotation_y(t * 1.4);
         if let Ok((mut tr, mut v)) = q.get_mut(slot.ring) {
@@ -323,7 +323,7 @@ fn update_arrows(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut
         let v = Vec3::from(a.vel);
         let dir = v.normalize_or(Vec3::NEG_Z);
         if let Ok((mut tr, mut vis)) = q.get_mut(slot.shaft) {
-            *tr = seg(p - dir * 0.6, p + dir * 0.6, 0.07);
+            *tr = seg(p - dir * 0.7, p + dir * 0.7, 0.1);
             *vis = Visibility::Visible;
         }
         if let Ok((mut tr, mut vis)) = q.get_mut(slot.trail) {
@@ -376,25 +376,26 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
         let right = d.dir.cross(Vec3::Y).normalize_or(Vec3::X);
         let up = right.cross(d.dir).normalize_or(Vec3::Y);
         // our own bow sits low and to the left of the view; another player's out in front of their chest
-        let centre = if d.local { d.eye + d.dir * 0.62 - right * 0.14 - up * 0.2 } else { d.eye + d.dir * 0.8 - up * 0.28 };
+        let centre = if d.local { d.eye + d.dir * 0.78 - right * 0.42 - up * 0.3 } else { d.eye + d.dir * 0.8 - up * 0.28 };
+        let th = if d.local { 0.6 } else { 1.0 };
         let col = if d.local { GOLD } else { colour_of(&net, d.owner) };
-        tint(&mut mats, &slot.mat, col, 2.2 + 1.2 * d.frac);
+        tint(&mut mats, &slot.mat, col, if d.local { 1.1 + 0.6 * d.frac } else { 2.0 + 1.0 * d.frac });
         let pts = bow_points(centre, up, d.dir);
         for (k, e) in slot.bow.iter().enumerate() {
             if let Ok((mut tr, mut vis)) = q.get_mut(*e) {
-                *tr = seg(pts[k], pts[k + 1], 0.035);
+                *tr = seg(pts[k], pts[k + 1], 0.035 * th);
                 *vis = Visibility::Visible;
             }
         }
         let nock = centre - d.dir * (0.32 * d.frac);
         for (k, tip) in [pts[0], pts[BOW_SEGS]].into_iter().enumerate() {
             if let Ok((mut tr, mut vis)) = q.get_mut(slot.string[k]) {
-                *tr = seg(tip, nock, 0.012);
+                *tr = seg(tip, nock, 0.012 * th);
                 *vis = Visibility::Visible;
             }
         }
         if let Ok((mut tr, mut vis)) = q.get_mut(slot.arrow) {
-            *tr = seg(nock - d.dir * 0.05, nock + d.dir * 0.95, 0.03);
+            *tr = seg(nock - d.dir * 0.05, nock + d.dir * 0.95, 0.03 * th);
             *vis = Visibility::Visible;
         }
         // the aim line: a faint glint for everyone, a bright one on the head it points at
@@ -405,9 +406,11 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
                 let world = PowerWorld { draws: vec![DrawObj { pos: d.eye.to_array(), dir: d.dir.to_array(), owner: d.owner, frac: d.frac }], ..Default::default() };
                 let on_me = glint_at(&world, me, Vec3::from(v.eye).to_array());
                 let flicker = 0.85 + 0.15 * (t * 31.0 + i as f32).sin();
-                tint(&mut mats, &slot.laser_mat, [1.0, 0.18, 0.5], (0.10 + 0.35 * d.frac) * flicker + 6.0 * on_me * flicker);
+                tint(&mut mats, &slot.laser_mat, [1.0, 0.18, 0.5], (0.10 + 0.35 * d.frac) * flicker + 2.2 * on_me * flicker);
+                // pointing at our head, the line stops a metre short of the camera (it would fill the screen otherwise)
+                let reach = if on_me > 0.1 { (Vec3::from(v.eye) - d.eye).dot(d.dir) - 1.2 } else { LASER_LEN };
                 let a = centre + d.dir * 0.5;
-                *tr = seg(a, a + d.dir * LASER_LEN, if on_me > 0.1 { 0.03 } else { 0.012 });
+                *tr = seg(a, d.eye + d.dir * reach.clamp(1.0, LASER_LEN), if on_me > 0.1 { 0.02 } else { 0.012 });
                 *vis = Visibility::Visible;
             }
         }
@@ -453,7 +456,7 @@ fn update_tags(time: Res<Time>, view: Res<ViewRes>, net: Res<Net>, look: Option<
         tint(&mut mats, &slot.gmat, hot, 0.9 + 0.8 * blink);
         tint(&mut mats, &slot.pmat, if g.armed { hot } else { owner }, 1.2 + 2.0 * blink);
         if let Ok((mut tr, mut vis)) = q.get_mut(slot.glyph) {
-            *tr = Transform::from_translation(p + rot * Vec3::Z * 0.03).with_rotation(rot).with_scale(Vec3::splat(if g.flying { 0.8 } else { 1.3 }));
+            *tr = Transform::from_translation(p + rot * Vec3::Z * 0.03).with_rotation(rot).with_scale(Vec3::splat(if g.flying { 1.2 } else { 2.0 }));
             *vis = Visibility::Visible;
         }
         // the countdown ring: one pip per twelfth of the fuse left, clockwise from the top
@@ -462,7 +465,7 @@ fn update_tags(time: Res<Time>, view: Res<ViewRes>, net: Res<Net>, look: Option<
             if let Ok((mut tr, mut vis)) = q.get_mut(*e) {
                 let a = std::f32::consts::FRAC_PI_2 - k as f32 / PIPS as f32 * std::f32::consts::TAU;
                 let off = rot * Vec3::new(a.cos(), a.sin(), 0.0) * TAG_RING_R;
-                *tr = Transform::from_translation(p + off + rot * Vec3::Z * 0.04).with_rotation(rot).with_scale(Vec3::new(0.045, 0.045, 0.012));
+                *tr = Transform::from_translation(p + off + rot * Vec3::Z * 0.04).with_rotation(rot).with_scale(Vec3::new(0.07, 0.07, 0.012));
                 *vis = if k < lit { Visibility::Visible } else { Visibility::Hidden };
             }
         }
