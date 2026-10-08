@@ -165,7 +165,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Remotes>()
             .init_resource::<BodyMats>()
             .init_resource::<crate::character_look::LookMats>()
-            .init_resource::<crate::character_look::MyLook>()
+            .insert_resource(crate::character_look::MyLook::startup())
             .init_resource::<crate::hit_feedback::HitFx>()
             .init_resource::<Lock>()
             .init_resource::<ModeRes>()

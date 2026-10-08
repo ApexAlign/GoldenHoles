@@ -51,9 +51,9 @@ pub fn remember(path: Option<&Path>) {
 /// The startup choice: `--character` wins, then `SHINOBI_CHARACTER`, then the remembered path. `Ok(None)` = stock
 /// ninja. A path given explicitly that fails to load is reported (and the stock look is used); a stale remembered
 /// path is silently dropped.
-pub fn startup(cli: Option<String>, env: Option<String>) -> (Option<(PathBuf, CharacterSpec)>, Vec<String>) {
+pub fn startup(cli: Option<String>, env: Option<String>, use_saved: bool) -> (Option<(PathBuf, CharacterSpec)>, Vec<String>) {
     let mut notes = Vec::new();
-    for (src, explicit) in [(cli, true), (env, true), (saved_path_file().and_then(|f| std::fs::read_to_string(f).ok()), false)] {
+    for (src, explicit) in [(cli, true), (env, true), (if use_saved { saved_path_file().and_then(|f| std::fs::read_to_string(f).ok()) } else { None }, false)] {
         let Some(p) = src.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
         match load(Path::new(&p)) {
             Ok(spec) => return (Some((PathBuf::from(p), spec)), notes),
@@ -96,9 +96,9 @@ mod tests {
     #[test]
     fn cli_beats_env_and_a_bad_explicit_path_falls_back_to_stock() {
         let good = tmp("good", br#"{"schema":"shinobi-character/1","name":"cli"}"#);
-        let (r, _) = startup(Some(good.to_string_lossy().into()), Some("/nonexistent".into()));
+        let (r, _) = startup(Some(good.to_string_lossy().into()), Some("/nonexistent".into()), false);
         assert_eq!(r.unwrap().1.name, "CLI");
-        let (r, notes) = startup(Some("/nonexistent/x.json".into()), None);
+        let (r, notes) = startup(Some("/nonexistent/x.json".into()), None, false);
         assert!(r.is_none() && notes.len() == 1);
         let _ = std::fs::remove_file(good);
     }

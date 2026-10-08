@@ -78,6 +78,27 @@ impl Src {
 #[derive(Resource, Default)]
 pub struct LookMats(HashMap<u64, Handle<StandardMaterial>>);
 
+static STARTUP_LOOK: std::sync::OnceLock<Option<CharacterSpec>> = std::sync::OnceLock::new();
+
+/// Called once by `main` with the look chosen on the command line / environment (before the app is built).
+pub fn set_startup_look(spec: Option<CharacterSpec>) {
+    let _ = STARTUP_LOOK.set(spec);
+}
+
+impl MyLook {
+    /// The startup choice (`set_startup_look`); `SHOT_CHAR=file` overrides it for review frames.
+    pub fn startup() -> MyLook {
+        let mut look = STARTUP_LOOK.get().cloned().flatten();
+        if let Ok(p) = std::env::var("SHOT_CHAR").map(|p| p.trim().to_string()).and_then(|p| if p == "presets" { Err(std::env::VarError::NotPresent) } else { Ok(p) }) {
+            match shinobi_client::character_file::load(std::path::Path::new(&p)) {
+                Ok(s) => look = Some(s),
+                Err(e) => eprintln!("SHOT_CHAR: {e}"),
+            }
+        }
+        MyLook(look)
+    }
+}
+
 /// The local player's own look (`--character`, `SHINOBI_CHARACTER`, `/character`): first-person gloves and the blade
 /// follow it, and `sync_my_look` sends it to the server. `None` = the stock ninja.
 #[derive(Resource, Default, Clone, Debug)]
