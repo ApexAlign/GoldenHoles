@@ -73,6 +73,11 @@ pub struct NetClient {
     ropes: HashMap<u16, [f32; 3]>,
     /// Team of every player (from `TeamAssign`), team kills and the match result (from `TeamScore`).
     teams: HashMap<u16, u8>,
+    /// Custom looks of every player (from `CharacterLook`), validated again by `from_wire`.
+    looks: HashMap<u16, shinobi_proto::character::CharacterSpec>,
+    /// Our look as canonical wire bytes; sent with every packet until the server echoes it back.
+    my_look: Option<shinobi_proto::character::Wire>,
+    look_acked: bool,
     team_score: [u16; 2],
     team_result: u8,
     /// Health of hurt pieces (1/255ths of their limit; absent = untouched), from `BlockDamaged`.
@@ -142,6 +147,9 @@ impl Default for NetClient {
             events: Vec::new(),
             ropes: HashMap::new(),
             teams: HashMap::new(),
+            looks: HashMap::new(),
+            my_look: None,
+            look_acked: true,
             team_score: [0; 2],
             team_result: 0,
             blocks: HashMap::new(),
@@ -284,6 +292,13 @@ impl NetClient {
                 NetEvent::MapChange { .. } => self.ropes.clear(),
                 NetEvent::TeamAssign { player, team } if team == shinobi_sim::events::TEAM_NONE => {
                     self.teams.remove(&player);
+                    self.looks.remove(&player);
+                }
+                NetEvent::CharacterLook { player, wire } => {
+                    if Some(player) == self.player_id() && self.my_look == Some(wire) {
+                        self.look_acked = true;
+                    }
+                    self.looks.insert(player, shinobi_proto::character::CharacterSpec::from_wire(&wire));
                 }
                 NetEvent::TeamAssign { player, team } => {
                     self.teams.insert(player, team);
@@ -588,6 +603,20 @@ impl NetClient {
         self.teams.get(&player).copied()
     }
 
+    /// `player`'s custom look, once the server has replicated it (`None` = stock ninja).
+    pub fn look_of(&self, player: u16) -> Option<&shinobi_proto::character::CharacterSpec> {
+        self.looks.get(&player)
+    }
+
+    /// Choose our look (sent to the server in the next packets until echoed). `None` = stock ninja.
+    pub fn set_look(&mut self, spec: Option<&shinobi_proto::character::CharacterSpec>) {
+        let wire = spec.filter(|s| !s.is_default()).map(|s| s.to_wire());
+        if wire != self.my_look {
+            self.my_look = wire;
+            self.look_acked = wire.is_none();
+        }
+    }
+
     /// How many players' teams we know (headless health checks).
     pub fn teams_known(&self) -> usize {
         self.teams.len()
@@ -658,6 +687,7 @@ impl NetClient {
         });
         let pkt = ClientPacket {
             report,
+            look: if self.look_acked { None } else { self.my_look },
             seq: self.seq,
             ack_snapshot_tick: self.interp.newest_tick().unwrap_or(0),
             ack_event_seq: self.inbox.ack(),

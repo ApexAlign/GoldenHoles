@@ -148,6 +148,7 @@ impl Client {
             view: ViewState { from_tick: t.saturating_sub(6), alpha: 0 },
             intents: (0..4).map(|i| mk(t - i)).collect(),
             report: None,
+            look: None,
         };
         self.seq = self.seq.wrapping_add(1);
         self.sock.send(&pkt.encode().unwrap()).unwrap();
