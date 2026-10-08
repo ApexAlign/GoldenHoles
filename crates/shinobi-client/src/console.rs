@@ -194,7 +194,6 @@ pub fn exec(line: &str, s: &mut Settings, kills: &[KillEntry], me: u16) -> (bool
                 "/colour     your neon colour".into(),
                 "/vol <0-100> volume".into(),
                 "/mute /unmute".into(),
-                "/character <file.json>  your look".into(),
                 "/log        recent kills".into(),
                 "/clear      clear this log".into(),
             ],

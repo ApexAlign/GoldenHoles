@@ -543,7 +543,7 @@ mod tests {
             ack_event_seq: 77,
             view: ViewState { from_tick: 119_994, alpha: 200 },
             report: Some(ClientReport { ping_ms: 87, corrections: 65_531 }),
-            look: Some(crate::character::preset(2).to_wire()),
+            look: None,
             intents: vec![
                 intent(120_010, Buttons::DASH | Buttons::JUMP_HELD, 127),
                 intent(120_009, Buttons::JUMP_HELD, 127),
@@ -554,6 +554,17 @@ mod tests {
         let bytes = pkt.encode().unwrap();
         assert!(bytes.len() <= 46, "packet too fat: {}", bytes.len()); // this one also carries the once-a-second report (+29 bits)
         assert_eq!(ClientPacket::decode(&bytes).unwrap(), pkt);
+    }
+
+    #[test]
+    fn look_rides_the_packet_and_costs_one_bit_when_absent() {
+        let base = ClientPacket { intents: vec![intent(50, 0, 0)], ..Default::default() };
+        let with = ClientPacket { look: Some(crate::character::preset(2).to_wire()), ..base.clone() };
+        let (a, b) = (base.encode().unwrap(), with.encode().unwrap());
+        assert_eq!(ClientPacket::decode(&b).unwrap(), with);
+        assert_eq!(ClientPacket::decode(&a).unwrap().look, None);
+        assert!(b.len() <= a.len() + crate::character::WIRE_LEN + 1, "{} vs {}", b.len(), a.len());
+        assert!(ClientPacket::decode(&b[..b.len() - 8]).is_err(), "truncated look is rejected");
     }
 
     fn pkt(intents: Vec<PlayerIntent>) -> ClientPacket {
