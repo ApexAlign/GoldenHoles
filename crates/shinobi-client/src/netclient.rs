@@ -1040,6 +1040,41 @@ mod tests {
     }
 
     #[test]
+    fn our_look_rides_every_packet_until_the_server_echoes_it() {
+        use shinobi_proto::character::{preset, CharacterSpec};
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let it = |t: u32| PlayerIntent { tick: t, ..Default::default() };
+        let look_in = |c: &mut NetClient, t: u32| ClientPacket::decode(&c.next_packet(it(t), t as f64).unwrap()).unwrap().look;
+        assert_eq!(look_in(&mut c, 5), None, "stock ninja sends nothing");
+        let me = preset(3);
+        c.set_look(Some(&me));
+        assert_eq!(look_in(&mut c, 6), Some(me.to_wire()));
+        assert_eq!(look_in(&mut c, 7), Some(me.to_wire()), "repeated until acked");
+        // the server's echo (and another player's look) arrive as reliable events
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::CharacterLook { player: 1, wire: me.to_wire() });
+        ob.push(NetEvent::CharacterLook { player: 2, wire: preset(1).to_wire() });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!(look_in(&mut c, 8), None, "echo seen: stop sending");
+        assert_eq!(c.look_of(2), Some(&preset(1)));
+        assert_eq!(c.look_of(9), None);
+        // changing the look sends again; clearing it sends nothing
+        c.set_look(Some(&CharacterSpec { name: "NEW".into(), ..me.clone() }));
+        assert!(look_in(&mut c, 9).is_some());
+        c.set_look(None);
+        assert_eq!(look_in(&mut c, 10), None);
+        // a player who leaves is forgotten
+        ob.push(NetEvent::TeamAssign { player: 2, team: shinobi_sim::events::TEAM_NONE });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
+        assert_eq!(c.look_of(2), None);
+    }
+
+    #[test]
     fn team_events_fill_team_of_and_scores() {
         use shinobi_sim::events::{TEAM_NONE, TEAM_RESULT_CYAN};
         let mut c = NetClient::default();
