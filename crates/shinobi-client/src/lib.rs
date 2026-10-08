@@ -2,6 +2,7 @@
 //! Visual geometry stays here; the server never sees a mesh.
 
 pub mod camera;
+pub mod character_file;
 pub mod client_game;
 pub mod colour;
 pub mod console;
