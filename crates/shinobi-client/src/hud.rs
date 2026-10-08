@@ -450,6 +450,8 @@ pub struct HudState {
     pub guard_flash: Option<(u8, f32)>,
     /// Star-energy pool readout (`hud_energy`); `None` hides it.
     pub star: Option<crate::hud_energy::StarHud>,
+    /// Power weapons: draw ring, ammo, tag countdown, bow glint, pickup call-outs (`hud_power`); `None` hides it.
+    pub power: Option<crate::hud_power::PowerHud>,
     /// Flash-star white-out 0..=1 (screen wash; `RenderView::blind`, already scaled by the settings' effect strength).
     pub blind: f32,
     /// Contextual hint on screen: id and age (`hud_energy::HintState`).
@@ -1184,6 +1186,7 @@ impl Hud {
         }
         guard_cue(&mut out, s, p);
         crate::hud_energy::draw(&mut out, s, p, ax());
+        crate::hud_power::draw(&mut out, s, p, ax());
         if let Some(t) = s.boot {
             boot_sequence(&mut out, t, p);
         }
