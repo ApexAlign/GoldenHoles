@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use shinobi_client::remote::NinjaDraw;
+use shinobi_proto::character::*;
 use shinobi_proto::snapshot::{MoveKind, FLAG_ROLL, FX_BLOCK, FX_OPEN, FX_STAGGER};
 
 /// Dark armour is hidden beyond this distance (m): it would only dim the bright core.
@@ -34,11 +35,58 @@ enum Role {
     Glow,
     /// Visor, blade edge, launcher muzzle: near white.
     Hot,
+    /// A custom character's own colour, drawn exactly as given (skin, hair, glove, cloth).
+    Plain,
 }
 
-/// Material handles per quantised colour, indexed by `Role as usize`.
+/// Where a part's colour comes from. `Match` = the player's match colour (the stock look). The others read the
+/// player's `CharacterSpec`; a slot the spec leaves unset falls back to `Match`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Src {
+    Match,
+    Base,
+    Trim,
+    Glow,
+    Visor,
+    Glove,
+    Scarf,
+    Hair,
+    Skin,
+    Edge,
+    Star,
+}
+
+impl Src {
+    fn rgb(self, s: &CharacterSpec) -> Option<[u8; 3]> {
+        match self {
+            Src::Match => None,
+            Src::Base => s.rgb(C_BASE),
+            Src::Trim => s.rgb(C_TRIM),
+            Src::Glow => s.rgb(C_GLOW),
+            Src::Visor => s.rgb(C_VISOR),
+            Src::Glove => s.rgb(C_GLOVE).or_else(|| s.rgb(C_SKIN)),
+            Src::Scarf => s.rgb(C_SCARF),
+            Src::Hair => s.rgb(C_HAIR),
+            Src::Skin => s.rgb(C_SKIN),
+            Src::Edge => s.rgb(C_EDGE),
+            Src::Star => s.rgb(C_STAR),
+        }
+    }
+}
+
+/// Material handles per final colour (quantised, see `colour_key`).
 #[derive(Resource, Default)]
-pub struct LookMats(HashMap<u32, [Handle<StandardMaterial>; 4]>);
+pub struct LookMats(HashMap<u64, Handle<StandardMaterial>>);
+
+/// The local player's own look (`--character`, `SHINOBI_CHARACTER`, `/character`): first-person gloves and the blade
+/// follow it, and `sync_my_look` sends it to the server. `None` = the stock ninja.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct MyLook(pub Option<CharacterSpec>);
+
+/// Push the local look to the network client (idempotent: it re-sends only on change, and again after a reconnect).
+pub fn sync_my_look(look: Res<MyLook>, mut net: ResMut<crate::net::Net>) {
+    net.0.game.net.set_look(look.0.as_ref());
+}
 
 fn role_colour(role: Role, hue: [f32; 3]) -> [f32; 3] {
     let lift = |w: f32, g: f32| -> [f32; 3] { std::array::from_fn(|i| (hue[i] + (1.0 - hue[i]) * w) * g) };
@@ -47,6 +95,54 @@ fn role_colour(role: Role, hue: [f32; 3]) -> [f32; 3] {
         Role::Accent => lift(0.1, 1.0),
         Role::Glow => lift(0.3, 3.0),
         Role::Hot => lift(0.85, 4.5),
+        Role::Plain => hue,
+    }
+}
+
+/// Final linear colour of a part: the stock role colour of the match hue, or the spec's colour for its slot
+/// (dim/plain slots exactly as given, glow and hot slots lifted the same way as the stock look).
+fn paint(role: Role, src: Src, hue: [f32; 3], spec: Option<&CharacterSpec>) -> [f32; 3] {
+    match spec.and_then(|s| src.rgb(s)) {
+        None => role_colour(role, hue),
+        Some(c) => {
+            let c = c.map(|v| v as f32 / 255.0);
+            match role {
+                Role::Glow | Role::Hot => role_colour(role, c),
+                _ => c,
+            }
+        }
+    }
+}
+
+fn colour_key(c: [f32; 3]) -> u64 {
+    c.iter().fold(0u64, |k, v| (k << 16) | (v.clamp(0.0, 60.0) * 1000.0).round() as u64)
+}
+
+/// Scale of the glyph sheet segments (half extent of a glyph, metres) on the chest.
+const GLYPH_R: f32 = 0.075;
+
+/// The 15 chest emblems (1..=15) as line segments `[cx, cy, length, thickness, angle]` in a -1..1 box.
+pub fn glyph_segments(id: u8) -> &'static [[f32; 5]] {
+    const T: f32 = 0.34;
+    const P4: f32 = std::f32::consts::FRAC_PI_4;
+    const H: f32 = std::f32::consts::FRAC_PI_2;
+    match id {
+        1 => &[[0.0, 0.0, 2.0, T, 0.0], [0.0, 0.0, 2.0, T, H]],
+        2 => &[[0.0, 0.0, 2.2, T, P4], [0.0, 0.0, 2.2, T, -P4]],
+        3 => &[[0.0, 0.7, 2.0, T, 0.0], [0.0, 0.0, 2.0, T, 0.0], [0.0, -0.7, 2.0, T, 0.0]],
+        4 => &[[-0.7, 0.0, 2.0, T, H], [0.0, 0.0, 2.0, T, H], [0.7, 0.0, 2.0, T, H]],
+        5 => &[[-0.5, 0.5, 1.4, T, -P4], [0.5, 0.5, 1.4, T, P4], [-0.5, -0.5, 1.4, T, P4], [0.5, -0.5, 1.4, T, -P4]],
+        6 => &[[0.0, -0.8, 2.0, T, 0.0], [-0.5, 0.0, 1.9, T, 1.1], [0.5, 0.0, 1.9, T, -1.1]],
+        7 => &[[-0.5, 0.0, 1.5, T, 0.9], [0.5, 0.0, 1.5, T, -0.9]],
+        8 => &[[-0.5, 0.45, 1.2, T, 0.9], [0.5, 0.45, 1.2, T, -0.9], [-0.5, -0.45, 1.2, T, 0.9], [0.5, -0.45, 1.2, T, -0.9]],
+        9 => &[[0.0, 0.9, 2.0, T, 0.0], [0.0, -0.9, 2.0, T, 0.0], [-0.9, 0.0, 2.0, T, H], [0.9, 0.0, 2.0, T, H]],
+        10 => &[[0.0, 0.0, 2.4, T, 0.9], [0.8, -0.8, 0.4, 0.5, 0.0]],
+        11 => &[[0.0, 0.0, 2.0, T, 0.0], [0.0, 0.0, 2.0, T, H], [0.0, 0.0, 2.0, T, P4], [0.0, 0.0, 2.0, T, -P4]],
+        12 => &[[-0.7, 0.0, 2.0, T, H], [0.0, -0.9, 1.6, T, 0.0]],
+        13 => &[[0.0, 0.9, 1.8, T, 0.0], [0.0, 0.0, 2.3, T, 0.9], [0.0, -0.9, 1.8, T, 0.0]],
+        14 => &[[0.0, 0.7, 0.5, 0.5, 0.0], [-0.7, -0.6, 0.5, 0.5, 0.0], [0.7, -0.6, 0.5, 0.5, 0.0]],
+        15 => &[[0.0, 0.0, 2.2, 0.5, P4], [0.0, 0.0, 2.2, 0.5, -P4], [0.0, 0.0, 0.5, 0.5, 0.0]],
+        _ => &[],
     }
 }
 
@@ -62,8 +158,8 @@ pub struct Rig {
     katana: Entity,
     glyph: Entity,
     scarf: [Entity; SCARF_SEGS],
-    /// Materials are applied per role, so remember who has which.
-    roles: Vec<(Entity, Role)>,
+    /// Materials are applied per (role, colour source), so remember who has which.
+    roles: Vec<(Entity, Role, Src)>,
     /// Entities hidden beyond `DARK_MAX`.
     dark: Vec<Entity>,
     /// Pivots hidden beyond `GLOW_MAX` (children follow).
@@ -71,6 +167,12 @@ pub struct Rig {
     phase: f32,
     /// Scarf points in world space (anchor first); `None` until the first update.
     scarf_pts: Option<[Vec3; SCARF_SEGS + 1]>,
+    /// Visual build: root scale (width, height) and the scarf's style (shown?), length and width factors.
+    bulk: f32,
+    height: f32,
+    scarf_on: bool,
+    scarf_len: f32,
+    scarf_w: f32,
 }
 
 /// Per-frame inputs for one remote player.
@@ -169,12 +271,17 @@ pub fn pose(kind: MoveKind, flags: u8, fx: u8, speed: f32, phase: f32, t: f32, g
 /// One scarf spring step: each point trails the previous one, pushed back by the player's velocity and sagging with
 /// gravity. Deterministic in its inputs; `dt` is clamped so a hitch never explodes the chain.
 pub fn scarf_step(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3, vel: Vec3, dt: f32) {
+    scarf_step_len(pts, anchor, back, vel, dt, 1.0)
+}
+
+/// `scarf_step` with every link `len` times as long (custom scarf length).
+pub fn scarf_step_len(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3, vel: Vec3, dt: f32, len: f32) {
     let dt = dt.clamp(0.0, 0.05);
     pts[0] = anchor;
     let speed = vel.length();
     let wind = if speed > 0.1 { -vel / speed } else { Vec3::ZERO };
     for i in 1..=SCARF_SEGS {
-        let seg = 0.2 - 0.02 * i as f32;
+        let seg = (0.2 - 0.02 * i as f32) * len;
         let streaming = (speed / 12.0).clamp(0.0, 1.0);
         // at rest the scarf hangs down and a little back; at speed it streams straight out behind
         let want = (back * (0.5 + 0.9 * streaming) + wind * (1.4 * streaming) - Vec3::Y * (0.9 - 0.75 * streaming)).normalize_or(Vec3::NEG_Y);
@@ -190,12 +297,13 @@ pub fn scarf_step(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3, ve
 struct Spawner<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
     cube: &'a Handle<Mesh>,
-    roles: Vec<(Entity, Role)>,
+    roles: Vec<(Entity, Role, Src)>,
     dark: Vec<Entity>,
 }
 
 impl Spawner<'_, '_, '_> {
-    fn part(&mut self, parent: Entity, role: Role, pos: [f32; 3], size: [f32; 3], rot: Quat) -> Entity {
+    /// A part whose colour comes from `src`. Dark armour and hair/skin hide beyond `DARK_MAX`.
+    fn part_s(&mut self, parent: Entity, role: Role, src: Src, pos: [f32; 3], size: [f32; 3], rot: Quat) -> Entity {
         let e = self
             .commands
             .spawn((
@@ -205,8 +313,17 @@ impl Spawner<'_, '_, '_> {
                 ChildOf(parent),
             ))
             .id();
-        self.roles.push((e, role));
-        if role == Role::Dark {
+        self.roles.push((e, role, src));
+        if role == Role::Dark || matches!(src, Src::Skin | Src::Hair) {
+            self.dark.push(e);
+        }
+        e
+    }
+
+    /// Like `part_s` but always hidden beyond `DARK_MAX` (head dressing that would dim the bright core from afar).
+    fn part_far(&mut self, parent: Entity, role: Role, src: Src, pos: [f32; 3], size: [f32; 3], rot: Quat) -> Entity {
+        let e = self.part_s(parent, role, src, pos, size, rot);
+        if !self.dark.contains(&e) {
             self.dark.push(e);
         }
         e
@@ -218,68 +335,265 @@ impl Spawner<'_, '_, '_> {
 }
 
 impl Rig {
-    /// Spawn the whole rig under `root` (model space: feet at the origin, facing -Z).
-    pub fn spawn(commands: &mut Commands, root: Entity, cube: &Handle<Mesh>) -> Rig {
+    /// Spawn the whole rig under `root` (model space: feet at the origin, facing -Z). `spec` = `None` or a default
+    /// spec builds exactly the stock rig.
+    pub fn spawn(commands: &mut Commands, root: Entity, cube: &Handle<Mesh>, spec: Option<&CharacterSpec>) -> Rig {
+        let dflt = CharacterSpec::default();
+        let sp = spec.unwrap_or(&dflt);
         let mut s = Spawner { commands, cube, roles: Vec::new(), dark: Vec::new() };
         let id = Quat::IDENTITY;
         let rz = Quat::from_rotation_z;
         let rx = Quat::from_rotation_x;
+        let tabi = if sp.has_acc(ACC_TABI) { Src::Glow } else { Src::Match };
 
         // ---- torso (nominal half extents 0.22 x 0.357 x 0.12, front is -Z) ----
         let torso = s.pivot(root);
-        // chest plate + circuit lines + core diamond
-        s.part(torso, Role::Dark, [0.0, 0.10, -0.125], [0.36, 0.30, 0.03], id);
-        s.part(torso, Role::Glow, [0.0, 0.10, -0.145], [0.022, 0.28, 0.012], id);
-        s.part(torso, Role::Glow, [0.0, 0.17, -0.145], [0.31, 0.018, 0.012], id);
-        s.part(torso, Role::Glow, [0.0, 0.03, -0.145], [0.31, 0.018, 0.012], id);
-        s.part(torso, Role::Hot, [0.0, 0.10, -0.152], [0.06, 0.06, 0.012], rz(0.785));
+        // chest plate + circuit pattern + core diamond / emblem
+        if sp.plates >= 1 {
+            s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.10, -0.125], [0.36, 0.30, 0.03], id);
+        }
+        match sp.pattern {
+            0 => {
+                // lines: a spine and up to three cross bars by density (4 = the stock two)
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.10, -0.145], [0.022, 0.28, 0.012], id);
+                let bars: &[f32] = match sp.density_q {
+                    0..=1 => &[],
+                    2..=3 => &[0.17],
+                    4..=5 => &[0.17, 0.03],
+                    _ => &[0.17, 0.03, 0.235],
+                };
+                for y in bars {
+                    s.part_s(torso, Role::Glow, Src::Glow, [0.0, *y, -0.145], [0.31, 0.018, 0.012], id);
+                }
+            }
+            1 => {
+                const SPOTS: [[f32; 2]; 8] = [[-0.1, 0.19], [0.1, 0.19], [-0.1, 0.01], [0.1, 0.01], [0.0, 0.215], [0.0, -0.015], [-0.14, 0.10], [0.14, 0.10]];
+                for p in SPOTS.iter().take(1 + sp.density_q as usize) {
+                    s.part_s(torso, Role::Glow, Src::Glow, [p[0], p[1], -0.145], [0.05, 0.05, 0.012], rz(0.785));
+                }
+            }
+            2 => {
+                for (i, x) in [-0.12f32, 0.12, -0.04, 0.04].iter().take(1 + sp.density_q as usize / 2).enumerate() {
+                    let tilt = if i % 2 == 0 { 0.5 } else { -0.5 };
+                    s.part_s(torso, Role::Glow, Src::Glow, [*x, 0.10, -0.145], [0.018, 0.27, 0.012], rz(tilt));
+                }
+            }
+            _ => {}
+        }
+        if sp.emblem == 0 {
+            s.part_s(torso, Role::Hot, Src::Glow, [0.0, 0.10, -0.152], [0.06, 0.06, 0.012], rz(0.785));
+        } else {
+            for g in glyph_segments(sp.emblem) {
+                // segment centre (cx, cy), its long axis rotated by the angle, flat on the chest
+                s.part_s(torso, Role::Hot, Src::Glow, [g[0] * GLYPH_R, 0.10 + g[1] * GLYPH_R, -0.152], [g[2] * GLYPH_R * 0.5, g[3] * GLYPH_R * 0.25, 0.012], rz(g[4]));
+            }
+        }
         // back plate + spine line
-        s.part(torso, Role::Dark, [0.0, 0.10, 0.125], [0.36, 0.30, 0.03], id);
-        s.part(torso, Role::Glow, [0.0, 0.10, 0.145], [0.022, 0.28, 0.012], id);
-        // shoulder plates with a lit edge
-        for sx in [-1.0f32, 1.0] {
-            s.part(torso, Role::Dark, [0.27 * sx, 0.30, 0.0], [0.17, 0.05, 0.24], rz(-0.25 * sx));
-            s.part(torso, Role::Glow, [0.335 * sx, 0.275, 0.0], [0.016, 0.02, 0.24], rz(-0.25 * sx));
+        if sp.plates >= 1 {
+            s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.10, 0.125], [0.36, 0.30, 0.03], id);
+        }
+        if sp.pattern != 3 {
+            s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.10, 0.145], [0.022, 0.28, 0.012], id);
+        }
+        // shoulder plates with a lit edge (heavy: a second layer and an abdomen guard)
+        if sp.plates >= 1 {
+            for sx in [-1.0f32, 1.0] {
+                s.part_s(torso, Role::Dark, Src::Base, [0.27 * sx, 0.30, 0.0], [0.17, 0.05, 0.24], rz(-0.25 * sx));
+                s.part_s(torso, Role::Glow, Src::Glow, [0.335 * sx, 0.275, 0.0], [0.016, 0.02, 0.24], rz(-0.25 * sx));
+                if sp.plates == 2 {
+                    s.part_s(torso, Role::Dark, Src::Base, [0.285 * sx, 0.345, 0.0], [0.2, 0.05, 0.3], rz(-0.25 * sx));
+                }
+            }
+            if sp.plates == 2 {
+                s.part_s(torso, Role::Dark, Src::Base, [0.0, -0.12, -0.125], [0.34, 0.12, 0.03], id);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.12, -0.145], [0.3, 0.014, 0.01], id);
+            }
+        }
+        if sp.has_acc(ACC_FINS) {
+            for sx in [-1.0f32, 1.0] {
+                s.part_s(torso, Role::Glow, Src::Glow, [0.40 * sx, 0.40, 0.04], [0.02, 0.26, 0.14], rz(0.5 * sx));
+            }
         }
         // sash: waist band + knot + hanging tail
-        s.part(torso, Role::Accent, [0.0, -0.30, 0.0], [0.47, 0.075, 0.27], id);
-        s.part(torso, Role::Glow, [0.0, -0.30, -0.138], [0.45, 0.014, 0.01], id);
-        s.part(torso, Role::Accent, [0.19, -0.33, -0.14], [0.07, 0.07, 0.04], rz(0.785));
-        s.part(torso, Role::Accent, [0.21, -0.52, -0.145], [0.05, 0.27, 0.015], rz(0.12));
-        // katana sheath across the back: dark scabbard, lit seam, hilt and tip glow
-        let sheath_q = rz(0.8);
-        s.part(torso, Role::Dark, [0.0, -0.02, 0.19], [0.05, 0.86, 0.05], sheath_q);
-        s.part(torso, Role::Glow, [0.0, -0.02, 0.222], [0.012, 0.8, 0.012], sheath_q);
-        s.part(torso, Role::Hot, [-0.31, 0.30, 0.19], [0.06, 0.1, 0.06], sheath_q);
-        s.part(torso, Role::Glow, [0.31, -0.34, 0.19], [0.06, 0.05, 0.06], sheath_q);
-
-        // ---- head: hood shell, mask, glowing visor slit (nominal half 0.11 x 0.12 x 0.11) ----
-        let head = s.pivot(root);
-        s.part(head, Role::Dark, [0.0, 0.145, 0.0], [0.27, 0.05, 0.27], id); // hood top
-        s.part(head, Role::Dark, [0.0, 0.0, 0.125], [0.27, 0.29, 0.04], id); // hood back
-        s.part(head, Role::Dark, [-0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
-        s.part(head, Role::Dark, [0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
-        s.part(head, Role::Dark, [0.0, 0.17, 0.17], [0.2, 0.04, 0.2], rx(-0.45)); // hood peak
-        s.part(head, Role::Dark, [0.0, -0.065, -0.118], [0.22, 0.11, 0.03], id); // face mask
-        s.part(head, Role::Dark, [0.0, 0.10, -0.118], [0.22, 0.07, 0.03], id); // brow band
-        s.part(head, Role::Hot, [0.0, 0.03, -0.124], [0.20, 0.034, 0.02], id); // visor slit
-        for sx in [-1.0f32, 1.0] {
-            s.part(head, Role::Glow, [0.105 * sx, 0.03, -0.085], [0.016, 0.03, 0.07], id);
+        if sp.sash {
+            s.part_s(torso, Role::Accent, Src::Trim, [0.0, -0.30, 0.0], [0.47, 0.075, 0.27], id);
+            s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.30, -0.138], [0.45, 0.014, 0.01], id);
+            s.part_s(torso, Role::Accent, Src::Trim, [0.19, -0.33, -0.14], [0.07, 0.07, 0.04], rz(0.785));
+            s.part_s(torso, Role::Accent, Src::Trim, [0.21, -0.52, -0.145], [0.05, 0.27, 0.015], rz(0.12));
         }
-        // headband tails
-        s.part(head, Role::Accent, [0.0, 0.07, 0.15], [0.05, 0.05, 0.26], rx(0.25));
+        if sp.has_acc(ACC_KUNAI) {
+            for x in [-0.17f32, -0.1, -0.03] {
+                s.part_s(torso, Role::Dark, Src::Base, [x, -0.27, -0.15], [0.022, 0.05, 0.02], id);
+                s.part_s(torso, Role::Hot, Src::Edge, [x, -0.34, -0.15], [0.026, 0.10, 0.012], id);
+            }
+        }
+        // back item: katana sheath (dark scabbard, lit seam, hilt and tip glow), banner, pack or nothing
+        match sp.back_item {
+            0 => {
+                let sheath_q = rz(0.8);
+                s.part_s(torso, Role::Dark, Src::Base, [0.0, -0.02, 0.19], [0.05, 0.86, 0.05], sheath_q);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.02, 0.222], [0.012, 0.8, 0.012], sheath_q);
+                s.part_s(torso, Role::Hot, Src::Edge, [-0.31, 0.30, 0.19], [0.06, 0.1, 0.06], sheath_q);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.31, -0.34, 0.19], [0.06, 0.05, 0.06], sheath_q);
+            }
+            1 => {
+                s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.05, 0.19], [0.012, 1.0, 0.012], id);
+                s.part_s(torso, Role::Accent, Src::Trim, [0.0, -0.02, 0.20], [0.22, 0.72, 0.014], id);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.39, 0.205], [0.22, 0.02, 0.016], id);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.34, 0.205], [0.24, 0.02, 0.016], id);
+            }
+            2 => {
+                s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.0, 0.205], [0.32, 0.36, 0.14], id);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.08, 0.278], [0.28, 0.016, 0.012], id);
+                s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.08, 0.278], [0.28, 0.016, 0.012], id);
+                s.part_s(torso, Role::Accent, Src::Trim, [0.0, 0.0, 0.282], [0.05, 0.3, 0.01], id);
+            }
+            _ => {}
+        }
+
+        // ---- head: hood shell, mask, glowing visor (nominal half 0.11 x 0.12 x 0.11) ----
+        let head = s.pivot(root);
+        let hooded = sp.hood == 0;
+        match sp.hood {
+            0 => {
+                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.145, 0.0], [0.27, 0.05, 0.27], id); // hood top
+                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.0, 0.125], [0.27, 0.29, 0.04], id); // hood back
+                s.part_s(head, Role::Dark, Src::Base, [-0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
+                s.part_s(head, Role::Dark, Src::Base, [0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
+                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.17, 0.17], [0.2, 0.04, 0.2], rx(-0.45)); // hood peak
+            }
+            1 => {
+                // hood thrown back: the back and short side panels frame the face and hair
+                s.part_s(head, Role::Dark, Src::Base, [0.0, -0.01, 0.14], [0.27, 0.31, 0.05], id);
+                s.part_s(head, Role::Dark, Src::Base, [-0.13, -0.04, 0.07], [0.04, 0.2, 0.12], id);
+                s.part_s(head, Role::Dark, Src::Base, [0.13, -0.04, 0.07], [0.04, 0.2, 0.12], id);
+            }
+            _ => {}
+        }
+        if !hooded {
+            s.part_s(head, Role::Plain, Src::Skin, [0.0, 0.0, 0.0], [0.235, 0.26, 0.235], id); // bare head
+        }
+        // face covering
+        match sp.mask {
+            0 => {
+                if hooded {
+                    s.part_s(head, Role::Plain, Src::Skin, [0.0, -0.02, -0.118], [0.2, 0.17, 0.02], id); // face in the hood opening
+                }
+            }
+            1 => {
+                s.part_s(head, Role::Dark, Src::Base, [0.0, -0.065, -0.118], [0.22, 0.11, 0.03], id); // face mask
+                if hooded {
+                    s.part_s(head, Role::Dark, Src::Base, [0.0, 0.10, -0.118], [0.22, 0.07, 0.03], id); // brow band
+                }
+            }
+            2 => {
+                s.part_s(head, Role::Dark, Src::Base, [0.0, -0.01, -0.118], [0.225, 0.24, 0.03], id);
+            }
+            3 => {
+                s.part_far(head, Role::Accent, Src::Trim, [0.0, -0.01, -0.118], [0.225, 0.24, 0.03], id);
+                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.075, -0.13], [0.2, 0.03, 0.04], id); // brow ridge
+                for sx in [-1.0f32, 1.0] {
+                    s.part_s(head, Role::Hot, Src::Glow, [0.05 * sx, -0.10, -0.138], [0.025, 0.06, 0.02], id); // fangs
+                    s.part_s(head, Role::Glow, Src::Glow, [0.085 * sx, 0.17, -0.06], [0.03, 0.09, 0.03], rz(-0.35 * sx)); // small horns
+                }
+            }
+            _ => {
+                // fox: pointed ears, snout, whisker lines
+                s.part_far(head, Role::Accent, Src::Trim, [0.0, -0.03, -0.118], [0.225, 0.2, 0.03], id);
+                s.part_far(head, Role::Accent, Src::Trim, [0.0, -0.075, -0.15], [0.08, 0.06, 0.07], id);
+                for sx in [-1.0f32, 1.0] {
+                    s.part_far(head, Role::Accent, Src::Trim, [0.075 * sx, 0.20, -0.02], [0.07, 0.12, 0.03], rz(-0.3 * sx));
+                    for dy in [-0.045f32, -0.085] {
+                        s.part_s(head, Role::Glow, Src::Glow, [0.13 * sx, dy, -0.122], [0.07, 0.012, 0.012], rz(0.15 * sx));
+                    }
+                }
+            }
+        }
+        // glowing eyes
+        match sp.visor_style {
+            0 => {
+                s.part_s(head, Role::Hot, Src::Visor, [0.0, 0.03, -0.124], [0.20, 0.034, 0.02], id); // visor slit
+            }
+            1 => {
+                for sx in [-1.0f32, 1.0] {
+                    s.part_s(head, Role::Hot, Src::Visor, [0.055 * sx, 0.03, -0.124], [0.075, 0.03, 0.02], id);
+                }
+            }
+            _ => {
+                s.part_s(head, Role::Hot, Src::Visor, [0.0, 0.03, -0.126], [0.225, 0.05, 0.02], id);
+            }
+        }
+        for sx in [-1.0f32, 1.0] {
+            s.part_s(head, Role::Glow, Src::Glow, [0.105 * sx, 0.03, -0.085], [0.016, 0.03, 0.07], id);
+        }
+        // headband tails (and the band itself when there is no hood over it)
+        if sp.headband {
+            s.part_s(head, Role::Accent, Src::Trim, [0.0, 0.07, 0.15], [0.05, 0.05, 0.26], rx(0.25));
+            if !hooded {
+                s.part_far(head, Role::Accent, Src::Trim, [0.0, 0.075, 0.0], [0.24, 0.045, 0.24], id);
+            }
+        }
+        // hair (only shows when the hood is open or off)
+        if !hooded && sp.hair_style != 0 {
+            s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.115, 0.0], [0.245, 0.07, 0.245], id); // cap of hair
+            s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.02, 0.121], [0.245, 0.2, 0.04], id);
+            match sp.hair_style {
+                1 => {
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.17, 0.02], [0.05, 0.06, 0.05], id);
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.215, 0.02], [0.1, 0.09, 0.1], id);
+                }
+                2 => {
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.08, 0.16], [0.07, 0.07, 0.1], id);
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, 0.0, 0.2], [0.06, 0.13, 0.06], id);
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, -0.13, 0.215], [0.045, 0.15, 0.045], id);
+                }
+                3 => {
+                    for k in -2i32..=2 {
+                        let x = k as f32 * 0.05;
+                        s.part_s(head, Role::Plain, Src::Hair, [x, 0.2, 0.0], [0.04, 0.15, 0.04], rz(-x * 3.0));
+                    }
+                }
+                _ => {
+                    s.part_s(head, Role::Plain, Src::Hair, [0.0, -0.1, 0.135], [0.25, 0.42, 0.04], id);
+                    for sx in [-1.0f32, 1.0] {
+                        s.part_s(head, Role::Plain, Src::Hair, [0.125 * sx, -0.08, -0.03], [0.04, 0.3, 0.06], id);
+                    }
+                }
+            }
+        }
+        if sp.scarf_style == 3 {
+            // scarf tails also hang from the back of the head
+            for sx in [-1.0f32, 1.0] {
+                s.part_s(head, Role::Accent, Src::Scarf, [0.05 * sx, -0.12, 0.17], [0.04, 0.3, 0.015], rz(0.08 * sx));
+            }
+        }
+        if sp.has_acc(ACC_HORNS) {
+            for sx in [-1.0f32, 1.0] {
+                s.part_far(head, Role::Accent, Src::Trim, [0.09 * sx, 0.25, 0.0], [0.045, 0.2, 0.045], rz(-0.4 * sx));
+            }
+        }
+        if sp.has_acc(ACC_EARRING) {
+            s.part_s(head, Role::Glow, Src::Glow, [0.128, -0.045, 0.0], [0.025, 0.05, 0.025], id);
+        }
+        if sp.has_acc(ACC_GLASSES) {
+            for sx in [-1.0f32, 1.0] {
+                s.part_s(head, Role::Glow, Src::Glow, [0.058 * sx, 0.035, -0.14], [0.09, 0.06, 0.012], id);
+            }
+            s.part_s(head, Role::Glow, Src::Glow, [0.0, 0.045, -0.14], [0.04, 0.012, 0.012], id);
+        }
 
         // ---- arms: pivot at the shoulder (torso space is applied at update time) ----
+        let hand_role = if sp.rgb(C_GLOVE).is_some() || sp.rgb(C_SKIN).is_some() { Role::Plain } else { Role::Accent };
         let arm = |s: &mut Spawner, launcher: bool| -> Entity {
             let a = s.pivot(root);
-            s.part(a, Role::Dark, [0.0, -0.29, 0.0], [0.09, 0.58, 0.09], id);
-            s.part(a, Role::Glow, [0.0, -0.44, 0.0], [0.108, 0.06, 0.108], id);
-            s.part(a, Role::Accent, [0.0, -0.61, 0.0], [0.075, 0.085, 0.075], id);
+            s.part_s(a, Role::Dark, Src::Base, [0.0, -0.29, 0.0], [0.09, 0.58, 0.09], id);
+            s.part_s(a, Role::Glow, Src::Glow, [0.0, -0.44, 0.0], [0.108, 0.06, 0.108], id);
+            s.part_s(a, hand_role, Src::Glove, [0.0, -0.61, 0.0], [0.075, 0.085, 0.075], id);
             if launcher {
                 // wrist grapple launcher: a chunky bracer with a lit barrel (its muzzle is where the rope starts)
-                s.part(a, Role::Dark, [0.0, -0.40, -0.07], [0.13, 0.17, 0.08], id);
-                s.part(a, Role::Glow, [0.0, -0.40, -0.113], [0.05, 0.15, 0.012], id);
-                s.part(a, Role::Hot, [0.0, -0.50, -0.07], [0.05, 0.04, 0.05], id);
+                s.part_s(a, Role::Dark, Src::Base, [0.0, -0.40, -0.07], [0.13, 0.17, 0.08], id);
+                s.part_s(a, Role::Glow, Src::Glow, [0.0, -0.40, -0.113], [0.05, 0.15, 0.012], id);
+                s.part_s(a, Role::Hot, Src::Glow, [0.0, -0.50, -0.07], [0.05, 0.04, 0.05], id);
             }
             a
         };
@@ -287,14 +601,18 @@ impl Rig {
         let arm_r = arm(&mut s, false);
 
         // ---- legs: lit greaves on the existing leg box, and two animated feet ----
+        // (greaves keep the match colour unless the character has glowing tabi, so teams still read from the legs)
         let legs = s.pivot(root);
-        s.part(legs, Role::Glow, [0.0, -0.62, 0.0], [0.375, 0.045, 0.255], id); // ankle
-        s.part(legs, Role::Glow, [0.0, 0.05, 0.0], [0.375, 0.03, 0.255], id); // knee
-        s.part(legs, Role::Dark, [0.0, -0.3, -0.115], [0.3, 0.3, 0.03], id); // shin guard
+        s.part_s(legs, Role::Glow, tabi, [0.0, -0.62, 0.0], [0.375, 0.045, 0.255], id); // ankle
+        s.part_s(legs, Role::Glow, tabi, [0.0, 0.05, 0.0], [0.375, 0.03, 0.255], id); // knee
+        s.part_s(legs, Role::Dark, Src::Base, [0.0, -0.3, -0.115], [0.3, 0.3, 0.03], id); // shin guard
         let foot = |s: &mut Spawner| -> Entity {
             let f = s.pivot(root);
-            s.part(f, Role::Dark, [0.0, 0.0, -0.03], [0.13, 0.08, 0.3], id);
-            s.part(f, Role::Glow, [0.0, 0.043, -0.03], [0.08, 0.012, 0.26], id);
+            s.part_s(f, Role::Dark, Src::Base, [0.0, 0.0, -0.03], [0.13, 0.08, 0.3], id);
+            s.part_s(f, Role::Glow, tabi, [0.0, 0.043, -0.03], [0.08, 0.012, 0.26], id);
+            if tabi == Src::Glow {
+                s.part_s(f, Role::Glow, tabi, [0.0, -0.036, -0.03], [0.15, 0.012, 0.32], id); // sole glow
+            }
             f
         };
         let foot_l = foot(&mut s);
@@ -302,46 +620,91 @@ impl Rig {
 
         // ---- katana at the hip: lit edge + guard + wrapped grip (the body box is the blade core) ----
         let katana = s.pivot(root);
-        s.part(katana, Role::Hot, [0.0, 0.0, 0.0], [0.016, 0.05, 1.12], id);
-        s.part(katana, Role::Accent, [0.0, 0.0, -0.22], [0.11, 0.11, 0.02], id);
-        s.part(katana, Role::Dark, [0.0, 0.0, -0.4], [0.055, 0.055, 0.26], id);
+        s.part_s(katana, Role::Hot, Src::Edge, [0.0, 0.0, 0.0], [0.016, 0.05, 1.12], id);
+        s.part_s(katana, Role::Accent, Src::Trim, [0.0, 0.0, -0.22], [0.11, 0.11, 0.02], id);
+        s.part_s(katana, Role::Dark, Src::Base, [0.0, 0.0, -0.4], [0.055, 0.055, 0.26], id);
 
         // ---- spinning star glyph at the left hip: two crossed bars + a 45 degree pair ----
         let glyph = s.pivot(root);
         for a in [0.0f32, 0.785, 1.571, 2.356] {
-            s.part(glyph, Role::Hot, [0.0, 0.0, 0.0], [0.2, 0.012, 0.028], Quat::from_rotation_y(a));
+            s.part_s(glyph, Role::Hot, Src::Star, [0.0, 0.0, 0.0], [0.2, 0.012, 0.028], Quat::from_rotation_y(a));
         }
 
         // ---- scarf: loose segments, positioned each frame from the spring chain ----
         let scarf = std::array::from_fn(|i| {
             let w = 0.14 - 0.015 * i as f32;
-            let role = if i + 1 == SCARF_SEGS { Role::Glow } else { Role::Accent };
-            s.part(root, role, [0.0, 1.3, 0.1], [w, 0.02, 0.2], id)
+            let (role, src) = if i + 1 == SCARF_SEGS { (Role::Glow, Src::Glow) } else { (Role::Accent, Src::Scarf) };
+            s.part_s(root, role, src, [0.0, 1.3, 0.1], [w, 0.02, 0.2], id)
         });
 
         let pivots = vec![torso, head, arm_l, arm_r, legs, foot_l, foot_r, katana, glyph];
         let mut roles = std::mem::take(&mut s.roles);
         let dark = std::mem::take(&mut s.dark);
         roles.shrink_to_fit();
-        Rig { torso, head, arm_l, arm_r, legs, foot_l, foot_r, katana, glyph, scarf, roles, dark, pivots, phase: 0.0, scarf_pts: None }
+        // scarf length: 4 = stock, +-15% per step; "long" is longer again; "tails" are narrow
+        let scarf_len = (1.0 + (sp.scarf_len_q as f32 - 4.0) * 0.15) * if sp.scarf_style == 2 { 1.35 } else { 1.0 };
+        let scarf_w = match sp.scarf_style {
+            3 => 0.55,
+            2 => 1.2,
+            _ => 1.0,
+        };
+        Rig {
+            torso,
+            head,
+            arm_l,
+            arm_r,
+            legs,
+            foot_l,
+            foot_r,
+            katana,
+            glyph,
+            scarf,
+            roles,
+            dark,
+            pivots,
+            phase: 0.0,
+            scarf_pts: None,
+            bulk: sp.bulk(),
+            height: sp.height(),
+            scarf_on: sp.scarf_style != 0,
+            scarf_len,
+            scarf_w,
+        }
     }
 
-    /// (Re)skin every part for a player colour.
-    pub fn skin(&self, commands: &mut Commands, cache: &mut LookMats, mats: &mut Assets<StandardMaterial>, hue: [f32; 3], key: u32) {
-        let set = cache.0.entry(key).or_insert_with(|| {
-            [Role::Dark, Role::Accent, Role::Glow, Role::Hot].map(|r| {
-                let c = role_colour(r, hue);
-                mats.add(StandardMaterial { base_color: Color::linear_rgb(c[0], c[1], c[2]), unlit: true, ..default() })
-            })
-        });
-        for (e, r) in &self.roles {
-            commands.entity(*e).insert(MeshMaterial3d(set[*r as usize].clone()));
+    /// Root scale for the visual build (about the model origin; the hitbox never changes). Stock = identity.
+    pub fn root_scale(&self) -> Vec3 {
+        Vec3::new(self.bulk, self.height, self.bulk)
+    }
+
+    /// Vertical lift that keeps the feet on the ground under `root_scale`.
+    pub fn foot_lift(&self) -> f32 {
+        0.81 * (self.height - 1.0)
+    }
+
+    /// Remove every entity of this rig (before spawning another look).
+    pub fn despawn(&self, commands: &mut Commands) {
+        for e in self.pivots.iter().chain(self.scarf.iter()) {
+            commands.entity(*e).despawn();
+        }
+    }
+
+    /// (Re)skin every part for a player colour and (optionally) a custom look.
+    pub fn skin(&self, commands: &mut Commands, cache: &mut LookMats, mats: &mut Assets<StandardMaterial>, hue: [f32; 3], spec: Option<&CharacterSpec>) {
+        for (e, role, src) in &self.roles {
+            let c = paint(*role, *src, hue, spec);
+            let h = cache
+                .0
+                .entry(colour_key(c))
+                .or_insert_with(|| mats.add(StandardMaterial { base_color: Color::linear_rgb(c[0], c[1], c[2]), unlit: true, ..default() }))
+                .clone();
+            commands.entity(*e).insert(MeshMaterial3d(h));
         }
     }
 
     /// Paint every rig part with one material (the hit flash); `skin` restores the colours.
     pub fn flash(&self, commands: &mut Commands, mat: &Handle<StandardMaterial>) {
-        for (e, _) in &self.roles {
+        for (e, _, _) in &self.roles {
             commands.entity(*e).insert(MeshMaterial3d(mat.clone()));
         }
     }
@@ -357,7 +720,7 @@ impl Rig {
         }
         for e in &self.scarf {
             if let Ok(mut v) = vis.get_mut(*e) {
-                v.set_if_neq(if near { Visibility::Inherited } else { Visibility::Hidden });
+                v.set_if_neq(if near && self.scarf_on { Visibility::Inherited } else { Visibility::Hidden });
             }
         }
         for e in &self.dark {
@@ -376,7 +739,10 @@ impl Rig {
         let part = |n: &str| c.draw.parts.iter().find(|p| p.name == n);
         let (bw, bh) = c.boost;
         let root_q = Quat::from_rotation_y(c.draw.yaw) * Quat::from_rotation_z(c.draw.roll);
-        let root_pos = Vec3::from(c.draw.pos);
+        // the root carries the visual build (scale + foot lift); model-space maths below is unscaled, world points
+        // are mapped through the same transform
+        let rs = self.root_scale();
+        let root_pos = Vec3::from(c.draw.pos) + Vec3::Y * self.foot_lift();
 
         let mut shoulder_y = 0.0;
         let mut torso_xf = Transform::IDENTITY;
@@ -424,7 +790,7 @@ impl Rig {
         let mut left_q = arm_rot(pz.left, -1.0);
         if let Some(anchor) = c.anchor {
             // the launcher arm points at the anchor
-            let local = root_q.inverse() * (anchor - root_pos) - shoulder(-1.0);
+            let local = (root_q.inverse() * (anchor - root_pos)) / rs - shoulder(-1.0);
             left_q = Quat::from_rotation_arc(Vec3::NEG_Y, local.normalize_or(Vec3::NEG_Z));
         }
         for (e, side, q) in [(self.arm_l, -1.0f32, left_q), (self.arm_r, 1.0, arm_rot(pz.right, 1.0))] {
@@ -441,7 +807,7 @@ impl Rig {
 
         // scarf: spring chain in world space, drawn in root space
         let neck_local = torso_xf.translation + torso_xf.rotation * Vec3::new(0.0, 0.357 * torso_xf.scale.y * 0.9, 0.10);
-        let anchor = root_pos + root_q * neck_local;
+        let anchor = root_pos + root_q * (neck_local * rs);
         let back = root_q * Vec3::Z;
         let pts = self.scarf_pts.get_or_insert_with(|| {
             let mut p = [anchor; SCARF_SEGS + 1];
@@ -450,16 +816,16 @@ impl Rig {
             }
             p
         });
-        scarf_step(pts, anchor, back, c.vel, c.dt);
+        scarf_step_len(pts, anchor, back, c.vel, c.dt, self.scarf_len);
         let inv = root_q.inverse();
         for i in 0..SCARF_SEGS {
-            let (a, b) = (inv * (pts[i] - root_pos), inv * (pts[i + 1] - root_pos));
+            let (a, b) = ((inv * (pts[i] - root_pos)) / rs, (inv * (pts[i + 1] - root_pos)) / rs);
             let d = b - a;
             let len = d.length().max(1e-3);
             if let Ok(mut t) = tf.get_mut(self.scarf[i]) {
                 t.translation = (a + b) * 0.5;
                 t.rotation = Quat::from_rotation_arc(Vec3::Z, d / len);
-                t.scale = Vec3::new((0.14 - 0.015 * i as f32) * bw.min(2.0), 0.02, len * 1.1);
+                t.scale = Vec3::new((0.14 - 0.015 * i as f32) * bw.min(2.0) * self.scarf_w, 0.02, len * 1.1);
             }
         }
     }

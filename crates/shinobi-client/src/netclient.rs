@@ -608,6 +608,11 @@ impl NetClient {
         self.looks.get(&player)
     }
 
+    /// Pretend the server replicated `spec` for `player` (offline review shots and tests only).
+    pub fn inject_look(&mut self, player: u16, spec: &shinobi_proto::character::CharacterSpec) {
+        self.looks.insert(player, spec.clone());
+    }
+
     /// Choose our look (sent to the server in the next packets until echoed). `None` = stock ninja.
     pub fn set_look(&mut self, spec: Option<&shinobi_proto::character::CharacterSpec>) {
         let wire = spec.filter(|s| !s.is_default()).map(|s| s.to_wire());
