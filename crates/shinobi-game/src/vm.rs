@@ -130,6 +130,9 @@ pub struct VmEnts {
     /// Gloved left hand holding the star, and the wrist grapple launcher (rope origin), both on the viewmodel layer.
     left_hand: Entity,
     launcher: Entity,
+    /// Glove and sleeve materials (recoloured by a custom character, see `apply_look`).
+    glove: Handle<StandardMaterial>,
+    sleeve: Handle<StandardMaterial>,
     /// (material, base colour, gain) flared by hit confirmation
     glow: Vec<(Handle<StandardMaterial>, shinobi_client::hud::Rgba, f32)>,
 }
@@ -139,7 +142,8 @@ pub struct VmPlugin;
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, guard: 0.0, guard_flash: 0.0 })
-            .add_systems(Startup, spawn.after(crate::play::setup));
+            .add_systems(Startup, spawn.after(crate::play::setup))
+            .add_systems(Update, apply_look.before(update));
     }
 }
 
@@ -289,7 +293,43 @@ fn spawn(
     let mut glow = glow;
     glow.extend(glow_extra);
 
-    commands.insert_resource(VmEnts { blade, left_hand, launcher, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
+    commands.insert_resource(VmEnts { blade, left_hand, launcher, glove, sleeve, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
+}
+
+/// A custom character recolours the first-person hands and weapons: gloves (or skin), sleeves (suit base), the lit
+/// bracer and blade core (glow), blade edge, hilt (trim), star and muzzle. Stock looks keep the stock colours. Runs
+/// only when the look changes.
+pub fn apply_look(look: Res<crate::character_look::MyLook>, ents: Option<ResMut<VmEnts>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    use shinobi_client::hud::Rgba;
+    use shinobi_proto::character::*;
+    let Some(mut ents) = ents else { return };
+    if !look.is_changed() {
+        return;
+    }
+    let pal = Palette::TRON;
+    let spec = look.0.as_ref();
+    let rgba = |s: Option<[u8; 3]>| s.map(|c| Rgba(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0));
+    let towards_white = |c: Rgba, w: f32| Rgba(c.0 + (1.0 - c.0) * w, c.1 + (1.0 - c.1) * w, c.2 + (1.0 - c.2) * w, 1.0);
+    let glow = spec.and_then(|s| rgba(s.rgb(C_GLOW)));
+    let edge = spec.and_then(|s| rgba(s.rgb(C_EDGE))).map(|c| towards_white(c, 0.5));
+    let trim = spec.and_then(|s| rgba(s.rgb(C_TRIM)));
+    let star = spec.and_then(|s| rgba(s.rgb(C_STAR)));
+    let muzzle = spec.and_then(|s| rgba(s.rgb(C_VISOR))).or(edge);
+    // order of `VmEnts::glow`: blade core, edge, hilt, star, bracer, muzzle
+    let stock = [pal.cyan, pal.orange, pal.magenta, pal.cyan, pal.cyan, pal.orange];
+    let custom = [glow, edge, trim, star, glow, muzzle];
+    for (i, entry) in ents.glow.iter_mut().enumerate().take(6) {
+        entry.1 = custom[i].unwrap_or(stock[i]);
+    }
+    let set = |mats: &mut Assets<StandardMaterial>, h: &Handle<StandardMaterial>, c: Rgba, gain: f32| {
+        if let Some(mut m) = mats.get_mut(h) {
+            m.base_color = Color::linear_rgb(c.0 * gain, c.1 * gain, c.2 * gain);
+        }
+    };
+    let glove = spec.and_then(|s| rgba(s.rgb(C_GLOVE).or_else(|| s.rgb(C_SKIN))));
+    let sleeve = spec.and_then(|s| rgba(s.rgb(C_BASE)));
+    set(&mut mats, &ents.glove, glove.unwrap_or(pal.cyan), if glove.is_some() { 1.0 } else { 0.16 });
+    set(&mut mats, &ents.sleeve, sleeve.unwrap_or(pal.cyan), if sleeve.is_some() { 1.0 } else { 0.08 });
 }
 
 pub fn update(

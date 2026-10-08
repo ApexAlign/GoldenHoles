@@ -91,6 +91,9 @@ struct Client {
     own_acked: Option<u32>,
     hp_x10: Option<u16>,
     board: Option<Board>,
+    /// Custom looks seen (`CharacterLook` events) and the one we send with every packet while it is set.
+    looks: std::collections::HashMap<u16, shinobi_proto::character::Wire>,
+    send_look: Option<shinobi_proto::character::Wire>,
 }
 
 impl Client {
@@ -127,6 +130,8 @@ impl Client {
                         own_acked: None,
                         hp_x10: None,
                         board: None,
+                        looks: Default::default(),
+                        send_look: None,
                     };
                 }
             }
@@ -148,6 +153,7 @@ impl Client {
             view: ViewState { from_tick: t.saturating_sub(6), alpha: 0 },
             intents: (0..4).map(|i| mk(t - i)).collect(),
             report: None,
+            look: self.send_look,
         };
         self.seq = self.seq.wrapping_add(1);
         self.sock.send(&pkt.encode().unwrap()).unwrap();
@@ -170,16 +176,19 @@ impl Client {
                 self.board = Some(Board::decode(board).expect("board decodes"));
             }
             let (mut count, mut walls, mut obstacles) = (0, 0, 0);
+            let mut looks = Vec::new();
             self.inbox
                 .read(&mut BitReader::new(events), |e| {
                     count += 1;
                     match e {
                         shinobi_sim::events::NetEvent::WallSpawn(_) => walls += 1,
                         shinobi_sim::events::NetEvent::ObstacleSpawn(_) => obstacles += 1,
+                        shinobi_sim::events::NetEvent::CharacterLook { player, wire } => looks.push((player, wire)),
                         _ => {}
                     }
                 })
                 .unwrap();
+            self.looks.extend(looks);
             self.events_seen += count;
             self.wall_events += walls;
             self.obstacle_events += obstacles;
@@ -406,6 +415,44 @@ fn server_full_is_reported_not_silently_dropped() {
     late.send(&encode_hello(decode_challenge(&buf[..n]).unwrap())).unwrap();
     late.set_nonblocking(true).unwrap();
     assert_eq!(wait_kick(&late, Duration::from_secs(2)), Some(KickReason::ServerFull));
+}
+
+#[test]
+fn custom_looks_are_validated_by_the_server_and_reach_the_other_player_and_late_joiners() {
+    use shinobi_proto::character::{preset, CharacterSpec, WIRE_LEN};
+    let (_srv, addr) = start_server_with(&[("SHINOBI_BOTS", "1"), ("SHINOBI_BOT_SKILL", "easy")]);
+    let mut a = Client::connect(&addr);
+    let mut b = Client::connect(&addr);
+    // A claims a hostile look (all bits set); the server must canonicalise it before anyone sees it
+    let hostile = [0xFFu8; WIRE_LEN];
+    a.send_look = Some(hostile);
+    let canon = CharacterSpec::canonical_wire(&hostile);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline && !(b.looks.contains_key(&a.id) && a.looks.contains_key(&a.id)) {
+        a.send_intent(0, 0);
+        b.send_intent(0, 0);
+        std::thread::sleep(Duration::from_millis(16));
+        a.pump();
+        b.pump();
+        if a.looks.contains_key(&a.id) {
+            a.send_look = None; // the echo is the ack
+        }
+    }
+    assert_eq!(b.looks.get(&a.id), Some(&canon), "B sees A's validated look, not the raw bytes");
+    assert_eq!(a.looks.get(&a.id), Some(&canon), "A gets its own echo");
+    assert_ne!(canon, hostile);
+    assert_eq!(b.looks.get(&201), Some(&preset(201).to_wire()), "the bot wears a built-in preset");
+    // a late joiner gets everyone's look in its join catch-up
+    let mut c = Client::connect(&addr);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline && !(c.looks.contains_key(&a.id) && c.looks.contains_key(&201)) {
+        c.send_intent(0, 0);
+        std::thread::sleep(Duration::from_millis(16));
+        c.pump();
+    }
+    assert_eq!(c.looks.get(&a.id), Some(&canon));
+    assert!(c.looks.contains_key(&201));
+    assert!(!c.looks.contains_key(&b.id), "B never set a look: nothing sent for it");
 }
 
 #[test]

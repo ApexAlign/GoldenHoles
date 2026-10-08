@@ -52,6 +52,8 @@ struct RemoteEnt {
     shield_bars: [Entity; 4],
     /// Tron x shinobi dressing on the body (hood, plates, katana edge, scarf, poses): `character_look.rs`.
     rig: crate::character_look::Rig,
+    /// The custom look the rig was built from; `None` = stock ninja.
+    spec: Option<shinobi_proto::character::CharacterSpec>,
     /// Showing the white hit flash (`hit_feedback::HitFx`) instead of the player colour.
     flashing: bool,
 }
@@ -163,10 +165,12 @@ impl Plugin for PlayPlugin {
             .init_resource::<Remotes>()
             .init_resource::<BodyMats>()
             .init_resource::<crate::character_look::LookMats>()
+            .insert_resource(crate::character_look::MyLook::startup())
             .init_resource::<crate::hit_feedback::HitFx>()
             .init_resource::<Lock>()
             .init_resource::<ModeRes>()
             .add_systems(Update, update_title)
+            .add_systems(Update, crate::character_look::sync_my_look)
             .insert_resource(FxRes { state: FxState::new(FxCfg::default()), out: Default::default(), dash_held: false, slash_edge: false, slash: None, fire_edge: false, dj_edge: false, flip: false })
             .add_systems(Startup, setup)
             .add_systems(Update, (input, crate::mobile::touch_input, fx_from_view, sync_remotes, crate::vm::update, step_fx, follow_camera, update_crt, clear_edges).chain());
@@ -676,9 +680,18 @@ fn sync_remotes(
             let shield_bars = std::array::from_fn(|_| {
                 commands.spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield))).id()
             });
-            let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.cube);
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig, flashing: false }
+            let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.cube, None);
+            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig, spec: None, flashing: false }
         });
+        // custom look (replicated by the server): rebuild the rig when it arrives or changes, then re-skin below
+        let want = s.game.net.look_of(*id).filter(|c| !c.is_default());
+        if want != ent.spec.as_ref() {
+            ent.rig.despawn(&mut commands);
+            ent.spec = want.cloned();
+            ent.rig = crate::character_look::Rig::spawn(&mut commands, ent.root, &look.cube, ent.spec.as_ref());
+            ent.colour = None;
+            ent.flashing = false;
+        }
         // player colour (team colour in team modes): re-skin the body parts only when it changes
         let hue = crate::team::colour_of(&net, *id);
         let k = crate::team::key(hue);
@@ -689,7 +702,7 @@ fn sync_remotes(
         }
         if ent.colour != Some(k) && !flashing {
             ent.colour = Some(k);
-            ent.rig.skin(&mut commands, &mut look_mats, &mut mats, hue, k);
+            ent.rig.skin(&mut commands, &mut look_mats, &mut mats, hue, ent.spec.as_ref());
             let m = body_mats.0.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
                     base_color: {
@@ -796,7 +809,8 @@ fn sync_remotes(
         }
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
-            r.translation = Vec3::from(d.pos) + hitfx.shake(*id);
+            r.translation = Vec3::from(d.pos) + hitfx.shake(*id) + Vec3::Y * ent.rig.foot_lift();
+            r.scale = ent.rig.root_scale();
             r.rotation = Quat::from_rotation_y(d.yaw) * Quat::from_rotation_z(d.roll);
         }
         let (bw, bh) = size_boost(dist);

@@ -8,7 +8,7 @@ Only the JSON ever reaches the game. The photo stays in the chatbot you chose. T
 field is validated and clamped on load and again by the server (unknown fields are ignored, bad values fall back to the
 default), so a hand-edited or malicious file cannot break a match.
 
-Why JSON and not a 3D model: it is small (about 100 bytes on the wire), chatbots produce it reliably from an image,
+Why JSON and not a 3D model: it is small (39 bytes on the wire), chatbots produce it reliably from an image,
 it always fits our rig and animations, and it keeps characters readable at distance (the game enforces a minimum glow).
 
 ## The format
@@ -113,6 +113,18 @@ Return the JSON now.
 1. Save the chatbot's answer as `characters/me.json`.
 2. Start the game with `--character characters/me.json`, or type `/character characters/me.json` in the game console.
 3. Other players receive a validated copy, so you look like yourself to everyone in the match.
+
+## Implementation notes (deviations and details)
+
+- Wire size is 39 bytes (colours 5-6-5 bits, numbers in 0.01 steps, name 6 bits per character), not ~100. Because of the
+  quantisation a colour on screen can differ from your hex by up to ~3%.
+- The display name is upper-cased (`[A-Z0-9 _-]`). Colour fields left out keep the stock look for that part (the match
+  colour); `weapons.edge` / `weapons.star` fall back to `colors.glow`.
+- `colors.glow` is lifted to value >= 0.6 and `colors.suit_base` is capped at value 0.35 (hue kept).
+- The greaves and knee bands stay in the match colour unless the character wears `tabi_glow`, so teams still read from the legs.
+- `torso.emblem` 1..15 draws a small glyph on the chest in the glow colour (0 keeps the stock core diamond).
+- Files over 16 KiB, deeper than 12 levels or with more than 2000 values are refused. The remembered file path is stored
+  beside `settings.cfg` as `character.path`.
 
 ## Rules the game enforces (so every character stays fair and readable)
 

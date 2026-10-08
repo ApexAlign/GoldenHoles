@@ -69,6 +69,8 @@ pub struct Replicator {
     ropes: HashMap<u16, [i32; 3]>,
     /// Last team broadcast per player (`TeamAssign`), and the last `TeamScore` sent.
     teams: HashMap<u16, u8>,
+    /// Last custom look broadcast per player (`CharacterLook`).
+    looks: HashMap<u16, shinobi_proto::character::Wire>,
     last_team_score: Option<([u16; 2], u8)>,
     /// Shurikens replicated per snapshot right now (shrinks under load, see `build_round`).
     disc_cap: usize,
@@ -79,6 +81,15 @@ pub struct Replicator {
     margins: HashMap<u16, i32>,
     /// Playtest statistics (see `telemetry.rs`); reports come out through `take_telemetry`.
     telemetry: crate::telemetry::Telemetry,
+}
+
+/// First id of the bot range (humans take 1..=200; see `shinobi_proto::colour`).
+const BOT_ID_MIN: u16 = 201;
+
+/// What everyone sees for `p`: the validated look they sent, or for a bot a built-in preset so the effect shows
+/// without files. `None` = the stock ninja.
+fn effective_look(p: &Player) -> Option<shinobi_proto::character::Wire> {
+    p.look.or_else(|| (p.id >= BOT_ID_MIN && p.id <= 255).then(|| shinobi_proto::character::preset(p.id as usize).to_wire()))
 }
 
 impl Replicator {
@@ -95,6 +106,7 @@ impl Replicator {
             log: Vec::new(),
             ropes: HashMap::new(),
             teams: HashMap::new(),
+            looks: HashMap::new(),
             last_team_score: None,
             disc_cap: PROJECTILE_ID_MAX,
             stuck_ids: HashMap::new(),
@@ -133,6 +145,19 @@ impl Replicator {
                 changed.push(NetEvent::TeamAssign { player: p.id, team: p.team });
             }
         }
+        // custom looks (catch-up), and the newcomer's own (a bot's preset is known at once)
+        let mut look_changed = Vec::new();
+        for p in server.players.iter() {
+            if let Some(wire) = effective_look(p) {
+                st.outbox.push(NetEvent::CharacterLook { player: p.id, wire });
+                if self.looks.insert(p.id, wire) != Some(wire) {
+                    look_changed.push(NetEvent::CharacterLook { player: p.id, wire });
+                }
+            }
+        }
+        for ev in look_changed {
+            self.broadcast(ev);
+        }
         if let Some((score, result)) = self.team_score_now(server) {
             st.outbox.push(NetEvent::TeamScore { tick: now_tick, score, result });
         }
@@ -165,6 +190,7 @@ impl Replicator {
     }
 
     pub fn remove_peer(&mut self, _server: &mut Server, id: u16, now_tick: u32) {
+        self.looks.remove(&id);
         if self.teams.remove(&id).is_some() {
             self.broadcast(NetEvent::TeamAssign { player: id, team: shinobi_sim::events::TEAM_NONE });
         }
@@ -202,6 +228,7 @@ impl Replicator {
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
         self.sync_teams(server, tick);
+        self.sync_looks(server);
         self.sync_blocks(server);
         for p in &mut server.players {
             if let Some(m) = p.queue.take_margin() {
@@ -283,6 +310,17 @@ impl Replicator {
         }
         for (cell, hp_q) in hurt {
             self.broadcast(NetEvent::BlockDamaged { cell, hp_q });
+        }
+    }
+
+    /// A player's custom look changed (client sent a new one) -> one reliable event for everyone.
+    fn sync_looks(&mut self, server: &Server) {
+        for p in server.players.iter() {
+            if let Some(wire) = effective_look(p) {
+                if self.looks.insert(p.id, wire) != Some(wire) {
+                    self.broadcast(NetEvent::CharacterLook { player: p.id, wire });
+                }
+            }
         }
     }
 
@@ -1201,6 +1239,44 @@ mod tests {
         let t = s.tick;
         r.remove_peer(&mut s, 3, t);
         assert!(teams_for(&mut r, &s, 1).contains(&NetEvent::TeamAssign { player: 3, team: TEAM_NONE }));
+    }
+
+    #[test]
+    fn custom_looks_are_revalidated_replicated_and_caught_up() {
+        use shinobi_proto::character::{preset, CharacterSpec, WIRE_LEN};
+        use shinobi_proto::intent::{ClientPacket, PlayerIntent};
+        let (mut s, mut r) = two_peers();
+        let looks_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter().filter_map(|e| if let NetEvent::CharacterLook { player, wire } = e { Some((player, wire)) } else { None }).collect::<Vec<_>>()
+        };
+        r.post_frame(&mut s);
+        assert!(looks_for(&mut r, &s, 2).is_empty(), "stock ninjas cost nothing");
+        // player 1 sends hostile bytes: the server stores and replicates the canonical, rule-abiding form
+        let hostile = [0xFFu8; WIRE_LEN];
+        let t = s.tick;
+        let pkt = ClientPacket { look: Some(hostile), intents: vec![PlayerIntent { tick: t, ..Default::default() }], ..Default::default() };
+        s.ingest(1, &pkt.encode().unwrap());
+        r.post_frame(&mut s);
+        let canon = CharacterSpec::canonical_wire(&hostile);
+        assert_ne!(canon, hostile);
+        assert_eq!(looks_for(&mut r, &s, 2), vec![(1, canon)]);
+        assert_eq!(looks_for(&mut r, &s, 1), vec![(1, canon)], "the sender gets its own echo (the ack)");
+        // resending the same look does not re-broadcast
+        s.ingest(1, &pkt.encode().unwrap());
+        r.post_frame(&mut s);
+        assert_eq!(looks_for(&mut r, &s, 2).len(), 1, "same look: no second event (the one pending is just unacked)");
+        // a late human gets the catch-up; a bot arrives with a preset everyone hears about
+        s.add_player(3, [9.0, 0.81, 0.0]);
+        r.add_peer(&s, 3, s.tick);
+        s.add_player(201, [12.0, 0.81, 0.0]);
+        r.add_peer(&s, 201, s.tick);
+        let got = looks_for(&mut r, &s, 3);
+        assert!(got.contains(&(1, canon)) && got.contains(&(201, preset(201).to_wire())), "{got:?}");
+        assert!(looks_for(&mut r, &s, 2).contains(&(201, preset(201).to_wire())));
     }
 
     #[test]

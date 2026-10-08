@@ -368,6 +368,7 @@ fn mode_ui(
     mut net: ResMut<Net>,
     mut audio: Option<ResMut<crate::audio::AudioSettings>>,
     mut music: Option<ResMut<crate::audio::MusicCmds>>,
+    mut my_look: ResMut<crate::character_look::MyLook>,
 ) {
     // F1: bring the first-30-seconds controls strip back (or put it away)
     if keys.just_pressed(KeyCode::F1) {
@@ -410,6 +411,22 @@ fn mode_ui(
                 let res = console.0.submit(&mut settings.0, kills, me);
                 if res.settings_changed {
                     save(&settings.0);
+                }
+                if let Some(choice) = res.character {
+                    match choice {
+                        None => {
+                            my_look.0 = None;
+                            shinobi_client::character_file::remember(None);
+                        }
+                        Some(file) => match shinobi_client::character_file::load(std::path::Path::new(&file)) {
+                            Ok(spec) => {
+                                console.0.push(format!("character: {}", if spec.name.is_empty() { "loaded" } else { &spec.name }));
+                                my_look.0 = Some(spec);
+                                shinobi_client::character_file::remember(Some(std::path::Path::new(&file)));
+                            }
+                            Err(e) => console.0.push(format!("character: {e}")),
+                        },
+                    }
                 }
                 if let Some(a) = audio.as_deref_mut() {
                     for cmd in res.audio {

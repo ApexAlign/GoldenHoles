@@ -62,6 +62,9 @@ pub enum NetEvent {
     /// A flash star whited `victim` out: `strength_q` / 255, for `ticks` sim ticks. Everyone gets it (cheap, rare); only
     /// the victim's client draws the white-out.
     StarBlind { tick: u32, victim: u16, strength_q: u8, ticks: u16 },
+    /// `player`'s custom look (`shinobi_proto::character`, already validated by the server). Sent to everyone on join
+    /// (catch-up) and whenever it changes; stock-look players send none.
+    CharacterLook { player: u16, wire: shinobi_proto::character::Wire },
 }
 
 /// `NetEvent::StarFx::what`.
@@ -265,6 +268,13 @@ impl NetEvent {
                 w.write_bits(*strength_q as u32, 8);
                 w.write_bits(*ticks as u32, 16);
             }
+            Self::CharacterLook { player, wire } => {
+                w.write_bits(25, 5);
+                w.write_bits(*player as u32, 16);
+                for b in wire {
+                    w.write_bits(*b as u32, 8);
+                }
+            }
         }
     }
 
@@ -364,6 +374,14 @@ impl NetEvent {
             }
             21 => Self::BlockDamaged { cell: read_v3(r, [0; 3])?, hp_q: r.read_bits(8)? as u8 },
             23 => Self::StarFx { tick: r.read_varint()?, what: r.read_bits(3)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
+            25 => {
+                let player = r.read_bits(16)? as u16;
+                let mut wire = [0u8; shinobi_proto::character::WIRE_LEN];
+                for b in wire.iter_mut() {
+                    *b = r.read_bits(8)? as u8;
+                }
+                Self::CharacterLook { player, wire }
+            }
             24 => Self::StarBlind { tick: r.read_varint()?, victim: r.read_bits(16)? as u16, strength_q: r.read_bits(8)? as u8, ticks: r.read_bits(16)? as u16 },
             _ => return Err(DecodeError::Malformed),
         })
@@ -598,6 +616,7 @@ mod tests {
             NetEvent::StarFx { tick: 70_000, what: STAR_FX_MINE_BURST, owner: 9, pos: [-20_000, 512, 33_333] },
             NetEvent::StarFx { tick: 70_001, what: STAR_FX_SMOKE_GONE, owner: 65_535, pos: [0, 0, 0] },
             NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
+            NetEvent::CharacterLook { player: 7, wire: shinobi_proto::character::preset(1).to_wire() },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

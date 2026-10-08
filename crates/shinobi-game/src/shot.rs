@@ -327,7 +327,7 @@ fn ent(pos: [f32; 3], vel: [f32; 3], kind: MoveKind) -> EntityState {
 }
 
 /// Scripted world, a pure function of the tick: us standing still, a runner, a dasher and a jumper.
-fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
+fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>, my_look: Res<crate::character_look::MyLook>) {
     net.0.advance_clock();
     let t = net.0.local_tick();
     let sec = (t / 60.0) as f32;
@@ -388,6 +388,23 @@ fn offline_world(mut net: ResMut<Net>, base: Res<OfflineSpawn>) {
     }
     snap.entities.extend(rguard);
     snap.entities.extend(ropen);
+    // SHOT_CHAR=file.json dresses us (first person) and every other player in that character file;
+    // SHOT_CHAR=presets gives each other player a built-in look. Unset = untouched (goldens stay exact).
+    match std::env::var("SHOT_CHAR").ok().as_deref() {
+        Some("presets") => {
+            for (id, _) in snap.entities.iter().filter(|(id, _)| *id != 1) {
+                net.0.game.net.inject_look(*id, &shinobi_proto::character::preset(*id as usize));
+            }
+        }
+        Some(_) => {
+            if let Some(spec) = &my_look.0 {
+                for (id, _) in snap.entities.iter().filter(|(id, _)| *id != 1) {
+                    net.0.game.net.inject_look(*id, spec);
+                }
+            }
+        }
+        None => {}
+    }
     // SHOT_FX=guard: our own shield up (first-person blade + shield + HUD ring)
     net.0.game.force_blocking(has("guard"));
     net.0.game.net.interp.push(snap, t);

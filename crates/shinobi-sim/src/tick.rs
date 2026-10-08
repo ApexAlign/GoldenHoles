@@ -80,6 +80,8 @@ pub struct Player {
     pub last_pkt: Option<(u16, u32)>,
     /// The client's own ping / correction report and the server tick it arrived on (telemetry only).
     pub client_report: Option<(shinobi_proto::intent::ClientReport, u32)>,
+    /// Custom look, canonical (re-validated) wire bytes. Cosmetic only; the replicator broadcasts changes.
+    pub look: Option<shinobi_proto::character::Wire>,
     /// Server tick of the newest intent whose aim was applied (a hitching client may skip ticks: the aim slew
     /// allowance grows with the gap).
     pub last_aim_tick: u32,
@@ -268,6 +270,7 @@ impl Server {
             team,
             last_pkt: None,
             client_report: None,
+            look: None,
             last_aim_tick: 0,
             clash: None,
             clash_ready_tick: 0,
@@ -387,6 +390,12 @@ impl Server {
                 // newest by sequence number (wrapping), so a reordered older packet does not move the echo backwards
                 if p.last_pkt.map_or(true, |(s, _)| (1..0x8000).contains(&pkt.seq.wrapping_sub(s))) {
                     p.last_pkt = Some((pkt.seq, tick));
+                }
+                if let Some(w) = &pkt.look {
+                    let canon = shinobi_proto::character::CharacterSpec::canonical_wire(w);
+                    if p.look != Some(canon) {
+                        p.look = Some(canon);
+                    }
                 }
                 if let Some(r) = pkt.report {
                     p.client_report = Some((r, tick));

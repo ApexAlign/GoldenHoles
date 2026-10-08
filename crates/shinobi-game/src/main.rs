@@ -89,6 +89,21 @@ fn main() {
         .expect("--server ADDR:PORT");
 
     let flag = |k: &str| args.iter().any(|a| a == k);
+    // custom character: `--character FILE`, else $SHINOBI_CHARACTER, else (live play only) the remembered one
+    {
+        let live = !["--shot", "--shot-offline", "--record", "--headless"].iter().any(|f| flag(f));
+        let (found, notes) = shinobi_client::character_file::startup(arg_value(&args, "--character"), std::env::var("SHINOBI_CHARACTER").ok(), live);
+        for n in notes {
+            eprintln!("{n}");
+        }
+        if let Some((file, spec)) = &found {
+            eprintln!("character: {} ({})", file.display(), if spec.name.is_empty() { "unnamed" } else { &spec.name });
+            if arg_value(&args, "--character").is_some() && live {
+                shinobi_client::character_file::remember(Some(file));
+            }
+        }
+        character_look::set_startup_look(found.map(|f| f.1));
+    }
     // `--tier high|medium|low` pins the quality tier; without it (or with `--tier auto`) the live game picks one from
     // the GPU class and steps down when frames run long. Shots always use a fixed tier (default high).
     let tier_arg = arg_value(&args, "--tier").filter(|t| !t.eq_ignore_ascii_case("auto"));

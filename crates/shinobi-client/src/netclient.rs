@@ -73,6 +73,11 @@ pub struct NetClient {
     ropes: HashMap<u16, [f32; 3]>,
     /// Team of every player (from `TeamAssign`), team kills and the match result (from `TeamScore`).
     teams: HashMap<u16, u8>,
+    /// Custom looks of every player (from `CharacterLook`), validated again by `from_wire`.
+    looks: HashMap<u16, shinobi_proto::character::CharacterSpec>,
+    /// Our look as canonical wire bytes; sent with every packet until the server echoes it back.
+    my_look: Option<shinobi_proto::character::Wire>,
+    look_acked: bool,
     team_score: [u16; 2],
     team_result: u8,
     /// Health of hurt pieces (1/255ths of their limit; absent = untouched), from `BlockDamaged`.
@@ -142,6 +147,9 @@ impl Default for NetClient {
             events: Vec::new(),
             ropes: HashMap::new(),
             teams: HashMap::new(),
+            looks: HashMap::new(),
+            my_look: None,
+            look_acked: true,
             team_score: [0; 2],
             team_result: 0,
             blocks: HashMap::new(),
@@ -284,6 +292,13 @@ impl NetClient {
                 NetEvent::MapChange { .. } => self.ropes.clear(),
                 NetEvent::TeamAssign { player, team } if team == shinobi_sim::events::TEAM_NONE => {
                     self.teams.remove(&player);
+                    self.looks.remove(&player);
+                }
+                NetEvent::CharacterLook { player, wire } => {
+                    if Some(player) == self.player_id() && self.my_look == Some(wire) {
+                        self.look_acked = true;
+                    }
+                    self.looks.insert(player, shinobi_proto::character::CharacterSpec::from_wire(&wire));
                 }
                 NetEvent::TeamAssign { player, team } => {
                     self.teams.insert(player, team);
@@ -588,6 +603,25 @@ impl NetClient {
         self.teams.get(&player).copied()
     }
 
+    /// `player`'s custom look, once the server has replicated it (`None` = stock ninja).
+    pub fn look_of(&self, player: u16) -> Option<&shinobi_proto::character::CharacterSpec> {
+        self.looks.get(&player)
+    }
+
+    /// Pretend the server replicated `spec` for `player` (offline review shots and tests only).
+    pub fn inject_look(&mut self, player: u16, spec: &shinobi_proto::character::CharacterSpec) {
+        self.looks.insert(player, spec.clone());
+    }
+
+    /// Choose our look (sent to the server in the next packets until echoed). `None` = stock ninja.
+    pub fn set_look(&mut self, spec: Option<&shinobi_proto::character::CharacterSpec>) {
+        let wire = spec.filter(|s| !s.is_default()).map(|s| s.to_wire());
+        if wire != self.my_look {
+            self.my_look = wire;
+            self.look_acked = wire.is_none();
+        }
+    }
+
     /// How many players' teams we know (headless health checks).
     pub fn teams_known(&self) -> usize {
         self.teams.len()
@@ -658,6 +692,7 @@ impl NetClient {
         });
         let pkt = ClientPacket {
             report,
+            look: if self.look_acked { None } else { self.my_look },
             seq: self.seq,
             ack_snapshot_tick: self.interp.newest_tick().unwrap_or(0),
             ack_event_seq: self.inbox.ack(),
@@ -1002,6 +1037,41 @@ mod tests {
         c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
         assert_eq!((c.frag_limit(), c.team_frag_limit(), c.time_limit_secs()), (Some(7), Some(40), Some(240)));
         assert_eq!(c.respawn_secs(), Some(2.5));
+    }
+
+    #[test]
+    fn our_look_rides_every_packet_until_the_server_echoes_it() {
+        use shinobi_proto::character::{preset, CharacterSpec};
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let it = |t: u32| PlayerIntent { tick: t, ..Default::default() };
+        let look_in = |c: &mut NetClient, t: u32| ClientPacket::decode(&c.next_packet(it(t), t as f64).unwrap()).unwrap().look;
+        assert_eq!(look_in(&mut c, 5), None, "stock ninja sends nothing");
+        let me = preset(3);
+        c.set_look(Some(&me));
+        assert_eq!(look_in(&mut c, 6), Some(me.to_wire()));
+        assert_eq!(look_in(&mut c, 7), Some(me.to_wire()), "repeated until acked");
+        // the server's echo (and another player's look) arrive as reliable events
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::CharacterLook { player: 1, wire: me.to_wire() });
+        ob.push(NetEvent::CharacterLook { player: 2, wire: preset(1).to_wire() });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!(look_in(&mut c, 8), None, "echo seen: stop sending");
+        assert_eq!(c.look_of(2), Some(&preset(1)));
+        assert_eq!(c.look_of(9), None);
+        // changing the look sends again; clearing it sends nothing
+        c.set_look(Some(&CharacterSpec { name: "NEW".into(), ..me.clone() }));
+        assert!(look_in(&mut c, 9).is_some());
+        c.set_look(None);
+        assert_eq!(look_in(&mut c, 10), None);
+        // a player who leaves is forgotten
+        ob.push(NetEvent::TeamAssign { player: 2, team: shinobi_sim::events::TEAM_NONE });
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
+        assert_eq!(c.look_of(2), None);
     }
 
     #[test]

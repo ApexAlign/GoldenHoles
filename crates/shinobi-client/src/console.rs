@@ -35,6 +35,8 @@ pub struct ConsoleOut {
     /// `settings` were edited: apply and save them.
     pub settings_changed: bool,
     pub audio: Vec<AudioCmd>,
+    /// `/character PATH` (`Some(Some(path))`) or `/character off` (`Some(None)`): the shell loads and applies it.
+    pub character: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +103,17 @@ impl Console {
             }
             return res;
         }
+        if let Some(rest) = character_cmd(line) {
+            if rest.is_empty() {
+                self.push("/character PATH  load a shinobi-character/1 json (see docs/CHARACTER_SPEC.md); /character off");
+            } else if rest.eq_ignore_ascii_case("off") {
+                self.push("character: stock ninja");
+                res.character = Some(None);
+            } else {
+                res.character = Some(Some(rest.to_string()));
+            }
+            return res;
+        }
         let (changed, out) = exec(line, settings, kills, me);
         for l in out {
             self.push(l);
@@ -115,6 +128,13 @@ impl Console {
     pub fn clear(&mut self) {
         self.log.clear();
     }
+}
+
+/// `/character <rest of line>`: the argument (a path may hold spaces), empty when none. `None` = another command.
+fn character_cmd(line: &str) -> Option<&str> {
+    let l = line.trim_start_matches('/');
+    let (cmd, rest) = l.split_once(char::is_whitespace).unwrap_or((l, ""));
+    cmd.eq_ignore_ascii_case("character").then(|| rest.trim())
 }
 
 /// `/vol 0..100`, `/mute`, `/unmute`: the audio commands, handled apart from `exec` because they change shell state,
@@ -242,6 +262,21 @@ mod tests {
             c.type_char(ch);
         }
         c.submit(s, &[], 3)
+    }
+
+    #[test]
+    fn character_command_hands_the_path_to_the_shell() {
+        let (mut c, mut s) = (Console::default(), Settings::default());
+        c.input = "/character characters/my file.json".into();
+        let out = c.submit(&mut s, &[], 1);
+        assert_eq!(out.character, Some(Some("characters/my file.json".into())));
+        assert!(!out.settings_changed);
+        c.input = "/character OFF".into();
+        assert_eq!(c.submit(&mut s, &[], 1).character, Some(None));
+        c.input = "/character".into();
+        let out = c.submit(&mut s, &[], 1);
+        assert_eq!(out.character, None);
+        assert!(c.log().any(|l| l.contains("shinobi-character/1")));
     }
 
     #[test]
