@@ -914,6 +914,72 @@ mod tests {
         assert!(p.iter().all(|v| v.is_finite()));
     }
 
+    const ALL_SRC: [Src; 11] = [Src::Match, Src::Base, Src::Trim, Src::Glow, Src::Visor, Src::Glove, Src::Scarf, Src::Hair, Src::Skin, Src::Edge, Src::Star];
+    const ALL_ROLES: [Role; 5] = [Role::Dark, Role::Accent, Role::Glow, Role::Hot, Role::Plain];
+
+    #[test]
+    fn stock_and_default_specs_paint_exactly_the_stock_colours() {
+        let hue = [0.1, 0.9, 0.7];
+        let d = CharacterSpec::default();
+        for role in ALL_ROLES {
+            for src in ALL_SRC {
+                assert_eq!(paint(role, src, hue, None), role_colour(role, hue));
+                assert_eq!(paint(role, src, hue, Some(&d)), role_colour(role, hue), "{role:?} {src:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn custom_colours_replace_only_their_own_slot_and_keep_the_hot_core_rules() {
+        let mut sp = CharacterSpec::default();
+        sp.col[C_GLOW] = pack565([255, 79, 216]);
+        sp.col[C_SKIN] = pack565([224, 180, 148]);
+        sp.sanitize();
+        let hue = [0.0, 0.9, 1.0];
+        // glow slot: lifted like the stock glow role, from the character's colour
+        let g = paint(Role::Glow, Src::Glow, hue, Some(&sp));
+        assert!(g[0] > g[1] && g[2] > g[1], "pink glow stays pink: {g:?}");
+        assert!(g.iter().copied().fold(0.0, f32::max) > 2.5, "HDR boosted like the stock glow");
+        // edge falls back to the glow colour; the visor is unset so it keeps the match colour
+        assert_eq!(paint(Role::Hot, Src::Edge, hue, Some(&sp)), role_colour(Role::Hot, sp.rgb(C_GLOW).unwrap().map(|v| v as f32 / 255.0)));
+        assert_eq!(paint(Role::Hot, Src::Visor, hue, Some(&sp)), role_colour(Role::Hot, hue));
+        // gloves fall back to skin; plain slots are drawn exactly as given
+        let skin = sp.rgb(C_SKIN).unwrap().map(|v| v as f32 / 255.0);
+        assert_eq!(paint(Role::Plain, Src::Glove, hue, Some(&sp)), skin);
+    }
+
+    #[test]
+    fn glyph_sheet_has_fifteen_distinct_glyphs() {
+        assert!(glyph_segments(0).is_empty() && glyph_segments(16).is_empty());
+        let all: Vec<_> = (1..=15u8).map(glyph_segments).collect();
+        for (i, g) in all.iter().enumerate() {
+            assert!(!g.is_empty() && g.len() <= 4, "glyph {}", i + 1);
+            assert!(g.iter().all(|s| s[..2].iter().all(|v| v.abs() <= 1.0) && s[2] > 0.0 && s[3] > 0.0));
+            for h in &all[i + 1..] {
+                assert_ne!(g, h);
+            }
+        }
+    }
+
+    #[test]
+    fn longer_scarf_links_reach_further() {
+        let anchor = Vec3::new(0.0, 1.4, 0.0);
+        let reach = |len: f32| {
+            let mut p = [anchor - Vec3::Y * 0.1; SCARF_SEGS + 1];
+            for _ in 0..240 {
+                scarf_step_len(&mut p, anchor, Vec3::Z, Vec3::ZERO, 1.0 / 60.0, len);
+            }
+            (p[SCARF_SEGS] - p[0]).length()
+        };
+        assert!(reach(1.5) > reach(1.0) * 1.3 && reach(0.5) < reach(1.0) * 0.7);
+    }
+
+    #[test]
+    fn colour_keys_distinguish_nearby_colours() {
+        assert_ne!(colour_key([0.1, 0.2, 0.3]), colour_key([0.1, 0.2, 0.31]));
+        assert_eq!(colour_key([1.0, 2.0, 3.0]), colour_key([1.0, 2.0, 3.0]));
+    }
+
     #[test]
     fn role_colours_order_dark_to_hot() {
         let hue = [0.1, 0.8, 1.0];
