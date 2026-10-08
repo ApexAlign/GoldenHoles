@@ -37,3 +37,11 @@ of four mines: owners 2 and 5 armed and near = bright, owner 1 unarmed and 6 arm
 `star_world_flash.png` (burst shell mid-pop), `star_world_mineburst.png`, `star_world_starkinds.png` (flying mine / flash / smoke discs),
 `star_world_blind.png` (full white-out). HUD frames (CPU, `hud_dump`): `hud_cpu_star_sel_{mine,flash,smoke,mine_dry}.png` (selector, cost rings,
 unaffordable in magenta), `hud_cpu_star_cycle_hint.png`, `hud_cpu_star_blind.png`.
+
+## Power weapons (docs/powerups.md)
+World frames (lavapipe, same recipe as above, `SHOT_FX=yumi|arrows|tags|tagblast|pedestals`): `power_world_yumi.png` (our own drawn bow bottom left
+with the string back, a bow drawn straight at us with its bright laser glint and a faint one aimed off to the side, an arrow and a parried-back cyan arrow),
+`power_world_arrows.png` (three streaking arrows), `power_world_tags.png` (tags arming on the floor, a flying one, one stuck on a player with its pip ring),
+`power_world_tagblast.png` (blast shell mid-pop), `power_world_pedestals.png` (a bow and tag pedestals glowing, one dimmed after being taken).
+HUD frames (CPU, `hud_dump`): `hud_cpu_power_draw.png`, `hud_cpu_power_full.png` (ring closed, RELEASE), `hud_cpu_power_tags_live.png` (DETONATE prompt),
+`hud_cpu_power_tag_on_me.png` (TAG ON YOU countdown), `hud_cpu_power_glint.png` (bow drawn on you + a pickup call-out).
