@@ -520,6 +520,7 @@ impl BotMem {
             block: blocking,
             mark: false,
             star: if buttons & Buttons::FIRE != 0 { self.star_pick } else { 0 },
+            draw: false,
         };
         // leaving Strike hands the ticket back
         if released {

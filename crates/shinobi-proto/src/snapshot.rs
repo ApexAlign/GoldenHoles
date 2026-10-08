@@ -344,6 +344,42 @@ pub const DISC_STUCK: u8 = 1 << 4;
 pub const DISC_ARMED: u8 = 1 << 5;
 pub const STUCK_NORMAL_SPEED: f32 = 8.0;
 
+/// Power-weapon entities (docs/powerups.md), ids from `POWER_ID_BASE` (stable for the object's life, `uid & 0xFF`):
+/// * `ARROW_ID_BASE..`: a yumi arrow. `yaw` = owner id, `vel` = its velocity, `flags` bit 0 = turned around by a parry.
+/// * `TAG_ID_BASE..`: a fuda tag. `yaw` = owner id. Flying (`TAG_FLYING`): `vel` is its velocity. Stuck: `vel` = surface normal
+///   * `STUCK_NORMAL_SPEED`, or with `TAG_ON_PLAYER` `vel[0]` = the victim's id; `TAG_ARMED`; `fx` = fuse left in 1/15ths.
+/// * `DRAW_ID_BASE..` (+ the drawer's id & 0xFF): a bow held out. `pos` = eye, `vel` = aim * `STUCK_NORMAL_SPEED`, `yaw` =
+///   owner id, `fx` = draw progress in 1/15ths. Others see the glint of the aim line from it.
+pub const POWER_ID_BASE: EntityId = 0x6000;
+pub const ARROW_ID_BASE: EntityId = 0x6000;
+pub const TAG_ID_BASE: EntityId = 0x6100;
+pub const DRAW_ID_BASE: EntityId = 0x6200;
+pub const POWER_ID_END: EntityId = 0x6300;
+pub const ARROW_REFLECTED: u8 = 1 << 0;
+pub const TAG_FLYING: u8 = 1 << 0;
+pub const TAG_ON_PLAYER: u8 = 1 << 1;
+pub const TAG_ARMED: u8 = 1 << 2;
+
+/// What a snapshot entity id is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityClass {
+    Player,
+    Disc,
+    Arrow,
+    Tag,
+    Draw,
+}
+
+pub fn entity_class(id: EntityId) -> EntityClass {
+    match id {
+        i if i < PROJECTILE_ID_BASE => EntityClass::Player,
+        i if i < POWER_ID_BASE => EntityClass::Disc,
+        i if i < TAG_ID_BASE => EntityClass::Arrow,
+        i if i < DRAW_ID_BASE => EntityClass::Tag,
+        _ => EntityClass::Draw,
+    }
+}
+
 /// Pack a disc's `flags`: bounce count (0..=3), star kind (0..=3) and the landed / armed bits.
 pub fn disc_flags(bounces: u8, kind: u8, stuck: bool, armed: bool) -> u8 {
     (bounces.min(3)) | ((kind & 3) << 2) | if stuck { DISC_STUCK } else { 0 } | if armed { DISC_ARMED } else { 0 }

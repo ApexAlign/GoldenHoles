@@ -79,7 +79,7 @@ fn weapon_index(k: shinobi_sim::combat::DamageKind) -> u8 {
         Shuriken => 0,
         Slash => 1,
         GridBeam => 2,
-        Mine => 0, // a mine counts toward the sharpshooter (stars)
+        Mine | Arrow | Tag => 0, // mines, arrows and tags count toward the sharpshooter
     }
 }
 

@@ -119,8 +119,8 @@ impl Replicator {
     /// New peer: queues the live world (pickups, obstacles, blocks, teams, ropes) so late joiners see it.
     pub fn add_peer(&mut self, server: &Server, id: u16, now_tick: u32) {
         let mut st = PeerState::default();
-        for (pid, pos, _kind) in server.pickups.active() {
-            st.outbox.push(NetEvent::PickupSpawned { tick: now_tick, id: pid, pos: q_pos3(pos), kind: 0 });
+        for (pid, pos, weapon) in server.pickups.active_weapons() {
+            st.outbox.push(NetEvent::PickupSpawned { tick: now_tick, id: pid, pos: q_pos3(pos), kind: weapon as u8 });
         }
         for o in self.obstacles.not_ended_at(now_tick) {
             st.outbox.push(NetEvent::ObstacleSpawn(*o));
@@ -218,6 +218,16 @@ impl Replicator {
             }
             self.obstacles.prune(tick);
             server.hazards.obstacles.prune(tick);
+        }
+    }
+
+    /// Power weapon moments of the last frame -> reliable `PowerFx` (sounds and effects for everyone).
+    fn sync_power(&mut self, server: &Server, tick: u32) {
+        use shinobi_sim::combat::CombatEvent;
+        for (owner, e) in &server.events {
+            if let CombatEvent::PowerFx { what, pos } = *e {
+                self.broadcast(NetEvent::PowerFx { tick, what, owner: *owner, pos: q_pos3([pos.x, pos.y, pos.z]) });
+            }
         }
     }
 
@@ -382,6 +392,7 @@ impl Replicator {
         let pickups = std::mem::take(&mut server.pickup_events);
         let who = |id: u16| if id == NO_ATTACKER { 0 } else { id };
         self.sync_stars(server, tick);
+        self.sync_power(server, tick);
         for ev in pvp {
             match ev {
                 PvpEvent::Hit { attacker, victim, amount, kind, head, bonus, .. } => {
@@ -454,12 +465,26 @@ impl Replicator {
         }
         for ev in pickups {
             match ev {
-                PickupEvent::Spawned { tick, id, pos, .. } => {
-                    self.broadcast(NetEvent::PickupSpawned { tick, id, pos: q_pos3(pos), kind: 0 })
+                PickupEvent::Spawned { tick, id, pos, weapon, .. } => {
+                    self.broadcast(NetEvent::PickupSpawned { tick, id, pos: q_pos3(pos), kind: weapon as u8 })
                 }
-                PickupEvent::Taken { tick, id, player, .. } => {
-                    self.log_line(tick, format!("PICKUP  p{player} took cube #{id}"));
-                    self.broadcast(NetEvent::PickupTaken { tick, id, player })
+                PickupEvent::Taken { tick, id, player, weapon, .. } => {
+                    use shinobi_sim::power::PowerKind;
+                    let what = match weapon {
+                        PowerKind::None => "cube",
+                        PowerKind::Yumi => "the yumi",
+                        PowerKind::Tag => "fuda tags",
+                    };
+                    self.log_line(tick, format!("PICKUP  p{player} took {what} #{id}"));
+                    self.broadcast(NetEvent::PickupTaken { tick, id, player });
+                    // the whole server hears who picked up a power weapon
+                    let code = match weapon {
+                        PowerKind::Yumi => shinobi_sim::power_pass::FX_PICKUP_YUMI,
+                        PowerKind::Tag => shinobi_sim::power_pass::FX_PICKUP_TAG,
+                        PowerKind::None => continue,
+                    };
+                    let pos = server.players.iter().find(|p| p.id == player).map_or([0.0; 3], |p| p.pos(&server.world));
+                    self.broadcast(NetEvent::PowerFx { tick, what: code, owner: player, pos: q_pos3(pos) });
                 }
             }
         }
@@ -604,6 +629,9 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32
         star_max: star.map_or(0, |s| s.1.round().clamp(1.0, 15.0) as u8),
         star_energy: star.map_or(0, |s| (s.0 * 16.0).round().clamp(0.0, 255.0) as u8),
         star_locked: star.map_or(false, |s| s.2),
+        power_kind: p.power.kind as u8,
+        power_ammo: p.power.ammo,
+        power_left_q: (p.power.left * 4.0).ceil().clamp(0.0, 255.0) as u8,
         has_state: acked.is_some(),
         acked_tick: acked.unwrap_or(0),
         hp_x10: if p.vitals.alive() { (p.vitals.hp * 10.0).round().clamp(1.0, u16::MAX as f32) as u16 } else { 0 },
@@ -625,6 +653,8 @@ fn weapon_code(k: DamageKind) -> u8 {
         DamageKind::Slash => gameplay::KIND_SLASH,
         DamageKind::GridBeam => gameplay::KIND_GRID_BEAM,
         DamageKind::Mine => gameplay::KIND_MINE,
+        DamageKind::Arrow => gameplay::KIND_ARROW,
+        DamageKind::Tag => gameplay::KIND_TAG,
     }
 }
 
@@ -642,6 +672,8 @@ fn kind_verb(kind: u8) -> &'static str {
         gameplay::KIND_SLASH => "sliced",
         gameplay::KIND_GRID_BEAM => "grid-beamed",
         gameplay::KIND_MINE => "stepped on a mine star",
+        gameplay::KIND_ARROW => "shot through with a yumi arrow",
+        gameplay::KIND_TAG => "blew up with a fuda tag",
         gameplay::KIND_OBSTACLE => "hit a neon obstacle",
         _ => "ran into a light wall",
     }
@@ -728,7 +760,59 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize, stuck: &[(u16, En
         ));
     }
     entities.extend_from_slice(stuck);
+    power_entities(server, &mut entities);
     Snapshot { tick, entities }
+}
+
+/// Arrows in flight, fuda tags and the bows being drawn as snapshot entities (ids documented in `snapshot.rs`), sorted by id.
+fn power_entities(server: &Server, entities: &mut Vec<(u16, EntityState)>) {
+    use shinobi_proto::snapshot::{ARROW_ID_BASE, ARROW_REFLECTED, DRAW_ID_BASE, STUCK_NORMAL_SPEED, TAG_ARMED, TAG_FLYING, TAG_ID_BASE, TAG_ON_PLAYER};
+    let pc = server.balance.combat.power;
+    let tc = pc.tag;
+    let mut out: Vec<(u16, EntityState)> = Vec::new();
+    for a in &server.arrows {
+        out.push((
+            ARROW_ID_BASE + (a.uid & 0xFF),
+            EntityState {
+                pos: q_pos3(a.pos),
+                vel: [q_vel(a.vel[0]), q_vel(a.vel[1]), q_vel(a.vel[2])],
+                yaw: a.owner,
+                kind: MoveKind::Airborne,
+                flags: if a.reflected { ARROW_REFLECTED } else { 0 },
+                fx: 0,
+            },
+        ));
+    }
+    for t in &server.tags {
+        let n = STUCK_NORMAL_SPEED;
+        let (vel, flags) = if !t.stuck {
+            ([q_vel(t.vel[0]), q_vel(t.vel[1]), q_vel(t.vel[2])], TAG_FLYING)
+        } else if let Some((victim, _)) = t.on {
+            ([victim as i16, 0, 0], TAG_ON_PLAYER | if t.armed(&tc) { TAG_ARMED } else { 0 })
+        } else {
+            ([q_vel(t.normal[0] * n), q_vel(t.normal[1] * n), q_vel(t.normal[2] * n)], if t.armed(&tc) { TAG_ARMED } else { 0 })
+        };
+        out.push((TAG_ID_BASE + (t.uid & 0xFF), EntityState { pos: q_pos3(t.pos), vel, yaw: t.owner, kind: MoveKind::Airborne, flags, fx: (t.fuse_left(&tc) * 15.0).round() as u8 }));
+    }
+    for p in server.players.iter().filter(|p| p.vitals.alive() && p.power.drawing) {
+        let at = p.pos(&server.world);
+        let eye = [at[0], at[1] + p.ch.eye_above(), at[2]];
+        let d = shinobi_sim::combat::stars::view_dir(shinobi_proto::quant::dq_yaw(p.yaw), shinobi_proto::quant::dq_pitch(p.pitch));
+        out.push((
+            DRAW_ID_BASE + (p.id & 0xFF),
+            EntityState {
+                pos: q_pos3(eye),
+                vel: [q_vel(d[0] * STUCK_NORMAL_SPEED), q_vel(d[1] * STUCK_NORMAL_SPEED), q_vel(d[2] * STUCK_NORMAL_SPEED)],
+                yaw: p.id,
+                kind: MoveKind::Airborne,
+                flags: 0,
+                fx: (p.power.draw_frac(&pc) * 15.0).round() as u8,
+            },
+        ));
+    }
+    out.sort_by_key(|e| e.0);
+    out.dedup_by_key(|e| e.0);
+    entities.extend(out);
 }
 
 /// Test helper: apply the event section of a datagram the way a client does.

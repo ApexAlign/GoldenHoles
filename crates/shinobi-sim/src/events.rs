@@ -62,6 +62,9 @@ pub enum NetEvent {
     /// A flash star whited `victim` out: `strength_q` / 255, for `ticks` sim ticks. Everyone gets it (cheap, rare); only
     /// the victim's client draws the white-out.
     StarBlind { tick: u32, victim: u16, strength_q: u8, ticks: u16 },
+    /// A power weapon (yumi / fuda tag) moment worth an effect and a sound at `pos`: `what` = `power_pass::FX_*`, by `owner`
+    /// (pickup call-outs name who took it). The arrows and tags themselves ride in the snapshot.
+    PowerFx { tick: u32, what: u8, owner: u16, pos: [i32; 3] },
 }
 
 /// `NetEvent::StarFx::what`.
@@ -265,6 +268,13 @@ impl NetEvent {
                 w.write_bits(*strength_q as u32, 8);
                 w.write_bits(*ticks as u32, 16);
             }
+            Self::PowerFx { tick, what, owner, pos } => {
+                w.write_bits(25, 5);
+                w.write_varint(*tick);
+                w.write_bits(*what as u32 & 31, 5);
+                w.write_bits(*owner as u32, 16);
+                write_v3(w, *pos, [0; 3]);
+            }
         }
     }
 
@@ -365,6 +375,7 @@ impl NetEvent {
             21 => Self::BlockDamaged { cell: read_v3(r, [0; 3])?, hp_q: r.read_bits(8)? as u8 },
             23 => Self::StarFx { tick: r.read_varint()?, what: r.read_bits(3)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
             24 => Self::StarBlind { tick: r.read_varint()?, victim: r.read_bits(16)? as u16, strength_q: r.read_bits(8)? as u8, ticks: r.read_bits(16)? as u16 },
+            25 => Self::PowerFx { tick: r.read_varint()?, what: r.read_bits(5)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -598,6 +609,7 @@ mod tests {
             NetEvent::StarFx { tick: 70_000, what: STAR_FX_MINE_BURST, owner: 9, pos: [-20_000, 512, 33_333] },
             NetEvent::StarFx { tick: 70_001, what: STAR_FX_SMOKE_GONE, owner: 65_535, pos: [0, 0, 0] },
             NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
+            NetEvent::PowerFx { tick: 70_003, what: 13, owner: 4, pos: [-20_000, 512, 33_333] },
         ];
         let mut w = BitWriter::new();
         for e in &evs {
