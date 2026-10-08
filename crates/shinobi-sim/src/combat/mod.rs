@@ -112,6 +112,10 @@ pub enum DamageKind {
     GridBeam,
     /// A mine star's burst.
     Mine,
+    /// A yumi arrow (`power.rs`).
+    Arrow,
+    /// An explosive fuda tag's blast (`power.rs`).
+    Tag,
 }
 
 /// Which katana move a `CombatEvent::Slash` was (docs/melee.md, "Katana moves").
@@ -170,6 +174,8 @@ pub enum CombatEvent {
     StarGone { kind: stars::StarKind, pos: Point<Real> },
     /// Server only: `victim` is white-out blind for `ticks` at `strength_q` / 255 (events of the thrower).
     StarBlind { victim: u16, strength_q: u8, ticks: u16 },
+    /// A power weapon moment for sound / FX (`power::FX_*`), at `pos` (server only, forwarded as `NetEvent::PowerFx`).
+    PowerFx { what: u8, pos: Point<Real> },
     /// A MARK star struck `target` (`collider` = its hitbox): no damage, the server marks that player for the katana.
     MarkHit { target: u128, collider: ColliderHandle },
     ShurikenBounce { pos: Point<Real>, normal: Vector<Real> },

@@ -153,6 +153,8 @@ pub fn insert_static_box(w: &mut PhysicsWorld, b: &LevelBox) {
 pub struct PickupPoint {
     pub pos: [f32; 3],
     pub respawn_secs: f32,
+    /// `PowerKind::None` = a data cube (`pickup`); `yumi` / `tag` lines are power-weapon pedestals (docs/powerups.md).
+    pub kind: crate::power::PowerKind,
 }
 
 /// Everything a level file says. `LevelDesc` is the part both sides need.
@@ -163,12 +165,15 @@ pub struct LevelFile {
 }
 
 pub const DEFAULT_PICKUP_RESPAWN_SECS: f32 = 20.0;
+pub const DEFAULT_WEAPON_RESPAWN_SECS: f32 = 45.0;
 
 /// Parse a level file: one directive per line, `#` starts a comment.
 /// ```text
 /// box    cx cy cz  hx hy hz [rot_z_radians]   # static cuboid (centre, half extents), optional roll for ramps
 /// spawn  x y z [team]                          # capsule-centre spawn point; team 0 Cyan / 1 Orange, omitted = either
 /// pickup x y z [respawn_secs]                  # power-up cube, default respawn 20 s
+/// yumi   x y z [respawn_secs]                  # power-weapon pedestal: digital bow (default respawn 45 s)
+/// tag    x y z [respawn_secs]                  # power-weapon pedestal: explosive fuda tags (default respawn 45 s)
 /// ```
 /// Errors name the line. A level needs at least one `box` and one `spawn`.
 pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
@@ -200,12 +205,16 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
                 }
                 spawns.push([nums[0], nums[1], nums[2]]);
             }
-            ("pickup", 3 | 4) => pickups.push(PickupPoint {
-                pos: [nums[0], nums[1], nums[2]],
-                respawn_secs: nums.get(3).copied().unwrap_or(DEFAULT_PICKUP_RESPAWN_SECS),
-            }),
-            ("box" | "spawn" | "pickup", _) => return Err(err("wrong number of values")),
-            _ => return Err(err("unknown directive (box | spawn | pickup)")),
+            ("pickup" | "yumi" | "tag", 3 | 4) => {
+                let (kind, default) = match kind {
+                    "yumi" => (crate::power::PowerKind::Yumi, DEFAULT_WEAPON_RESPAWN_SECS),
+                    "tag" => (crate::power::PowerKind::Tag, DEFAULT_WEAPON_RESPAWN_SECS),
+                    _ => (crate::power::PowerKind::None, DEFAULT_PICKUP_RESPAWN_SECS),
+                };
+                pickups.push(PickupPoint { pos: [nums[0], nums[1], nums[2]], respawn_secs: nums.get(3).copied().unwrap_or(default), kind });
+            }
+            ("box" | "spawn" | "pickup" | "yumi" | "tag", _) => return Err(err("wrong number of values")),
+            _ => return Err(err("unknown directive (box | spawn | pickup | yumi | tag)")),
         }
     }
     if boxes.is_empty() {
@@ -246,7 +255,12 @@ impl LevelFile {
             out += &format!("spawn {x} {y} {z}\n");
         }
         for p in &self.pickups {
-            out += &format!("pickup {} {} {} {}\n", p.pos[0], p.pos[1], p.pos[2], p.respawn_secs);
+            let word = match p.kind {
+                crate::power::PowerKind::None => "pickup",
+                crate::power::PowerKind::Yumi => "yumi",
+                crate::power::PowerKind::Tag => "tag",
+            };
+            out += &format!("{word} {} {} {} {}\n", p.pos[0], p.pos[1], p.pos[2], p.respawn_secs);
         }
         out
     }
@@ -346,6 +360,16 @@ mod tests {
     }
 
     #[test]
+    fn yumi_and_tag_lines_are_weapon_pedestals_with_a_45_second_default_and_survive_the_round_trip() {
+        use crate::power::PowerKind;
+        let f = parse_level_file("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\npickup 8 1 0\nyumi 0 20 0\ntag 3 1 3 30\n").unwrap();
+        let kinds: Vec<_> = f.pickups.iter().map(|p| (p.kind, p.respawn_secs)).collect();
+        assert_eq!(kinds, vec![(PowerKind::None, 20.0), (PowerKind::Yumi, 45.0), (PowerKind::Tag, 30.0)]);
+        assert_eq!(parse_level_file(&f.to_text()).unwrap(), f);
+        assert!(parse_level_file("box 0 0 0 1 1 1\nspawn 0 0 0\nyumi 1 2").unwrap_err().contains("line 3: wrong number"));
+    }
+
+    #[test]
     fn parse_errors_name_the_line() {
         for (text, needle) in [
             ("box 0 0 0 1 1\nspawn 0 0 0", "line 1: wrong number"),
@@ -371,7 +395,7 @@ mod tests {
                 ],
                 spawns: vec![[0.0, 0.81, 0.0], [4.25, 0.81, -4.0]],
             },
-            pickups: vec![PickupPoint { pos: [8.0, 1.0, 0.0], respawn_secs: 5.5 }],
+            pickups: vec![PickupPoint { pos: [8.0, 1.0, 0.0], respawn_secs: 5.5, kind: crate::power::PowerKind::None }],
         };
         assert_eq!(parse_level_file(&f.to_text()).unwrap(), f);
         assert_eq!(LevelDesc::from_text(&f.to_text()).unwrap(), f.level);

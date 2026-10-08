@@ -187,6 +187,35 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         let blind = HudState { blind: 0.75, ..sel(StarKind::Standard, 5.0, None) };
         out.push(("star_blind", Hud::build_with(&blind, &p)));
     }
+    // power weapons (docs/powerups.md): the bow half drawn and at full draw, a spent tag bag with tags out, a tag on you, a bow
+    // drawn on you with a pickup call-out
+    {
+        use crate::hud_power::{Callout, PowerHud, TagOnMe};
+        use crate::power_view::PowerView;
+        use shinobi_sim::power::{PowerCfg, PowerKind, PowerState};
+        let cfg = PowerCfg::default();
+        let yumi = |draw: f32, ammo: u8| {
+            let mut s = PowerState::default();
+            s.grant(PowerKind::Yumi, ammo, 0.0, &cfg);
+            let mut v = PowerView::of(&s, &cfg, 0, 0).unwrap();
+            v.draw = draw;
+            v.full = draw >= 1.0;
+            v
+        };
+        let with = |h: PowerHud| HudState { power: Some(h), star: Some(StarHud { charges: 6.0, max: 6.0, idle: 5.0, ..Default::default() }), ..base() };
+        out.push(("power_draw", Hud::build_with(&with(PowerHud { view: Some(yumi(0.55, 3)), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_full", Hud::build_with(&with(PowerHud { view: Some(yumi(1.0, 2)), time: 0.3, ..Default::default() }), &p)));
+        let mut tags = PowerView::of(&PowerState::default(), &cfg, 2, 1).unwrap();
+        tags.kind = PowerKind::Tag;
+        tags.ammo = 0;
+        tags.ammo_max = 2;
+        tags.left = 0.6;
+        tags.left_secs = 36.0;
+        out.push(("power_tags_live", Hud::build_with(&with(PowerHud { view: Some(tags), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_tag_on_me", Hud::build_with(&with(PowerHud { tag_on_me: Some(TagOnMe { secs: 1.3, armed: true }), time: 0.3, ..Default::default() }), &p)));
+        let callouts = vec![Callout { text: format!("{} TOOK THE YUMI", callsign(5)), age: 0.6, kind: 0, mine: false }];
+        out.push(("power_glint", Hud::build_with(&with(PowerHud { glint: 0.9, callouts, view: Some(yumi(0.0, 1)), time: 0.3, ..Default::default() }), &p)));
+    }
     let low = HudState {
         guarding: true,
         guard_spent: 0.85,

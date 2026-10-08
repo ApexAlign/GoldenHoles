@@ -12,6 +12,7 @@ use rapier3d::prelude::*;
 
 use crate::character::{Cfg, PhysicsWorld};
 use crate::combat::powerup::PowerupKind;
+use crate::power::{PowerCfg, PowerKind};
 use crate::tick::Player;
 
 /// Half extent of the cube's pickup volume (the visible data-cube is smaller).
@@ -20,8 +21,9 @@ pub const PICKUP_HALF: f32 = 0.4;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PickupEvent {
     /// A cube appeared (match start, or its respawn timer elapsed).
-    Spawned { tick: u32, id: u32, pos: [f32; 3], kind: PowerupKind },
-    Taken { tick: u32, id: u32, player: u16, kind: PowerupKind },
+    /// `weapon` != None: a pedestal / dropped power weapon (the yumi or a fuda tag, `power.rs`) instead of a data cube.
+    Spawned { tick: u32, id: u32, pos: [f32; 3], kind: PowerupKind, weapon: PowerKind },
+    Taken { tick: u32, id: u32, player: u16, kind: PowerupKind, weapon: PowerKind },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -30,8 +32,12 @@ pub struct PickupPoint {
     pub pos: [f32; 3],
     pub kind: PowerupKind,
     pub respawn_ticks: u32,
-    /// Seconds the collected charge lasts in the inventory.
+    /// Seconds the collected charge lasts in the inventory (a power weapon: its remaining carry time, 0 = a fresh load).
     pub charge_secs: f32,
+    /// A power weapon instead of a data cube: only players with empty hands take it, into `Player::power`.
+    pub weapon: PowerKind,
+    /// Power weapon: arrows / tags in it (0 = a fresh load; a dropped weapon keeps what was left).
+    pub ammo: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,6 +78,11 @@ impl Pickups {
         self.slots.iter().filter(|s| s.active).map(|s| (s.point.id, s.point.pos, s.point.kind))
     }
 
+    /// Active pickups with their power weapon kind (`PowerKind::None` = a data cube).
+    pub fn active_weapons(&self) -> impl Iterator<Item = (u32, [f32; 3], PowerKind)> + '_ {
+        self.slots.iter().filter(|s| s.active).map(|s| (s.point.id, s.point.pos, s.point.weapon))
+    }
+
     /// Ticks until a taken cube is back, `None` if it is up (HUD respawn pips).
     pub fn ticks_until_back(&self, id: u32, now: u32) -> Option<u32> {
         let s = self.slots.iter().find(|s| s.point.id == id && !s.active)?;
@@ -87,7 +98,7 @@ impl Pickups {
         }
     }
 
-    pub fn update(&mut self, tick: u32, world: &PhysicsWorld, players: &mut [Player], ch: &Cfg, out: &mut Vec<PickupEvent>) {
+    pub fn update(&mut self, tick: u32, world: &PhysicsWorld, players: &mut [Player], ch: &Cfg, pcfg: &PowerCfg, out: &mut Vec<PickupEvent>) {
         let capsule = Capsule::new_y(ch.half_height, ch.radius);
         self.slots.retain(|s| !(s.one_shot && reached(tick, s.expires_at)));
         for s in &mut self.slots {
@@ -100,7 +111,7 @@ impl Pickups {
             }
             if !s.announced {
                 s.announced = true;
-                out.push(PickupEvent::Spawned { tick, id: s.point.id, pos: s.point.pos, kind: s.point.kind });
+                out.push(PickupEvent::Spawned { tick, id: s.point.id, pos: s.point.pos, kind: s.point.kind, weapon: s.point.weapon });
             }
             let cube = Cuboid::new(vector![PICKUP_HALF, PICKUP_HALF, PICKUP_HALF]);
             let at = Isometry::translation(s.point.pos[0], s.point.pos[1], s.point.pos[2]);
@@ -108,7 +119,8 @@ impl Pickups {
             // nearest capsule centre wins, then lowest id; only players who can actually hold a charge
             let mut best: Option<(f32, u16, usize)> = None;
             for (i, p) in players.iter().enumerate() {
-                if !p.vitals.alive() || p.combat.powerups.free_slots() == 0 {
+                let room = if s.point.weapon == PowerKind::None { p.combat.powerups.free_slots() > 0 } else { !p.power.held() };
+                if !p.vitals.alive() || !room {
                     continue;
                 }
                 let body = *world.bodies[p.ch.body].position();
@@ -121,10 +133,15 @@ impl Pickups {
                 }
             }
             if let Some((_, id, i)) = best {
-                if players[i].combat.powerups.grant(s.point.kind, s.point.charge_secs) {
+                let got = if s.point.weapon == PowerKind::None {
+                    players[i].combat.powerups.grant(s.point.kind, s.point.charge_secs)
+                } else {
+                    players[i].power.grant(s.point.weapon, s.point.ammo, s.point.charge_secs, pcfg)
+                };
+                if got {
                     s.active = false;
                     s.ready_at = if s.one_shot { s.expires_at } else { tick.wrapping_add(s.point.respawn_ticks) };
-                    out.push(PickupEvent::Taken { tick, id: s.point.id, player: id, kind: s.point.kind });
+                    out.push(PickupEvent::Taken { tick, id: s.point.id, player: id, kind: s.point.kind, weapon: s.point.weapon });
                 }
             }
         }

@@ -158,7 +158,7 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
 
-## Network events (protocol v17, for client authors)
+## Network events (protocol v18, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:

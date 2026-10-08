@@ -23,7 +23,9 @@ use shinobi_proto::gameplay::{Board, HitMsg};
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{dq_pitch, dq_yaw};
 use shinobi_proto::quant::{dq_pos, dq_pos3, dq_vel};
-use shinobi_proto::snapshot::{disc_kind, EntityId, DISC_ARMED, DISC_STUCK, PROJECTILE_ID_BASE, STUCK_NORMAL_SPEED};
+use shinobi_proto::snapshot::{disc_kind, EntityId, DISC_ARMED, DISC_STUCK, POWER_ID_BASE, PROJECTILE_ID_BASE, STUCK_NORMAL_SPEED};
+use shinobi_sim::power::{PowerCfg, PowerEvent, PowerInput, PowerKind, PowerState};
+use crate::power_view::{PowerView, PowerWorld};
 use shinobi_proto::TICK_DT;
 use shinobi_sim::balance::FeedbackBalance;
 use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
@@ -533,6 +535,12 @@ pub struct RenderView {
     pub lock: Option<LockOn>,
     /// Lock-on edges since the previous view, in order, for audio / flashes to trigger on.
     pub lock_edges: Vec<LockEdge>,
+    /// The power weapon in hand (docs/powerups.md), predicted; `None` with empty hands and no tags out.
+    pub power: Option<PowerView>,
+    /// Arrows, fuda tags and drawn bows in the newest snapshot (everyone's, ours included).
+    pub power_world: PowerWorld,
+    /// Our own power-weapon moments since the previous view (bow drawn, arrow loosed, tag thrown...), for pose and sound.
+    pub power_events: Vec<PowerEvent>,
     /// Every live block as `(owner, cell)`; centre = `(cell + 0.5) * block_size`. Server-confirmed plus our own pending.
     pub blocks: Vec<BlockInfo>,
     /// Edge length of a block cell, metres. Slab geometry: `block_geometry`.
@@ -572,6 +580,10 @@ const STAR_REGEN_S: f32 = 0.45;
 const STAR_RESUME: f32 = 2.0;
 const MARK_COST: f32 = 2.0;
 pub const MARK_CHARGE_TICKS: u32 = 24;
+/// A throw-button hold up to this many ticks with a bow in the hands is a tap (still a star); `YumiCfg::tap_s` at 60 Hz.
+const YUMI_TAP_TICKS: u32 = 10;
+/// Ticks a thrown tag may be missing from the snapshot before the client stops counting it as live.
+const TAG_SNAPSHOT_GRACE: u32 = 24;
 
 const HOME_RANGE: f32 = 9.0;
 const HOME_CONE: f32 = 0.9;
@@ -646,6 +658,14 @@ pub struct ClientGame {
     fx_edges: LocalFx,
     throw_cd_left: f32,
     prev_flags: MoveFlags,
+    /// The power weapon in hand: the predicted copy of the server's `Player::power` (same code, `power.rs`), the last
+    /// (kind, ammo) report it was synced to, the sim ticks of tags thrown that the snapshot may not show yet, and the
+    /// moments since the last view. `fire_release_len` = ticks the throw button had been down at its release.
+    power: PowerState,
+    power_seen: Option<(u8, u8)>,
+    tag_throws: Vec<u32>,
+    power_events: Vec<PowerEvent>,
+    fire_release_len: u32,
     /// Number of corrections applied (replays), for stats / debug overlay.
     pub corrections: u32,
     /// The local death in progress (see `death_cam`).
@@ -712,6 +732,11 @@ impl ClientGame {
             fx_edges: LocalFx::default(),
             throw_cd_left: 0.0,
             prev_flags: MoveFlags::default(),
+            power: PowerState::default(),
+            power_seen: None,
+            tag_throws: Vec::new(),
+            power_events: Vec::new(),
+            fire_release_len: 0,
             corrections: 0,
             death: None,
             last_kill: None,
@@ -759,6 +784,7 @@ impl ClientGame {
                     self.fire_hold = Some(0);
                 } else if let Some(h) = self.fire_hold.take() {
                     self.fire_release = Some(h >= MARK_CHARGE_TICKS);
+                    self.fire_release_len = h;
                 }
             }
             Action::Cling => self.latch.set(Buttons::WALL_CLING, e.down),
@@ -976,13 +1002,15 @@ impl ClientGame {
         let (dx, dy) = frame.look;
         // block: the view is frozen where it was when the shield went up (the server applies no other aim while it is up)
         let blocking = self.block_held && self.death.is_none();
-        let (dx, dy) = if blocking { (0.0, 0.0) } else { (dx, dy) };
+        // a drawn bow slows the turn (docs/powerups.md: `combat.yumi.turn_mult`)
+        let turn_k = if self.power.drawing { PowerCfg::default().yumi.turn_mult } else { 1.0 };
+        let (dx, dy) = if blocking { (0.0, 0.0) } else { (dx * turn_k, dy * turn_k) };
         if dx != 0.0 || dy != 0.0 {
             self.settings.look(&mut self.aim, dx, dy, false);
             self.look_touch = false;
         }
         let (tx, ty) = self.touch.take_look();
-        let (tx, ty) = if blocking { (0.0, 0.0) } else { (tx, ty) };
+        let (tx, ty) = if blocking { (0.0, 0.0) } else { (tx * turn_k, ty * turn_k) };
         if tx != 0.0 || ty != 0.0 {
             self.settings.look(&mut self.aim, tx, ty, true); // the aim pad has its own sensitivity
             self.look_touch = true;
@@ -1033,10 +1061,42 @@ impl ClientGame {
             *h += 1;
         }
         if let Some(m) = self.fire_release.take() {
-            self.latch.set(Buttons::FIRE, true);
-            self.latch.set(Buttons::FIRE, false);
-            mark_now = m;
+            // a bow in the hands: the held button WAS the draw. A release after a real draw is the shot (or its cancel), no
+            // throw; only a tap still throws the star. Tags take every press as theirs and never charge a MARK star.
+            let bow_draw = self.power.kind == PowerKind::Yumi && self.fire_release_len > YUMI_TAP_TICKS;
+            if !bow_draw {
+                self.latch.set(Buttons::FIRE, true);
+                self.latch.set(Buttons::FIRE, false);
+                mark_now = m && self.power.kind == PowerKind::None;
+            }
         }
+        // the weapon the server says we hold (re-synced when its kind / ammo report changes, never on a stale repeat)
+        match self.net.power_report() {
+            Some((k, a, l)) => {
+                if self.power_seen != Some((k, a)) {
+                    self.power_seen = Some((k, a));
+                    let kind = PowerKind::from_u8(k);
+                    if kind == PowerKind::None {
+                        self.power.clear();
+                    } else if self.power.kind != kind {
+                        self.power.clear();
+                        self.power.grant(kind, a, l as f32 / 4.0, &PowerCfg::default());
+                    } else {
+                        self.power.ammo = a;
+                    }
+                }
+                if self.power.held() && (self.power.left - l as f32 / 4.0).abs() > 1.0 {
+                    self.power.left = l as f32 / 4.0;
+                }
+            }
+            None => {}
+        }
+        // our own tags that exist (snapshot) or were thrown a moment ago (the snapshot has not caught up yet)
+        let me_id = self.net.player_id().unwrap_or(0);
+        let (snap_live, snap_armed) = self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t)).map_or((0, 0), |s| PowerWorld::of(s, |_| None).tags_of(me_id));
+        self.tag_throws.retain(|t| tick.wrapping_sub(*t) < TAG_SNAPSHOT_GRACE);
+        let live_tags = snap_live.max(self.tag_throws.len() as u32);
+        let tag_press = self.power.kind == PowerKind::Tag && (self.power.ammo > 0 || live_tags > 0);
         let mut held = self.latch.sample();
         let blocking = blocking && !dead;
         if blocking {
@@ -1061,7 +1121,9 @@ impl ClientGame {
                 }
             }
         }
-        if held.has(Buttons::FIRE) {
+        if held.has(Buttons::FIRE) && tag_press {
+            mark_now = false; // the press belongs to the tags, no star is spent on it
+        } else if held.has(Buttons::FIRE) {
             if let Some((e, _, locked)) = &mut self.star_est {
                 let cost = if mark_now { MARK_COST } else { StarCfg::default().cost(self.star_sel, 1.0) };
                 if *locked || *e + 1e-3 < cost {
@@ -1106,9 +1168,26 @@ impl ClientGame {
         intent.mark = mark_now;
         // the throwable a plain press sends rides with the FIRE edge (a MARK star ignores it)
         intent.star = if intent.buttons.has(Buttons::FIRE) && !mark_now { self.star_sel as u8 } else { 0 };
-        if intent.buttons.has(Buttons::FIRE) && !mark_now {
+        if intent.buttons.has(Buttons::FIRE) && !mark_now && !tag_press {
             self.star_throws += 1;
         }
+        // the bow: the held throw button is the draw (the server also needs it to be a yumi, and slows the walk by it)
+        intent.draw = self.fire_hold.is_some() && self.power.kind == PowerKind::Yumi && !blocking && !dead;
+        // the weapon's own state machine, with exactly the inputs the server gives its copy
+        if dead {
+            self.power.clear();
+        } else {
+            let mut pev = Vec::new();
+            let armed = snap_armed;
+            self.power.update(TICK_DT, &PowerInput { draw: intent.draw, fire: intent.buttons.has(Buttons::FIRE), live_tags, armed_tags: armed, can_act: !blocking }, &PowerCfg::default(), &mut pev);
+            for e in pev {
+                if e == PowerEvent::TagThrow {
+                    self.tag_throws.push(tick);
+                }
+                self.power_events.push(e);
+            }
+        }
+        let star_fire_ok = !self.power.blocks_star();
         self.blocking = blocking;
         // flash white-out from the server (events of this tick); it also keeps lock-on from forming in our prediction
         for (q, ticks) in self.net.take_blind() {
@@ -1179,7 +1258,7 @@ impl ClientGame {
                     TICK_DT,
                     p.now,
                     &CombatInput {
-                        fire: intent.buttons.has(Buttons::FIRE),
+                        fire: intent.buttons.has(Buttons::FIRE) && star_fire_ok,
                         slice: intent.buttons.has(Buttons::SLICE),
                         ultimate: intent.ultimate,
                         mark: intent.mark,
@@ -1295,7 +1374,7 @@ impl ClientGame {
             }
         }
         if let Some(newest) = net.interp.newest_tick().and_then(|t| net.interp.get(t)) {
-            for (_, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && st.flags & DISC_STUCK != 0) {
+            for (_, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && *id < POWER_ID_BASE && st.flags & DISC_STUCK != 0) {
                 let (pos, kind) = (dq_pos3(st.pos), StarKind::from_u8(disc_kind(st.flags)));
                 // our own copy of it (landed a moment ago, not yet dropped) already covers it
                 if out.iter().any(|o| o.owner == st.yaw && o.kind == kind && within(o.pos, pos, 0.6)) {
@@ -1327,7 +1406,7 @@ impl ClientGame {
         let mut disc_kinds: Vec<StarKind> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.loadout.discs().iter().filter(|d| !d.stuck).map(|d| d.kind).collect());
         disc_kinds.resize(discs.len(), StarKind::Standard);
         if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
-            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && st.flags & DISC_STUCK == 0 && Some(st.yaw) != own_id) {
+            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && *id < POWER_ID_BASE && st.flags & DISC_STUCK == 0 && Some(st.yaw) != own_id) {
                 if let Some(s) = self.net.interp.sample(*id, rt) {
                     let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
                     discs.push((s.pos, v));
@@ -1441,6 +1520,14 @@ impl ClientGame {
         }
         let los_ids = self.los_cache.1.clone();
         let events = self.net.take_events();
+        let power_world = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
+            (Some(rt), Some(newest)) => PowerWorld::of(newest, |id| self.net.interp.sample(id, rt).map(|s| s.pos)),
+            (None, Some(newest)) => PowerWorld::of(newest, |_| None),
+            _ => PowerWorld::default(),
+        };
+        let (own_live, own_armed) = power_world.tags_of(own_id.unwrap_or(0));
+        let live_for_view = own_live.max(self.tag_throws.len() as u32);
+        let power = PowerView::of(&self.power, &PowerCfg::default(), live_for_view, own_armed).filter(|_| self.death.is_none());
         // who killed us (for the kill-cam): the Kill event can land before or after the dead flag
         if let Some(me) = own_id {
             for e in &events {
@@ -1505,6 +1592,9 @@ impl ClientGame {
             build_ghost: build_ghost.filter(|_| !dead),
             lock: lock.filter(|_| !dead),
             lock_edges: std::mem::take(&mut self.lock_edges),
+            power,
+            power_world,
+            power_events: std::mem::take(&mut self.power_events),
             blocks,
             block_size: BlockCfg::default().size,
             block_thickness: BlockCfg::default().thickness,

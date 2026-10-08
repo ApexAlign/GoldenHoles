@@ -66,7 +66,14 @@ fn dense_city_with_a_spawn_ring_on_every_tier_and_sparse_pickups() {
     let l = load();
     assert!((230..=420).contains(&l.level.boxes.len()), "{} boxes", l.level.boxes.len());
     assert!((16..=24).contains(&l.level.spawns.len()), "{} spawns", l.level.spawns.len());
-    assert!((4..=10).contains(&l.pickups.len()), "{} pickups: sparse", l.pickups.len());
+    let cubes = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::None).count();
+    assert!((4..=10).contains(&cubes), "{cubes} cubes: sparse");
+    let yumi = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::Yumi).count();
+    let tags = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::Tag).count();
+    assert!((1..=3).contains(&yumi) && (3..=6).contains(&tags), "{yumi} bows and {tags} tag bags: a handful, bows rare");
+    assert!(l.pickups.iter().filter(|p| p.kind != shinobi_sim::power::PowerKind::None).all(|p| p.respawn_secs == 45.0), "weapons respawn after 45 s");
+    // the bows sit on the highest towers
+    assert!(l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::Yumi).all(|p| p.pos[1] > 150.0));
     assert!(l.pickups.iter().all(|p| p.respawn_secs >= 10.0));
     for t in TIERS {
         let n = l.level.spawns.iter().filter(|s| (s[1] - 0.81 - t).abs() < 0.01).count();

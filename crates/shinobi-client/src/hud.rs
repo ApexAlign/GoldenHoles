@@ -9,7 +9,7 @@
 
 use shinobi_proto::snapshot::{FLAG_DEAD, FLAG_INVULN, MoveKind};
 use shinobi_sim::combat::{CombatEvent, DamageKind};
-use shinobi_proto::gameplay::{KIND_GRID_BEAM, KIND_MINE, KIND_SHURIKEN, KIND_SLASH, PHASE_INTERMISSION, PHASE_LIVE};
+use shinobi_proto::gameplay::{KIND_ARROW, KIND_GRID_BEAM, KIND_MINE, KIND_SHURIKEN, KIND_SLASH, KIND_TAG, PHASE_INTERMISSION, PHASE_LIVE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind, ScoreEntry};
 use shinobi_sim::pvp::{PvpEvent, Vitals};
@@ -74,7 +74,8 @@ impl Palette {
             DamageKind::Shuriken => self.cyan,
             DamageKind::Slash => self.orange,
             DamageKind::GridBeam => self.magenta,
-            DamageKind::Mine => self.magenta,
+            DamageKind::Mine | DamageKind::Tag => self.magenta,
+            DamageKind::Arrow => self.cyan,
         }
     }
 }
@@ -449,6 +450,8 @@ pub struct HudState {
     pub guard_flash: Option<(u8, f32)>,
     /// Star-energy pool readout (`hud_energy`); `None` hides it.
     pub star: Option<crate::hud_energy::StarHud>,
+    /// Power weapons: draw ring, ammo, tag countdown, bow glint, pickup call-outs (`hud_power`); `None` hides it.
+    pub power: Option<crate::hud_power::PowerHud>,
     /// Flash-star white-out 0..=1 (screen wash; `RenderView::blind`, already scaled by the settings' effect strength).
     pub blind: f32,
     /// Contextual hint on screen: id and age (`hud_energy::HintState`).
@@ -774,6 +777,8 @@ pub fn damage_kind(k: u8) -> DamageKind {
         KIND_SHURIKEN => DamageKind::Shuriken,
         KIND_GRID_BEAM => DamageKind::GridBeam,
         KIND_MINE => DamageKind::Mine,
+        KIND_ARROW => DamageKind::Arrow,
+        KIND_TAG => DamageKind::Tag,
         _ => DamageKind::Slash,
     }
 }
@@ -781,7 +786,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
 /// Environmental damage source: anything that is not a weapon kind (obstacles, and any retired kind an old
 /// server might still send, e.g. light walls).
 pub fn is_void(k: u8) -> bool {
-    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_MINE)
+    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_MINE | KIND_ARROW | KIND_TAG)
 }
 
 impl KillEntry {
@@ -1181,6 +1186,7 @@ impl Hud {
         }
         guard_cue(&mut out, s, p);
         crate::hud_energy::draw(&mut out, s, p, ax());
+        crate::hud_power::draw(&mut out, s, p, ax());
         if let Some(t) = s.boot {
             boot_sequence(&mut out, t, p);
         }
@@ -1543,6 +1549,8 @@ pub fn weapon_name(k: DamageKind) -> &'static str {
         DamageKind::Slash => "KATANA",
         DamageKind::GridBeam => "GRID BEAM",
         DamageKind::Mine => "MINE STAR",
+        DamageKind::Arrow => "YUMI ARROW",
+        DamageKind::Tag => "FUDA TAG",
     }
 }
 
@@ -2052,7 +2060,7 @@ impl Glyph {
             DamageKind::Slash => Glyph::Katana,
             DamageKind::Shuriken => Glyph::Shuriken,
             DamageKind::GridBeam => Glyph::Beam,
-            DamageKind::Mine => Glyph::Shuriken,
+            DamageKind::Mine | DamageKind::Arrow | DamageKind::Tag => Glyph::Shuriken,
         }
     }
 }

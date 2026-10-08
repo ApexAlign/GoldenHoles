@@ -79,7 +79,7 @@ fn weapon_index(k: shinobi_sim::combat::DamageKind) -> u8 {
         Shuriken => 0,
         Slash => 1,
         GridBeam => 2,
-        Mine => 0, // a mine counts toward the sharpshooter (stars)
+        Mine | Arrow | Tag => 0, // mines, arrows and tags count toward the sharpshooter
     }
 }
 
@@ -192,6 +192,8 @@ pub struct HudBridge {
     pub fx: HudFx,
     /// Star-pool edge tracking and the contextual hints (`hud_energy`); the shell syncs `hints.counts()` with the settings.
     star_fx: crate::hud_energy::StarFx,
+    /// Power weapon HUD state (`hud_power`): call-outs and clocks.
+    power_fx: crate::hud_power::PowerHudFx,
     pub hints: crate::hud_energy::HintState,
     /// Strength multiplier for the flash white-out (the shell sets it from the effect-strength / reduced-motion settings); None = 1.
     pub blind_mult: Option<f32>,
@@ -616,6 +618,7 @@ impl HudBridge {
         hs.guard_flash = self.fx.guard_flash();
         // star energy readout, hints (out of stars, shield low; other ids are triggered by their owners via `hint`)
         hs.star = self.star_fx.update(dt, view.star, view.charging, view.star_refused, view.star_sel);
+        hs.power = self.power_fx.update(dt, view, local_id, callsign);
         // the first plain throws: tell the player the throwable can be switched (stops once they have, or after 3 showings)
         if view.fx.threw.is_some() && view.star_sel == shinobi_sim::combat::stars::StarKind::Standard && view.star_throws >= 2 {
             if view.star_cycled {

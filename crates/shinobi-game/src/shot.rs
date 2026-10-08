@@ -69,7 +69,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
     .add_plugins(sky::SkyPlugin)
     .add_plugins(PlayPlugin)
     .add_plugins(crate::env_look::EnvLookPlugin)
-    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin))
+    .add_plugins((vm::VmPlugin, crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::team::TeamPlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin))
     .add_plugins(hud_view::HudPlugin)
     .insert_resource(ShotRequest { width: dims.0, height: dims.1 });
     app
@@ -270,6 +270,58 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 }
             }
             "blind" => v.blind = p,
+            // power weapons (docs/powerups.md). `yumi`: our bow drawn (gold, bottom of view), a player drawing a bow straight at us
+            // (the bright glint, owner 2) and one aiming off to the side (faint, owner 5), two arrows streaking past (one parried back)
+            "yumi" => {
+                use shinobi_client::power_view::{ArrowObj, DrawObj, PowerView};
+                use shinobi_sim::power::{PowerCfg, PowerKind, PowerState};
+                let cfg = PowerCfg::default();
+                let mut s = PowerState::default();
+                s.grant(PowerKind::Yumi, 2, 0.0, &cfg);
+                let mut pv = PowerView::of(&s, &cfg, 0, 0).unwrap();
+                pv.draw = 0.85;
+                v.power = Some(pv);
+                v.power_world.draws.push(DrawObj { pos: [bx - 0.4, by + 0.7, bz - 16.0], dir: [0.02, -0.03, 1.0], owner: 2, frac: 1.0 });
+                v.power_world.draws.push(DrawObj { pos: [bx + 7.0, by + 0.7, bz - 22.0], dir: [-0.5, 0.0, 0.87], owner: 5, frac: 0.6 });
+                v.power_world.arrows.push(ArrowObj { pos: [bx - 3.0, by + 0.5, bz - 9.0], vel: [0.0, 0.0, -90.0], owner: 2, reflected: false });
+                v.power_world.arrows.push(ArrowObj { pos: [bx + 2.2, by + 0.8, bz - 6.0], vel: [0.0, 0.0, 90.0], owner: 5, reflected: true });
+            }
+            // `arrows`: arrows in flight from three owners at different ranges (streaks)
+            "arrows" => {
+                use shinobi_client::power_view::ArrowObj;
+                // crossing the view from the side, like a shot from a flank: three owners, three ranges
+                for (owner, p, vel) in [(2u16, [3.5f32, 0.9f32, -7.0f32], [-90.0f32, -0.4f32, 0.0f32]), (5, [-4.0, 1.4, -11.0], [90.0, -0.3, -6.0]), (7, [1.0, 0.5, -5.0], [-64.0, -0.4, -64.0])] {
+                    v.power_world.arrows.push(ArrowObj { pos: [bx + p[0], by + p[1], bz + p[2]], vel, owner, reflected: false });
+                }
+            }
+            // `tags`: a tag stuck on the floor arming, one armed with the ring half gone, one flying, one stuck on player 4's torso
+            "tags" => {
+                use shinobi_client::power_view::TagObj;
+                let t = |pos: [f32; 3], vel: [f32; 3], normal: [f32; 3], owner, flying, on_player: Option<u16>, armed, fuse_left| TagObj { pos, vel, normal, owner, flying, on_player, armed, fuse_left };
+                v.power_world.tags.push(t([bx - 1.6, by - 0.77, bz - 5.0], [0.0; 3], [0.0, 1.0, 0.0], 2, false, None, false, 0.95));
+                v.power_world.tags.push(t([bx + 1.2, by - 0.77, bz - 6.5], [0.0; 3], [0.0, 1.0, 0.0], 5, false, None, true, 0.5));
+                v.power_world.tags.push(t([bx + 0.2, by + 0.7, bz - 3.5], [3.0, 2.0, -20.0], [0.0, 1.0, 0.0], 2, true, None, false, 1.0));
+                let on = v.remotes.iter().find(|(id, _)| *id == 4).map_or([bx + 8.0, by + 1.4, bz - 14.0], |(_, s)| [s.pos[0], s.pos[1] + 0.3, s.pos[2] + 0.5]);
+                v.power_world.tags.push(t(on, [0.0; 3], [0.0, 0.0, 1.0], 2, false, Some(4), true, 0.25));
+            }
+            // `tagblast`: the blast goes off at frame 112 (shell + floor ring + sparks), with a stuck tag still ticking nearby
+            "tagblast" => {
+                if frame == 112 {
+                    v.events.push(shinobi_sim::events::NetEvent::PowerFx { tick: 0, what: shinobi_sim::power_pass::FX_TAG_BLAST, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by - 0.6, bz - 8.0]) });
+                }
+            }
+            // `pedestals`: a yumi and two tag pedestals (and one taken) light up in front of us
+            "pedestals" => {
+                if frame == 3 {
+                    let q = shinobi_proto::quant::q_pos3;
+                    for (id, dx, dz, kind) in [(101u32, -3.0f32, -7.0f32, 1u8), (102, 0.5, -9.0, 2), (103, 4.0, -7.5, 2), (104, 7.0, -11.0, 2)] {
+                        v.events.push(shinobi_sim::events::NetEvent::PickupSpawned { tick: 0, id, pos: q([bx + dx, by + 0.2, bz + dz]), kind });
+                    }
+                }
+                if frame == 4 {
+                    v.events.push(shinobi_sim::events::NetEvent::PickupTaken { tick: 0, id: 104, player: 2 });
+                }
+            }
             "starkinds" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);

@@ -295,7 +295,7 @@ impl EmitterSystem {
             }
             // server-side outcomes: the world FX layer draws them from `NetEvent::StarFx`
             CombatEvent::StarBurst { .. } | CombatEvent::StarGone { .. } | CombatEvent::StarBlind { .. } => {}
-            CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } => {}
+            CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } | CombatEvent::PowerFx { .. } => {}
         }
     }
 

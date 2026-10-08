@@ -28,7 +28,7 @@ fn arena() -> Server {
     f.level.apply_to_server(&mut s);
     s.set_spawns(f.level.spawns.clone());
     s.set_balance(Balance::demo()).unwrap();
-    for (i, p) in f.pickups.iter().enumerate() {
+    for (i, p) in f.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::None).enumerate() {
         s.add_pickup(i as u32 + 1, p.pos, PowerupKind::GridBeam, p.respawn_secs);
     }
     // one long continuous match: no intermissions in the statistics

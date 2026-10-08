@@ -26,5 +26,7 @@ pub mod star_pass;
 pub mod team;
 pub mod own_state;
 pub mod pickups;
+pub mod power;
+pub mod power_pass;
 pub mod tick;
 pub mod walls;

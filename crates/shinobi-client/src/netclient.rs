@@ -105,6 +105,8 @@ pub struct NetClient {
     blind_in: Vec<(u8, u16)>,
     /// Star energy as the server last reported it: (pool size, energy in 1/16 charge, locked out).
     star: Option<(u8, u8, bool)>,
+    /// The power weapon the server says we hold: (`PowerKind` wire value, ammo, carry time left in 1/4 s).
+    power: Option<(u8, u8, u8)>,
     hits: Vec<HitMsg>,
     board: Option<Board>,
     /// Last tick handed out by `pace_tick`.
@@ -167,6 +169,7 @@ impl Default for NetClient {
             hp_x10: None,
             blind_in: Vec::new(),
             star: None,
+            power: None,
             hits: Vec::new(),
             board: None,
             cursor: None,
@@ -340,6 +343,7 @@ impl NetClient {
                 self.last_extras_tick = Some(snap.tick);
                 self.hp_x10 = Some(x.hp_x10);
                 self.star = (x.star_max > 0).then_some((x.star_max, x.star_energy, x.star_locked));
+                self.power = Some((x.power_kind, x.power_ammo, x.power_left_q));
                 self.intent_complete = self.intent_complete.max(x.intent_complete);
                 self.on_lead_margin(x.lead_margin as i32);
                 self.on_echo(x.echo_seq, x.echo_age, local_tick);
@@ -370,6 +374,11 @@ impl NetClient {
     /// Star energy as (charges, pool size, locked out) from the newest owner block; `None` = no pool in this match.
     pub fn star_energy(&self) -> Option<(f32, f32, bool)> {
         self.star.map(|(max, e, locked)| (e as f32 / 16.0, max as f32, locked))
+    }
+
+    /// The power weapon we hold as the server last reported it: (`PowerKind` wire value, ammo, carry time left in 1/4 s).
+    pub fn power_report(&self) -> Option<(u8, u8, u8)> {
+        self.power
     }
 
     /// Flash white-outs aimed at us since the last call: (strength 0..=255, sim ticks).

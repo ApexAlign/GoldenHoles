@@ -35,7 +35,7 @@ enum MineFate {
 
 impl Server {
     /// Clear line (no solid geometry) between two points.
-    fn los_clear(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+    pub(crate) fn los_clear(&self, a: [f32; 3], b: [f32; 3]) -> bool {
         let d = vector![b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let len = d.norm();
         if len < 1e-3 {

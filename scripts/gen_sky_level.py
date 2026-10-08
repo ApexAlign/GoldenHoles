@@ -359,6 +359,20 @@ for t in range(4):
         x, y, z = by_tier[t][len(by_tier[t]) // 2]
         pickups.append((x, y + 1.0, z, 25))
 
+# --------------------------------------------------------------------------------------------- power-weapon pedestals
+# docs/powerups.md: two YUMI (digital bow) on the highest towers (the central spire and the east crown tower: grapple or wall-run
+# up, rare, respawn 45 s) and four explosive TAG bags where the routes meet (the three turn plazas of the serpentine and the
+# tier-1 terrace). Pedestal height = dais top + 1 m, like every pickup.
+WEAPON_RESPAWN = 45
+weapons = [
+    ("yumi", 0.0, 200.0 + 0.6 + 1.0, 0.0),          # central spire (dais top 200.6)
+    ("yumi", 48.5, 187.0 + 0.6 + 1.0, 92.0),        # crown tower of tier 3 (top 187 + dais)
+    ("tag", 110.0, H[1] + 1.0, -60.0),              # plaza tier 0 -> 1
+    ("tag", -108.0, H[2] + 1.0, 2.0),               # plaza tier 1 -> 2
+    ("tag", 108.0, H[3] + 1.0, 52.0),               # plaza tier 2 -> 3
+    ("tag", -5.0, H[1] + 5.0 + 1.0, -42.0),         # tier-1 terrace roof (the one no cube uses)
+]
+
 # --------------------------------------------------------------------------------------------- write
 lines = [
     "# SHINOBI FFA SKY - a floating vertical city: 232 x 190 m, 200 m tall, four tiers at y 24 / 55 / 86 / 117, no ground (kill plane y=-20).",
@@ -384,7 +398,11 @@ lines.append("")
 lines.append("# --- %d pickups ---" % len(pickups))
 for x, y, z, r in pickups:
     lines.append("pickup %s %s %s %s" % (f(x), f(y), f(z), f(r)))
+lines.append("")
+lines.append("# --- %d power-weapon pedestals (yumi = bow, tag = explosive fuda tags; respawn %d s) ---" % (len(weapons), WEAPON_RESPAWN))
+for kind, x, y, z in weapons:
+    lines.append("%s %s %s %s %s" % (kind, f(x), f(y), f(z), f(WEAPON_RESPAWN)))
 
 out = sys.argv[1] if len(sys.argv) > 1 else "levels/ffa_sky.lvl"
 open(out, "w").write("\n".join(lines) + "\n")
-print("wrote %s: %d boxes, %d spawns, %d pickups" % (out, n, len(spawns), len(pickups)))
+print("wrote %s: %d boxes, %d spawns, %d pickups, %d weapon pedestals" % (out, n, len(spawns), len(pickups), len(weapons)))

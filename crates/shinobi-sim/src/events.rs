@@ -65,6 +65,9 @@ pub enum NetEvent {
     /// `player`'s custom look (`shinobi_proto::character`, already validated by the server). Sent to everyone on join
     /// (catch-up) and whenever it changes; stock-look players send none.
     CharacterLook { player: u16, wire: shinobi_proto::character::Wire },
+    /// A power weapon (yumi / fuda tag) moment worth an effect and a sound at `pos`: `what` = `power_pass::FX_*`, by `owner`
+    /// (pickup call-outs name who took it). The arrows and tags themselves ride in the snapshot.
+    PowerFx { tick: u32, what: u8, owner: u16, pos: [i32; 3] },
 }
 
 /// `NetEvent::StarFx::what`.
@@ -275,6 +278,13 @@ impl NetEvent {
                     w.write_bits(*b as u32, 8);
                 }
             }
+            Self::PowerFx { tick, what, owner, pos } => {
+                w.write_bits(26, 5);
+                w.write_varint(*tick);
+                w.write_bits(*what as u32 & 31, 5);
+                w.write_bits(*owner as u32, 16);
+                write_v3(w, *pos, [0; 3]);
+            }
         }
     }
 
@@ -383,6 +393,7 @@ impl NetEvent {
                 Self::CharacterLook { player, wire }
             }
             24 => Self::StarBlind { tick: r.read_varint()?, victim: r.read_bits(16)? as u16, strength_q: r.read_bits(8)? as u8, ticks: r.read_bits(16)? as u16 },
+            26 => Self::PowerFx { tick: r.read_varint()?, what: r.read_bits(5)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -617,6 +628,7 @@ mod tests {
             NetEvent::StarFx { tick: 70_001, what: STAR_FX_SMOKE_GONE, owner: 65_535, pos: [0, 0, 0] },
             NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
             NetEvent::CharacterLook { player: 7, wire: shinobi_proto::character::preset(1).to_wire() },
+            NetEvent::PowerFx { tick: 70_003, what: 13, owner: 4, pos: [-20_000, 512, 33_333] },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

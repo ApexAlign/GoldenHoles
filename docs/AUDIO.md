@@ -60,3 +60,9 @@ footsteps (stride-timed to speed, left/right pitch); jump, double jump, land, ha
 and low-health heartbeat; kill streak (rises in pitch); void fall whoosh, death sting, respawn chime; match start,
 victory and defeat stingers; UI click on menu / console open and close; ambient wind and hum.
 Footsteps do not vary by surface yet: the client does not expose the surface under the player.
+
+## Power weapons
+No new synth sounds: yumi draw = heavy-cut charge whine, loose = a low throw + heavy release, arrow hit = body thud / hard tick (head), blocked =
+block clang, parried = parry bell, cut down = clash, wall hit = ricochet; fuda tag throw = a high throw, stuck = print, armed = high refill ping, blast = air
+slam, floor drop = land, countdown beeps (rope pulse, faster as the fuse runs down) while a tag is stuck on you. Your own draw / loose / throw play from the
+prediction; the server's copies are skipped for you. Pickup call-outs: your own = refill ping, someone else's = a high execute chime. See docs/powerups.md.

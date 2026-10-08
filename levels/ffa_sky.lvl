@@ -418,3 +418,11 @@ pickup -25 30 -92 25
 pickup 12 61 -8 25
 pickup -25 92 8 25
 pickup 12 123 92 25
+
+# --- 6 power-weapon pedestals (yumi = bow, tag = explosive fuda tags; respawn 45 s) ---
+yumi 0 201.6 0 45
+yumi 48.5 188.6 92 45
+tag 110 56 -60 45
+tag -108 87 2 45
+tag 108 118 52 45
+tag -5 61 -42 45

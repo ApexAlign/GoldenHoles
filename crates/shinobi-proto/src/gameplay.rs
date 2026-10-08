@@ -16,6 +16,9 @@ pub const KIND_OBSTACLE: u8 = 3;
 pub const KIND_WALL: u8 = 4;
 /// A mine star's burst.
 pub const KIND_MINE: u8 = 5;
+/// A yumi arrow / a fuda tag's blast (docs/powerups.md).
+pub const KIND_ARROW: u8 = 6;
+pub const KIND_TAG: u8 = 7;
 
 /// One hit, owner-only and unreliable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -65,13 +68,17 @@ pub struct OwnExtras {
     pub star_max: u8,
     pub star_energy: u8,
     pub star_locked: bool,
+    /// The power weapon in hand (`PowerKind` wire value, 0 = none), arrows / tags left, carry time left in 1/4 s.
+    pub power_kind: u8,
+    pub power_ammo: u8,
+    pub power_left_q: u8,
 }
 
 /// `lead_margin` defaults to `LEAD_MARGIN_MAX`, which means "no measurement" (real margins are clamped to at most
 /// `LEAD_MARGIN_MAX - 1`): a block built without margin data (tests, other tools) must not steer the client's lead.
 impl Default for OwnExtras {
     fn default() -> Self {
-        Self { has_state: false, acked_tick: 0, hp_x10: 0, hits: Vec::new(), hit_seq: 0, intent_complete: 0, lead_margin: LEAD_MARGIN_MAX, echo_seq: 0, echo_age: 0, star_max: 0, star_energy: 0, star_locked: false }
+        Self { has_state: false, acked_tick: 0, hp_x10: 0, hits: Vec::new(), hit_seq: 0, intent_complete: 0, lead_margin: LEAD_MARGIN_MAX, echo_seq: 0, echo_age: 0, star_max: 0, star_energy: 0, star_locked: false, power_kind: 0, power_ammo: 0, power_left_q: 0 }
     }
 }
 
@@ -96,6 +103,11 @@ impl OwnExtras {
         if self.star_max > 0 {
             w.write_bits(self.star_energy as u32, 8);
             w.write_bool(self.star_locked);
+        }
+        w.write_bits(self.power_kind as u32 & 3, 2);
+        if self.power_kind & 3 != 0 {
+            w.write_bits(self.power_ammo as u32 & 15, 4);
+            w.write_bits(self.power_left_q as u32, 8);
         }
         let n = self.hits.len().min(MAX_HITS);
         w.write_bits(n as u32, 4);
@@ -132,6 +144,8 @@ impl OwnExtras {
         let echo_age = r.read_bits(8)? as u8;
         let star_max = r.read_bits(4)? as u8;
         let (star_energy, star_locked) = if star_max > 0 { (r.read_bits(8)? as u8, r.read_bool()?) } else { (0, false) };
+        let power_kind = r.read_bits(2)? as u8;
+        let (power_ammo, power_left_q) = if power_kind != 0 { (r.read_bits(4)? as u8, r.read_bits(8)? as u8) } else { (0, 0) };
         let n = r.read_bits(4)? as usize;
         let hit_seq = if n > 0 { r.read_bits(8)? as u8 } else { 0 };
         let mut hits = Vec::with_capacity(n);
@@ -146,7 +160,7 @@ impl OwnExtras {
                 bonus: r.read_bool()?,
             });
         }
-        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin, echo_seq, echo_age, star_max, star_energy, star_locked }, state))
+        Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin, echo_seq, echo_age, star_max, star_energy, star_locked, power_kind, power_ammo, power_left_q }, state))
     }
 }
 
@@ -227,7 +241,7 @@ mod tests {
     #[test]
     fn own_extras_roundtrip_with_and_without_state() {
         let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7, head: other == 7 || taken, bonus: other == 7 };
-        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3, echo_seq: 65_000, echo_age: 3, star_max: 6, star_energy: 77, star_locked: true };
+        let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3, echo_seq: 65_000, echo_age: 3, star_max: 6, star_energy: 77, star_locked: true, power_kind: 2, power_ammo: 1, power_left_q: 200 };
         let mut w = BitWriter::new();
         full.write(&mut w, |w| {
             w.write_bits(0b1011, 4); // stand-in for OwnState
@@ -240,7 +254,7 @@ mod tests {
         assert_eq!(st, Some((0b1011, 99)));
 
         // dead: extras only, state closure never runs
-        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255, intent_complete: 0, lead_margin: 15, echo_seq: 7, echo_age: 255, star_max: 0, star_energy: 0, star_locked: false };
+        let dead = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 0, hits: vec![hit(3, true)], hit_seq: 255, intent_complete: 0, lead_margin: 15, echo_seq: 7, echo_age: 255, star_max: 0, star_energy: 0, star_locked: false, power_kind: 0, power_ammo: 0, power_left_q: 0 };
         let mut w = BitWriter::new();
         dead.write(&mut w, |_| panic!("no state when dead"));
         let bytes = w.finish();
