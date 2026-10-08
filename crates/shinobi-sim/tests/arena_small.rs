@@ -48,7 +48,12 @@ fn small_and_uncluttered_with_a_spawn_ring_and_sparse_pickups() {
     assert!(l.level.boxes.len() <= 80, "{} boxes: the map must stay uncluttered", l.level.boxes.len());
     assert!(l.level.boxes.len() >= 12, "{} boxes: too empty to play on", l.level.boxes.len());
     assert!((8..=12).contains(&l.level.spawns.len()), "{} spawns", l.level.spawns.len());
-    assert!((2..=6).contains(&l.pickups.len()), "{} pickups: sparse", l.pickups.len());
+    let cubes = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::None).count();
+    assert!((2..=6).contains(&cubes), "{cubes} cubes: sparse");
+    let yumi = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::Yumi).count();
+    let tags = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::Tag).count();
+    assert!(yumi == 1 && (3..=5).contains(&tags), "{yumi} bow and {tags} tag bags");
+    assert!(l.pickups.iter().filter(|p| p.kind != shinobi_sim::power::PowerKind::None).all(|p| p.respawn_secs == 45.0), "weapons respawn after 45 s");
     assert!(l.pickups.iter().all(|p| p.respawn_secs >= 10.0));
 }
 

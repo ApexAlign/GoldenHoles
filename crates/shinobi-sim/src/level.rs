@@ -360,6 +360,16 @@ mod tests {
     }
 
     #[test]
+    fn yumi_and_tag_lines_are_weapon_pedestals_with_a_45_second_default_and_survive_the_round_trip() {
+        use crate::power::PowerKind;
+        let f = parse_level_file("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\npickup 8 1 0\nyumi 0 20 0\ntag 3 1 3 30\n").unwrap();
+        let kinds: Vec<_> = f.pickups.iter().map(|p| (p.kind, p.respawn_secs)).collect();
+        assert_eq!(kinds, vec![(PowerKind::None, 20.0), (PowerKind::Yumi, 45.0), (PowerKind::Tag, 30.0)]);
+        assert_eq!(parse_level_file(&f.to_text()).unwrap(), f);
+        assert!(parse_level_file("box 0 0 0 1 1 1\nspawn 0 0 0\nyumi 1 2").unwrap_err().contains("line 3: wrong number"));
+    }
+
+    #[test]
     fn parse_errors_name_the_line() {
         for (text, needle) in [
             ("box 0 0 0 1 1\nspawn 0 0 0", "line 1: wrong number"),

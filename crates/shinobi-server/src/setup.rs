@@ -8,6 +8,8 @@
 //! box    cx cy cz  hx hy hz [rot_z_radians]   # static cuboid (centre, half extents), optional roll for ramps
 //! spawn  x y z                                 # capsule-centre spawn point
 //! pickup x y z [respawn_secs]                  # grid-beam cube, default respawn 20 s
+//! yumi   x y z [respawn_secs]                  # power-weapon pedestal: the digital bow, default respawn 45 s
+//! tag    x y z [respawn_secs]                  # power-weapon pedestal: two explosive fuda tags, default respawn 45 s
 //! ```
 
 use shinobi_sim::balance::Balance;
@@ -21,6 +23,8 @@ pub struct PickupDef {
     pub id: u32,
     pub pos: [f32; 3],
     pub respawn_secs: f32,
+    /// `PowerKind::None` = a data cube; `yumi` / `tag` level lines are power-weapon pedestals.
+    pub weapon: shinobi_sim::power::PowerKind,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -42,7 +46,7 @@ impl Setup {
         let pickups = [[10.0, 1.0, 0.0], [-10.0, 1.0, 0.0], [0.0, 1.0, 10.0], [0.0, 1.0, -10.0]]
             .into_iter()
             .enumerate()
-            .map(|(i, pos)| PickupDef { id: i as u32 + 1, pos, respawn_secs: 20.0 })
+            .map(|(i, pos)| PickupDef { id: i as u32 + 1, pos, respawn_secs: 20.0, weapon: shinobi_sim::power::PowerKind::None })
             .collect();
         Self { level: LevelDesc::standard(), pickups, balance: Balance::demo(), spawn_teams: Vec::new(), team_frag_limit: None }
     }
@@ -54,7 +58,7 @@ impl Setup {
             .pickups
             .iter()
             .enumerate()
-            .map(|(i, p)| PickupDef { id: i as u32 + 1, pos: p.pos, respawn_secs: p.respawn_secs })
+            .map(|(i, p)| PickupDef { id: i as u32 + 1, pos: p.pos, respawn_secs: p.respawn_secs, weapon: p.kind })
             .collect();
         Ok(Self { level: f.level, pickups, balance: Balance::demo(), spawn_teams: shinobi_sim::level::parse_spawn_teams(text), team_frag_limit: None })
     }
@@ -85,7 +89,10 @@ impl Setup {
             server.enable_teams(limit);
         }
         for p in &self.pickups {
-            server.add_pickup(p.id, p.pos, PowerupKind::GridBeam, p.respawn_secs);
+            match p.weapon {
+                shinobi_sim::power::PowerKind::None => server.add_pickup(p.id, p.pos, PowerupKind::GridBeam, p.respawn_secs),
+                w => server.add_weapon_pickup(p.id, p.pos, w, p.respawn_secs),
+            }
         }
         server
     }
