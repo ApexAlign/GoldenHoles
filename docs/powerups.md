@@ -31,7 +31,7 @@ Nobody can hold two weapons; pedestals ignore players whose hands are full.
   are passed through.
 * Match start / respawn empties your hands. Intermission clears every arrow and tag.
 
-## Netcode (protocol v19)
+## Netcode (protocol v20)
 * `PlayerIntent.draw`: the throw button held while a yumi is in hand (one bit). The server also needs the weapon: a stray bit does
   nothing. The walk slowdown is a function of that bit alone (`PlayerInput.walk_slow`), so reconciliation replays reproduce it.
 * `PowerState` (`power.rs`) is the carried state machine (draw timer, ammo, carry timer, cooldown). Server and client predictor

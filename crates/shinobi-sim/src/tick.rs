@@ -170,6 +170,9 @@ pub struct Server {
     pub blocks: crate::blocks::Blocks,
     /// Placed / Removed / Refused of the most recent `frame` (cleared each frame).
     pub block_events: Vec<crate::blocks::BlockEvent>,
+    /// Destructible level boxes (`dbox` lines, `breaks.rs`) and what happened to them in the most recent `frame`.
+    pub breaks: crate::breaks::LevelBreaks,
+    pub break_events: Vec<crate::breaks::BreakEvent>,
     /// `Removed` events of blocks dropped between frames (a player left); delivered with the next frame's events.
     pending_block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
@@ -221,6 +224,8 @@ impl Server {
             strike_log: Vec::new(),
             blocks: crate::blocks::Blocks::default(),
             block_events: Vec::new(),
+            breaks: crate::breaks::LevelBreaks::default(),
+            break_events: Vec::new(),
             pending_block_events: Vec::new(),
             pickup_events: Vec::new(),
             arrows: Vec::new(),
@@ -449,6 +454,7 @@ impl Server {
         self.pvp_events.clear();
         self.pickup_events.clear();
         self.block_events.clear();
+        self.break_events.clear();
         self.block_events.append(&mut self.pending_block_events);
         self.kill_tags.clear();
         self.match_events.clear();
@@ -468,6 +474,11 @@ impl Server {
     /// One 1/60 s tick. The only place Rapier state is mutated.
     fn step(&mut self, kicked: &mut Vec<u16>) {
         let (tick, dt, now, ac) = (self.tick, TICK_DT, self.now, self.ac);
+        if !self.breaks.is_empty() {
+            // unsupported level boxes fall, broken ones re-form (not onto a player)
+            let live: Vec<[f32; 3]> = self.players.iter().filter(|p| p.vitals.alive()).map(|p| p.pos(&self.world)).collect();
+            self.breaks.step(&mut self.world, tick, &live, &mut self.break_events);
+        }
         self.world.queries.update(&self.world.colliders);
         self.match_state.begin_tick(
             tick,
@@ -647,7 +658,10 @@ impl Server {
             let mut pieces_changed = false;
             for e in &ev {
                 if let CombatEvent::PieceHit { cell, amount, .. } = *e {
-                    pieces_changed |= self.blocks.damage(&mut self.world, cell, amount, tick, &mut self.block_events);
+                    pieces_changed |= match crate::breaks::world_idx(cell) {
+                        Some(idx) => self.breaks.damage(&mut self.world, idx, amount, tick, &mut self.break_events),
+                        None => self.blocks.damage(&mut self.world, cell, amount, tick, &mut self.block_events),
+                    };
                 }
             }
             if pieces_changed {

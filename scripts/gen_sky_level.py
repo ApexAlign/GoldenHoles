@@ -42,8 +42,9 @@ def section(title):
     BOXES.append((title, _cur))
 
 
-def add(cx, cy, cz, hx, hy, hz, rot=0.0):
-    _cur.append((cx, cy, cz, hx, hy, hz, rot))
+def add(cx, cy, cz, hx, hy, hz, rot=0.0, hp=0.0):
+    """hp > 0 makes the box DESTRUCTIBLE (a `dbox` line, crates/shinobi-sim/src/breaks.rs); 0 = permanent."""
+    _cur.append((cx, cy, cz, hx, hy, hz, rot, hp))
 
 
 def f(v):
@@ -51,14 +52,22 @@ def f(v):
     return "0" if s in ("-0", "") else s
 
 
-def slab(x0, x1, z0, z1, top, depth):
+def slab(x0, x1, z0, z1, top, depth, hp=0.0):
     x0, x1 = min(x0, x1), max(x0, x1)
     z0, z1 = min(z0, z1), max(z0, z1)
-    add((x0 + x1) / 2, top - depth / 2, (z0 + z1) / 2, (x1 - x0) / 2, depth / 2, (z1 - z0) / 2)
+    add((x0 + x1) / 2, top - depth / 2, (z0 + z1) / 2, (x1 - x0) / 2, depth / 2, (z1 - z0) / 2, 0.0, hp)
 
 
-def block(cx, cz, hx, hz, y0, y1):
-    add(cx, (y0 + y1) / 2, cz, hx, (y1 - y0) / 2, hz)
+def block(cx, cz, hx, hz, y0, y1, hp=0.0):
+    add(cx, (y0 + y1) / 2, cz, hx, (y1 - y0) / 2, hz, 0.0, hp)
+
+
+def tower(cx, cz, hx, hz, y0, y1, hp_per_seg, seg=12.0):
+    """A destructible tower stacked from segments of at most `seg` m (cut at the foot, the rest falls in a chain)."""
+    n = max(1, int(math.ceil((y1 - y0) / seg - 1e-6)))
+    h = (y1 - y0) / n
+    for i in range(n):
+        block(cx, cz, hx, hz, y0 + i * h, y0 + (i + 1) * h, hp_per_seg)
 
 
 def ramp(xa, ya, xb, yb, zc, hz, th=0.4):
@@ -96,7 +105,7 @@ gate_sites = []  # (axis of walking, cx, cz, deck top): torii candidates on catw
 def occupied(cx, cz, y0, y1, hx, hz):
     """Does any existing box overlap this footprint and height span? (rolled boxes by their bounding box)"""
     for _, items in BOXES:
-        for (bx, by, bz, bhx, bhy, bhz, rot) in items:
+        for (bx, by, bz, bhx, bhy, bhz, rot, _hp) in items:
             ex = abs(math.cos(rot)) * bhx + abs(math.sin(rot)) * bhy
             ey = abs(math.sin(rot)) * bhx + abs(math.cos(rot)) * bhy
             if abs(bx - cx) < ex + hx - 0.01 and abs(bz - cz) < bhz + hz - 0.01 and abs(by - (y0 + y1) / 2) < ey + (y1 - y0) / 2 - 0.01:
@@ -207,12 +216,12 @@ def dress(k, r, rz, out_sign, i, x0, x1, top):
         if kind == "tower":
             if k == 3:  # the crown: tier 3 towers climb toward y = 200
                 th = rng.pick([55.0, 70.0, 83.0])
-            block(cx, o(5.5), 3.0, 3.0, top, top + th)
+            tower(cx, o(5.5), 3.0, 3.0, top, top + th, 320.0)
         elif kind == "tower2":
-            block(cx, o(5.8), 2.5, 2.5, top, top + th * 0.55)
+            tower(cx, o(5.8), 2.5, 2.5, top, top + th * 0.55, 280.0)
         elif kind == "canyon":  # two walls 4.5 m apart: a wall-run lane that is also a corridor (open ends, no roof)
             for off in (1.2, 7.4):
-                block(cx, o(off), 9.0, 0.6, top, top + 12.0 + 2.0 * k)
+                block(cx, o(off), 9.0, 0.6, top, top + 12.0 + 2.0 * k, 260.0)
         elif kind == "terrace":  # a raised roof (top + 5) with a 22 degree ramp up to it along x
             pw, rise = 12.0, 5.0
             run = rise / 0.45
@@ -227,13 +236,13 @@ def dress(k, r, rz, out_sign, i, x0, x1, top):
             cx = (lo + w / 2) if left else (hi - w / 2)
         elif kind == "pillars":  # full-height cover walls (3.5 m: nothing waist high)
             for dx in (-4.0, 4.0):
-                block(cx + dx, o(2.8), 3.0, 0.6, top, top + 3.5)
+                block(cx + dx, o(2.8), 3.0, 0.6, top, top + 3.5, 180.0)
         elif kind == "arcade":  # a colonnade of 2 m columns (6 m full walls) with 5 m between them
             for dx in (-5.0, 0.0, 5.0):
-                block(cx + dx, o(4.0), 1.0, 1.0, top, top + 6.0)
+                block(cx + dx, o(4.0), 1.0, 1.0, top, top + 6.0, 140.0)
         else:  # chicane: two staggered baffle walls
-            block(cx - 3.0, o(2.5), 4.0, 0.6, top, top + 3.5)
-            block(cx + 3.0, o(6.5), 4.0, 0.6, top, top + 3.5)
+            block(cx - 3.0, o(2.5), 4.0, 0.6, top, top + 3.5, 180.0)
+            block(cx + 3.0, o(6.5), 4.0, 0.6, top, top + 3.5, 180.0)
         if left:
             lo += w + 2.0
         else:
@@ -293,7 +302,7 @@ islands = [  # (cx, cz, top)
 ]
 for j, (cx, cz, top) in enumerate(islands):
     slab(cx - 9.0, cx + 9.0, cz - 7.0, cz + 7.0, top, 8.0)
-    block(cx - 3.0 if j % 2 else cx + 3.0, cz, 2.5, 2.5, top, top + 12.0 + 3.0 * (j % 3))
+    tower(cx - 3.0 if j % 2 else cx + 3.0, cz, 2.5, 2.5, top, top + 12.0 + 3.0 * (j % 3), 260.0)
     slab(cx + 9.0, cx + 14.0, cz - 3.0, cz + 3.0, top, 1.0)  # a walkable lip off the +x edge
     if j in (1, 4, 6):
         pickups.append((cx + (-3.0 if j % 2 else 3.0) + 5.0, top + 1.0, cz, 25))
@@ -303,13 +312,13 @@ section("pagoda daises (stepped 0.3 m: walkable) on tower tops, torii posts on c
 # 1. pagoda daises: two inset 0.3 m steps on every tower top (the renderer floats a curved-eave pavilion canopy above)
 towers = []
 for _, items in BOXES[:-1]:
-    for (bx, by, bz, bhx, bhy, bhz, rot) in items:
+    for (bx, by, bz, bhx, bhy, bhz, rot, _hp) in items:
         if rot == 0 and abs(bhx - bhz) < 0.01 and 2.4 <= bhx <= 6.1 and bhy * 2 >= 7.0:
             towers.append((bx, by + bhy, bz, bhx, bhz))
 for (tx, ttop, tz, thx, thz) in towers:
     if not occupied(tx, tz, ttop + 0.02, ttop + 0.6, thx - 0.5, thz - 0.5):
-        add(tx, ttop + 0.15, tz, thx - 0.5, 0.15, thz - 0.5)
-        add(tx, ttop + 0.45, tz, thx - 1.2, 0.15, thz - 1.2)
+        add(tx, ttop + 0.15, tz, thx - 0.5, 0.15, thz - 0.5, 0.0, 40.0)
+        add(tx, ttop + 0.45, tz, thx - 1.2, 0.15, thz - 1.2, 0.0, 40.0)
 
 # 2. torii gates over every third catwalk: a small shrine pad widens the deck (flush with it) and the posts stand on the pad
 #    OUTSIDE the 5 m walkway (3.1 m from the centre line), so the whole catwalk stays clear between them
@@ -325,7 +334,7 @@ for i, (axis, cx, cz, top) in enumerate(gate_sites):
     slab(pad[0], pad[1], pad[2], pad[3], top, 1.0)
     for (px, pz) in posts:
         if not occupied(px, pz, top + 0.01, top + 5.5, TORII_POST[0], TORII_POST[2]):
-            add(px, top + TORII_POST[1], pz, *TORII_POST)
+            add(px, top + TORII_POST[1], pz, *TORII_POST, 0.0, 90.0)
 
 # ... and framing every second spawn (posts 3.2 m either side along x)
 for i, (sx, sz, top) in enumerate(spawns):
@@ -334,7 +343,7 @@ for i, (sx, sz, top) in enumerate(spawns):
     for sgn in (-1, 1):
         px = sx + sgn * 3.2
         if not occupied(px, sz, top + 0.01, top + 5.5, TORII_POST[0], TORII_POST[2]):
-            add(px, top + TORII_POST[1], sz, *TORII_POST)
+            add(px, top + TORII_POST[1], sz, *TORII_POST, 0.0, 90.0)
 
 # 3. stone-lantern pylons: one near the outer end of every third plate, on the outer rim
 pyl = 0
@@ -345,7 +354,7 @@ for (k, r, i, x0, x1, rz) in plates_all:
     pz = rz + ROW_HD - 1.0
     px = x1 - 1.6
     if not occupied(px, pz, top + 0.01, top + 3.6, PYLON[0], PYLON[2]):
-        add(px, top + PYLON[1], pz, *PYLON)
+        add(px, top + PYLON[1], pz, *PYLON, 0.0, 60.0)
         pyl += 1
 
 # --------------------------------------------------------------------------------------------- pickups
@@ -373,6 +382,17 @@ weapons = [
     ("tag", -5.0, H[1] + 5.0 + 1.0, -42.0),         # tier-1 terrace roof (the one no cube uses)
 ]
 
+# --------------------------------------------------------------------------------------------- permanence
+# a pedestal (pickup / bow / tag) must never lose its floor: every box in a column under one is made permanent
+for title, items in BOXES:
+    for k, (cx, cy, cz, hx, hy, hz, rot, hp) in enumerate(items):
+        if not hp:
+            continue
+        for (px, py, pz) in [(p[0], p[1], p[2]) for p in pickups] + [(w[1], w[2], w[3]) for w in weapons]:
+            if abs(px - cx) <= hx + 0.6 and abs(pz - cz) <= hz + 0.6 and py > cy - hy:
+                items[k] = (cx, cy, cz, hx, hy, hz, rot, 0.0)
+                break
+
 # --------------------------------------------------------------------------------------------- write
 lines = [
     "# SHINOBI FFA SKY - a floating vertical city: 232 x 190 m, 200 m tall, four tiers at y 24 / 55 / 86 / 117, no ground (kill plane y=-20).",
@@ -384,7 +404,11 @@ lines = [
 n = 0
 for title, items in BOXES:
     lines.append("# --- %s ---" % title)
-    for (cx, cy, cz, hx, hy, hz, rot) in items:
+    for (cx, cy, cz, hx, hy, hz, rot, hp) in items:
+        if hp:
+            lines.append("dbox %s %s %s  %s %s %s  %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz), f(rot), f(hp)))
+            n += 1
+            continue
         row = "box %s %s %s  %s %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz))
         if rot:
             row += " " + f(rot)

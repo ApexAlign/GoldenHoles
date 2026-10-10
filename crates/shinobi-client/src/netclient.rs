@@ -55,6 +55,14 @@ const HOLD_SLACK_TICKS: i64 = 2;
 
 const MS_PER_TICK: f64 = 1000.0 / TICK_HZ as f64;
 
+/// What happened to a destructible level box (from `NetEvent::World*`), for effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldFx {
+    Break { idx: u16, cascade: bool },
+    Rez { idx: u16 },
+    Crack { idx: u16, hp_q: u8 },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConnState {
     Connecting,
@@ -86,6 +94,11 @@ pub struct NetClient {
     blocks: HashMap<[i32; 3], (u16, Piece, u8)>,
     /// The server's build rules (`NetEvent::BlockRules`), once received.
     block_rules: Option<BlockRules>,
+    /// Destructible level boxes currently broken (`WorldBreak` / `WorldRez`), their cracks, and the events the renderer
+    /// has not drawn yet (`take_world_fx`).
+    world_broken: std::collections::BTreeSet<u16>,
+    world_hp: HashMap<u16, u8>,
+    world_fx: Vec<WorldFx>,
     /// Match rules from `NetEvent::MatchRules`: (frag limit, team frag limit, time limit s, respawn delay ticks).
     match_rules: Option<(u16, u16, u16, u16)>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
@@ -157,6 +170,9 @@ impl Default for NetClient {
             blocks: HashMap::new(),
             block_hp: HashMap::new(),
             block_rules: None,
+            world_broken: std::collections::BTreeSet::new(),
+            world_hp: HashMap::new(),
+            world_fx: Vec::new(),
             match_rules: None,
             anchor: None,
             kicked: None,
@@ -322,6 +338,24 @@ impl NetClient {
                 NetEvent::BlockRemoved { cell } | NetEvent::BlockDerez { cell } => {
                     self.blocks.remove(&cell);
                     self.block_hp.remove(&cell);
+                }
+                NetEvent::WorldBreak { idx, cascade } => {
+                    self.world_hp.remove(&idx);
+                    if self.world_broken.insert(idx) {
+                        self.world_fx.push(WorldFx::Break { idx, cascade });
+                    }
+                }
+                NetEvent::WorldRez { idx } => {
+                    self.world_hp.remove(&idx);
+                    if self.world_broken.remove(&idx) {
+                        self.world_fx.push(WorldFx::Rez { idx });
+                    }
+                }
+                NetEvent::WorldCrack { idx, hp_q } => {
+                    if !self.world_broken.contains(&idx) {
+                        self.world_hp.insert(idx, hp_q);
+                        self.world_fx.push(WorldFx::Crack { idx, hp_q });
+                    }
                 }
                 NetEvent::TeamScore { score, result, .. } => {
                     self.team_score = score;
@@ -598,6 +632,21 @@ impl NetClient {
     /// Remaining health of the piece in `cell` for cracking visuals: 255 = untouched (or no such piece), down to 1.
     pub fn block_hp_q(&self, cell: [i32; 3]) -> u8 {
         self.block_hp.get(&cell).copied().unwrap_or(255)
+    }
+
+    /// Destructible level boxes that are broken right now (what the predicted world removes and the renderer hides).
+    pub fn world_broken(&self) -> &std::collections::BTreeSet<u16> {
+        &self.world_broken
+    }
+
+    /// Remaining health of destructible box `idx` in 1/255ths (255 = untouched), for crack visuals.
+    pub fn world_hp_q(&self, idx: u16) -> u8 {
+        self.world_hp.get(&idx).copied().unwrap_or(255)
+    }
+
+    /// Breaks / re-forms / cracks since the last call (the renderer's cue for debris, dust and sound).
+    pub fn take_world_fx(&mut self) -> Vec<WorldFx> {
+        std::mem::take(&mut self.world_fx)
     }
 
     /// Live pieces with kind and scale, sorted by cell (what the shell draws and the predicted world collides with).
@@ -981,6 +1030,29 @@ mod tests {
         let mut w = BitWriter::new();
         x.write(&mut w, |w| OwnState::default().write(w));
         w.finish()
+    }
+
+    #[test]
+    fn world_breaks_keep_the_broken_set_and_queue_effects_once() {
+        let mut c = NetClient::default();
+        welcome(&mut c, 1, 0);
+        let mut ob = EventOutbox::default();
+        ob.push(NetEvent::WorldCrack { idx: 4, hp_q: 120 });
+        ob.push(NetEvent::WorldBreak { idx: 9, cascade: false });
+        ob.push(NetEvent::WorldBreak { idx: 9, cascade: false }); // re-sent catch-up: idempotent, one effect
+        ob.push(NetEvent::WorldBreak { idx: 4, cascade: true });
+        ob.push(NetEvent::WorldRez { idx: 9 });
+        ob.push(NetEvent::WorldCrack { idx: 4, hp_q: 50 }); // already broken: ignored
+        let mut w = BitWriter::new();
+        ob.write_pending(&mut w, 480);
+        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
+        assert_eq!(c.world_broken().iter().copied().collect::<Vec<_>>(), vec![4]);
+        assert_eq!(c.world_hp_q(4), 255, "a broken box has no cracks");
+        assert_eq!(
+            c.take_world_fx(),
+            vec![WorldFx::Crack { idx: 4, hp_q: 120 }, WorldFx::Break { idx: 9, cascade: false }, WorldFx::Break { idx: 4, cascade: true }, WorldFx::Rez { idx: 9 }]
+        );
+        assert!(c.take_world_fx().is_empty());
     }
 
     #[test]

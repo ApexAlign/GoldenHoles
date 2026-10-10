@@ -10,6 +10,7 @@
 //! * `WELCOME` server -> client, 7 bytes: `[0x57] | player_id u16 LE | server_tick u32 LE` (unchanged).
 //! * HELLO with another VERSION gets `KICK(BadVersion)`; known peers re-sending HELLO get `WELCOME` again.
 //! * v19: character wire grew to 41 bytes (spec v1.1: ears, expression, horns, nose, tail, shoulders).
+//! * v20: destructible level boxes: NetEvent::WorldBreak / WorldRez / WorldCrack (ids 27-29) and `dbox` level lines.
 //! * v18: custom characters (v17) and power weapons (yumi / fuda tag: snapshot entities, `NetEvent::PowerFx` = event 26) merged; both changed the wire.
 //! * v17: `ClientPacket.look` (custom character, `character.rs`) rides the first packets after WELCOME until the server's
 //!   `NetEvent::CharacterLook` echo arrives; the server re-validates it and replicates it to everyone.
@@ -47,7 +48,7 @@ use super::bits::{DecodeError, DecodeResult};
 
 pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 3: cookie handshake, snapshot datagram with own/board sections, gameplay events. See the module doc.
-pub const VERSION: u8 = 19;
+pub const VERSION: u8 = 20;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;

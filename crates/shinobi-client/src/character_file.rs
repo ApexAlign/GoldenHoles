@@ -87,8 +87,8 @@ mod tests {
 
     #[test]
     fn loads_the_example_and_refuses_junk() {
-        let ok = load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters/example_kitsune.json"))).unwrap();
-        assert_eq!(ok.name, "KITSUNE");
+        let ok = load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters/example_fox.json"))).unwrap();
+        assert_eq!(ok.name, "FOX");
         let bad = tmp("bad", b"{ nope");
         assert!(load(&bad).unwrap_err().contains("not valid JSON"));
         let big = tmp("big", &vec![b' '; 5 * 1024 * 1024]);

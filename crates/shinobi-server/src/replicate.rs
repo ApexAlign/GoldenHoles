@@ -180,6 +180,13 @@ impl Replicator {
                 st.outbox.push(NetEvent::BlockDamaged { cell: b.cell, hp_q }); // hurt before this peer joined
             }
         }
+        // destructible level boxes already broken or cracked when this peer joined (ascending: deterministic)
+        for idx in server.breaks.broken() {
+            st.outbox.push(NetEvent::WorldBreak { idx, cascade: false });
+        }
+        for (idx, hp_q) in server.breaks.cracked() {
+            st.outbox.push(NetEvent::WorldCrack { idx, hp_q });
+        }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
         roped.sort();
@@ -230,6 +237,7 @@ impl Replicator {
         self.sync_teams(server, tick);
         self.sync_looks(server);
         self.sync_blocks(server);
+        self.sync_breaks(server);
         for p in &mut server.players {
             if let Some(m) = p.queue.take_margin() {
                 self.telemetry.observe_margin(p.id, m);
@@ -320,6 +328,32 @@ impl Replicator {
         }
         for (cell, hp_q) in hurt {
             self.broadcast(NetEvent::BlockDamaged { cell, hp_q });
+        }
+    }
+
+    /// `Server::break_events` of the last frame (destructible level boxes) -> reliable events for everyone. Cracks are
+    /// coalesced per box (a volley hits one box many times a frame); a break or re-form supersedes them.
+    fn sync_breaks(&mut self, server: &mut Server) {
+        use shinobi_sim::breaks::BreakEvent;
+        let mut hurt: Vec<(u16, u8)> = Vec::new();
+        for ev in std::mem::take(&mut server.break_events) {
+            match ev {
+                BreakEvent::Break { idx, cascade, .. } => {
+                    hurt.retain(|h| h.0 != idx);
+                    self.broadcast(NetEvent::WorldBreak { idx, cascade })
+                }
+                BreakEvent::Rez { idx, .. } => {
+                    hurt.retain(|h| h.0 != idx);
+                    self.broadcast(NetEvent::WorldRez { idx })
+                }
+                BreakEvent::Damaged { idx, hp_q, .. } => match hurt.iter_mut().find(|h| h.0 == idx) {
+                    Some(h) => h.1 = h.1.min(hp_q),
+                    None => hurt.push((idx, hp_q)),
+                },
+            }
+        }
+        for (idx, hp_q) in hurt {
+            self.broadcast(NetEvent::WorldCrack { idx, hp_q });
         }
     }
 
@@ -1004,6 +1038,30 @@ mod tests {
         s.add_player(3, [9.0, 0.81, 0.0]);
         r.add_peer(&s, 3, s.tick);
         assert!(damaged_for(&mut r, &s, 3).contains(&NetEvent::BlockDamaged { cell: [3, 0, 0], hp_q: hp }));
+    }
+
+    #[test]
+    fn level_breaks_are_broadcast_cracks_coalesced_and_joiners_learn_the_broken_set() {
+        use shinobi_sim::breaks::BreakEvent;
+        let (mut s, mut r) = two_peers();
+        let world_for = |r: &mut Replicator, s: &Server, id: u16| {
+            let round = r.build_round(s);
+            let mut inbox = shinobi_sim::events::EventInbox::default();
+            let mut got = Vec::new();
+            read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
+            got.into_iter().filter(|e| matches!(e, NetEvent::WorldBreak { .. } | NetEvent::WorldRez { .. } | NetEvent::WorldCrack { .. })).collect::<Vec<_>>()
+        };
+        let tick = s.tick;
+        s.break_events.extend([
+            BreakEvent::Damaged { tick, idx: 5, hp_q: 200 },
+            BreakEvent::Damaged { tick, idx: 5, hp_q: 150 },
+            BreakEvent::Damaged { tick, idx: 6, hp_q: 90 },
+            BreakEvent::Break { tick, idx: 6, cascade: true },
+            BreakEvent::Rez { tick, idx: 8 },
+        ]);
+        r.post_frame(&mut s);
+        let got = world_for(&mut r, &s, 2);
+        assert_eq!(got, vec![NetEvent::WorldBreak { idx: 6, cascade: true }, NetEvent::WorldRez { idx: 8 }, NetEvent::WorldCrack { idx: 5, hp_q: 150 }], "{got:?}");
     }
 
     #[test]

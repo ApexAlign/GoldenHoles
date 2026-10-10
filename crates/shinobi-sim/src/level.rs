@@ -13,11 +13,18 @@ pub struct LevelBox {
     pub half: [f32; 3],
     /// Radians about the Z axis; positive tilts +X up.
     pub rot_z: f32,
+    /// Hit points of a destructible box (`dbox` line); 0 = permanent (`breaks.rs`).
+    pub hp: f32,
 }
 
 impl LevelBox {
     pub fn new(center: [f32; 3], half: [f32; 3]) -> Self {
-        Self { center, half, rot_z: 0.0 }
+        Self { center, half, rot_z: 0.0, hp: 0.0 }
+    }
+
+    pub fn destructible(mut self, hp: f32) -> Self {
+        self.hp = hp;
+        self
     }
 
     pub fn rolled(mut self, rot_z: f32) -> Self {
@@ -140,12 +147,19 @@ pub fn find_level(rel: &std::path::Path, exe: Option<&std::path::Path>) -> Optio
 
 /// The one place a static box becomes a collider.
 pub fn insert_static_box(w: &mut PhysicsWorld, b: &LevelBox) {
-    w.colliders.insert(
-        ColliderBuilder::cuboid(b.half[0], b.half[1], b.half[2])
-            .position(Isometry::new(vector![b.center[0], b.center[1], b.center[2]], vector![0.0, 0.0, b.rot_z]))
-            .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL))
-            .build(),
-    );
+    insert_level_box(w, b, None);
+}
+
+/// `insert_static_box` returning the handle; a destructible box (`hp > 0`) with its index carries the piece tag with the
+/// reserved world cell, so weapons report hits on it (`breaks.rs`).
+pub fn insert_level_box(w: &mut PhysicsWorld, b: &LevelBox, idx: Option<u16>) -> ColliderHandle {
+    let mut c = ColliderBuilder::cuboid(b.half[0], b.half[1], b.half[2])
+        .position(Isometry::new(vector![b.center[0], b.center[1], b.center[2]], vector![0.0, 0.0, b.rot_z]))
+        .collision_groups(InteractionGroups::new(GROUP_WORLD, Group::ALL));
+    if let (true, Some(i)) = (b.hp > 0.0, idx) {
+        c = c.user_data(crate::breaks::world_user_data(i));
+    }
+    w.colliders.insert(c.build())
 }
 
 /// A pickup point from a level file (server-only: the client never needs it to predict movement).
@@ -170,6 +184,7 @@ pub const DEFAULT_WEAPON_RESPAWN_SECS: f32 = 45.0;
 /// Parse a level file: one directive per line, `#` starts a comment.
 /// ```text
 /// box    cx cy cz  hx hy hz [rot_z_radians]   # static cuboid (centre, half extents), optional roll for ramps
+/// dbox   cx cy cz  hx hy hz rot_z hp           # DESTRUCTIBLE cuboid: like `box` (rot_z always given, may be 0) plus hit points
 /// spawn  x y z [team]                          # capsule-centre spawn point; team 0 Cyan / 1 Orange, omitted = either
 /// pickup x y z [respawn_secs]                  # power-up cube, default respawn 20 s
 /// yumi   x y z [respawn_secs]                  # power-weapon pedestal: digital bow (default respawn 45 s)
@@ -199,6 +214,15 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
                 let b = LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]);
                 boxes.push(if nums.len() == 7 { b.rolled(nums[6]) } else { b });
             }
+            ("dbox", 8) => {
+                if nums[3..6].iter().any(|h| *h <= 0.0) {
+                    return Err(err("half extents must be > 0"));
+                }
+                if nums[7] <= 0.0 {
+                    return Err(err("hp must be > 0 (use `box` for permanent geometry)"));
+                }
+                boxes.push(LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]).rolled(nums[6]).destructible(nums[7]));
+            }
             ("spawn", 3 | 4) => {
                 if nums.len() == 4 && !(nums[3] == 0.0 || nums[3] == 1.0) {
                     return Err(err("spawn team must be 0 (Cyan) or 1 (Orange)"));
@@ -213,8 +237,8 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
                 };
                 pickups.push(PickupPoint { pos: [nums[0], nums[1], nums[2]], respawn_secs: nums.get(3).copied().unwrap_or(default), kind });
             }
-            ("box" | "spawn" | "pickup" | "yumi" | "tag", _) => return Err(err("wrong number of values")),
-            _ => return Err(err("unknown directive (box | spawn | pickup | yumi | tag)")),
+            ("box" | "dbox" | "spawn" | "pickup" | "yumi" | "tag", _) => return Err(err("wrong number of values")),
+            _ => return Err(err("unknown directive (box | dbox | spawn | pickup | yumi | tag)")),
         }
     }
     if boxes.is_empty() {
@@ -245,6 +269,11 @@ impl LevelFile {
         for b in &self.level.boxes {
             let [cx, cy, cz] = b.center;
             let [hx, hy, hz] = b.half;
+            if b.hp > 0.0 {
+                out += &format!("dbox {cx} {cy} {cz} {hx} {hy} {hz} {} {}", b.rot_z, b.hp);
+                out.push('\n');
+                continue;
+            }
             out += &format!("box {cx} {cy} {cz} {hx} {hy} {hz}");
             if b.rot_z != 0.0 {
                 out += &format!(" {}", b.rot_z);
@@ -308,14 +337,14 @@ impl LevelDesc {
         self.spawns[i % self.spawns.len()]
     }
 
-    pub fn insert_into(&self, w: &mut PhysicsWorld) {
-        for b in &self.boxes {
-            insert_static_box(w, b);
-        }
+    /// One static collider per box, in order; the handles are returned (index = box index).
+    pub fn insert_into(&self, w: &mut PhysicsWorld) -> Vec<ColliderHandle> {
+        self.boxes.iter().enumerate().map(|(i, b)| insert_level_box(w, b, u16::try_from(i).ok())).collect()
     }
 
     pub fn apply_to_server(&self, s: &mut Server) {
-        self.insert_into(&mut s.world);
+        let handles = self.insert_into(&mut s.world);
+        s.breaks = crate::breaks::LevelBreaks::build(self, &handles);
     }
 }
 

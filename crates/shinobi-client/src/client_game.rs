@@ -169,6 +169,8 @@ struct Predicted {
     /// `(sensor hitbox, solid movement hull)` per remote: the hull is what a lunge or a run bumps into on the
     /// server (other players' capsules are solid to the character controller, corpses included).
     proxies: HashMap<EntityId, (ColliderHandle, ColliderHandle)>,
+    /// Destructible level boxes: the server's broken set is applied to `world` every tick (`breaks.rs`).
+    breaks: shinobi_sim::breaks::LevelBreaks,
 }
 
 /// Unconfirmed predicted blocks older than this many ticks are dropped (the server refused them).
@@ -913,7 +915,8 @@ impl ClientGame {
             islands: IslandManager::new(),
             queries: QueryPipeline::new(),
         };
-        self.level.insert_into(&mut world);
+        let level_handles = self.level.insert_into(&mut world);
+        let breaks = shinobi_sim::breaks::LevelBreaks::build(&self.level, &level_handles);
         let body = world.bodies.insert(
             RigidBodyBuilder::kinematic_position_based().translation(vector![ack.own.pos[0], ack.own.pos[1], ack.own.pos[2]]).build(),
         );
@@ -945,6 +948,7 @@ impl ClientGame {
             blocks: Blocks::new(BlockCfg { max_per_owner: usize::MAX, ..BlockCfg::default() }),
             block_pending: Vec::new(),
             proxies: HashMap::new(),
+            breaks,
         };
         // catch up: every intent already sent after the acked tick
         let replay: Vec<_> = self.pending.drain(..).filter(|i| i.tick > ack.tick).collect();
@@ -1215,6 +1219,10 @@ impl ClientGame {
                     p.blocks.cfg = p.blocks.cfg.with_rules(&r);
                 }
                 p.sync_blocks(&self.net.block_pieces(), tick);
+                // destructible level boxes the server has broken are gone from the predicted world too
+                if p.breaks.set_broken(&mut p.world, self.net.world_broken()) {
+                    p.world.queries.update(&p.world.colliders);
+                }
                 let my_kills = self.net.board().and_then(|b| b.rows.iter().find(|r| r.id as u16 == my_id).map(|r| r.kills as u32)).unwrap_or(0);
                 if let Some(kind) = press {
                     let aim = CombatAim { origin: vector![p.pos[0], p.pos[1] + p.ch.eye_above(), p.pos[2]], yaw: dq_yaw(intent.aim_yaw), pitch: dq_pitch(intent.aim_pitch) };

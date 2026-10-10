@@ -68,6 +68,13 @@ pub enum NetEvent {
     /// A power weapon (yumi / fuda tag) moment worth an effect and a sound at `pos`: `what` = `power_pass::FX_*`, by `owner`
     /// (pickup call-outs name who took it). The arrows and tags themselves ride in the snapshot.
     PowerFx { tick: u32, what: u8, owner: u16, pos: [i32; 3] },
+    /// Destructible level box `idx` (index of the `dbox` line among the level's boxes, `breaks.rs`) broke. `cascade`: it
+    /// fell because what held it up broke. Everyone's predicted world removes the collider; the renderer shatters it.
+    WorldBreak { idx: u16, cascade: bool },
+    /// Box `idx` re-formed (whole again, collider back).
+    WorldRez { idx: u16 },
+    /// Box `idx` took damage and stands: `hp_q` remaining in 1/255ths (cracks).
+    WorldCrack { idx: u16, hp_q: u8 },
 }
 
 /// `NetEvent::StarFx::what`.
@@ -285,6 +292,20 @@ impl NetEvent {
                 w.write_bits(*owner as u32, 16);
                 write_v3(w, *pos, [0; 3]);
             }
+            Self::WorldBreak { idx, cascade } => {
+                w.write_bits(27, 5);
+                w.write_bits(*idx as u32, 16);
+                w.write_bits(*cascade as u32, 1);
+            }
+            Self::WorldRez { idx } => {
+                w.write_bits(28, 5);
+                w.write_bits(*idx as u32, 16);
+            }
+            Self::WorldCrack { idx, hp_q } => {
+                w.write_bits(29, 5);
+                w.write_bits(*idx as u32, 16);
+                w.write_bits(*hp_q as u32, 8);
+            }
         }
     }
 
@@ -394,6 +415,9 @@ impl NetEvent {
             }
             24 => Self::StarBlind { tick: r.read_varint()?, victim: r.read_bits(16)? as u16, strength_q: r.read_bits(8)? as u8, ticks: r.read_bits(16)? as u16 },
             26 => Self::PowerFx { tick: r.read_varint()?, what: r.read_bits(5)? as u8, owner: r.read_bits(16)? as u16, pos: read_v3(r, [0; 3])? },
+            27 => Self::WorldBreak { idx: r.read_bits(16)? as u16, cascade: r.read_bits(1)? == 1 },
+            28 => Self::WorldRez { idx: r.read_bits(16)? as u16 },
+            29 => Self::WorldCrack { idx: r.read_bits(16)? as u16, hp_q: r.read_bits(8)? as u8 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -629,6 +653,10 @@ mod tests {
             NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
             NetEvent::CharacterLook { player: 7, wire: shinobi_proto::character::preset(1).to_wire() },
             NetEvent::PowerFx { tick: 70_003, what: 13, owner: 4, pos: [-20_000, 512, 33_333] },
+            NetEvent::WorldBreak { idx: 65_535, cascade: true },
+            NetEvent::WorldBreak { idx: 0, cascade: false },
+            NetEvent::WorldRez { idx: 300 },
+            NetEvent::WorldCrack { idx: 12, hp_q: 77 },
         ];
         let mut w = BitWriter::new();
         for e in &evs {
