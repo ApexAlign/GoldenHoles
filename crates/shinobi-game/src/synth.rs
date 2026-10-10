@@ -84,10 +84,31 @@ pub enum Sound {
     Wind,
     /// Loop (ambient bus): city hum, 1 s.
     Hum,
+    /// Destructible boxes: a short stone tick when one is cracked (played at a falling pitch as it weakens).
+    CrackStone,
+    /// Destructible boxes: a drier, higher wood snap (thin boxes: bamboo).
+    CrackWood,
+    /// A box breaks: noise burst + low thump + falling-debris rattle (~0.8 s).
+    Shatter,
+    /// `Shatter` heard from far away: dark and muffled.
+    ShatterFar,
+    /// A tall box / tower breaks: long rumble with thumps (~1.6 s).
+    Collapse,
+    /// `Collapse` heard from far away: dark and muffled.
+    CollapseFar,
+    /// A broken box re-forms: quiet rising neon shimmer (~0.5 s).
+    Reform,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 53] = [
+    pub const ALL: [Sound; 60] = [
+        Sound::CrackStone,
+        Sound::CrackWood,
+        Sound::Shatter,
+        Sound::ShatterFar,
+        Sound::Collapse,
+        Sound::CollapseFar,
+        Sound::Reform,
         Sound::Parry,
         Sound::Block,
         Sound::Lockout,
@@ -236,6 +257,54 @@ fn scaled(v: Vec<f32>, g: f32) -> Vec<f32> {
 /// Noise minus its low-passed self: the airy part (slices, ticks).
 fn highpass(x: &[f32], k: f32) -> Vec<f32> {
     lowpass(x, k).iter().zip(x).map(|(l, v)| v - l).collect()
+}
+
+/// Falling-debris rattle: tiny decaying pings whose rate thins out over `secs` (`rate` = clicks per second at the start).
+fn rattle(secs: f32, rate: f32, seed: u32, gain: f32) -> Vec<f32> {
+    let mut nz = Noise(seed);
+    let n = len(secs);
+    let mut out = vec![0.0f32; n];
+    for i in 0..n {
+        let u = i as f32 / n as f32;
+        let p = rate * (1.0 - u).powf(1.6) / SR as f32;
+        if (nz.next() * 0.5 + 0.5) < p {
+            let f = 500.0 + (nz.next() * 0.5 + 0.5) * 2600.0;
+            let g = gain * (0.4 + 0.6 * (nz.next() * 0.5 + 0.5)) * (1.0 - u);
+            let d = len(0.03);
+            for j in 0..d.min(n - i) {
+                let t = j as f32 / SR as f32;
+                out[i + j] += (TAU * f * t).sin() * (1.0 - j as f32 / d as f32).powi(3) * g;
+            }
+        }
+    }
+    out
+}
+
+fn shatter() -> Vec<f32> {
+    let d = 0.8;
+    mix(&[
+        (lowpass(&noise_burst(0.35, 211, |t| env(t, 0.35, 0.004, 1.6)), 0.55), 1.5),
+        (highpass(&noise_burst(0.12, 213, |t| env(t, 0.12, 0.0, 1.5)), 0.3), 0.9),
+        (sweep(0.4, 95.0, 32.0, 0, |t| env(t, 0.4, 0.003, 1.8)), 0.9),
+        (rattle(d, 60.0, 215, 0.35), 1.0),
+    ])
+}
+
+fn collapse() -> Vec<f32> {
+    let d = 1.6;
+    let rumble = lowpass(&noise_burst(d, 221, |t| env(t, d, 0.12, 0.8) * (0.7 + 0.3 * (TAU * 9.0 * t).sin())), 0.07);
+    let thump = |f: f32, dur: f32, g: f32| sweep(dur, f, f * 0.4, 0, move |t| env(t, dur, 0.004, 1.8) * g);
+    mix(&[
+        (rumble, 5.0),
+        (place(&[(0.0, thump(75.0, 0.6, 0.9)), (0.28, thump(62.0, 0.5, 0.6)), (0.6, thump(50.0, 0.5, 0.45))]), 1.0),
+        (lowpass(&noise_burst(0.4, 223, |t| env(t, 0.4, 0.004, 1.5)), 0.5), 1.3),
+        (rattle(d, 90.0, 225, 0.3), 1.0),
+    ])
+}
+
+/// Muffled far-away copy: dark low-pass, a bit louder to make up for the lost level.
+fn muffled(v: &[f32], gain: f32) -> Vec<f32> {
+    scaled(lowpass(&lowpass(v, 0.09), 0.09), gain)
 }
 
 /// Render one sound to mono f32 samples in -1..1.
@@ -435,6 +504,28 @@ pub fn render(s: Sound) -> Vec<f32> {
         ]),
         Sound::UiClick => mix(&[(sweep(0.035, 1800.0, 1800.0, 2, |t| env(t, 0.035, 0.001, 1.5)), 0.15), (tone(900.0, 0.07, 2.0, 1.0), 0.2)]),
         Sound::UiBack => sweep(0.06, 1200.0, 700.0, 0, |t| env(t, 0.06, 0.002, 1.5) * 0.3),
+        Sound::CrackStone => mix(&[
+            (highpass(&noise_burst(0.05, 231, |t| env(t, 0.05, 0.0, 2.0)), 0.25), 0.9),
+            (sweep(0.09, 1500.0, 1100.0, 0, |t| env(t, 0.09, 0.001, 2.5)), 0.28),
+            (sweep(0.07, 140.0, 80.0, 0, |t| env(t, 0.07, 0.001, 2.0)), 0.6),
+        ]),
+        Sound::CrackWood => mix(&[
+            (highpass(&noise_burst(0.04, 233, |t| env(t, 0.04, 0.0, 1.5)), 0.15), 1.1),
+            (sweep(0.1, 950.0, 600.0, 2, |t| env(t, 0.1, 0.001, 3.0)), 0.16),
+            (sweep(0.06, 220.0, 150.0, 0, |t| env(t, 0.06, 0.001, 2.0)), 0.4),
+        ]),
+        Sound::Shatter => shatter(),
+        Sound::ShatterFar => muffled(&shatter(), 2.2),
+        Sound::Collapse => collapse(),
+        Sound::CollapseFar => muffled(&collapse(), 2.0),
+        Sound::Reform => {
+            let d = 0.5;
+            mix(&[
+                (sweep(d, 420.0, 1700.0, 0, |t| env(t, d, 0.12, 0.7) * 0.2), 1.0),
+                (chord(&[880.0, 1320.0, 1760.0], d, 1.4, 0.08), 1.0),
+                (scaled(highpass(&noise_burst(d, 235, |t| env(t, d, 0.2, 1.2) * (0.5 + 0.5 * (TAU * 18.0 * t).sin())), 0.2), 0.5), 1.0),
+            ])
+        }
         // loops: integer-Hz partials so the 1 s buffer is seamless
         Sound::Hum => {
             let n = len(1.0);
@@ -612,6 +703,19 @@ mod tests {
         assert_ne!(render(Sound::Victory), render(Sound::Defeat));
         assert_ne!(render(Sound::Parry), render(Sound::Block));
         assert!(render(Sound::Wind).len() > render(Sound::Hum).len());
+    }
+
+    #[test]
+    fn destructible_sounds_have_their_lengths_and_far_is_darker() {
+        let secs = |s| render(s).len() as f32 / SR as f32;
+        assert!((0.7..0.95).contains(&secs(Sound::Shatter)));
+        assert!((1.5..1.8).contains(&secs(Sound::Collapse)));
+        assert!((0.4..0.65).contains(&secs(Sound::Reform)));
+        assert!(secs(Sound::CrackStone) < 0.15 && secs(Sound::CrackWood) < 0.15);
+        // fewer zero crossings = darker
+        let zc = |v: &[f32]| v.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        assert!(zc(&render(Sound::ShatterFar)) < zc(&render(Sound::Shatter)) / 2);
+        assert!(zc(&render(Sound::CollapseFar)) < zc(&render(Sound::Collapse)) / 2);
     }
 
     #[test]

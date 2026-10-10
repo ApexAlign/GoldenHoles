@@ -23,6 +23,7 @@ mod impacts;
 mod lock;
 mod rope;
 mod synth;
+mod destructible_audio;
 mod mixer;
 mod team;
 mod grid;
@@ -198,6 +199,7 @@ fn main() {
         app.add_plugins(vm::VmPlugin);
     }
     app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
+    app.add_plugins(crate::destructible_audio::DestructibleAudioPlugin);
     if !off("fx") {
         app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
     }

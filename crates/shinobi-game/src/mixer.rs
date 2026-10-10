@@ -134,6 +134,9 @@ pub fn min_gap(s: Sound) -> f32 {
         Sound::Step => 0.12,
         Sound::RopePulse => 0.2,
         Sound::Lockout => 0.3,
+        Sound::CrackStone | Sound::CrackWood => 0.05,
+        Sound::Shatter | Sound::ShatterFar | Sound::Collapse | Sound::CollapseFar => 0.04,
+        Sound::Reform => 0.06,
         Sound::GuardLow => 0.2,
         Sound::UiClick | Sound::UiBack => 0.04,
         Sound::Jump | Sound::DoubleJump | Sound::Land | Sound::LandHard => 0.08,
@@ -237,11 +240,16 @@ pub const HEAR_RANGE: f32 = 70.0;
 
 /// Loudness of a remote sound `dist` metres away: close to 1 near you, gone at `HEAR_RANGE`.
 pub fn falloff(dist: f32) -> f32 {
-    if !dist.is_finite() || dist >= HEAR_RANGE {
+    falloff_range(dist, HEAR_RANGE)
+}
+
+/// `falloff` for a sound that carries `range` metres (the "loud inside" radius is a tenth of it): big crashes reach further.
+pub fn falloff_range(dist: f32, range: f32) -> f32 {
+    if !dist.is_finite() || !(range > 0.0) || dist >= range {
         return 0.0;
     }
-    let near = 1.0 / (1.0 + (dist.max(0.0) / 7.0).powi(2));
-    let edge = 1.0 - (dist / HEAR_RANGE).powi(2);
+    let near = 1.0 / (1.0 + (dist.max(0.0) / (range / 10.0)).powi(2));
+    let edge = 1.0 - (dist / range).powi(2);
     (near * edge).clamp(0.0, 1.0)
 }
 
@@ -490,6 +498,15 @@ mod tests {
         assert_eq!(falloff(HEAR_RANGE), 0.0);
         assert_eq!(falloff(f32::NAN), 0.0);
         assert!(falloff(5.0) > falloff(30.0) * 3.0, "a near fight is much louder than a far one");
+    }
+
+    #[test]
+    fn falloff_range_matches_default_and_reaches_further() {
+        for d in [0.0, 3.0, 20.0, 69.0, 80.0] {
+            assert_eq!(falloff(d), falloff_range(d, HEAR_RANGE));
+        }
+        assert!(falloff_range(100.0, 200.0) > 0.0);
+        assert_eq!(falloff_range(10.0, 0.0), 0.0);
     }
 
     #[test]
