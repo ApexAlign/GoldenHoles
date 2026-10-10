@@ -235,7 +235,7 @@ pub fn setup(
     if let Some(l) = &level {
         let unit = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
         let gd = GridData::tron(&pal);
-        for b in l.0.boxes.iter().filter(|b| b.center[1] + b.half[1] > 0.05) {
+        for (bi, b) in l.0.boxes.iter().enumerate().filter(|(_, b)| b.center[1] + b.half[1] > 0.05) {
             let top = b.center[1] + b.half[1];
             let (tint, mode) = if floating {
                 crate::env_look::city_surface() // floating city: tier colours by height, circuit traces (env_look.rs, shader mode 3)
@@ -255,13 +255,16 @@ pub fn setup(
                 d if d.id != shinobi_sim::level::DistrictId::Arena && mode == 1.0 => district_tint(tint, d.tint),
                 _ => tint,
             };
-            commands.spawn((
+            let mut ent = commands.spawn((
                 Mesh3d(unit.clone()),
                 MeshMaterial3d(grids.add(GridFloor::for_box(&gd, b, tint, mode, fog.0))),
                 Transform::from_translation(Vec3::from(b.center))
                     .with_rotation(Quat::from_rotation_z(b.rot_z))
                     .with_scale(Vec3::from(b.half) * 2.0),
             ));
+            if b.hp > 0.0 {
+                ent.insert(crate::destructible_fx::DestructBox(bi as u16)); // destructible_fx hides it while broken
+            }
         }
     }
 
