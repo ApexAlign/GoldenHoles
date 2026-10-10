@@ -653,7 +653,7 @@ pub fn preset(i: usize) -> CharacterSpec {
 mod tests {
     use super::*;
 
-    const KITSUNE: &str = include_str!("../../../characters/example_kitsune.json");
+    const KITSUNE: &str = include_str!("../fixtures/kitsune_v1.json");
 
     struct Rng(u64);
     impl Rng {

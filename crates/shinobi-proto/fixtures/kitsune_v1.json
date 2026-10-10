@@ -1,0 +1,15 @@
+{
+  "schema": "shinobi-character/1",
+  "name": "Kitsune",
+  "build": { "height": 1.02, "bulk": 0.95 },
+  "colors": {
+    "suit_base": "#16181f", "suit_trim": "#3a2f55", "glow": "#ff4fd8", "visor": "#7ff0ff",
+    "glove": "#1c1c24", "scarf": "#c0173a", "hair": "#2b1a12", "skin": "#e0b494"
+  },
+  "head": { "hood": "open", "mask": "lower", "hair_style": "ponytail", "headband": true, "visor_style": "slit" },
+  "torso": { "plates": "light", "sash": true, "back_item": "sheath", "emblem": 5 },
+  "scarf": { "style": "tails", "length": 0.8 },
+  "pattern": { "type": "lines", "density": 0.5 },
+  "weapons": { "edge": "#ff4fd8", "star": "#7ff0ff" },
+  "accessories": ["kunai_belt", "tabi_glow"]
+}
