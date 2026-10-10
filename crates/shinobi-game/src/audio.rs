@@ -35,17 +35,36 @@ pub struct Cue {
     pub vol: f32,
     /// Playback speed (pitch): 1 = as rendered.
     pub speed: f32,
+    /// How far the sound carries, metres (`mixer::falloff_range`).
+    pub range: f32,
+}
+
+/// Cues queued by other systems (`destructible_audio`) for the playback backend; it drains this every frame. Capped.
+#[derive(Resource, Default)]
+pub struct ExtraCues(pub Vec<Cue>);
+
+impl ExtraCues {
+    pub fn push(&mut self, c: Cue) {
+        if self.0.len() >= 32 {
+            self.0.remove(0);
+        }
+        self.0.push(c);
+    }
 }
 
 impl Cue {
-    fn at(sound: Sound, pos: [f32; 3], vol: f32) -> Self {
-        Self { sound, pos: Some(pos), vol, speed: 1.0 }
+    pub fn at(sound: Sound, pos: [f32; 3], vol: f32) -> Self {
+        Self { sound, pos: Some(pos), vol, speed: 1.0, range: crate::mixer::HEAR_RANGE }
     }
     fn flat(sound: Sound, vol: f32) -> Self {
-        Self { sound, pos: None, vol, speed: 1.0 }
+        Self { sound, pos: None, vol, speed: 1.0, range: crate::mixer::HEAR_RANGE }
     }
-    fn pitched(mut self, speed: f32) -> Self {
+    pub fn pitched(mut self, speed: f32) -> Self {
         self.speed = speed;
+        self
+    }
+    pub fn ranged(mut self, range: f32) -> Self {
+        self.range = range;
         self
     }
 }
@@ -605,7 +624,7 @@ pub struct AudioFxPlugin;
 
 impl Plugin for AudioFxPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(crate::mixer::load_prefs()).init_resource::<MusicCmds>();
+        app.insert_resource(crate::mixer::load_prefs()).init_resource::<MusicCmds>().init_resource::<ExtraCues>();
         #[cfg(feature = "audio")]
         backend::install(app);
     }
@@ -623,7 +642,7 @@ mod backend {
     use bevy::prelude::*;
 
     use super::*;
-    use crate::mixer::{self, bus_of, crossfade, falloff, scan_music, start_next_at, wind_gain, Bus, Ducker, Limiter, Playlist};
+    use crate::mixer::{self, bus_of, crossfade, falloff_range, scan_music, start_next_at, wind_gain, Bus, Ducker, Limiter, Playlist};
     use crate::net::{Net, ViewRes};
     use crate::play::PlayerCam;
     use crate::synth::{render, wav, Sound};
@@ -757,6 +776,7 @@ mod backend {
         menu: Option<Res<crate::hud_view::MenuRes>>,
         mode: Option<Res<crate::play::ModeRes>>,
         mut loops: Query<(&LoopKind, Option<&mut AudioSink>)>,
+        mut extra: ResMut<ExtraCues>,
     ) {
         let Some(bank) = bank else { return };
         let dt = time.delta_secs();
@@ -802,7 +822,8 @@ mod backend {
         st.prev_menu = menu_open;
         st.prev_console = console_open;
 
-        let (cues, lp) = st.cuer.update(&frame);
+        let (mut cues, lp) = st.cuer.update(&frame);
+        cues.append(&mut extra.0);
         let duck = st.cuer.duck;
         st.duck.hit(duck);
         st.limiter.tick(dt);
@@ -818,7 +839,7 @@ mod backend {
                 let mut vol = c.vol;
                 if let Some(p) = c.pos {
                     // our own sounds are never attenuated; other players' are by distance
-                    vol *= falloff(ears.distance(Vec3::from(p)));
+                    vol *= falloff_range(ears.distance(Vec3::from(p)), c.range);
                     if vol < 0.02 {
                         continue;
                     }

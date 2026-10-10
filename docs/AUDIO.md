@@ -66,3 +66,18 @@ No new synth sounds: yumi draw = heavy-cut charge whine, loose = a low throw + h
 block clang, parried = parry bell, cut down = clash, wall hit = ricochet; fuda tag throw = a high throw, stuck = print, armed = high refill ping, blast = air
 slam, floor drop = land, countdown beeps (rope pulse, faster as the fuse runs down) while a tag is stuck on you. Your own draw / loose / throw play from the
 prediction; the server's copies are skipped for you. Pickup call-outs: your own = refill ping, someone else's = a high execute chime. See docs/powerups.md.
+
+## Destructible boxes
+`src/destructible_audio.rs` (plugin `DestructibleAudioPlugin`) voices level `dbox`es; see docs/destructible.md. It never drains
+`take_world_fx` (the renderer does): it diffs `world_broken()` per frame and polls `world_hp_q` for the 8 nearest intact boxes
+(within 80 m). Cues reach the backend through `audio::ExtraCues`; positional, `Cue::range` widens the falloff (`mixer::falloff_range`).
+
+| event | sound |
+| --- | --- |
+| hp drops | `CrackStone` (thick) / `CrackWood` (min half x,z < 0.6), speed 0.65..1.2 falling with `hp_q` |
+| break | `Shatter` (~0.8 s); `Collapse` (~1.6 s) when half y >= 4 or hp >= 250; beyond 90 m the muffled `ShatterFar` / `CollapseFar` |
+| re-form | `Reform` shimmer, quiet, only within 60 m |
+
+Cascades: breaks of one frame play bottom-first 50 ms apart (max 0.5 s). At most 6 audible voices (extra are skipped, a crowd ducks a
+little). Quiet join: the first 0.75 s after the client has joined (and the frames before) absorb the broken set silently, so
+catch-up breaks make no sound; a reconnect re-primes.
