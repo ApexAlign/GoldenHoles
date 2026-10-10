@@ -162,6 +162,11 @@ impl Server {
                 MineFate::Disarm => out_events.push((oid, CombatEvent::StarGone { kind: StarKind::Mine, pos: at })),
                 MineFate::Burst(victims) => {
                     out_events.push((oid, CombatEvent::StarBurst { pos: at }));
+                    // the burst shakes destructible boxes near it (full mine damage at the centre, a third at the edge)
+                    if !self.breaks.is_empty() {
+                        let (r, md) = (sc.mine_burst_radius.max(sc.mine_trigger_radius), sc.mine_damage);
+                        self.breaks.blast(&mut self.world, mpos, r, |d| md * (1.0 - 0.67 * (d / r).min(1.0)), tick, &mut self.break_events);
+                    }
                     for vj in victims {
                         let vpos = self.players[vj].pos(&self.world);
                         let v = &mut self.players[vj];

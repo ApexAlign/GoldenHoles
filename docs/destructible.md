@@ -13,7 +13,8 @@ pickup or a pedestal are plain `box` lines and never break (bots, the walkabilit
 | fuda tag blast | `LevelBreaks::blast`: tag player-damage at that distance x `BreakCfg::blast_mult` (5) | measured to the box's nearest point, radius = tag radius, shakes boxes behind cover too |
 | support loss | a free-standing box resting only on destructible boxes falls `COLLAPSE_TICKS` (18) after the last one breaks | cut a tower at the foot and the rest comes down in a chain |
 
-Arrows (yumi) and the mine blast do not damage boxes yet (follow-up).
+| yumi arrow | chips the box it strikes: `0.12 x arrow damage x blast_mult` (about 0.6 x an arrow's damage) | a cover wall takes several |
+| star mine burst | blast at the mine: mine damage (a third at the edge) x `blast_mult` | only when it bursts on a foe |
 
 ## Level file
 

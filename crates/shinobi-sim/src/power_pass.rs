@@ -376,6 +376,11 @@ impl Server {
                 let (wd, _) = wall.unwrap();
                 let p = add(from, scale(norm(sub(to, from)), wd));
                 fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_WALL, pos: pt(p) }));
+                // an arrow into a destructible box chips it (about 0.6 x an arrow's damage after `blast_mult`)
+                if !self.breaks.is_empty() {
+                    let chip = yc.damage * 0.12;
+                    self.breaks.blast(&mut self.world, p, 0.8, |_| chip, tick, &mut self.break_events);
+                }
                 self.arrows.remove(i);
                 continue;
             }
