@@ -439,7 +439,9 @@ pub fn apply_hits(
         if dead {
             if let Some(k) = killer {
                 players[k].vitals.kills = players[k].vitals.kills.saturating_add(1);
-                if matches!(h.cause, Cause::Weapon(DamageKind::Slash)) {
+                // a killer who died this same frame (trade, or killed earlier in the hit list) gets no heal: it would
+                // raise the hp of a corpse
+                if matches!(h.cause, Cause::Weapon(DamageKind::Slash)) && !died.contains(&k) && players[k].vitals.alive() {
                     let heal = melee.on_kill(&mut players[k].melee, tick);
                     let a = &mut players[k].vitals;
                     a.hp = (a.hp + heal).min(a.max_hp);

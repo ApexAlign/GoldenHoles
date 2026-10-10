@@ -265,7 +265,7 @@ fn four_duelist_free_for_all_for_five_minutes_keeps_the_books() {
             if v.alive() {
                 assert!(v.hp > 0.0, "tick {t}: {} alive with no hp", p.id);
             } else {
-                assert!(v.hp == 0.0 && v.dead_until_tick.is_some(), "tick {t}: {} dead but bookkeeping disagrees", p.id);
+                assert!(v.hp == 0.0 && v.dead_until_tick.is_some(), "tick {t}: {} dead but bookkeeping disagrees (hp {} dead_until {:?})", p.id, v.hp, v.dead_until_tick);
             }
             let pos = p.pos(&s.world);
             assert!(pos.iter().all(|c| c.is_finite()) && pos[0].abs() < 200.0 && pos[2].abs() < 200.0, "tick {t}: {pos:?}");
