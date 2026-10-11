@@ -42,7 +42,7 @@ SIDES = (-1, 1)  # -1 = south tower (z < 0), +1 = north tower
 BRIDGES = [  # (level, brick index 0..6 or "edge", material)
     (1, 6, "wood"), (2, 3, "steel"), (3, 6, "brick"), (5, 2, "wood"), (6, 0, "steel"), (8, 4, "steel"),
     (9, 6, "brick"), (11, 3, "wood"), (12, 0, "steel"), (14, 1, "steel"), (15, 6, "brick"),
-    (13, 6, "wood"),
+    (13, 6, "wood"), (0, 0, "wood"), (4, 0, "brick"), (7, 6, "steel"),
 ]
 GALLERIES = [2, 5, 8, 11, 14]
 BALCONIES = {2: (1, 5), 5: (4, 5), 8: (2, 5), 11: (1, 5), 14: (3, 5)}  # facade brick index -> door + balcony (galleries only)
@@ -221,14 +221,23 @@ for m in range(1, 15):
             put(x - 3, x + 3, top, top + 3, z + 1, z + 3, "wood", 0.1)  # a wall on the back of the deck
             put(x - 1, x + 1, top + 2, top + 10, z - 1, z + 1, "steel", 0.1)  # mast / hook post
             break
+for m in range(1, 15):  # a second, interleaved set
+    top = 22.0 + 12.0 * m
+    for _try in range(40):
+        x = rnd.uniform(-16.0, 16.0)
+        z = rnd.uniform(-5.0, 5.0)
+        if put(x - 3, x + 3, top - 2, top, z - 3, z + 3, rnd.choice(["steel", "wood", "concrete"])):
+            gondolas.append((x, top, z))
+            put(x - 1, x + 1, top + 2, top + 8, z - 1, z + 1, "steel", 0.1)
+            break
 # low extras so the bottom of the canyon has anchors too
-for (x, top, z) in [(-10.0, 18.0, -4.0), (9.0, 40.0, 4.0), (-4.0, 52.0, -2.0)]:
+for (x, top, z) in [(-10.0, 18.0, -4.0), (9.0, 40.0, 4.0), (-4.0, 52.0, -2.0), (-14.0, 24.0, 6.0), (2.0, 20.0, 5.0), (14.0, 16.0, -5.0), (-2.0, 34.0, 5.5), (6.0, 30.0, -5.0)]:
     if put(x - 3, x + 3, top - 2, top, z - 3, z + 3, "steel"):
         gondolas.append((x, top, z))
 
 # ---- hanging counterweights
 L.section("counterweights")
-for i in range(8):
+for i in range(14):
     top = rnd.uniform(40.0, 190.0)
     x, z = rnd.uniform(-17.0, 17.0), rnd.uniform(-7.0, 7.0)
     if free(x - 2, x + 2, top - 8, top + 12.0, z - 2, z + 2, 1.5):
@@ -266,6 +275,11 @@ for xs in (-9.0, 9.0):  # scaffolds on the south roof: four posts, top frame
         T(-1, 8 + du - 1, 8 + du + 1, xs + dx - 1, xs + dx + 1, ROOF, ROOF + 6.0, "steel")
         T(-1, 8 + du - 1, 8 + du + 1, xs + dx - 1, xs + dx + 1, ROOF + 6.0, ROOF + 12.0, "steel")
     T(-1, 3, 13, xs - 5, xs + 5, ROOF + 12.0, ROOF + 14.0, "wood")
+for sd in SIDES:  # antenna pylons on the west landing strip of each roof
+    for uu in (4.0, 22.0):
+        T(sd, uu - 1, uu + 1, -18.0, -16.0, ROOF, ROOF + 6.0, "steel")
+        T(sd, uu - 1, uu + 1, -18.0, -16.0, ROOF + 6.0, ROOF + 12.0, "steel")
+    T(sd, 3.0, 23.0, -18.0, -16.0, ROOF + 12.0, ROOF + 14.0, "steel")
 # north gantry: a lane-A ramp up from the roof to a bow platform (walkable)
 SG = 1
 ramp(SG, -15.0, ROOF, 15.0, ROOF + 12.0, 10.0, 3.0)
