@@ -187,7 +187,7 @@ fn one_walkable_network_joins_every_spawn_and_the_high_places_stay_hook_only() {
     let bands: std::collections::BTreeSet<i32> = seen.iter().map(|n| n.1 / 400).collect();
     assert!(bands.len() >= 5, "the network spans only {} 40 m bands", bands.len());
     // hook-only: surfaces above y 40 that the flood never reached (free cogs, column cap, pendulum bobs, wall balconies)
-    let off: usize = cells.iter().map(|(c, hs)| hs.iter().filter(|h| **h > 40.0 && !seen.contains(&(*c, key(**h)))).count()).sum();
+    let off: usize = cells.iter().map(|(c, hs)| hs.iter().filter(|h| **h > 40.0 && **h < 205.0 && !seen.contains(&(*c, key(**h)))).count()).sum();
     assert!(off >= 300, "only {off} high surface cells are off the walkable network");
     let cap = (-5..5).flat_map(|x| (-5..5).map(move |z| (x, z))).filter(|c| cells.get(c).map_or(false, |hs| hs.iter().any(|h| (*h - 200.0).abs() < 0.01) && !seen.contains(&(*c, 2000)))).count();
     assert!(cap >= 80, "the column cap must be off the network ({cap} cells)");
@@ -226,7 +226,7 @@ fn wall_run_faces_ramps_and_pendulums_exist() {
     for b in l.level.boxes.iter().filter(|b| b.rot_z != 0.0) {
         assert!(b.rot_z.abs() <= 24.0f32.to_radians(), "ramp {b:?} too steep");
     }
-    let bobs = l.level.boxes.iter().filter(|b| b.half == [3.0, 3.0, 3.0] && b.center[1] > 180.0 && b.center[1] < 195.0 && b.center[0].abs() > 5.0 && b.center[0].abs() < 12.0 && b.center[2].abs() < 12.0).count();
+    let bobs = l.level.boxes.iter().filter(|b| b.half == [3.0, 3.0, 3.0] && b.center[1] > 190.0 && b.center[1] < 200.0 && b.center[0].abs() > 5.0 && b.center[0].abs() < 12.0 && b.center[2].abs() < 12.0).count();
     assert_eq!(bobs, 4, "{bobs} pendulum bobs");
 }
 

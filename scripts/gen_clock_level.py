@@ -7,8 +7,8 @@ A 54 m (flat to flat) stepped-octagon drum of 6 m bricks, 212 m tall (y 8..212),
 middle (cap y 200 carries the two bows). A walkable SWITCHBACK spiral climbs the inside of the wall: 15 ramps of 21.8 degrees
 (rolled about Z only, so they run along x in the north / south lanes) joined by landings on the east / west sides, every 12 m up
 from y 14 to y 194. Gear-wheel cogs (cross-shaped plates) sit on the column: some mated to a landing or ramp (walkable, they carry
-the tag bags), some floating free with only girder links (hook only), with hanging weights. Ceiling beams at y 201..205 carry four
-pendulum weights; balconies jut from the walls into the bays. Everything is bricks (lvl_lib); only plinths under spawns and
+the tag bags), some floating free with only girder links (hook only), with hanging weights. A 4 m steel base floor (y 10..14, the first landing) catches anything that falls down the shaft and a 3.2 m lid
+(y 208.8..212) closes the top and carries four pendulum weights; balconies jut from the walls into the bays. Everything is bricks (lvl_lib); only plinths under spawns and
 pedestals are permanent. Tests: crates/shinobi-sim/tests/arena_clock.rs, walkable.rs; bots: crates/shinobi-ai/tests/clock.rs
 """
 import math
@@ -22,6 +22,7 @@ L = Level("THE CLOCKWORK: a 54 m octagonal brick drum, 210 m tall, spiral ramps,
 
 Y0, BH, NL = 8.0, 6.0, 34  # wall layers: 8 .. 212
 WALL_TOP = Y0 + BH * NL
+LID = 3.2  # lid thickness (>= 3 so the pendulum tops under it read as a wall to the walkability validator)
 COL_LAYERS = 32  # column top 200
 COL_TOP = Y0 + BH * COL_LAYERS
 RISE, N_LAND = 12.0, 16
@@ -67,11 +68,37 @@ for l in range(COL_LAYERS):
         for (c, d) in ((-6, 0), (0, 6)):
             L.block(a, b, ya, ya + BH, c, d, "concrete")
 
+# ---------------------------------------------------------------------------------------------- base floor
+L.section("base floor of the drum (y 14, 4 m of steel; a fall down the shaft ends here, not in the void)")
+for ci in range(-4, 5):
+    for cj in range(-4, 5):
+        if abs(ci) + abs(cj) > 6:
+            continue  # the chamfer wall cells
+        x0, x1, z0, z1 = 6 * ci - 3, 6 * ci + 3, 6 * cj - 3, 6 * cj + 3
+        pieces = []
+        if x1 <= -6 or x0 >= 6 or z1 <= -6 or z0 >= 6:
+            pieces.append((x0, x1, z0, z1))
+        else:  # subtract the column (|x|, |z| < 6)
+            if x0 < -6:
+                pieces.append((x0, -6, z0, z1))
+            if x1 > 6:
+                pieces.append((6, x1, z0, z1))
+            mx0, mx1 = max(x0, -6), min(x1, 6)
+            if z0 < -6:
+                pieces.append((mx0, mx1, z0, -6))
+            if z1 > 6:
+                pieces.append((mx0, mx1, 6, z1))
+        for (xa, xb, za, zb) in pieces:
+            if xb - xa > 0.1 and zb - za > 0.1:
+                L.block(xa, xb, 10.0, 14.0, za, zb, "steel")
+
 # ---------------------------------------------------------------------------------------------- spiral
 L.section("switchback spiral: landings (x +-15..21) and 22 degree ramps (z +-15..21)")
 
 
 def landing(k):
+    if k == 0:
+        return  # the base floor is landing 0
     x0, x1 = (-21.0, -15.0) if k % 2 == 0 else (15.0, 21.0)
     for zc in (-18, -12, -6, 0, 6, 12, 18):
         L.block(x0, x1, LAND[k] - 2.0, LAND[k], zc - 3, zc + 3, "concrete")
@@ -141,19 +168,17 @@ for t in (62.0, 92.0, 128.0, 158.0, 188.0):
     cog(t, free=True, weights=True)
 tags += [(9.0, LAND[5] + 1.0, 0.0), (0.0, LAND[7] + CT + 1.0, -9.0), (-9.0, LAND[8] + 1.0, 0.0), (9.0, LAND[11] + 1.0, 0.0)]
 
-# ---------------------------------------------------------------------------------------------- ceiling and pendulums
-L.section("ceiling beams (y 199 and 205) and four hanging pendulum weights")
-for zc in (-10.0, 10.0):
-    for i in range(9):
-        L.block(-27 + 6 * i, -21 + 6 * i, 202.8, 206.0, zc - 1, zc + 1, "steel")
-for xc in (-20.0, 20.0):
-    for i in range(7):
-        L.block(xc - 1, xc + 1, 196.8, 200.0, -21 + 6 * i, -15 + 6 * i, "steel")
-for px in (-10.0, 10.0):
-    for pz in (-10.0, 10.0):
-        L.block(px - 2, px + 2, 196.8, 202.8, pz - 2, pz + 2, "steel")
-        L.block(px - 2, px + 2, 190.8, 196.8, pz - 2, pz + 2, "steel")
-        L.block(px - 3, px + 3, 184.8, 190.8, pz - 3, pz + 3, "concrete")
+# ---------------------------------------------------------------------------------------------- lid and pendulums
+L.section("lid (y 210..212, flush with the wall top) and four hanging pendulum weights")
+for ci in range(-4, 5):
+    for cj in range(-4, 5):
+        if abs(ci) + abs(cj) <= 6:
+            L.block(6 * ci - 3, 6 * ci + 3, WALL_TOP - LID, WALL_TOP, 6 * cj - 3, 6 * cj + 3, "concrete")
+for px in (-11.0, 11.0):
+    for pz in (-11.0, 11.0):
+        L.block(px - 2, px + 2, WALL_TOP - LID - 6.0, WALL_TOP - LID, pz - 2, pz + 2, "steel")
+        L.block(px - 2, px + 2, WALL_TOP - LID - 12.0, WALL_TOP - LID - 6.0, pz - 2, pz + 2, "steel")
+        L.block(px - 3, px + 3, WALL_TOP - LID - 18.0, WALL_TOP - LID - 12.0, pz - 3, pz + 3, "concrete")
 
 # ---------------------------------------------------------------------------------------------- balconies
 L.section("balconies jutting from the walls into the bays")
@@ -165,16 +190,16 @@ def snap(y):
 
 
 for k in (0, 4, 8, 12):  # north bay, at the north ramp's mid height
-    for xc in (-6, 0, 6):
+    for xc in (-3, 3):
         L.block(xc - 3, xc + 3, snap(LAND[k] + HM) - 1.85, snap(LAND[k] + HM) + 0.15, 21, 27, "wood")
 for k in (1, 5, 9, 13):  # south bay
-    for xc in (-6, 0, 6):
+    for xc in (-3, 3):
         L.block(xc - 3, xc + 3, snap(LAND[k] + HM) - 1.85, snap(LAND[k] + HM) + 0.15, -27, -21, "wood")
 for k in (2, 6, 10, 14):  # east wall, at west landing levels (hook / jump only)
-    for zc in (-6, 0, 6):
+    for zc in (-3, 3):
         L.block(21, 27, snap(LAND[k]) - 2.0, snap(LAND[k]), zc - 3, zc + 3, "wood")
 for k in (3, 7, 11, 15):  # west wall, at east landing levels
-    for zc in (-6, 0, 6):
+    for zc in (-3, 3):
         L.block(-27, -21, snap(LAND[k]) - 2.0, snap(LAND[k]), zc - 3, zc + 3, "wood")
 
 # ---------------------------------------------------------------------------------------------- entities
