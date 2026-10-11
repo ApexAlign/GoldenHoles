@@ -24,7 +24,7 @@ const CONTROLS: [(&str, &str); 19] = [
     ("F1 / F3", "CONTROLS STRIP / PERF"),
     ("LEFT CLICK", "KATANA SLICE"),
     ("RIGHT CLICK", "THROW SELECTED STAR"),
-    ("WHEEL / R", "STAR TYPE: STAR, MINE, FLASH, SMOKE"),
+    ("WHEEL / R", "STAR TYPE: STAR, BARREL, FLASH, CANISTER"),
     ("HOLD RIGHT CLICK", "MARK STAR (2 CHARGES, +40% CUT)"),
     ("STAR ENERGY", "6 CHARGES; EMPTY = WAIT FOR 2"),
     ("HOLD CTRL / F / V", "BLOCK, PARRY (VIEW LOCKS)"),
@@ -64,7 +64,7 @@ mod tests {
     fn panel_says_click_to_play_and_lists_every_control() {
         let t = texts(&click_to_play(&Palette::TRON, 0.0));
         assert!(t.iter().any(|s| s == "CLICK TO PLAY") && t.iter().any(|s| s == TITLE));
-        for must in ["MOVE", "AIM", "DASH", "WALL RUN", "RELEASE MOUSE", "THROW SELECTED STAR", "STAR TYPE: STAR, MINE, FLASH, SMOKE"] {
+        for must in ["MOVE", "AIM", "DASH", "WALL RUN", "RELEASE MOUSE", "THROW SELECTED STAR", "STAR TYPE: STAR, BARREL, FLASH, CANISTER"] {
             assert!(t.iter().any(|s| s == must), "missing {must}");
         }
     }

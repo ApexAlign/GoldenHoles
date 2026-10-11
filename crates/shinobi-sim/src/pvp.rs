@@ -296,8 +296,8 @@ pub fn apply_hits(
         let (mut amount, mut bonus) = (h.amount, false);
         let mut guard_seen = crate::block::Guard::None;
         let mut mom = 1.0f32;
-        // arrows and tag blasts are resolved against shield, parry and cut-down by `power_pass.rs` before they get here
-        let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag));
+        // arrows, tag blasts and star explosions are resolved against shield, parry and cut-down (`power_pass.rs`, `star_pass.rs`) before they get here
+        let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag | DamageKind::Explosive));
         if let (Cause::Weapon(kind), false) = (h.cause, pre_resolved) {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
             // momentum + kill streak: a fast, hot swordsman cuts harder (but only against an open target: a shield is
@@ -336,6 +336,9 @@ pub fn apply_hits(
                             stick_age: 0.0,
                             normal: Vector::y(),
                             uid: 0x8000 | (tick as u16 & 0x7fff),
+                            vel: Vector::zeros(),
+                            attach: None,
+                            attach_off: None,
                         });
                     }
                 }

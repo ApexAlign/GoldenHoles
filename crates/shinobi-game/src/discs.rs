@@ -272,9 +272,9 @@ fn update(
 fn disc_colour(net: &Net, view: &shinobi_client::client_game::RenderView, i: usize) -> [f32; 3] {
     // star variants fly in their own colour: mine orange, flash white, smoke grey-blue
     match view.disc_kinds.get(i) {
-        Some(shinobi_sim::combat::stars::StarKind::Mine) => return [1.0, 0.45, 0.08],
+        Some(shinobi_sim::combat::stars::StarKind::Barrel) => return [1.0, 0.45, 0.08],
         Some(shinobi_sim::combat::stars::StarKind::Flash) => return [1.0, 1.0, 1.0],
-        Some(shinobi_sim::combat::stars::StarKind::Smoke) => return [0.62, 0.72, 0.85],
+        Some(shinobi_sim::combat::stars::StarKind::Canister) => return [0.62, 0.72, 0.85],
         _ => {}
     }
     match view.disc_owners.get(i).copied().filter(|o| *o != 0) {

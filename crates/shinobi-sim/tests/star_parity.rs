@@ -1,6 +1,6 @@
 //! Prediction parity of the star variants: a client-style `CombatSystem` fed the intents a server player gets, in the
 //! same world, throws the same star (kind, flight, landing, energy) tick for tick. The client never decides a variant's
-//! effects (burst, white-out, smoke) -- only the throw and the pool -- so this is the part that has to match.
+//! effects (blast, white-out) -- only the throw and the pool -- so this is the part that has to match.
 
 use std::time::Duration;
 
@@ -18,6 +18,12 @@ use shinobi_sim::tick::Server;
 const A: u16 = 1;
 
 fn run_kind(kind: StarKind) {
+    // an explosive is detonated by the server at its fuse (the client drops its copy by then): compare only up to there
+    let ticks = match kind {
+        StarKind::Barrel => 110,
+        StarKind::Canister => 60,
+        _ => 150,
+    };
     let lv = LevelDesc { boxes: vec![LevelBox::new([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]), LevelBox::new([0.0, 5.0, -30.0], [40.0, 5.0, 1.0])], spawns: vec![[0.0, 0.81, 0.0]] };
     let mut s = Server::new(Cfg::default());
     lv.apply_to_server(&mut s);
@@ -52,7 +58,7 @@ fn run_kind(kind: StarKind) {
     let mut mismatches = Vec::new();
     let pitch = -0.25;
     let mut ticks_stuck = 0;
-    for t in 0..150u32 {
+    for t in 0..ticks as u32 {
         let fire = t == 3;
         let it = if fire { PlayerIntent { buttons: Buttons(Buttons::FIRE), star: kind as u8, ..idle(pitch) } } else { idle(pitch) };
         feed(&mut s, it);
@@ -93,7 +99,7 @@ fn run_kind(kind: StarKind) {
     }
     assert!(mismatches.is_empty(), "{kind:?}: {:?}", &mismatches[..mismatches.len().min(5)]);
     match kind {
-        StarKind::Mine | StarKind::Smoke => assert!(ticks_stuck > 10, "{kind:?} landed and stayed (both sides agree)"),
+        StarKind::Barrel | StarKind::Canister => assert!(ticks_stuck > 10, "{kind:?} landed and stayed (both sides agree)"),
         _ => {}
     }
 }
@@ -104,8 +110,8 @@ fn a_predicted_standard_star_matches_the_server() {
 }
 
 #[test]
-fn a_predicted_mine_flies_lands_and_pays_like_the_server() {
-    run_kind(StarKind::Mine);
+fn a_predicted_barrel_flies_lands_and_pays_like_the_server() {
+    run_kind(StarKind::Barrel);
 }
 
 #[test]
@@ -114,6 +120,6 @@ fn a_predicted_flash_matches_the_server() {
 }
 
 #[test]
-fn a_predicted_smoke_flies_lands_and_pays_like_the_server() {
-    run_kind(StarKind::Smoke);
+fn a_predicted_canister_flies_lands_and_pays_like_the_server() {
+    run_kind(StarKind::Canister);
 }

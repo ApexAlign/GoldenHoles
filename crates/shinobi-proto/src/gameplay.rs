@@ -14,8 +14,8 @@ pub const KIND_SLASH: u8 = 1;
 pub const KIND_GRID_BEAM: u8 = 2;
 pub const KIND_OBSTACLE: u8 = 3;
 pub const KIND_WALL: u8 = 4;
-/// A mine star's burst.
-pub const KIND_MINE: u8 = 5;
+/// A barrel or canister blast (`DamageKind::Explosive`).
+pub const KIND_EXPLOSIVE: u8 = 5;
 /// A yumi arrow / a fuda tag's blast (docs/powerups.md).
 pub const KIND_ARROW: u8 = 6;
 pub const KIND_TAG: u8 = 7;

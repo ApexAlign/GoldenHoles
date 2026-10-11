@@ -729,7 +729,7 @@ impl Enemies {
                         DamageKind::Slash => bal.combat.knockback_slash,
                         DamageKind::Shuriken => bal.combat.knockback_shuriken,
                         DamageKind::GridBeam => bal.combat.knockback_ultimate,
-                        DamageKind::Mine | DamageKind::Tag => bal.combat.knockback_shuriken * 3.0,
+                        DamageKind::Explosive | DamageKind::Tag => bal.combat.knockback_shuriken * 3.0,
                         DamageKind::Arrow => bal.combat.knockback_shuriken * 2.0,
                     };
                     out.push(EnemyDamage { enemy: en.id, attacker: Some(attacker), attacker_pos: Some(attacker_pos), amount, knockback });

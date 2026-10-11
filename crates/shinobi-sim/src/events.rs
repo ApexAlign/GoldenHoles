@@ -88,12 +88,14 @@ pub const ENV_BOLT_MARK: u8 = 3;
 pub const ENV_BOLT_STRIKE: u8 = 4;
 
 /// `NetEvent::StarFx::what`.
-pub const STAR_FX_MINE_STUCK: u8 = 0;
-pub const STAR_FX_SMOKE_LANDED: u8 = 1;
-pub const STAR_FX_MINE_BURST: u8 = 2;
+pub const STAR_FX_BARREL_LANDED: u8 = 0;
+pub const STAR_FX_CANISTER_STUCK: u8 = 1;
+pub const STAR_FX_BARREL_BURST: u8 = 2;
 pub const STAR_FX_FLASH_BURST: u8 = 3;
-pub const STAR_FX_MINE_GONE: u8 = 4;
-pub const STAR_FX_SMOKE_GONE: u8 = 5;
+pub const STAR_FX_BARREL_GONE: u8 = 4;
+pub const STAR_FX_CANISTER_GONE: u8 = 5;
+/// A canister went off (a barrel going off is `STAR_FX_BARREL_BURST`).
+pub const STAR_FX_CANISTER_BURST: u8 = 6;
 
 pub const BLOCK_REFUSED_OCCUPIED: u8 = 0;
 pub const BLOCK_REFUSED_BLOCKED: u8 = 1;
@@ -666,8 +668,8 @@ mod tests {
     #[test]
     fn star_events_roundtrip() {
         let evs = [
-            NetEvent::StarFx { tick: 70_000, what: STAR_FX_MINE_BURST, owner: 9, pos: [-20_000, 512, 33_333] },
-            NetEvent::StarFx { tick: 70_001, what: STAR_FX_SMOKE_GONE, owner: 65_535, pos: [0, 0, 0] },
+            NetEvent::StarFx { tick: 70_000, what: STAR_FX_BARREL_BURST, owner: 9, pos: [-20_000, 512, 33_333] },
+            NetEvent::StarFx { tick: 70_001, what: STAR_FX_CANISTER_GONE, owner: 65_535, pos: [0, 0, 0] },
             NetEvent::StarBlind { tick: 70_002, victim: 3, strength_q: 255, ticks: 72 },
             NetEvent::CharacterLook { player: 7, wire: shinobi_proto::character::preset(1).to_wire() },
             NetEvent::PowerFx { tick: 70_003, what: 13, owner: 4, pos: [-20_000, 512, 33_333] },

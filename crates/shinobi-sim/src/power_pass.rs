@@ -461,6 +461,7 @@ impl Server {
         let oteam = oi.map(|o| self.players[o].team);
         let owner_pos = oi.map(|o| self.players[o].pos(&self.world)).unwrap_or(centre);
         fx.push((t.owner, CombatEvent::PowerFx { what: FX_TAG_BLAST, pos: pt(centre) }));
+        self.pending_blasts.push((t.owner, centre));
         // the blast shakes destructible level boxes too (pillars, towers, bamboo)
         if !self.breaks.is_empty() {
             self.breaks.blast(&mut self.world, centre, tc.radius, |d| blast_damage(tc, d), tick, &mut self.break_events);

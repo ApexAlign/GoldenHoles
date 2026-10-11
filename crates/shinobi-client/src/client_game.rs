@@ -72,7 +72,7 @@ pub enum Action {
     /// Held: the block / parry shield. The view is locked where it was when the hold began (look input is ignored) while
     /// movement, jump, dash, grapple and wall-run keep working; throwing and cutting are shut while it is up.
     Block,
-    /// Cycle the throwable the throw button sends (mouse wheel / `R`): star, mine, flash, smoke. One-tick edges.
+    /// Cycle the throwable the throw button sends (mouse wheel / `R`): star, barrel, flash, canister. One-tick edges.
     StarNext,
     StarPrev,
 }
@@ -522,12 +522,12 @@ pub struct RenderView {
     pub star_sel: StarKind,
     pub star_cycled: bool,
     pub star_throws: u32,
-    /// Landed mines and smoke clouds (all players'), and the kind of each flying disc in `discs`.
+    /// Landed barrels and canisters (all players'), and the kind of each flying disc in `discs`.
     pub star_objs: Vec<StarObj>,
     pub disc_kinds: Vec<StarKind>,
     /// Flash white-out right now, 0..=1 (screen flash strength, decays with the server's blind time).
     pub blind: f32,
-    /// Enemies standing in smoke: no lock, radar blip or tag for them.
+    /// Hidden enemies (currently always empty).
     pub hidden_ids: Vec<EntityId>,
     /// How far the throw button has charged toward a MARK star, 0..=1 (0 when up or after a tap).
     pub charging: f32,
@@ -551,14 +551,14 @@ pub struct RenderView {
     pub block_thickness: f32,
 }
 
-/// A landed star object (mine or smoke cloud) for the renderer.
+/// A landed star object (barrel or canister) for the renderer.
 #[derive(Clone, Copy, Debug)]
 pub struct StarObj {
     pub kind: StarKind,
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub owner: u16,
-    /// Mines: past the arming delay.
+    /// Explosives: the fuse is burning (landed).
     pub armed: bool,
     /// Fraction of its life left, 1 = fresh.
     pub life_left: f32,
@@ -627,7 +627,7 @@ pub struct ClientGame {
     blind_left: u32,
     blind_total: u32,
     blind_strength: f32,
-    /// Enemies inside a smoke cloud as of the last tick.
+    /// Hidden enemies as of the last tick (currently none).
     hidden_ids: Vec<EntityId>,
     /// Pending build press for the next tick: `Some(kind)` (latched until the tick, so a sub-tick tap is not lost).
     build_edge: Option<PieceKind>,
@@ -1008,6 +1008,8 @@ impl ClientGame {
         let blocking = self.block_held && self.death.is_none();
         // a drawn bow slows the turn (docs/powerups.md: `combat.yumi.turn_mult`)
         let turn_k = if self.power.drawing { PowerCfg::default().yumi.turn_mult } else { 1.0 };
+        // a flash-dazed player turns slowly (`combat.star.flash_daze_turn`); the server does not clamp it, the aim is the client's
+        let turn_k = if self.blind_left > 0 { turn_k * StarCfg::default().flash_daze_turn } else { turn_k };
         let (dx, dy) = if blocking { (0.0, 0.0) } else { (dx * turn_k, dy * turn_k) };
         if dx != 0.0 || dy != 0.0 {
             self.settings.look(&mut self.aim, dx, dy, false);
@@ -1249,12 +1251,9 @@ impl ClientGame {
                     _ => Vec::new(),
                 };
                 p.combat.allies = p.sync_proxies(&self.cfg.sim, &remotes);
-                // smoke: enemies inside a cloud (ours or anyone's, from the snapshot) cannot be locked onto; a white-out
-                // forms no lock at all. The server applies the same two rules, so the predicted throw bends the same way.
-                let smoke = StarCfg::default().smoke_radius;
-                let clouds: Vec<[f32; 3]> = Self::star_objects_of(&self.net, Some(&*p), own_id).into_iter().filter(|o| o.kind == StarKind::Smoke).map(|o| [o.pos[0] + o.normal[0], o.pos[1] + o.normal[1], o.pos[2] + o.normal[2]]).collect();
-                self.hidden_ids = remotes.iter().filter(|(_, pos, ally, dead)| !*ally && !*dead && clouds.iter().any(|c| within(*pos, *c, smoke))).map(|r| r.0).collect();
-                p.combat.hidden = self.hidden_ids.iter().filter_map(|id| p.proxies.get(id).map(|(h, _)| *h)).collect();
+                // a white-out forms no lock at all (the server applies the same rule, so the predicted throw bends the same way)
+                self.hidden_ids.clear();
+                p.combat.hidden.clear();
                 p.combat.suppress_lock = self.blind_left > 0;
                 p.world.queries.update(&p.world.colliders); // combat now runs every tick (lock-on tracks the cone continuously)
                 let aim = CombatAim {
@@ -1279,7 +1278,7 @@ impl ClientGame {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
-                // a landed mine / smoke is the server's from here on (it can burst or be shot): our copy only bridges the gap
+                // a landed barrel / canister is the server's from here on (it can burst or be shot): our copy only bridges the gap
                 p.combat.drop_landed_stars(0.5);
                 if let Some(edge) = p.combat.lock_edge {
                     self.lock_edges.push(edge);
@@ -1371,7 +1370,7 @@ impl ClientGame {
         self.net.next_packet(intent, local_tick)
     }
 
-    /// Landed mines / smoke: our own predicted ones (until the snapshot brings the authoritative copy) plus every one in the
+    /// Landed barrels / canisters: our own predicted ones (until the snapshot brings the authoritative copy) plus every one in the
     /// newest snapshot. Pure of `self` borrows so the tick can call it while `pred` is held.
     fn star_objects_of(net: &NetClient, pred: Option<&Predicted>, own: Option<EntityId>) -> Vec<StarObj> {
         let sc = StarCfg::default();

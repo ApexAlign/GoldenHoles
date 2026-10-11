@@ -186,6 +186,8 @@ pub struct Server {
     /// Owners that pressed detonate this tick, and the counter that names arrows / tags / floor drops.
     pub(crate) power_launch: Vec<crate::power_pass::Launch>,
     pub(crate) power_uid: u16,
+    /// Tag blasts of the last power pass (owner, centre): the next `star_pass` lets them set off barrels and canisters.
+    pub(crate) pending_blasts: Vec<(u16, [f32; 3])>,
     pub(crate) drop_seq: u32,
     /// Movement-only broad phase (solid colliders), rebuilt once per tick before the player loop.
     solid_queries: QueryPipeline,
@@ -236,6 +238,7 @@ impl Server {
             arrows: Vec::new(),
             tags: Vec::new(),
             power_launch: Vec::new(),
+            pending_blasts: Vec::new(),
             power_uid: 0,
             drop_seq: 0,
             solid_queries: QueryPipeline::new(),
@@ -515,9 +518,7 @@ impl Server {
 
         let bcfg = self.balance.guard.cfg();
         let mcfg = self.balance.melee.cfg();
-        // star variants: who stands in smoke (hidden from every lock-on) and where this tick's combat events begin
-        let in_smoke = self.in_smoke();
-        let hidden_boxes: Vec<(usize, ColliderHandle)> = self.players.iter().enumerate().filter(|(j, _)| in_smoke[*j]).map(|(j, q)| (j, q.vitals.hitbox)).collect();
+        // star variants: where this tick's combat events begin
         let ev_start = self.events.len();
         for i in 0..self.players.len() {
             let intent = self.players[i].queue.take_for_tick(tick);
@@ -612,7 +613,6 @@ impl Server {
                 let just_unblocked = self.players[i].kmoves.just_unblocked(tick);
                 let p = &mut self.players[i];
                 p.combat.allies = allies;
-                p.combat.hidden = hidden_boxes.iter().filter(|(j, _)| *j != i).map(|(_, h)| *h).collect();
                 p.combat.suppress_lock = tick < p.blind_until;
                 p.combat.set_moves(crate::combat::MoveCtx { counter, just_unblocked });
                 p.combat.update(
@@ -828,6 +828,15 @@ impl Server {
         }
 
         // every attacker has run: settle damage once, then record the tick
+        // a flash-dazed victim takes extra damage from every weapon (the "expose for the katana" window)
+        let daze = self.balance.combat.star.flash_daze_damage;
+        if daze > 0.0 {
+            for h in hits.iter_mut() {
+                if matches!(h.cause, crate::pvp::Cause::Weapon(_)) && self.players.get(h.victim).map_or(false, |v| tick < v.blind_until) {
+                    h.amount *= 1.0 + daze;
+                }
+            }
+        }
         let first_new = self.pvp_events.len();
         pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {

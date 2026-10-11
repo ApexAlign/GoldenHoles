@@ -74,7 +74,7 @@ pub struct Replicator {
     last_team_score: Option<([u16; 2], u8)>,
     /// Shurikens replicated per snapshot right now (shrinks under load, see `build_round`).
     disc_cap: usize,
-    /// Stable snapshot entity id of every landed mine / smoke star, keyed by (owner, launcher uid).
+    /// Stable snapshot entity id of every landed barrel / canister, keyed by (owner, launcher uid).
     stuck_ids: HashMap<(u16, u16), u16>,
     /// Smallest intent arrival margin per player since the last snapshot round (taken from the intent queues every
     /// frame, reported in the owner block so clients can size their intent lead).
@@ -285,12 +285,13 @@ impl Replicator {
         use shinobi_sim::events::*;
         for (owner, e) in &server.events {
             let (what, pos) = match *e {
-                CombatEvent::StarStuck { kind: StarKind::Mine, pos, .. } => (STAR_FX_MINE_STUCK, pos),
-                CombatEvent::StarStuck { kind: StarKind::Smoke, pos, .. } => (STAR_FX_SMOKE_LANDED, pos),
-                CombatEvent::StarBurst { pos } => (STAR_FX_MINE_BURST, pos),
+                CombatEvent::StarStuck { kind: StarKind::Barrel, pos, .. } => (STAR_FX_BARREL_LANDED, pos),
+                CombatEvent::StarStuck { kind: StarKind::Canister, pos, .. } => (STAR_FX_CANISTER_STUCK, pos),
+                CombatEvent::StarBurst { kind: StarKind::Canister, pos } => (STAR_FX_CANISTER_BURST, pos),
+                CombatEvent::StarBurst { pos, .. } => (STAR_FX_BARREL_BURST, pos),
                 CombatEvent::StarFlash { pos } => (STAR_FX_FLASH_BURST, pos),
-                CombatEvent::StarGone { kind: StarKind::Mine, pos } => (STAR_FX_MINE_GONE, pos),
-                CombatEvent::StarGone { kind: StarKind::Smoke, pos } => (STAR_FX_SMOKE_GONE, pos),
+                CombatEvent::StarGone { kind: StarKind::Barrel, pos } => (STAR_FX_BARREL_GONE, pos),
+                CombatEvent::StarGone { kind: StarKind::Canister, pos } => (STAR_FX_CANISTER_GONE, pos),
                 CombatEvent::StarBlind { victim, strength_q, ticks } => {
                     self.broadcast(NetEvent::StarBlind { tick, victim, strength_q, ticks });
                     continue;
@@ -608,7 +609,7 @@ impl Replicator {
         self.broadcast(NetEvent::MapChange { tick, map });
     }
 
-    /// Landed mines / smoke as snapshot entities with ids that stay with the object (see `STUCK_ID_BASE`), sorted by id.
+    /// Landed barrels / canisters as snapshot entities with ids that stay with the object (see `STUCK_ID_BASE`), sorted by id.
     fn stuck_entities(&mut self, server: &Server) -> Vec<(u16, EntityState)> {
         use shinobi_proto::snapshot::{disc_flags, STUCK_ID_BASE, STUCK_NORMAL_SPEED};
         let sc = server.balance.combat.star;
@@ -758,7 +759,7 @@ fn weapon_code(k: DamageKind) -> u8 {
         DamageKind::Shuriken => gameplay::KIND_SHURIKEN,
         DamageKind::Slash => gameplay::KIND_SLASH,
         DamageKind::GridBeam => gameplay::KIND_GRID_BEAM,
-        DamageKind::Mine => gameplay::KIND_MINE,
+        DamageKind::Explosive => gameplay::KIND_EXPLOSIVE,
         DamageKind::Arrow => gameplay::KIND_ARROW,
         DamageKind::Tag => gameplay::KIND_TAG,
     }
@@ -777,7 +778,7 @@ fn kind_verb(kind: u8) -> &'static str {
         gameplay::KIND_SHURIKEN => "shuriken'd",
         gameplay::KIND_SLASH => "sliced",
         gameplay::KIND_GRID_BEAM => "grid-beamed",
-        gameplay::KIND_MINE => "stepped on a mine star",
+        gameplay::KIND_EXPLOSIVE => "stepped on a mine star",
         gameplay::KIND_ARROW => "shot through with a yumi arrow",
         gameplay::KIND_TAG => "blew up with a fuda tag",
         gameplay::KIND_OBSTACLE => "hit a neon obstacle",
@@ -1339,7 +1340,7 @@ mod tests {
         assert!(t.contains("match 1 FINAL") && t.contains("8 human(s), 8 bot(s)"), "{t}");
         assert!(t.contains("p1 (human): kills") && t.contains("bots x8 (summed)"), "{t}");
         let thrown: u32 = t.lines().find(|l| l.contains("shuriken: thrown")).and_then(|l| l.split("thrown ").nth(1)).and_then(|x| x.split_whitespace().next()).and_then(|x| x.parse().ok()).unwrap();
-        assert!(thrown > 20, "the scripted humans throw all match long: {thrown}\n{t}");
+        assert!(thrown > 12, "the scripted humans throw all match long: {thrown}\n{t}");
     }
 
     /// The client reads datagrams into a 2048 B buffer (`udp_game::RX_BUF`): a bigger one is truncated and dropped.

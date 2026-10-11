@@ -9,7 +9,7 @@
 
 use shinobi_proto::snapshot::{FLAG_DEAD, FLAG_INVULN, MoveKind};
 use shinobi_sim::combat::{CombatEvent, DamageKind};
-use shinobi_proto::gameplay::{KIND_ARROW, KIND_GRID_BEAM, KIND_MINE, KIND_SHURIKEN, KIND_SLASH, KIND_TAG, PHASE_INTERMISSION, PHASE_LIVE};
+use shinobi_proto::gameplay::{KIND_ARROW, KIND_GRID_BEAM, KIND_EXPLOSIVE, KIND_SHURIKEN, KIND_SLASH, KIND_TAG, PHASE_INTERMISSION, PHASE_LIVE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind, ScoreEntry};
 use shinobi_sim::pvp::{PvpEvent, Vitals};
@@ -74,7 +74,7 @@ impl Palette {
             DamageKind::Shuriken => self.cyan,
             DamageKind::Slash => self.orange,
             DamageKind::GridBeam => self.magenta,
-            DamageKind::Mine | DamageKind::Tag => self.magenta,
+            DamageKind::Explosive | DamageKind::Tag => self.magenta,
             DamageKind::Arrow => self.cyan,
         }
     }
@@ -776,7 +776,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
     match k {
         KIND_SHURIKEN => DamageKind::Shuriken,
         KIND_GRID_BEAM => DamageKind::GridBeam,
-        KIND_MINE => DamageKind::Mine,
+        KIND_EXPLOSIVE => DamageKind::Explosive,
         KIND_ARROW => DamageKind::Arrow,
         KIND_TAG => DamageKind::Tag,
         _ => DamageKind::Slash,
@@ -786,7 +786,7 @@ pub fn damage_kind(k: u8) -> DamageKind {
 /// Environmental damage source: anything that is not a weapon kind (obstacles, and any retired kind an old
 /// server might still send, e.g. light walls).
 pub fn is_void(k: u8) -> bool {
-    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_MINE | KIND_ARROW | KIND_TAG)
+    !matches!(k, KIND_SHURIKEN | KIND_SLASH | KIND_GRID_BEAM | KIND_EXPLOSIVE | KIND_ARROW | KIND_TAG)
 }
 
 impl KillEntry {
@@ -1548,7 +1548,7 @@ pub fn weapon_name(k: DamageKind) -> &'static str {
         DamageKind::Shuriken => "SHURIKEN",
         DamageKind::Slash => "KATANA",
         DamageKind::GridBeam => "GRID BEAM",
-        DamageKind::Mine => "MINE STAR",
+        DamageKind::Explosive => "EXPLOSION",
         DamageKind::Arrow => "YUMI ARROW",
         DamageKind::Tag => "FUDA TAG",
     }
@@ -2060,7 +2060,7 @@ impl Glyph {
             DamageKind::Slash => Glyph::Katana,
             DamageKind::Shuriken => Glyph::Shuriken,
             DamageKind::GridBeam => Glyph::Beam,
-            DamageKind::Mine | DamageKind::Arrow | DamageKind::Tag => Glyph::Shuriken,
+            DamageKind::Explosive | DamageKind::Arrow | DamageKind::Tag => Glyph::Shuriken,
         }
     }
 }

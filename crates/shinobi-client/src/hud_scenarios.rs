@@ -174,14 +174,14 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let full = HudState { star: Some(StarHud { charges: 6.0, max: 6.0, flash: Some(0.15), idle: 0.1, ..Default::default() }), ..base() };
     out.push(("star_refill_flash", Hud::build_with(&full, &p)));
     // star variants: the selector under the pips (cost rings on the pips a throw spends), a fresh switch with its blurb, a cycle hint,
-    // an unaffordable mine, and the flash white-out
+    // an unaffordable barrel, and the flash white-out
     {
         use shinobi_sim::combat::stars::StarKind;
         let sel = |k: StarKind, c: f32, sw: Option<f32>| HudState { star: Some(StarHud { charges: c, max: 6.0, idle: 0.2, sel: k, switched: sw, ..Default::default() }), ..base() };
-        out.push(("star_sel_mine", Hud::build_with(&sel(StarKind::Mine, 6.0, Some(0.3)), &p)));
+        out.push(("star_sel_barrel", Hud::build_with(&sel(StarKind::Barrel, 6.0, Some(0.3)), &p)));
         out.push(("star_sel_flash", Hud::build_with(&sel(StarKind::Flash, 5.0, None), &p)));
-        out.push(("star_sel_smoke", Hud::build_with(&sel(StarKind::Smoke, 4.0, Some(0.3)), &p)));
-        out.push(("star_sel_mine_dry", Hud::build_with(&sel(StarKind::Mine, 2.0, None), &p)));
+        out.push(("star_sel_canister", Hud::build_with(&sel(StarKind::Canister, 4.0, Some(0.3)), &p)));
+        out.push(("star_sel_barrel_dry", Hud::build_with(&sel(StarKind::Barrel, 2.0, None), &p)));
         let hint = HudState { hint: Some((HintId::StarCycle, 1.0)), ..sel(StarKind::Standard, 5.0, None) };
         out.push(("star_cycle_hint", Hud::build_with(&hint, &p)));
         let blind = HudState { blind: 0.75, ..sel(StarKind::Standard, 5.0, None) };

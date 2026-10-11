@@ -110,8 +110,8 @@ pub enum DamageKind {
     Shuriken,
     Slash,
     GridBeam,
-    /// A mine star's burst.
-    Mine,
+    /// A barrel or canister blast (`stars.rs`).
+    Explosive,
     /// A yumi arrow (`power.rs`).
     Arrow,
     /// An explosive fuda tag's blast (`power.rs`).
@@ -164,13 +164,13 @@ pub enum CombatEvent {
         kind: SlashKind,
     },
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real>, kind: stars::StarKind },
-    /// A mine or smoke star landed and stuck at `pos` (surface `normal`).
+    /// A barrel came to rest or a canister stuck at `pos` (surface `normal`); a barrel that struck a player is "stuck" with its fuse spent.
     StarStuck { kind: stars::StarKind, pos: Point<Real>, normal: Vector<Real> },
     /// A flash star burst at `pos` (impact or fuse). The server turns it into white-outs (`StarBlind`).
     StarFlash { pos: Point<Real> },
-    /// A mine went off at `pos` (server only).
-    StarBurst { pos: Point<Real> },
-    /// A mine was shot, cut or replaced and is gone without exploding (server only); a smoke cloud ran out.
+    /// A barrel or canister went off at `pos` (server only).
+    StarBurst { pos: Point<Real>, kind: stars::StarKind },
+    /// A landed explosive ran past its fuse without the server detonating it (failsafe, server only).
     StarGone { kind: stars::StarKind, pos: Point<Real> },
     /// Server only: `victim` is white-out blind for `ticks` at `strength_q` / 255 (events of the thrower).
     StarBlind { victim: u16, strength_q: u8, ticks: u16 },
@@ -217,7 +217,7 @@ pub struct CombatSystem {
     pub lock_edge: Option<aim_assist::LockEdge>,
     /// Blinded (flash star): no lock-on can form and the lock that was held breaks; set every tick by the owner of the sim.
     pub suppress_lock: bool,
-    /// Hitboxes inside a smoke cloud: never acquired as a lock-on target (they still take hits).
+    /// Hitboxes never acquired as a lock-on target (they still take hits); unused, kept for hiding effects.
     pub hidden: Vec<ColliderHandle>,
 }
 
@@ -298,7 +298,7 @@ impl CombatSystem {
         self.loadout.active() || !self.powerups.bursts().is_empty()
     }
 
-    /// Client prediction: forget landed mines / smoke older than `grace` seconds (the server's copy takes over).
+    /// Client prediction: forget landed barrels / canisters older than `grace` seconds (the server's copy takes over).
     pub fn drop_landed_stars(&mut self, grace: f32) {
         if let Some(d) = self.loadout.discs_mut() {
             d.retain(|d| !(d.stuck && d.stick_age > grace));
@@ -325,7 +325,7 @@ impl CombatSystem {
         // lock first: one best_target per tick feeds the lock state and every weapon fired this tick
         let (eye, fwd) = (aim.origin, aim.forward());
         let held = self.lock.target.filter(|_| self.lock.holding());
-        // smoke hides players from the lock (not from shots): lock candidates skip them like allies
+        // hidden players are skipped by the lock like allies
         let mut skip = self.allies.clone();
         skip.extend(self.hidden.iter().copied());
         let found = if self.suppress_lock { None } else { aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &skip, ch.body, held) };

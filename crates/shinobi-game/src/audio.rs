@@ -303,11 +303,11 @@ impl Cuer {
         for (what, p) in &f.star_fx {
             use shinobi_sim::events::*;
             let (s, v) = match *what {
-                STAR_FX_MINE_STUCK => (Sound::Print, 0.5),
-                STAR_FX_SMOKE_LANDED => (Sound::Land, 0.7),
-                STAR_FX_MINE_BURST => (Sound::AirSlam, 1.0),
+                STAR_FX_BARREL_LANDED => (Sound::Print, 0.5),
+                STAR_FX_CANISTER_STUCK => (Sound::Land, 0.7),
+                STAR_FX_BARREL_BURST => (Sound::AirSlam, 1.0),
                 STAR_FX_FLASH_BURST => (Sound::CounterFlash, 1.0),
-                STAR_FX_MINE_GONE => (Sound::Whiff, 0.7),
+                STAR_FX_BARREL_GONE => (Sound::Whiff, 0.7),
                 _ => continue,
             };
             cues.push(Cue::at(s, *p, v));
