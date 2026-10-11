@@ -57,40 +57,55 @@ def plates(xe, ze, top, mat=MATF, thick=THICK):
 def ring_floor(top, cut=None, roof=False):
     """One ring deck. cut = 'S' or 'N': the 4 m ramp lane under the ramp that arrives here is left open (rim plates stay under the wall)."""
     X10 = xs_edges(-OUT, OUT, 10)
+    # on a floor where a ramp arrives, one plate must span the last 2.2 m of the climb on the lane side (x 14..20 / -20..-14)
+    XS = xs_edges(-OUT, 14.0, 8) + [20.0, 24.0, 28.0]
+    XN = [-28.0, -24.0, -20.0] + xs_edges(-14.0, OUT, 8)
     for sgn in (-1, 1):  # sgn -1 = south strip, +1 = north strip
         def zr(a, b):
             return sorted([sgn * a, sgn * b])
         # ledge row (well side) and rim row
-        plates(X10, zr(WELL, 22.0), top)
         sidecut = (cut == ("S" if sgn < 0 else "N"))
+        XE = (XS if sgn < 0 else XN) if sidecut else X10
+        plates(XE, zr(WELL, 22.0), top)
         if not sidecut:
             plates(X10, zr(22.0, OUT), top)
         else:
-            plates(X10, zr(26.0, OUT), top)  # rim under the wall
+            plates(XE, zr(26.0, OUT), top)  # rim under the wall
             # lane row (22..26): only outside the ramp x range
             if sgn < 0:
                 xa, xb = RAMP_X
             else:
                 xa, xb = -RAMP_X[1], -RAMP_X[0]
             if xa > -OUT:
-                plates([-OUT, xa], zr(22.0, 26.0), top)
+                plates(xs_edges(-OUT, xa, max(1, math.ceil((xa + OUT) / 5.9))), zr(22.0, 26.0), top)
             if xb < OUT:
-                plates(xs_edges(xb, OUT, 2), zr(22.0, 26.0), top)
+                plates(xs_edges(xb, OUT, max(1, math.ceil((OUT - xb) / 5.9))), zr(22.0, 26.0), top)
     # east / west strips between the N and S strips
     Z6 = xs_edges(-WELL, WELL, 6)
     for sgn in (-1, 1):
         def xr(a, b):
             return sorted([sgn * a, sgn * b])
-        plates(xr(WELL, 24.0), Z6, top)
-        plates(xr(24.0, OUT), Z6, top)
+        plates(xr(WELL, 22.0), Z6, top)
+        plates(xr(22.0, OUT), Z6, top)
+
+
+def roof_ring(top):
+    """The roof deck between the walls (the top-story walls run up to the roof top so no wall top reads as a step beside it)."""
+    XR = xs_edges(-WALL, WALL, 9)
+    for sgn in (-1, 1):
+        for (a, b) in ((WELL, 22.0), (22.0, WALL)):
+            plates(XR, sorted([sgn * a, sgn * b]), top)
+        plates(sorted([sgn * WELL, sgn * 22.0]), xs_edges(-WELL, WELL, 6), top)
+        plates(sorted([sgn * 22.0, sgn * WALL]), xs_edges(-WELL, WELL, 6), top)
 
 
 def ramp_boxes(k):
     """The 24 degree ramp from deck k to deck k+1 along the south (k even) or north (k odd) wall, in 8 rolled segments."""
     south = (k % 2 == 0)
     xa, xb = RAMP_X if south else (-RAMP_X[1], -RAMP_X[0])
-    zc = -(LANE_Z[0] + LANE_Z[1]) / 2 if south else (LANE_Z[0] + LANE_Z[1]) / 2
-    hz = (LANE_Z[1] - LANE_Z[0]) / 2
+    # 4 m lane cut in the floor above, but the ramp is 3.5 m wide: a 0.5 m slot against the wall keeps wall-brick sides free of ramp 'steps'
+    zc = -(LANE_Z[0] + 25.5) / 2 if south else (LANE_Z[0] + 25.5) / 2
+    hz = (25.5 - LANE_Z[0]) / 2
     # surface runs (x_lo, deck_lo) -> (x_hi, deck_hi) climbing in +x (south) or -x (north)
     p0 = (xa, D[k]) if south else (xb, D[k])
     p1 = (xb, D[k + 1]) if south else (xa, D[k + 1])
@@ -112,9 +127,8 @@ def ramp_boxes(k):
 
 def story_walls(k):
     y0 = D[k]
-    top = D[k + 1] - THICK - 4.0 if k < NF - 1 else ROOF_TOP - THICK
-    layers = STORY_LAYERS if k < NF - 1 else 3
-    h = (top - y0) / layers if k == NF - 1 else 6.0
+    layers = STORY_LAYERS if k < NF - 1 else 4
+    h = 6.0 if k < NF - 1 else (ROOF_TOP - y0) / layers  # the top story runs up to the roof top (4 x 5 m)
     top = y0 + h * layers
     # north / south walls span the full width; east / west walls run between them. Running bond is done per layer by hand
     # (lvl_lib's own bond would also split the 2 m thickness).
@@ -134,7 +148,7 @@ def partitions(k):
     """Honeycomb: brick partitions across the east / west strips (aisle x 18..22 stays open) form alcoves."""
     for sx in (-1, 1):
         for z in (-9.0, 9.0):
-            L.block(sx * 22.0 if sx > 0 else -26.0, sx * 26.0 if sx > 0 else -22.0, D[k], D[k] + 6.0, z - 1.0, z + 1.0, MATW)
+            L.block(sx * 22.0 if sx > 0 else -26.0, sx * 26.0 if sx > 0 else -22.0, D[k], D[k] + (5.0 if k == NF - 1 else 6.0), z - 1.0, z + 1.0, MATW)
 
 
 def hang_chain(x, z, hx, hz, y_top, y_bot, links, mat=MATF, gap=0.3):
@@ -155,7 +169,7 @@ for k in range(NF):
         cut = "S" if (k - 1) % 2 == 0 else "N"  # ramp k-1 arrives here
     ring_floor(D[k], cut)
 L.section("roof ring (y 188..190)")
-ring_floor(ROOF_TOP, None)
+roof_ring(ROOF_TOP)
 
 L.section("outer brick walls (one story per floor)")
 for k in range(NF):
@@ -187,16 +201,16 @@ for k in range(NF - 1):
         L.block(-1.0, 1.0, y - 0.75, y + 0.75, -WELL - 1.0, WELL + 1.0, MATB)
 
 L.section("ceiling beams under the roof (y ~187.6) and the crown chains")
-BEAM_Y = ROOF_TOP - THICK - 0.4  # centre 187.6, top 188.35: 0.35 m into the roof plates (no support coupling)
+BEAM_Y = ROOF_TOP - 0.75  # centre 189.25, top flush with the roof deck (1.5 m girders, ends tied into the roof plates)
 L.block(-WELL - 1.0, WELL + 1.0, BEAM_Y - 0.75, BEAM_Y + 0.75, -BR_W / 2, BR_W / 2, MATB)
 L.block(-BR_W / 2, BR_W / 2, BEAM_Y - 0.75, BEAM_Y + 0.75, -WELL - 1.0, WELL + 1.0, MATB)
 CROWN_TOP = D[-1] - 2.0  # 168
 L.perm(0.0, CROWN_TOP - 1.0, 0.0, 3.0, 1.0, 4.5)  # the crown platform (bedrock: carries a bow)
 for z in (-3.0, 3.0):
-    hang_chain(0.0, z, 1.0, 1.0, BEAM_Y + 0.5, CROWN_TOP - 1.0, 4, MATB)
+    hang_chain(0.0, z, 1.0, 1.0, BEAM_Y + 0.75, CROWN_TOP - 1.0, 4, MATB)
 # a weapon plinth on the floor 7 bridge (bow 2): the bridge there runs along x (i = 3)
 BR7 = D[7]
-L.perm(0.0, BR7 + 0.75, 0.0, 1.5, 0.75, 1.5)
+L.perm(0.0, BR7 + 0.15, 0.0, 1.5, 0.15, 1.5)
 
 L.section("pillars on the bridges (hook / wall-run posts)")
 for i, k in enumerate((1, 3, 5, 7)):
@@ -211,8 +225,8 @@ for i, k in enumerate((1, 3, 5, 7)):
 # ============================================================================================================ curtains and stalactites
 L.section("wall-run curtains hung under the floor rims")
 for k in range(1, NF):
-    ytop = D[k] - THICK + 1.0  # tied 1 m into the plate
-    ybot = D[k] - THICK - 11.0
+    ytop = D[k]  # tied flush with the deck top (a lower top would read as a step beside the plate)
+    ybot = D[k] - 12.0
     h = (ytop - ybot) / 2
     pos = [(7.0, 19.0), (-7.0, -19.0)]
     for (x, z) in pos:
@@ -226,8 +240,8 @@ L.section("stalactite chains under the floors")
 for k in range(1, NF):
     sh = [-13.0, 13.0] if k % 2 else [-14.0, 14.0]
     for a in sh:
-        hang_chain(a, 19.0 if k % 2 else -19.0, 1.0, 1.0, D[k] - THICK + 1.0, D[k] - THICK - 11.0, 2)
-        hang_chain(19.0 if k % 2 else -19.0, -a, 1.0, 1.0, D[k] - THICK + 1.0, D[k] - THICK - 11.0, 2)
+        hang_chain(a, 19.0 if k % 2 else -19.0, 1.0, 1.0, D[k], D[k] - 12.0, 2)
+        hang_chain(19.0 if k % 2 else -19.0, -a, 1.0, 1.0, D[k], D[k] - 12.0, 2)
 
 # ============================================================================================================ entities
 SPAWNS = [  # (floor, x, z)
@@ -238,10 +252,10 @@ for (k, x, z) in SPAWNS:
     L.spawn(x, D[k] + 0.81, z)
 for (k, x, z) in [(0, -24, 14), (3, 24, 13), (4, -24, 0), (6, 24, 0), (7, -24, -13), (8, 24, 13)]:
     L.pickup(x, D[k] + 1.0, z, 25)
-for (k, x, z) in [(1, -24, 0), (2, 24, 13), (4, -24, -13), (5, 24, -13)]:
+for (k, x, z) in [(1, -24, 0), (2, 24, 13), (3, -24, -13), (4, 24, -13)]:
     L.weapon("tag", x, D[k] + 1.0, z)
 L.weapon("yumi", 0.0, CROWN_TOP + 1.0, 0.0)
-L.weapon("yumi", 0.0, BR7 + 1.5 + 1.0, 0.0)
+L.weapon("yumi", 0.0, BR7 + 0.3 + 1.0, 0.0)
 
 out = sys.argv[1] if len(sys.argv) > 1 else "levels/ffa_hive.lvl"
 L.write(out, header=[
