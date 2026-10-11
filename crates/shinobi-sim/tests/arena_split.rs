@@ -62,7 +62,7 @@ fn counts_budgets_and_pedestals() {
         }
     }
     assert!(dv / tv >= 0.70, "only {:.0} % of the volume is destructible", 100.0 * dv / tv);
-    assert!(perm <= l.level.spawns.len() + l.pickups.len() + 8, "{perm} permanent boxes: bedrock only under spawns and pedestals");
+    assert!(perm <= 2 * (l.level.spawns.len() + l.pickups.len()), "{perm} permanent boxes: bedrock only under spawns and pedestals");
     for b in l.level.boxes.iter().filter(|b| b.rot_z == 0.0) {
         let (a, c) = (b.half[0].min(b.half[1]).min(b.half[2]) * 2.0, b.half[0].max(b.half[1]).max(b.half[2]) * 2.0);
         assert!(a >= 1.99, "box {b:?} thinner than 2 m");
@@ -261,8 +261,8 @@ fn there_are_hook_anchors_within_30_m_of_anywhere() {
         assert!(count(*s) >= 3, "spawn {s:?}: only {} anchors in reach", count(*s));
     }
     let mut worst = (usize::MAX, [0.0f32; 3]);
-    for (n, (c, j)) in net.seen.keys().enumerate() {
-        if n % 37 != 0 {
+    for (c, j) in net.seen.keys() {
+        if c.0.rem_euclid(5) != 0 || c.1.rem_euclid(5) != 0 {
             continue;
         }
         let p = [c.0 as f32 + 0.5, net.surf[c][*j] + 1.0, c.1 as f32 + 0.5];

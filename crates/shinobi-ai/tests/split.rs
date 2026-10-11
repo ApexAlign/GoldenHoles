@@ -140,8 +140,8 @@ fn split_bots_fight_without_freezing_or_walking_off_the_towers() {
         // a bot may stall once at the foot of a pit wall (it stares up at the rim); more than two is a nav bug
         assert!(r.stuck.len() <= 2, "seed {seed}: stuck stretches (bot, tick, x, z, phase): {:?}", &r.stuck[..r.stuck.len().min(10)]);
         // 12 bots x 4 minutes: a roof is not a cliff. Slashes now launch their victims and a ring-out is a kill (melee heighteners), so shoves off the roofs are part of the fight; a flood of them is a bug.
-        assert!(r.void_deaths <= 5, "seed {seed}: {} bots walked or got shoved off the roofs in 240 s", r.void_deaths);
-        assert!(r.tiers_seen >= 4, "seed {seed}: bots only stood on {} island(s): they are not using the ramps and stairs", r.tiers_seen);
+        assert!(r.void_deaths <= 5, "seed {seed}: {} bots walked or got shoved off the towers in 240 s", r.void_deaths);
+        assert!(r.tiers_seen >= 4, "seed {seed}: bots only stood on {} height band(s): they are not climbing", r.tiers_seen);
         assert!(r.kills >= 100, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
     }
 }
