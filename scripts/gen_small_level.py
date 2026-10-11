@@ -45,14 +45,15 @@ boxes = []  # (title, [(cx, cy, cz, hx, hy, hz, rot)])
 
 
 def part(title, items, rot180=False, mx=False):
-    items = [b if len(b) == 7 else tuple(b) + (0,) for b in items]
+    # an item is (cx, cy, cz, hx, hy, hz[, rot[, hp]]); hp > 0 = DESTRUCTIBLE (a `dbox` line, crates/shinobi-sim/src/breaks.rs)
+    items = [tuple(b) + (0,) * (8 - len(b)) for b in items]
     out = []
     for b in items:
         vs = [b]
         if mx:
-            vs += [(-b[0], b[1], b[2], b[3], b[4], b[5], -b[6]) for b in vs]
+            vs += [(-b[0], b[1], b[2], b[3], b[4], b[5], -b[6], b[7]) for b in vs]
         if rot180:
-            vs += [(-b[0], b[1], -b[2], b[3], b[4], b[5], b[6]) for b in vs]
+            vs += [(-b[0], b[1], -b[2], b[3], b[4], b[5], b[6], b[7]) for b in vs]
         for v in vs:
             if v not in out:
                 out.append(v)
@@ -101,11 +102,11 @@ part(
 )
 
 # low cover (jumpable, 1.6 m) around the hub, four corners of a square
-part("cover pillars (3.2 m: full walls, nothing waist high)", [(15, 1.6, 15, 1.5, 1.6, 1.5, 0)], mx=True, rot180=False)
-part("cover pillars (z mirror)", [(15, 1.6, -15, 1.5, 1.6, 1.5, 0)], mx=True)
+part("cover pillars (3.2 m: full walls, nothing waist high)", [(15, 1.6, 15, 1.5, 1.6, 1.5, 0, 150)], mx=True, rot180=False)
+part("cover pillars (z mirror)", [(15, 1.6, -15, 1.5, 1.6, 1.5, 0, 150)], mx=True)
 
 # monoliths: 6 m x 4 m x 1 m slabs that split the diagonals
-part("monoliths", [(-8, 3, -14, 2, 3, 0.5, 0)], rot180=True)
+part("monoliths", [(-8, 3, -14, 2, 3, 0.5, 0, 200)], rot180=True)
 
 # floating anchor slabs: rope highways and power-up perches
 part("anchor slabs", [(-27, 11, 0, 5, 0.4, 5, 0)], rot180=True)
@@ -141,7 +142,11 @@ lines = [
 n = 0
 for title, items in boxes:
     lines.append("# --- %s ---" % title)
-    for (cx, cy, cz, hx, hy, hz, rot) in items:
+    for (cx, cy, cz, hx, hy, hz, rot, hp) in items:
+        if hp:
+            lines.append("dbox %s %s %s  %s %s %s  %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz), f(rot), f(hp)))
+            n += 1
+            continue
         row = "box %s %s %s  %s %s %s" % (f(cx), f(cy), f(cz), f(hx), f(hy), f(hz))
         if rot:
             row += " " + f(rot)
