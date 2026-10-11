@@ -1,4 +1,4 @@
-# Destructible maps (protocol v20)
+# Destructible maps (protocol v21)
 
 Level boxes with hit points (`dbox` lines) wear down under weapons, **break** (the collider disappears on the server and on
 every client's predicted world), and **re-form** 40 s later. Decks, ramps, stairs, the spires and anything that carries a

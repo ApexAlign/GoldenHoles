@@ -11,6 +11,7 @@ pub mod breaks;
 pub mod character;
 pub mod combat;
 pub mod enemies;
+pub mod env_events;
 pub mod events;
 pub mod hazards;
 pub mod lagcomp;

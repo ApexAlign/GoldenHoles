@@ -187,6 +187,17 @@ impl Replicator {
         for (idx, hp_q) in server.breaks.cracked() {
             st.outbox.push(NetEvent::WorldCrack { idx, hp_q });
         }
+        // a quake in progress and bolts already marked when this peer joined
+        {
+            use shinobi_sim::events::{ENV_BOLT_MARK, ENV_QUAKE_START, ENV_QUAKE_WARN};
+            let (quake, bolts) = server.env.catch_up(server.tick);
+            if let Some((left, warning)) = quake {
+                st.outbox.push(NetEvent::EnvFx { what: if warning { ENV_QUAKE_WARN } else { ENV_QUAKE_START }, id: 0, pos: [0; 3], aux: left.min(u16::MAX as u32) as u16 });
+            }
+            for (id, pos, left) in bolts {
+                st.outbox.push(NetEvent::EnvFx { what: ENV_BOLT_MARK, id, pos: q_pos3(pos), aux: left.min(u16::MAX as u32) as u16 });
+            }
+        }
         // ropes already hooked when this peer joined (sorted: deterministic)
         let mut roped: Vec<_> = self.ropes.iter().map(|(p, a)| (*p, *a)).collect();
         roped.sort();
@@ -238,6 +249,7 @@ impl Replicator {
         self.sync_looks(server);
         self.sync_blocks(server);
         self.sync_breaks(server);
+        self.sync_env(server);
         for p in &mut server.players {
             if let Some(m) = p.queue.take_margin() {
                 self.telemetry.observe_margin(p.id, m);
@@ -354,6 +366,26 @@ impl Replicator {
         }
         for (idx, hp_q) in hurt {
             self.broadcast(NetEvent::WorldCrack { idx, hp_q });
+        }
+    }
+
+    /// `Server::env_events` of the last frame (quakes, lightning) -> one reliable event each, for everyone.
+    fn sync_env(&mut self, server: &mut Server) {
+        use shinobi_sim::env_events::EnvEvent;
+        use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE, ENV_QUAKE_END, ENV_QUAKE_START, ENV_QUAKE_WARN};
+        let tick = server.tick;
+        for ev in std::mem::take(&mut server.env_events) {
+            let (what, id, pos, aux) = match ev {
+                EnvEvent::QuakeWarn { warn_ticks, .. } => (ENV_QUAKE_WARN, 0, [0.0; 3], warn_ticks),
+                EnvEvent::QuakeStart { dur_ticks, .. } => (ENV_QUAKE_START, 0, [0.0; 3], dur_ticks),
+                EnvEvent::QuakeEnd { .. } => (ENV_QUAKE_END, 0, [0.0; 3], 0),
+                EnvEvent::BoltMark { id, pos, warn_ticks, .. } => (ENV_BOLT_MARK, id, pos, warn_ticks),
+                EnvEvent::BoltStrike { id, pos, .. } => (ENV_BOLT_STRIKE, id, pos, 0),
+            };
+            if what == ENV_BOLT_STRIKE {
+                self.log_line(tick, format!("LIGHTNING bolt {id} struck ({:.0}, {:.0}, {:.0})", pos[0], pos[1], pos[2]));
+            }
+            self.broadcast(NetEvent::EnvFx { what, id, pos: q_pos3(pos), aux: aux.min(u16::MAX as u32) as u16 });
         }
     }
 
@@ -492,7 +524,9 @@ impl Replicator {
                         _ => format!(" (p{k}'s trail)"),
                     });
                     // the sim's kill plane reports as obstacle id 65535 (`pvp::VOID_SOURCE_ID`)
-                    let verb = if matches!(source, HazardSource::Obstacle(shinobi_sim::pvp::VOID_SOURCE_ID)) {
+                    let verb = if matches!(source, HazardSource::Obstacle(shinobi_sim::env_events::LIGHTNING_SOURCE_ID)) {
+                        "was struck by lightning"
+                    } else if matches!(source, HazardSource::Obstacle(shinobi_sim::pvp::VOID_SOURCE_ID)) {
                         "fell out of the world"
                     } else if matches!(source, HazardSource::Obstacle(shinobi_sim::melee::SPLAT_SOURCE_ID)) {
                         "was splatted"

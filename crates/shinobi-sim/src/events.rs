@@ -75,7 +75,17 @@ pub enum NetEvent {
     WorldRez { idx: u16 },
     /// Box `idx` took damage and stands: `hp_q` remaining in 1/255ths (cracks).
     WorldCrack { idx: u16, hp_q: u8 },
+    /// Environmental event (`env_events.rs`): `what` = `ENV_*`, `id` names a lightning bolt (mark and strike share it), `pos`
+    /// the bolt's strike point (quantized like every position; zero for quakes), `aux` ticks: warning / shaking length.
+    EnvFx { what: u8, id: u8, pos: [i32; 3], aux: u16 },
 }
+
+/// `NetEvent::EnvFx::what`.
+pub const ENV_QUAKE_WARN: u8 = 0;
+pub const ENV_QUAKE_START: u8 = 1;
+pub const ENV_QUAKE_END: u8 = 2;
+pub const ENV_BOLT_MARK: u8 = 3;
+pub const ENV_BOLT_STRIKE: u8 = 4;
 
 /// `NetEvent::StarFx::what`.
 pub const STAR_FX_MINE_STUCK: u8 = 0;
@@ -306,6 +316,13 @@ impl NetEvent {
                 w.write_bits(*idx as u32, 16);
                 w.write_bits(*hp_q as u32, 8);
             }
+            Self::EnvFx { what, id, pos, aux } => {
+                w.write_bits(31, 5);
+                w.write_bits(*what as u32 & 7, 3);
+                w.write_bits(*id as u32, 8);
+                write_v3(w, *pos, [0; 3]);
+                w.write_bits(*aux as u32, 16);
+            }
         }
     }
 
@@ -418,6 +435,7 @@ impl NetEvent {
             27 => Self::WorldBreak { idx: r.read_bits(16)? as u16, cascade: r.read_bits(1)? == 1 },
             28 => Self::WorldRez { idx: r.read_bits(16)? as u16 },
             29 => Self::WorldCrack { idx: r.read_bits(16)? as u16, hp_q: r.read_bits(8)? as u8 },
+            31 => Self::EnvFx { what: r.read_bits(3)? as u8, id: r.read_bits(8)? as u8, pos: read_v3(r, [0; 3])?, aux: r.read_bits(16)? as u16 },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -657,6 +675,9 @@ mod tests {
             NetEvent::WorldBreak { idx: 0, cascade: false },
             NetEvent::WorldRez { idx: 300 },
             NetEvent::WorldCrack { idx: 12, hp_q: 77 },
+            NetEvent::EnvFx { what: ENV_QUAKE_WARN, id: 0, pos: [0, 0, 0], aux: 150 },
+            NetEvent::EnvFx { what: ENV_BOLT_MARK, id: 255, pos: [-20_000, 512, 33_333], aux: 120 },
+            NetEvent::EnvFx { what: ENV_BOLT_STRIKE, id: 9, pos: [1, -2, 3], aux: 0 },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

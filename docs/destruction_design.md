@@ -3,7 +3,7 @@
 Direction: the maps are (almost) completely destructible. Every structure is built from bricks (`scripts/lvl_lib.py`); weapons
 chew through them, whatever loses its support comes down, and nothing is safe for long. Decks and ramps are bricks too, so
 the fight reshapes the arena. This is the design contract; the engine pieces are `breaks.rs` (sim), the `World*` events
-(protocol v20) and `destructible_fx.rs` / `destructible_audio.rs` (game).
+(protocol v21) and `destructible_fx.rs` / `destructible_audio.rs` (game).
 
 ## The rules of the world
 

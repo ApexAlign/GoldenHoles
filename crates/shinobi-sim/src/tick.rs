@@ -173,6 +173,9 @@ pub struct Server {
     /// Destructible level boxes (`dbox` lines, `breaks.rs`) and what happened to them in the most recent `frame`.
     pub breaks: crate::breaks::LevelBreaks,
     pub break_events: Vec<crate::breaks::BreakEvent>,
+    /// Quakes and lightning (`env_events.rs`) and what happened in the most recent `frame`.
+    pub env: crate::env_events::Env,
+    pub env_events: Vec<crate::env_events::EnvEvent>,
     /// `Removed` events of blocks dropped between frames (a player left); delivered with the next frame's events.
     pending_block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
@@ -226,6 +229,8 @@ impl Server {
             block_events: Vec::new(),
             breaks: crate::breaks::LevelBreaks::default(),
             break_events: Vec::new(),
+            env: crate::env_events::Env::default(),
+            env_events: Vec::new(),
             pending_block_events: Vec::new(),
             pickup_events: Vec::new(),
             arrows: Vec::new(),
@@ -322,6 +327,7 @@ impl Server {
         self.hazards.cfg.obstacles_enabled = b.hazards.obstacles_enabled;
         self.match_state.cfg = b.match_cfg();
         self.breaks.cfg = crate::breaks::BreakCfg::from_balance(&b.destruct);
+        self.env.cfg = crate::env_events::EnvCfg::from_balance(&b.env);
         self.balance = b;
         Ok(())
     }
@@ -456,6 +462,7 @@ impl Server {
         self.pickup_events.clear();
         self.block_events.clear();
         self.break_events.clear();
+        self.env_events.clear();
         self.block_events.append(&mut self.pending_block_events);
         self.kill_tags.clear();
         self.match_events.clear();
@@ -494,6 +501,7 @@ impl Server {
         let frozen = self.match_state.frozen();
         pvp::tick_respawns(&mut self.players, &mut self.world, crate::spawn::SpawnSet { pos: &self.spawns, teams: &self.spawn_teams }, &mut self.spawn_counter, tick, self.balance.player.invuln_ticks, &mut self.pvp_events);
         let mut hits = Vec::new();
+        self.env_step(tick, &mut hits);
         // (attacker, victim) pairs hit by a bounced disc this tick, and attackers that were wall-running
         let mut ricochets: Vec<(u16, u16)> = Vec::new();
         let mut wall_runners: Vec<u16> = Vec::new();

@@ -433,6 +433,28 @@ pub struct EnemyBalance {
     pub disc_speed: f32,
 }
 
+/// Environmental events (`env_events.rs`): quakes and lightning. Off in the demo preset; `balance/storm.cfg` turns them on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvBalance {
+    /// 1 = on.
+    pub quake: f32,
+    pub lightning: f32,
+    pub quake_min_s: f32,
+    pub quake_max_s: f32,
+    pub quake_warn_s: f32,
+    pub quake_s: f32,
+    pub quake_dmg_frac_per_s: f32,
+    pub quake_shove: f32,
+    pub bolt_min_s: f32,
+    pub bolt_max_s: f32,
+    pub bolt_warn_s: f32,
+    pub bolt_radius: f32,
+    pub bolt_player_dmg: f32,
+    pub bolt_brick_dmg: f32,
+    pub bolt_volley: u32,
+    pub bolt_knock: f32,
+}
+
 /// Destructible level geometry (`breaks.rs`, docs/destructible.md, docs/destruction_design.md). All server-only: clients just obey
 /// the break / re-form events.
 #[derive(Clone, Debug, PartialEq)]
@@ -477,6 +499,7 @@ pub struct Balance {
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
     pub destruct: DestructBalance,
+    pub env: EnvBalance,
 }
 
 impl EnemyBalance {
@@ -637,6 +660,24 @@ impl Default for Balance {
                 disc_speed: 16.0,
             },
             destruct: DestructBalance { hp_mult: 1.0, rez_s: 40.0, blast_mult: 5.0, chip_mult: 1.0, collapse_ticks: 18, retry_ticks: 60 },
+            env: EnvBalance {
+                quake: 0.0,
+                lightning: 0.0,
+                quake_min_s: 45.0,
+                quake_max_s: 75.0,
+                quake_warn_s: 2.5,
+                quake_s: 4.0,
+                quake_dmg_frac_per_s: 0.12,
+                quake_shove: 2.5,
+                bolt_min_s: 6.0,
+                bolt_max_s: 11.0,
+                bolt_warn_s: 2.0,
+                bolt_radius: 7.0,
+                bolt_player_dmg: 80.0,
+                bolt_brick_dmg: 900.0,
+                bolt_volley: 3,
+                bolt_knock: 16.0,
+            },
             wave: WaveBalance {
                 first_wave_delay_ticks: 180,
                 inter_wave_ticks: 300,
@@ -882,6 +923,22 @@ impl Balance {
                 v.push(($name.to_string(), Slot::$kind(&mut $place)))
             };
         }
+        s!("env.quake", F, self.env.quake);
+        s!("env.lightning", F, self.env.lightning);
+        s!("env.quake_min_s", F, self.env.quake_min_s);
+        s!("env.quake_max_s", F, self.env.quake_max_s);
+        s!("env.quake_warn_s", F, self.env.quake_warn_s);
+        s!("env.quake_s", F, self.env.quake_s);
+        s!("env.quake_dmg_frac_per_s", F, self.env.quake_dmg_frac_per_s);
+        s!("env.quake_shove", F, self.env.quake_shove);
+        s!("env.bolt_min_s", F, self.env.bolt_min_s);
+        s!("env.bolt_max_s", F, self.env.bolt_max_s);
+        s!("env.bolt_warn_s", F, self.env.bolt_warn_s);
+        s!("env.bolt_radius", F, self.env.bolt_radius);
+        s!("env.bolt_player_dmg", F, self.env.bolt_player_dmg);
+        s!("env.bolt_brick_dmg", F, self.env.bolt_brick_dmg);
+        s!("env.bolt_volley", U, self.env.bolt_volley);
+        s!("env.bolt_knock", F, self.env.bolt_knock);
         s!("destruct.hp_mult", F, self.destruct.hp_mult);
         s!("destruct.rez_s", F, self.destruct.rez_s);
         s!("destruct.blast_mult", F, self.destruct.blast_mult);
