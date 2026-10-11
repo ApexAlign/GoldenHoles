@@ -70,3 +70,9 @@ fn the_validator_flags_waist_high_blocks_only() {
     let ramp = LevelBox::new([-1.5 - run / 2.0 + t * th.sin(), 0.6 - t * th.cos(), 0.0], [len / 2.0, t, 1.5]).rolled(th);
     assert!(unwalkable_obstacles(&mk(vec![floor, LevelBox::new([0.0, 0.6, 0.0], [1.5, 0.6, 1.5]), ramp]), step).is_empty(), "block with a ramp");
 }
+
+#[test]
+fn ffa_hive_has_no_jump_only_obstacles() {
+    let Some(o) = offenders("ffa_hive.lvl") else { return };
+    assert!(o.is_empty(), "{} unwalkable obstacles in ffa_hive: {:?}", o.len(), &o[..o.len().min(10)]);
+}
