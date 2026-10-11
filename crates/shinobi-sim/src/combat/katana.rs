@@ -516,12 +516,23 @@ impl Weapon for Katana {
         }
 
         // player-built pieces in the blade box take damage too (the server decides if they de-rez)
-        if !matches!(mode, Mode::Whirl | Mode::Counter(..)) {
-            let shape = Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]);
-            let pos = Isometry::from_parts((origin + dir * (reach * 0.5)).into(), UnitQuaternion::face_towards(&dir, &Vector::y()));
+        {
+            // whirl: everything within the whirl radius all round; every other cut: the blade box
+            let whirl = matches!(mode, Mode::Whirl);
+            let pos = if whirl {
+                Isometry::translation(origin.x, origin.y, origin.z)
+            } else {
+                Isometry::from_parts((origin + dir * (reach * 0.5)).into(), UnitQuaternion::face_towards(&dir, &Vector::y()))
+            };
+            let shape: Box<dyn Shape> = if whirl {
+                Box::new(Ball::new(c.whirl_radius))
+            } else {
+                Box::new(Cuboid::new(vector![c.half_width, c.half_height, reach * 0.5]))
+            };
+            let shape = shape.as_ref();
             let piece_filter = QueryFilter::default().groups(InteractionGroups::new(GROUP_MELEE, super::GROUP_WORLD));
             let mut cells: Vec<[i32; 3]> = wall_piece.into_iter().collect();
-            ctx.world.queries.intersections_with_shape(&ctx.world.bodies, &ctx.world.colliders, &pos, &shape, piece_filter, |h| {
+            ctx.world.queries.intersections_with_shape(&ctx.world.bodies, &ctx.world.colliders, &pos, shape, piece_filter, |h| {
                 if let Some(cell) = ctx.world.colliders.get(h).and_then(|col| crate::blocks::piece_cell(col.user_data)) {
                     cells.push(cell);
                 }
