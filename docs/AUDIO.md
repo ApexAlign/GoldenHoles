@@ -81,3 +81,20 @@ prediction; the server's copies are skipped for you. Pickup call-outs: your own 
 Cascades: breaks of one frame play bottom-first 50 ms apart (max 0.5 s). At most 6 audible voices (extra are skipped, a crowd ducks a
 little). Quiet join: the first 0.75 s after the client has joined (and the frames before) absorb the broken set silently, so
 catch-up breaks make no sound; a reconnect re-primes.
+
+## Being hit / shot at (`src/hit_audio.rs`)
+Pure logic (unit-tested) used by `audio::Cuer`; the backend applies the muffle.
+
+| event | sound |
+| --- | --- |
+| you take damage | ONE cue per frame from the worst hit: `Hurt` (crack + 50-110 Hz thump + short ring), `HurtHeavy` (>= 30% max hp, deeper/longer), `HurtHead` (headshot, harshest, ringing tone). Louder and lower with damage (`hit_audio::hurt_cue`) |
+| ear muffle | for 0.25..0.5 s (scales with damage) everything that is not an alert (music, wind/hum, reel/wall-run loops, footsteps and other new cues) drops 45..80% (`Muffle`: instant dip, 40% hold, linear return). Not a true low-pass (no filter hook in bevy audio), and one-shots already playing are not touched |
+| low hp (< 30%) | `Heartbeat`, period 1.05 s at 30% down to 0.42 s near 0, louder as hp falls; silent when healthy, dead or after respawn |
+| enemy star / arrow passes within 2.5 m | `Whoosh` (doppler pitch fall baked in), positional at the closest point, once per pass. Allies' projectiles are ignored (team modes). Only projectiles the client sees (discs, arrows) |
+| hit on your raised shield | `Clang` (loud, metallic); the world copy of your own arrow-block is skipped |
+| guard broken | `GuardBreak`; ESTIMATED from the client's guard model (same numbers as the HUD), the client does not expose the server's guard energy |
+| parry | `Parry` bell plus a bright octave copy |
+
+Mix: alerts (`hit_audio::is_alert`) are `priority` (never dropped), never turned down below 75% by the limiter, and play before
+other cues of the same frame. `min_gap`: hurt 0.1 s, whoosh 0.12 s, clang 0.09 s, guard break 0.5 s, heartbeat 0.25 s.
+Not covered: an enemy hit on a teammate near you (the client has no teammate-damage event; positional arrow/star impacts still play).

@@ -31,7 +31,18 @@ pub enum Sound {
     GrappleAttach,
     GrappleRelease,
     Dash,
+    /// You took a hit: layered crack + sub thump + short ring.
     Hurt,
+    /// You took a big hit (>= 30 % of max hp): longer, deeper, harsher.
+    HurtHeavy,
+    /// You took a headshot: harshest, with a ringing high tone.
+    HurtHead,
+    /// An enemy projectile zipped past you: whoosh with a doppler pitch fall.
+    Whoosh,
+    /// Loud metallic clang: a star / arrow hit your raised shield.
+    Clang,
+    /// Your guard broke: shattering metal + low boom.
+    GuardBreak,
     Heartbeat,
     Print,
     Derez,
@@ -101,7 +112,12 @@ pub enum Sound {
 }
 
 impl Sound {
-    pub const ALL: [Sound; 60] = [
+    pub const ALL: [Sound; 65] = [
+        Sound::HurtHeavy,
+        Sound::HurtHead,
+        Sound::Whoosh,
+        Sound::Clang,
+        Sound::GuardBreak,
         Sound::CrackStone,
         Sound::CrackWood,
         Sound::Shatter,
@@ -368,7 +384,67 @@ pub fn render(s: Sound) -> Vec<f32> {
             let d = 0.22;
             lowpass(&noise_burst(d, 41, |t| env(t, d, 0.03, 1.4)), 0.4).iter().map(|v| v * 1.5).collect()
         }
-        Sound::Hurt => mix(&[(sweep(0.24, 100.0, 45.0, 0, |t| env(t, 0.24, 0.002, 2.0)), 1.0), (noise_burst(0.05, 17, |t| env(t, 0.05, 0.0, 2.0)), 0.3)]),
+        Sound::Hurt => mix(&[
+            // crack, sub thump (+ a 2nd harmonic so small speakers hear it), short ring
+            (highpass(&noise_burst(0.05, 17, |t| env(t, 0.05, 0.0, 1.6)), 0.3), 1.6),
+            (sweep(0.3, 110.0, 52.0, 0, |t| env(t, 0.3, 0.002, 1.8)), 1.1),
+            (sweep(0.12, 220.0, 120.0, 0, |t| env(t, 0.12, 0.001, 2.0)), 0.5),
+            (tone(2300.0, 0.18, 2.5, 0.28), 1.0),
+        ]),
+        Sound::HurtHeavy => mix(&[
+            (highpass(&noise_burst(0.09, 18, |t| env(t, 0.09, 0.0, 1.4)), 0.25), 2.0),
+            (lowpass(&noise_burst(0.2, 19, |t| env(t, 0.2, 0.0, 1.8)), 0.3), 1.2),
+            (sweep(0.5, 95.0, 42.0, 0, |t| env(t, 0.5, 0.002, 1.5)), 1.4),
+            (sweep(0.22, 200.0, 70.0, 2, |t| env(t, 0.22, 0.001, 2.0)), 0.2),
+            (tone(1750.0, 0.4, 2.2, 0.3), 1.0),
+            (tone(2600.0, 0.3, 2.5, 0.2), 1.0),
+        ]),
+        Sound::HurtHead => mix(&[
+            (highpass(&noise_burst(0.07, 20, |t| env(t, 0.07, 0.0, 1.2)), 0.2), 2.4),
+            (sweep(0.14, 3800.0, 1500.0, 2, |t| env(t, 0.14, 0.0, 1.6)), 0.3),
+            (sweep(0.4, 100.0, 40.0, 0, |t| env(t, 0.4, 0.002, 1.5)), 1.4),
+            (tone(3100.0, 0.7, 1.6, 0.3), 1.0),
+            (tone(4300.0, 0.55, 1.8, 0.2), 1.0),
+            (sweep(0.3, 190.0, 60.0, 2, |t| env(t, 0.3, 0.001, 2.0)), 0.18),
+        ]),
+        Sound::Whoosh => {
+            // doppler: a bright band of noise that darkens as it passes, a tone sliding down ~ 1500 -> 520 Hz
+            let d = 0.5;
+            let mut nz = Noise(131);
+            let (mut a, mut b) = (0.0f32, 0.0f32);
+            let air: Vec<f32> = (0..len(d))
+                .map(|i| {
+                    let t = i as f32 / SR as f32;
+                    let k = 0.55 - 0.45 * (t / d); // bright -> dark
+                    let x = nz.next();
+                    a += (x - a) * k;
+                    b += (a - b) * k;
+                    (a - b) * 6.0 * env(t, d, 0.12, 1.1)
+                })
+                .collect();
+            mix(&[(air, 1.4), (sweep(d, 1500.0, 520.0, 0, |t| env(t, d, 0.1, 1.4)), 0.25)])
+        }
+        Sound::Clang => {
+            let d = 0.6;
+            mix(&[
+                (highpass(&noise_burst(0.05, 133, |t| env(t, 0.05, 0.0, 1.2)), 0.3), 1.2),
+                (sweep(d, 880.0, 870.0, 0, |t| env(t, d, 0.001, 2.2)), 0.4),
+                (sweep(d, 1405.0, 1395.0, 0, |t| env(t, d, 0.001, 2.6)), 0.34),
+                (sweep(d, 2310.0, 2300.0, 0, |t| env(t, d, 0.001, 3.0)), 0.3),
+                (sweep(d, 3790.0, 3780.0, 0, |t| env(t, d, 0.001, 3.5)), 0.22),
+                (sweep(0.12, 200.0, 90.0, 0, |t| env(t, 0.12, 0.001, 2.0)), 0.7),
+            ])
+        }
+        Sound::GuardBreak => {
+            let d = 0.8;
+            mix(&[
+                (highpass(&noise_burst(0.35, 137, |t| env(t, 0.35, 0.0, 1.3)), 0.2), 1.8),
+                (sweep(d, 1100.0, 150.0, 1, |t| env(t, d, 0.002, 1.8) * 0.28), 1.0),
+                (sweep(d, 1860.0, 1500.0, 0, |t| env(t, d, 0.001, 2.4)), 0.3),
+                (sweep(d, 2790.0, 2200.0, 0, |t| env(t, d, 0.001, 2.8)), 0.22),
+                (sweep(0.5, 90.0, 38.0, 0, |t| env(t, 0.5, 0.002, 1.6)), 1.3),
+            ])
+        }
         Sound::Heartbeat => {
             let thump = || sweep(0.12, 70.0, 45.0, 0, |t| env(t, 0.12, 0.004, 2.0));
             place(&[(0.0, thump()), (0.18, thump().iter().map(|v| v * 0.7).collect())]).iter().map(|v| v * 0.9).collect()

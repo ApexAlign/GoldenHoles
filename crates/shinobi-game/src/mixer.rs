@@ -127,7 +127,13 @@ pub fn bus_of(s: Sound) -> Bus {
 /// Shortest time between two plays of the same sound (seconds).
 pub fn min_gap(s: Sound) -> f32 {
     match s {
-        Sound::HitBody | Sound::HitHard | Sound::Hurt => 0.04,
+        Sound::HitBody | Sound::HitHard => 0.04,
+        // being hit: one clear cue per ~0.1 s, never a buzz (the cuer also plays only the worst hit of a frame)
+        Sound::Hurt | Sound::HurtHeavy | Sound::HurtHead => 0.1,
+        Sound::Whoosh => 0.12,
+        Sound::Clang => 0.09,
+        Sound::GuardBreak => 0.5,
+        Sound::Heartbeat => 0.25,
         Sound::Clash | Sound::Block | Sound::Parry => 0.06,
         Sound::Print | Sound::Derez => 0.05,
         Sound::Ricochet => 0.08,
@@ -148,7 +154,15 @@ pub fn min_gap(s: Sound) -> f32 {
 pub fn priority(s: Sound) -> bool {
     matches!(
         s,
-        Sound::Kill | Sound::Hurt | Sound::DeathSting | Sound::Respawn | Sound::MatchStart | Sound::Victory | Sound::Defeat | Sound::Parry | Sound::Streak | Sound::Execute
+        Sound::Kill
+            | Sound::Hurt
+            | Sound::HurtHeavy
+            | Sound::HurtHead
+            | Sound::Whoosh
+            | Sound::Clang
+            | Sound::GuardBreak
+            | Sound::Heartbeat
+            | Sound::DeathSting | Sound::Respawn | Sound::MatchStart | Sound::Victory | Sound::Defeat | Sound::Parry | Sound::Streak | Sound::Execute
     )
 }
 
@@ -157,6 +171,8 @@ const LOAD_CAP: f32 = 3.0;
 const LOAD_DECAY: f32 = 8.0;
 /// Below this share of the budget a non-priority cue is dropped instead of played quietly.
 const DROP_BELOW: f32 = 0.4;
+/// Lowest volume scale an alert cue (`hit_audio::is_alert`) is turned down to.
+const ALERT_FLOOR: f32 = 0.75;
 
 /// Per-sound minimum gap + a soft loudness budget over all sounds, so a flurry of hits never stacks into clipping.
 #[derive(Default)]
@@ -189,7 +205,9 @@ impl Limiter {
         if scale < DROP_BELOW && !priority(s) {
             return None;
         }
-        let scale = scale.max(DROP_BELOW);
+        // hit / shield / near-miss alerts are never turned down below 3/4: they must cut through a flurry
+        let floor = if crate::hit_audio::is_alert(s) && priority(s) { ALERT_FLOOR } else { DROP_BELOW };
+        let scale = scale.max(floor);
         self.last.insert(s, self.now);
         self.load += vol * scale;
         Some(scale)
@@ -437,6 +455,19 @@ mod tests {
         assert!(total <= LOAD_CAP + 1e-3, "summed gain {total} over budget");
         // far fewer than 8 loud cues got through at full level
         assert!(sounds.iter().filter(|s| l.last.contains_key(*s)).count() < 8);
+    }
+
+    #[test]
+    fn alerts_outrank_footsteps_in_a_flurry() {
+        let mut l = Limiter::default();
+        for s in [Sound::HitBody, Sound::Print, Sound::Clash, Sound::Ricochet, Sound::Lockout, Sound::Refill, Sound::Whirl, Sound::AirSlam] {
+            l.admit(s, 1.0);
+        }
+        assert!(l.admit(Sound::Step, 0.5).is_none(), "a footstep is dropped in a flurry");
+        let s = l.admit(Sound::HurtHeavy, 1.0).expect("a hit alert is never dropped");
+        assert!(s >= 0.75, "and stays loud ({s})");
+        assert!(priority(Sound::Whoosh) && priority(Sound::Clang) && priority(Sound::GuardBreak));
+        assert!(min_gap(Sound::Hurt) >= 0.09 && min_gap(Sound::Whoosh) >= 0.1 && min_gap(Sound::GuardBreak) >= 0.4);
     }
 
     #[test]

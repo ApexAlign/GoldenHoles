@@ -26,6 +26,7 @@ mod rope;
 mod synth;
 mod destructible_audio;
 mod mixer;
+mod hit_audio;
 mod team;
 mod grid;
 mod hud_view;
