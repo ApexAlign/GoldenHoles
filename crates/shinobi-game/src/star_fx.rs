@@ -14,7 +14,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use shinobi_sim::combat::stars::{StarCfg, StarKind};
-use shinobi_sim::events::{NetEvent, STAR_FX_FLASH_BURST, STAR_FX_MINE_BURST};
+use shinobi_sim::events::{NetEvent, STAR_FX_FLASH_BURST, STAR_FX_BARREL_BURST};
 
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::{Net, ViewRes};
@@ -146,7 +146,7 @@ fn update_objects(time: Res<Time>, view: Res<ViewRes>, net: Res<Net>, look: Opti
     let me = net.0.own_id().unwrap_or(0);
     let eye = Vec3::from(v.eye);
     // ---- mines ----
-    let mines: Vec<_> = v.star_objs.iter().filter(|o| o.kind == StarKind::Mine).collect();
+    let mines: Vec<_> = v.star_objs.iter().filter(|o| o.kind == StarKind::Barrel).collect();
     for (i, (e, m)) in look.glyphs.iter().enumerate() {
         let Ok((mut tr, mut vis)) = q.get_mut(*e) else { continue };
         let Some(o) = mines.get(i) else {
@@ -164,7 +164,7 @@ fn update_objects(time: Res<Time>, view: Res<ViewRes>, net: Res<Net>, look: Opti
         *vis = Visibility::Visible;
     }
     // ---- smoke ----
-    let clouds: Vec<_> = v.star_objs.iter().filter(|o| o.kind == StarKind::Smoke).collect();
+    let clouds: Vec<_> = v.star_objs.iter().filter(|o| o.kind == StarKind::Canister).collect();
     let radius = StarCfg::default().smoke_radius;
     for (ci, puffs) in look.puffs.iter().enumerate() {
         let cloud = clouds.get(ci);
@@ -199,7 +199,7 @@ fn spawn_bursts(mut commands: Commands, look: Option<Res<Look>>, view: Res<ViewR
         let p = Vec3::from(shinobi_proto::quant::dq_pos3(*pos));
         let (colour, size, life, gain) = match *what {
             STAR_FX_FLASH_BURST => ([1.0, 1.0, 1.0], sc.flash_radius * 0.5, 0.28, 6.0),
-            STAR_FX_MINE_BURST => ([1.0, 0.45, 0.08], sc.mine_burst_radius, 0.35, 4.0),
+            STAR_FX_BARREL_BURST => ([1.0, 0.45, 0.08], sc.mine_burst_radius, 0.35, 4.0),
             _ => continue,
         };
         let m = mats.add(StandardMaterial {
@@ -211,7 +211,7 @@ fn spawn_bursts(mut commands: Commands, look: Option<Res<Look>>, view: Res<ViewR
             ..default()
         });
         commands.spawn((Mesh3d(look.sphere.clone()), MeshMaterial3d(m), Transform::from_translation(p).with_scale(Vec3::splat(0.05)), Shell { age: 0.0, life, size, col: [colour[0] * gain, colour[1] * gain, colour[2] * gain] }));
-        let spark = if *what == STAR_FX_MINE_BURST { colour } else { colour_of(&net, *owner) };
+        let spark = if *what == STAR_FX_BARREL_BURST { colour } else { colour_of(&net, *owner) };
         impacts.0.push(Impact { pos: p, color: spark, kind: ImpactKind::Hit { kill: true } });
     }
 }

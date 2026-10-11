@@ -92,7 +92,7 @@ pub struct PlayerIntent {
     pub block: bool,
     /// With `FIRE`: a charged throw, the MARK star (a one-tick edge like `FIRE`, cleared on lost-packet repeat).
     pub mark: bool,
-    /// With `FIRE` (and no `mark`): the throwable, 0 standard / 1 mine / 2 flash / 3 smoke (`StarKind`). Two wire bits,
+    /// With `FIRE` (and no `mark`): the throwable, 0 standard / 1 barrel / 2 flash / 3 canister (`StarKind`; v22 renamed 1 and 3). Two wire bits,
     /// present only while `FIRE` is set; carried with a lost packet's FIRE edge.
     pub star: u8,
     /// Held (a level, repeated with the last intent): the bow is being drawn (right button while a yumi is in hand,

@@ -272,7 +272,7 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
-            // a mine / smoke star landed (ours, predicted): a small grey-white puff off the surface
+            // a barrel / canister landed (ours, predicted): a small grey-white puff off the surface
             CombatEvent::StarStuck { pos, normal, .. } => {
                 let mut em = self.mk(EmitterKind::HitSpark, p.text, 2.0);
                 em.origin = [pos.x, pos.y, pos.z];

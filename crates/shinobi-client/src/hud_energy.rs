@@ -117,7 +117,7 @@ impl HintId {
             HintId::ShieldLow => "SHIELD LOW - LOWER IT TO RECOVER",
             HintId::HeavyCut => "HOLD KATANA FOR A HEAVY CUT",
             HintId::HookYank => "HOOK A TARGET AND PULL IN TO YANK",
-            HintId::StarCycle => "MOUSE WHEEL OR R SWITCHES STAR: MINE / FLASH / SMOKE",
+            HintId::StarCycle => "MOUSE WHEEL OR R SWITCHES STAR: BARREL / FLASH / CANISTER",
 
         }
     }
@@ -199,9 +199,9 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
 pub fn kind_colour(k: StarKind, p: &Palette) -> Rgba {
     match k {
         StarKind::Standard => p.cyan,
-        StarKind::Mine => p.orange,
+        StarKind::Barrel => p.orange,
         StarKind::Flash => Rgba(1.0, 1.0, 1.0, 1.0),
-        StarKind::Smoke => Rgba(0.62, 0.72, 0.85, 1.0),
+        StarKind::Canister => Rgba(0.62, 0.72, 0.85, 1.0),
     }
 }
 
@@ -209,9 +209,9 @@ pub fn kind_colour(k: StarKind, p: &Palette) -> Rgba {
 pub fn kind_blurb(k: StarKind) -> &'static str {
     match k {
         StarKind::Standard => "FAST POKE - RICOCHETS",
-        StarKind::Mine => "STICKS, ARMS, BURSTS NEAR FOES",
-        StarKind::Flash => "BLINDS FOES WHO FACE IT",
-        StarKind::Smoke => "CLOUD BREAKS LOCK-ON",
+        StarKind::Barrel => "HEAVY LOB - BLASTS EVEN YOU",
+        StarKind::Flash => "BLINDS + DAZES: +25% DAMAGE",
+        StarKind::Canister => "STICKS - SMALL FAST BLAST",
     }
 }
 
@@ -227,8 +227,8 @@ fn kind_icon(out: &mut Vec<Prim>, k: StarKind, c: (f32, f32), r: f32, col: Rgba,
                 out.push(Prim::Line { a: pt(a, r), b: pt(a - 2.4, r * 0.55), color: col, glow: 0.003 });
             }
         }
-        // a glyph ring with a dot: the mine
-        StarKind::Mine => {
+        // a round drum with bands: the barrel
+        StarKind::Barrel => {
             out.push(Prim::Ring { c, r, color: col, fill: false, glow: 0.003 });
             out.push(Prim::Ring { c, r: r * 0.35, color: col, fill: true, glow: 0.003 });
             for i in 0..4 {
@@ -243,8 +243,8 @@ fn kind_icon(out: &mut Vec<Prim>, k: StarKind, c: (f32, f32), r: f32, col: Rgba,
                 out.push(Prim::Line { a: pt(a, r * 0.3), b: pt(a, if i % 2 == 0 { r * 1.3 } else { r * 0.85 }), color: col, glow: 0.004 });
             }
         }
-        // three soft puffs
-        StarKind::Smoke => {
+        // a capsule: the canister
+        StarKind::Canister => {
             for (dx, dy, rr) in [(-0.5, 0.25, 0.55), (0.45, 0.2, 0.6), (0.0, -0.35, 0.65)] {
                 out.push(Prim::Ring { c: (c.0 + dx * r * ax, c.1 + dy * r), r: r * rr, color: col.a(col.3 * 0.8), fill: false, glow: 0.0 });
             }
@@ -396,15 +396,15 @@ mod tests {
             draw(&mut out, &s, &p, 1.0);
             out
         };
-        for (k, want) in [(StarKind::Standard, "STAR 1"), (StarKind::Mine, "MINE 3"), (StarKind::Flash, "FLASH 2"), (StarKind::Smoke, "SMOKE 2")] {
+        for (k, want) in [(StarKind::Standard, "STAR 1"), (StarKind::Barrel, "BARREL 3"), (StarKind::Flash, "FLASH 2"), (StarKind::Canister, "CANISTER 2")] {
             assert!(texts(k, 6.0).iter().any(|pr| matches!(pr, Prim::Text { text, .. } if text == want)), "{want}");
         }
-        // a mine with 6 charges rings 3 pips; with 2 charges it rings the 2 it cannot afford in a dim colour
+        // a barrel with 6 charges rings 3 pips; with 2 charges it rings the 2 it cannot afford in a dim colour
         let rings = |out: &[Prim]| out.iter().filter(|pr| matches!(pr, Prim::Ring { r, .. } if (*r - PIP_SIZE * 1.55).abs() < 1e-6)).count();
-        assert_eq!(rings(&texts(StarKind::Mine, 6.0)), 3);
+        assert_eq!(rings(&texts(StarKind::Barrel, 6.0)), 3);
         assert_eq!(rings(&texts(StarKind::Standard, 6.0)), 0, "a plain star needs no cost rings");
         // unaffordable: the label turns magenta
-        let dry = texts(StarKind::Mine, 2.0);
-        assert!(dry.iter().any(|pr| matches!(pr, Prim::Text { text, color, .. } if text == "MINE 3" && color.0 > 0.9 && color.1 < 0.5)));
+        let dry = texts(StarKind::Barrel, 2.0);
+        assert!(dry.iter().any(|pr| matches!(pr, Prim::Text { text, color, .. } if text == "BARREL 3" && color.0 > 0.9 && color.1 < 0.5)));
     }
 }

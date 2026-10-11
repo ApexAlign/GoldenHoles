@@ -258,16 +258,16 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 use shinobi_client::client_game::StarObj;
                 let fl = by - 0.8;
                 for (owner, dx, dz, armed) in [(2u16, -1.2f32, -4.0f32, true), (5, 2.5, -6.5, true), (1, 0.0, -14.0, false), (6, -4.0, -22.0, true)] {
-                    v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Mine, pos: [bx + dx, fl, bz + dz], normal: [0.0, 1.0, 0.0], owner, armed, life_left: 0.8 });
+                    v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Barrel, pos: [bx + dx, fl, bz + dz], normal: [0.0, 1.0, 0.0], owner, armed, life_left: 0.8 });
                 }
             }
             "smoke" => {
                 use shinobi_client::client_game::StarObj;
-                v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Smoke, pos: [bx + 1.0, by - 0.8, bz - 9.0], normal: [0.0, 1.0, 0.0], owner: 2, armed: false, life_left: 0.7 });
+                v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Canister, pos: [bx + 1.0, by - 0.8, bz - 9.0], normal: [0.0, 1.0, 0.0], owner: 2, armed: false, life_left: 0.7 });
             }
             "flash" | "mineburst" => {
                 if frame == 112 {
-                    let what = if name == "flash" { shinobi_sim::events::STAR_FX_FLASH_BURST } else { shinobi_sim::events::STAR_FX_MINE_BURST };
+                    let what = if name == "flash" { shinobi_sim::events::STAR_FX_FLASH_BURST } else { shinobi_sim::events::STAR_FX_BARREL_BURST };
                     v.events.push(shinobi_sim::events::NetEvent::StarFx { tick: 0, what, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by + 0.6, bz - 7.0]) });
                 }
             }
@@ -327,13 +327,13 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
             "starkinds" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
-                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Mine);
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Barrel);
                 v.discs.push(([bx, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
                 v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Flash);
                 v.discs.push(([bx + 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
-                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Smoke);
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Canister);
             }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));

@@ -248,12 +248,12 @@ pub struct BotMem {
     unstick_until: u32,
     unstick_dir: V3,
     /// Star variants (docs/stars.md): which throwable this tick's FIRE sends (0 = standard), when each kind may be
-    /// thrown again, and the window in which a hurt bot looks down to drop smoke at its own feet.
+    /// thrown again, and the window in which the bot raises its aim to lob a barrel (`lob_add` radians above the flat aim).
     star_pick: u8,
-    mine_ok: u32,
+    barrel_ok: u32,
     flash_ok: u32,
-    smoke_ok: u32,
-    smoke_aim_until: u32,
+    lob_until: u32,
+    lob_add: f32,
     /// Power weapons (docs/powerups.md, `power_bot.rs`): the brain and the look it wants this tick.
     power: crate::power_bot::PowerBrain,
     power_aim: Option<(f32, f32)>,
@@ -304,10 +304,10 @@ impl BotMem {
             unstick_until: 0,
             unstick_dir: Vector::zeros(),
             star_pick: 0,
-            mine_ok: 0,
+            barrel_ok: 0,
             flash_ok: 0,
-            smoke_ok: 0,
-            smoke_aim_until: 0,
+            lob_until: 0,
+            lob_add: 0.0,
             power: Default::default(),
             power_aim: None,
         }
@@ -1159,9 +1159,9 @@ impl BotMem {
 
     // ------------------------------------------------------------------ attacks & aim
 
-    /// Now and then a bot throws something other than a plain star: a mine at a target it is closing on, a flash at one that
-    /// is looking at it, smoke (dropped at its own feet) when it is hurt. Only with the energy to spare, and never faster
-    /// than the per-kind gaps below, so the variants stay seasoning and the plain star stays the bot's poke.
+    /// Now and then a bot throws something other than a plain star: a flash at a target that is looking at it, or a lobbed
+    /// barrel at one 9-20 m away (outside its own blast). Only with the energy to spare, and never faster than the
+    /// per-kind gaps below, so the variants stay seasoning and the plain star stays the bot's poke.
     fn star_variants(&mut self, ctx: &ThinkCtx, p: &Perception, buttons: &mut u8, rng: &mut Rng) {
         let (tick, me) = (ctx.world.tick, ctx.me);
         let Some((energy, _, locked)) = ctx.world.server.players.iter().find(|q| q.id == me.id).and_then(|q| q.combat.shuriken_energy()) else { return };
@@ -1169,38 +1169,35 @@ impl BotMem {
         if locked || tick < self.fire_ok || matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
             return;
         }
-        // smoke: hurt or backing off, look down and drop it where we stand
-        let hurt = me.hp_frac < 0.45 || self.phase == Phase::Retreat;
-        if hurt && energy >= sc.smoke_cost + 0.5 && tick >= self.smoke_ok {
-            if tick >= self.smoke_aim_until && rng.chance(0.025) {
-                self.smoke_aim_until = tick + 40;
-            }
-            if tick < self.smoke_aim_until && me.pitch < -0.6 {
-                *buttons |= Buttons::FIRE;
-                self.star_pick = 3;
-                self.smoke_ok = tick + 900;
-                self.smoke_aim_until = 0;
-                self.stats.shurikens += 1;
-                self.fire_ok = tick + self.skill.fire_gap_ticks;
-                return;
-            }
-        } else if !hurt {
-            self.smoke_aim_until = 0;
-        }
         let Some(t) = p.target else { return };
         if !t.los || t.view.spawn_protected || !matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone | Phase::Perch) {
             return;
         }
-        let (want_yaw, _) = self.aim_angles(ctx, &t);
+        let (want_yaw, flat_pitch) = self.aim_angles(ctx, &t);
         if wrap_pi(want_yaw - me.yaw).abs() >= 0.10 + self.skill.aim_error {
+            return;
+        }
+        // a barrel in preparation: wait until the aim has come up to the lob, then throw
+        if tick < self.lob_until {
+            if (me.pitch - (flat_pitch + self.lob_add)).abs() < 0.08 && energy >= sc.barrel_cost {
+                self.lob_until = 0;
+                *buttons |= Buttons::FIRE;
+                self.star_pick = 1;
+                self.stats.shurikens += 1;
+                self.fire_ok = tick + self.skill.fire_gap_ticks;
+            }
             return;
         }
         let pick = if t.on_screen && (7.0..=16.0).contains(&t.dist) && energy >= sc.flash_cost + 1.0 && tick >= self.flash_ok && rng.chance(0.012) {
             self.flash_ok = tick + 420;
             2
-        } else if (8.0..=22.0).contains(&t.dist) && energy >= sc.mine_cost + 1.5 && tick >= self.mine_ok && rng.chance(0.01) {
-            self.mine_ok = tick + 600;
-            1
+        } else if (9.0..=20.0).contains(&t.dist) && energy >= sc.barrel_cost + 1.5 && tick >= self.barrel_ok && rng.chance(0.01) {
+            // the low arc that lands a barrel at this range
+            let sin2 = (sc.barrel_gravity * t.dist / (sc.barrel_speed * sc.barrel_speed).max(1.0)).clamp(0.0, 0.95);
+            self.lob_add = 0.5 * sin2.asin();
+            self.lob_until = tick + 30;
+            self.barrel_ok = tick + 600;
+            return;
         } else {
             return;
         };
@@ -1250,14 +1247,16 @@ impl BotMem {
 
     fn aim(&mut self, ctx: &ThinkCtx, p: &Perception, dir: V3) -> (f32, f32) {
         let me = ctx.me;
-        let smoke_down = ctx.world.tick < self.smoke_aim_until;
         let (want_yaw, want_pitch) = match (p.target, self.phase) {
-            // dropping smoke at our own feet: keep the heading, look down
-            _ if smoke_down => (me.yaw, -0.95),
             // strikes lock on cleanly: the lunge goes where the aim points
             (Some(t), Phase::Strike { .. }) => {
                 let d = flat(t.view.pos - me.pos);
                 (yaw_of(d) + self.slice_off, 0.0)
+            }
+            // lobbing a barrel: aim above the target by the arc
+            (Some(t), _) if ctx.world.tick < self.lob_until => {
+                let (y, pch) = self.aim_angles(ctx, &t);
+                (y, (pch + self.lob_add).clamp(-1.2, 1.2))
             }
             // a drawn bow / a thrown tag aims with lead and drop (`power_bot.rs`)
             _ if self.power_aim.is_some() => self.power_aim.unwrap(),

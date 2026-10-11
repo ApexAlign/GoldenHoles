@@ -79,7 +79,7 @@ fn weapon_index(k: shinobi_sim::combat::DamageKind) -> u8 {
         Shuriken => 0,
         Slash => 1,
         GridBeam => 2,
-        Mine | Arrow | Tag => 0, // mines, arrows and tags count toward the sharpshooter
+        Explosive | Arrow | Tag => 0, // blasts, arrows and tags count toward the sharpshooter
     }
 }
 
@@ -356,7 +356,7 @@ impl HudBridge {
             let fov = if view.camera.fov > 1.0 { view.camera.fov } else { 90.0 };
             for (id, smp) in &view.remotes {
                 if *id == local_id || view.hidden_ids.contains(id) {
-                    continue; // smoke hides its occupants from tags and edge ticks
+                    continue; // hidden players get no tags or edge ticks
                 }
                 if let Some(t) = &teams {
                     if t.team_of.get(id).copied().map(|x| x != 0) == Some(t.my_team != 0) {

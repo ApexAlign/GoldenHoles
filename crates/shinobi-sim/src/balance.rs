@@ -111,7 +111,7 @@ pub struct KatanaBalance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatBalance {
     pub shuriken: ShurikenBalance,
-    /// Star variants: mine, flash, smoke (`combat/stars.rs`).
+    /// Star variants: barrel, canister, flash (`combat/stars.rs`).
     pub star: crate::combat::stars::StarCfg,
     /// Pickup-only power weapons: the yumi and the explosive tag (`power.rs`, docs/powerups.md).
     pub power: crate::power::PowerCfg,
@@ -1001,23 +1001,34 @@ impl Balance {
         s!("combat.shuriken.energy_regen_s", F, self.combat.shuriken.energy_regen_s);
         s!("combat.shuriken.energy_resume", F, self.combat.shuriken.energy_resume);
         s!("combat.shuriken.mark_cost", F, self.combat.shuriken.mark_cost);
-        s!("combat.star.mine_cost", F, self.combat.star.mine_cost);
-        s!("combat.star.mine_arm_s", F, self.combat.star.mine_arm_s);
-        s!("combat.star.mine_trigger_radius", F, self.combat.star.mine_trigger_radius);
-        s!("combat.star.mine_burst_radius", F, self.combat.star.mine_burst_radius);
-        s!("combat.star.mine_damage", F, self.combat.star.mine_damage);
-        s!("combat.star.mine_knock", F, self.combat.star.mine_knock);
-        s!("combat.star.mine_max", U, self.combat.star.mine_max);
-        s!("combat.star.mine_life_s", F, self.combat.star.mine_life_s);
-        s!("combat.star.mine_disarm_radius", F, self.combat.star.mine_disarm_radius);
+        s!("combat.star.barrel_cost", F, self.combat.star.barrel_cost);
+        s!("combat.star.barrel_speed", F, self.combat.star.barrel_speed);
+        s!("combat.star.barrel_gravity", F, self.combat.star.barrel_gravity);
+        s!("combat.star.barrel_bounce", F, self.combat.star.barrel_bounce);
+        s!("combat.star.barrel_grip", F, self.combat.star.barrel_grip);
+        s!("combat.star.barrel_fuse_s", F, self.combat.star.barrel_fuse_s);
+        s!("combat.star.barrel_radius", F, self.combat.star.barrel_radius);
+        s!("combat.star.barrel_damage", F, self.combat.star.barrel_damage);
+        s!("combat.star.barrel_edge", F, self.combat.star.barrel_edge);
+        s!("combat.star.barrel_knock", F, self.combat.star.barrel_knock);
+        s!("combat.star.barrel_launch", F, self.combat.star.barrel_launch);
+        s!("combat.star.barrel_hit_radius", F, self.combat.star.barrel_hit_radius);
+        s!("combat.star.canister_cost", F, self.combat.star.canister_cost);
+        s!("combat.star.canister_speed", F, self.combat.star.canister_speed);
+        s!("combat.star.canister_fuse_s", F, self.combat.star.canister_fuse_s);
+        s!("combat.star.canister_radius", F, self.combat.star.canister_radius);
+        s!("combat.star.canister_damage", F, self.combat.star.canister_damage);
+        s!("combat.star.canister_edge", F, self.combat.star.canister_edge);
+        s!("combat.star.canister_knock", F, self.combat.star.canister_knock);
+        s!("combat.star.canister_launch", F, self.combat.star.canister_launch);
         s!("combat.star.flash_cost", F, self.combat.star.flash_cost);
         s!("combat.star.flash_fuse_s", F, self.combat.star.flash_fuse_s);
         s!("combat.star.flash_radius", F, self.combat.star.flash_radius);
         s!("combat.star.flash_secs", F, self.combat.star.flash_secs);
         s!("combat.star.flash_cone_deg", F, self.combat.star.flash_cone_deg);
-        s!("combat.star.smoke_cost", F, self.combat.star.smoke_cost);
-        s!("combat.star.smoke_secs", F, self.combat.star.smoke_secs);
-        s!("combat.star.smoke_radius", F, self.combat.star.smoke_radius);
+        s!("combat.star.flash_self_radius", F, self.combat.star.flash_self_radius);
+        s!("combat.star.flash_daze_damage", F, self.combat.star.flash_daze_damage);
+        s!("combat.star.flash_daze_turn", F, self.combat.star.flash_daze_turn);
         s!("combat.lock_secs", F, self.combat.lock_secs);
         s!("combat.lock_pull_min", F, self.combat.lock_pull_min);
         s!("combat.lock_break_secs", F, self.combat.lock_break_secs);
@@ -1262,9 +1273,21 @@ impl Balance {
             e.push("combat.shuriken.energy_max must cover at least one star and one mark star".into());
         }
         let st = &self.combat.star;
-        let costs = [st.mine_cost, st.flash_cost, st.smoke_cost];
-        if costs.iter().any(|c| *c <= 0.0) || [st.mine_arm_s, st.mine_trigger_radius, st.mine_burst_radius, st.mine_damage, st.mine_knock, st.mine_life_s, st.mine_disarm_radius, st.flash_fuse_s, st.flash_radius, st.flash_secs, st.smoke_secs, st.smoke_radius].iter().any(|v| *v < 0.0) || st.mine_max == 0 || !(0.0..=180.0).contains(&st.flash_cone_deg) {
-            e.push("combat.star.*: costs > 0, times / radii / damage >= 0, mine_max >= 1, flash_cone_deg in 0..=180".into());
+        let costs = [st.barrel_cost, st.flash_cost, st.canister_cost];
+        let nonneg = [
+            st.barrel_gravity, st.barrel_fuse_s, st.barrel_radius, st.barrel_damage, st.barrel_knock, st.barrel_launch, st.barrel_hit_radius,
+            st.canister_fuse_s, st.canister_radius, st.canister_damage, st.canister_knock, st.canister_launch,
+            st.flash_fuse_s, st.flash_radius, st.flash_secs, st.flash_self_radius, st.flash_daze_damage,
+        ];
+        if costs.iter().any(|c| *c <= 0.0)
+            || st.barrel_speed <= 0.0
+            || st.canister_speed <= 0.0
+            || nonneg.iter().any(|v| *v < 0.0)
+            || ![st.barrel_bounce, st.barrel_grip, st.barrel_edge, st.canister_edge].iter().all(|v| (0.0..=1.0).contains(v))
+            || !(0.05..=1.0).contains(&st.flash_daze_turn)
+            || !(0.0..=180.0).contains(&st.flash_cone_deg)
+        {
+            e.push("combat.star.*: costs and speeds > 0, times / radii / damage / knock / launch / gravity >= 0, barrel_bounce, barrel_grip and *_edge in 0..=1, flash_daze_turn in 0.05..=1, flash_cone_deg in 0..=180".into());
         }
         if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < costs.iter().cloned().fold(0.0, f32::max) {
             e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
