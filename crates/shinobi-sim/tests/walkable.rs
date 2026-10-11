@@ -37,6 +37,12 @@ fn ffa_isles_has_no_jump_only_obstacles() {
 }
 
 #[test]
+fn ffa_clock_has_no_jump_only_obstacles() {
+    let Some(o) = offenders("ffa_clock.lvl") else { return };
+    assert!(o.is_empty(), "{} unwalkable obstacles in ffa_clock: {:?}", o.len(), &o[..o.len().min(10)]);
+}
+
+#[test]
 fn ffa_small_has_no_jump_only_obstacles() {
     let Some(o) = offenders("ffa_small.lvl") else { return };
     assert!(o.is_empty(), "{} unwalkable obstacles in ffa_small: {:?}", o.len(), &o[..o.len().min(10)]);
