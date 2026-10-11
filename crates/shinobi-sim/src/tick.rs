@@ -786,6 +786,7 @@ impl Server {
         }
 
         self.resolve_yanks(tick, &yanks);
+        self.resolve_hook_pulls(tick);
         // air-cut shock-waves: bystanders near a landing are thrown back (and credit the slammer if they go over the edge)
         for (centre, by, victim) in shocks {
             let by_team = self.players.iter().find(|q| q.id == by).map(|q| q.team);
@@ -870,6 +871,59 @@ impl Server {
 }
 
 impl Server {
+    /// Enemy hook (docs/grapple.md): every living hooker whose rope is on a player drags that player (the living, non-allied one
+    /// at the anchor) toward them at the reel speed (capped by `grapple_pull_max`, never past the release radius) and keeps
+    /// them staggered. A raised shield facing the hooker stops it: the guard drains and the hooker's rope drops. Server only:
+    /// the pull reaches the victim as an ordinary reconciliation; the hooker's rope and cooldown are predicted.
+    fn resolve_hook_pulls(&mut self, tick: u32) {
+        let cfg = self.cfg;
+        if cfg.grapple_pull_max <= 0.0 {
+            return;
+        }
+        let bcfg = self.balance.guard.cfg();
+        let dt = 1.0 / TICK_HZ_F;
+        for i in 0..self.players.len() {
+            if !self.players[i].vitals.alive() || !self.players[i].ch.pulling_enemy() {
+                continue;
+            }
+            let Some(g) = self.players[i].ch.grapple else { continue };
+            let team = self.players[i].team;
+            let mut best: Option<(f32, usize)> = None;
+            for (j, q) in self.players.iter().enumerate() {
+                if j == i || !q.vitals.alive() || allied(team, q.team) {
+                    continue;
+                }
+                let c = q.pos(&self.world);
+                let d = (vector![c[0], c[1], c[2]] - g.anchor).norm();
+                if d <= 2.5 && best.map_or(true, |b| d < b.0) {
+                    best = Some((d, j));
+                }
+            }
+            let Some((_, j)) = best else { continue };
+            let me = self.players[i].pos(&self.world);
+            let c = self.players[j].pos(&self.world);
+            let vyaw = shinobi_proto::quant::dq_yaw(self.players[j].yaw);
+            if crate::block::guard_vs(&self.players[j].blk, vyaw, c, me, tick, &bcfg) != crate::block::Guard::None {
+                let blk = &mut self.players[j].blk;
+                blk.energy -= cfg.grapple_shield_drain;
+                if blk.energy <= 0.0 {
+                    blk.break_guard(tick, &bcfg);
+                }
+                self.players[i].ch.hook_blocked();
+                continue;
+            }
+            let to = vector![me[0] - c[0], me[1] - c[1], me[2] - c[2]];
+            let gap = to.norm();
+            let reel = cfg.grapple_reel_speed(gap).min(cfg.grapple_pull_max);
+            // never carry them past the release radius in one tick
+            let speed = reel.min((0.4 * (gap - cfg.grapple_pull_end * 0.85) / dt).max(0.0));
+            self.players[j].ch.hook_pull(to, speed);
+            let ticks = ((cfg.grapple_stagger * TICK_HZ_F) as u32).max(1);
+            self.players[j].blk.stagger_until = tick + ticks;
+            self.players[j].blk.open_for(tick, ticks);
+        }
+    }
+
     /// Hook yank (docs/traversal_melee.md): the living, non-allied player at the rope's anchor is pulled toward the
     /// yanker (speed scales with the gap, capped at `yank_speed`) and staggered. Server only: the pull reaches the victim
     /// as an ordinary reconciliation, the yanker's own rope cut is predicted.

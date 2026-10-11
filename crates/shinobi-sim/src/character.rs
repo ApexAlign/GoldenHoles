@@ -160,6 +160,23 @@ pub struct Cfg {
     pub yank_stagger: f32,
     /// Pull speed grows with the gap (m/s per metre) so a close target is not flung past you; floor 30 % of `yank_speed`.
     pub yank_gain: f32,
+    /// Anchor assist: a hook press whose aim ray finds nothing snaps to the best hookable point within this many degrees
+    /// of the aim (0 = off). Rim / edge points score `grapple_assist_edge` degrees better, tops half of that.
+    pub grapple_assist_deg: f32,
+    pub grapple_assist_edge: f32,
+    /// Enemy hook: a hook that lands on a player pulls THEM toward you (m/s cap; 0 = off, the old behaviour where the
+    /// rope reels you to them). The rope lets go within `grapple_pull_end` m; the victim is staggered `grapple_stagger` s
+    /// (refreshed every pulling tick, so it outlasts the pull by that long). A raised shield in front stops the pull,
+    /// costs `grapple_shield_drain` of the guard, and the rope drops. Cooldown after a player rope: `grapple_player_cd`.
+    pub grapple_pull_max: f32,
+    pub grapple_pull_end: f32,
+    pub grapple_stagger: f32,
+    pub grapple_player_cd: f32,
+    pub grapple_shield_drain: f32,
+    /// Slingshot: a launching release (jump, dash, anchor broke) adds this fraction of the current speed along the
+    /// velocity (capped at `grapple_sling_cap` m/s; only above 6 m/s).
+    pub grapple_sling: f32,
+    pub grapple_sling_cap: f32,
 }
 
 impl Cfg {
@@ -242,7 +259,7 @@ impl Default for Cfg {
             grapple_min_len: 2.5,
             grapple_speed: 18.0,
             grapple_accel: 80.0,
-            grapple_cd: 0.5,
+            grapple_cd: 0.4,
             grapple_arrive: 1.3,
             grapple_max_time: 10.0,
             grapple_jump_boost: 5.0,
@@ -284,6 +301,15 @@ impl Default for Cfg {
             yank_cd: 1.6,
             yank_stagger: 0.7,
             yank_gain: 2.0,
+            grapple_assist_deg: 6.0,
+            grapple_assist_edge: 2.5,
+            grapple_pull_max: 45.0,
+            grapple_pull_end: 2.0,
+            grapple_stagger: 0.4,
+            grapple_player_cd: 3.0,
+            grapple_shield_drain: 0.4,
+            grapple_sling: 0.25,
+            grapple_sling_cap: 8.0,
         }
     }
 }
@@ -415,6 +441,9 @@ pub struct CharacterSystem {
     slice_cd: f32,
     pub grapple: Option<GrappleState>,
     grapple_cd: f32,
+    /// What the rope is on: `Some(true)` a player, `Some(false)` geometry, `None` unknown (after a reconcile restore;
+    /// re-derived on the next tick). Not on the wire.
+    rope_player: Option<bool>,
     /// Edge: what the grapple did in the last `update`.
     pub grapple_event: GrappleEvent,
 }
@@ -480,6 +509,7 @@ impl CharacterSystem {
             slice_cd: 0.0,
             grapple: None,
             grapple_cd: 0.0,
+            rope_player: None,
             grapple_event: GrappleEvent::None,
         }
     }
@@ -530,6 +560,30 @@ impl CharacterSystem {
         }
     }
 
+    /// Enemy hook victim side (server only, every tick of the pull): dragged toward `dir` at `speed`, airborne, wall-run and
+    /// own rope dropped. The next tick's input still acts on top (air control), the pull re-asserts each tick.
+    pub fn hook_pull(&mut self, dir: Vector<Real>, speed: f32) {
+        if dir.norm_squared() < 1e-8 {
+            return;
+        }
+        let d = dir.normalize();
+        self.vel = Vector::new(d.x * speed, d.y * speed * 0.5 + 1.5, d.z * speed);
+        self.state = MoveState::Airborne;
+        self.slide = None;
+        self.coyote = 0.0;
+        self.wall_cd = 0.3;
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
+    /// Enemy hook: the hooker's rope was stopped by a shield; drop it with the player-rope cooldown.
+    pub fn hook_blocked(&mut self) {
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
     /// Hook yank victim side (server only): pulled toward `to` at `speed` (+ `hop`), ropes and wall-runs dropped.
     pub fn yank_pull(&mut self, dir: Vector<Real>, speed: f32, hop: f32) {
         let d = if dir.norm_squared() > 1e-8 { dir.normalize() } else { return };
@@ -558,11 +612,28 @@ impl CharacterSystem {
     pub fn strike_kind(&self) -> Option<StrikeKind> {
         if matches!(self.state, MoveState::WallRun { .. }) {
             Some(StrikeKind::Wall)
-        } else if self.grapple.is_some() || (self.grapple_cd > self.cfg.grapple_cd - self.cfg.hookstrike_window && self.grapple_cd <= self.cfg.grapple_cd) {
+        } else if self.grapple.is_some() || self.released_within(self.cfg.hookstrike_window) {
             Some(StrikeKind::Hook)
         } else {
             None
         }
+    }
+
+    /// The rope let go (a clean release, or a player rope's longer cooldown) within the last `window` seconds.
+    fn released_within(&self, window: f32) -> bool {
+        let cfg = &self.cfg;
+        let hit = |x: f32| self.grapple_cd > (x - window).max(0.0) && self.grapple_cd <= x;
+        hit(cfg.grapple_cd) || (cfg.grapple_pull_max > 0.0 && hit(cfg.grapple_player_cd))
+    }
+
+    /// A rope that reels us (on, and not an enemy hook).
+    fn reeling(&self) -> bool {
+        self.grapple.is_some() && !self.pulling_enemy()
+    }
+
+    /// The rope is on a player and `grapple_pull_max` is on: the hook pulls THEM, it does not reel you.
+    pub fn pulling_enemy(&self) -> bool {
+        self.grapple.is_some() && self.cfg.grapple_pull_max > 0.0 && self.rope_player == Some(true)
     }
 
     pub fn snapshot(&self, w: &PhysicsWorld) -> CharacterSnapshot {
@@ -605,6 +676,7 @@ impl CharacterSystem {
         self.slice_cd = s.slice_cd;
         self.grapple = s.grapple;
         self.grapple_cd = s.grapple_cd;
+        self.rope_player = None;
         self.grapple_event = GrappleEvent::None;
         self.double_jumped = false;
     }
@@ -819,7 +891,7 @@ impl CharacterSystem {
                 } else {
                     cfg.air_accel * dt
                 };
-                let airborne_free = !grounded_state && self.grapple.is_none();
+                let airborne_free = !grounded_state && !self.reeling();
                 let speed_now = h.norm();
                 let step = if airborne_free && (speed_now > cfg.run_speed || dir_in.norm_squared() == 0.0) {
                     // momentum: a jump keeps its speed. Faster than a run (or no stick): only a slow drag; the stick
@@ -830,7 +902,7 @@ impl CharacterSystem {
                     let mut st = dir_in * (cfg.air_accel * dt);
                     st -= hd * st.dot(&hd).max(0.0);
                     st - hd * drag
-                } else if self.grapple.is_some() {
+                } else if self.reeling() {
                     // on the rope the stick only nudges; it never brakes the swing or the reel, and once the player is
                     // faster than a run it can only steer (sideways), never add speed (no runaway on the rope)
                     let mut st = dir_in * (cfg.air_accel * dt * cfg.grapple_steer);
@@ -846,7 +918,7 @@ impl CharacterSystem {
                     delta.normalize() * max
                 };
                 let mut nh = h + step;
-                if !grounded_state && self.grapple.is_none() {
+                if !grounded_state && !self.reeling() {
                     // rope / strike momentum past the rope's speed ceiling settles back down over a second or two
                     let sp = nh.norm();
                     if sp > cfg.grapple_max_speed {
@@ -886,7 +958,7 @@ impl CharacterSystem {
                 self.vel.y = cfg.ground_stick;
             } else {
                 // variable jump: hold to rise higher and glide down, release to hop short / fall at full weight
-                let g = if self.grapple.is_some() {
+                let g = if self.reeling() {
                     cfg.gravity
                 } else if self.vel.y > 0.0 {
                     cfg.gravity * if input.jump_held { cfg.rise_hold_mult } else { cfg.rise_cut_mult }
@@ -951,8 +1023,8 @@ impl CharacterSystem {
         }
         // ---- ledge assist: near the anchor, or just after the reel ended (not when the player is jumping off on purpose) ----
         if cfg.mantle_height > 0.0 && !input.jump_held && self.evasion.is_none() && !matches!(self.state, MoveState::WallRun { .. }) {
-            let near_rope = self.grapple.is_some(); // blocked by a steep face is the only trigger, so any rope distance is fine
-            let recent = self.grapple.is_none() && self.grapple_cd > cfg.grapple_cd - cfg.mantle_window;
+            let near_rope = self.reeling(); // blocked by a steep face is the only trigger, so any rope distance is fine
+            let recent = self.grapple.is_none() && self.released_within(cfg.mantle_window);
             if near_rope || recent {
                 self.mantle_assist(w, pos);
             }
@@ -1013,7 +1085,7 @@ impl CharacterSystem {
             }
         }
         // far hooks drag a grounded player along the floor: a ledge they cannot step stops them cold, so hop (see Cfg)
-        if let Some(g) = self.grapple {
+        if let Some(g) = self.grapple.filter(|_| !self.pulling_enemy()) {
             let want = desired.norm();
             if mv.grounded && want > 0.05 && flat(mv.translation).norm() < flat(desired).norm() * 0.2 && self.vel.y < cfg.grapple_hop {
                 let eye = pos + Vector::y() * cfg.eye_above_center;
@@ -1024,7 +1096,7 @@ impl CharacterSystem {
         }
         // wedged against a ledge just short of the release radius: the reel is driving into geometry and the capsule
         // barely moves, so let go (carrying the real speed, not the phantom reel speed) instead of hanging there
-        if let Some(g) = self.grapple {
+        if let Some(g) = self.grapple.filter(|_| !self.pulling_enemy()) {
             let want = desired.norm();
             if want > 0.05 && mv.translation.norm() < want * 0.2 {
                 let eye = pos + Vector::y() * cfg.eye_above_center;
@@ -1105,18 +1177,93 @@ impl CharacterSystem {
     }
 
     /// Geometry or player: the nearest of `grapple_probe` and a living player's hitbox along `dir` (the anchor is the
-    /// player's centre and follows them while the rope is on). `(rope length, anchor)`.
+    /// player's centre and follows them while the rope is on), else the anchor assist. `(rope length, anchor)`.
     pub fn grapple_target(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>) -> Option<(f32, Vector<Real>)> {
+        self.grapple_target_kind(w, eye, dir).map(|(l, a, _)| (l, a))
+    }
+
+    /// As `grapple_target`, plus whether the anchor is a player.
+    pub fn grapple_target_kind(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>) -> Option<(f32, Vector<Real>, bool)> {
         let geo = self.grapple_probe(w, eye, dir);
         if dir.norm_squared() >= 1e-6 {
             let reach = geo.map_or(self.cfg.grapple_range, |g| g.0);
             if let Some((t, centre)) = self.player_cast(w, eye, dir.normalize(), reach) {
                 if t >= self.cfg.grapple_min_len {
-                    return Some(((centre - eye).norm(), centre));
+                    return Some(((centre - eye).norm(), centre, true));
                 }
             }
         }
-        geo
+        if let Some((l, a)) = geo {
+            return Some((l, a, false));
+        }
+        self.grapple_assist(w, eye, dir).map(|(l, a)| (l, a, false))
+    }
+
+    /// Anchor assist: the best hookable point in a cone of `grapple_assist_deg` around `dir` (3 rings x 8 rays), for an
+    /// aim that found nothing. Rim / edge points and tops are preferred so a building edge is easy to hook and mantle.
+    /// Deterministic (libm, fixed ray order): the client predicts exactly what the server picks.
+    pub fn grapple_assist(&self, w: &PhysicsWorld, eye: Vector<Real>, dir: Vector<Real>) -> Option<(f32, Vector<Real>)> {
+        let cfg = &self.cfg;
+        if cfg.grapple_assist_deg <= 0.0 || dir.norm_squared() < 1e-6 || !dir.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let dir = dir.normalize();
+        let mut right = dir.cross(&Vector::y());
+        if right.norm_squared() < 1e-6 {
+            right = Vector::x();
+        }
+        let right = right.normalize();
+        let up = right.cross(&dir);
+        let mut best: Option<(f32, f32, Vector<Real>)> = None; // (score, rope length, point)
+        for ring in 1..=3 {
+            let deg = cfg.grapple_assist_deg * ring as f32 / 3.0;
+            let t = libm::tanf(deg.to_radians());
+            for k in 0..8 {
+                let a = k as f32 * core::f32::consts::FRAC_PI_4;
+                let d = (dir + (right * libm::cosf(a) + up * libm::sinf(a)) * t).normalize();
+                let Some((toi, n)) = self.grapple_cast_n(w, eye, d, cfg.grapple_range) else { continue };
+                if toi < cfg.grapple_min_len || !toi.is_finite() {
+                    continue;
+                }
+                let p = eye + d * toi;
+                let mut score = deg;
+                let edge = self.near_edge(w, p, n);
+                if n.y > 0.7 {
+                    score -= cfg.grapple_assist_edge * 0.5;
+                }
+                // only rims and ledges are worth snapping to: the assist forgives an edge shot, it does not turn every
+                // miss into a hook on whatever wall or floor is nearby
+                if !edge || p.y < eye.y - 0.5 {
+                    continue;
+                }
+                score -= cfg.grapple_assist_edge;
+                if best.map_or(true, |b| score < b.0 - 1e-4) {
+                    best = Some((score, toi, p));
+                }
+            }
+        }
+        best.map(|b| (b.1, b.2))
+    }
+
+    /// Is `p` (on a face with normal `n`) within ~0.6 m of the face's rim? Probes four tangents for missing surface.
+    fn near_edge(&self, w: &PhysicsWorld, p: Vector<Real>, n: Vector<Real>) -> bool {
+        let mut t1 = n.cross(&Vector::y());
+        if t1.norm_squared() < 0.01 {
+            t1 = Vector::x();
+        }
+        let t1 = t1.normalize();
+        let t2 = n.cross(&t1).normalize();
+        [t1, -t1, t2, -t2].iter().any(|t| self.grapple_cast_n(w, p + n * 0.1 + t * 0.6, -n, 0.3).is_none())
+    }
+
+    fn grapple_cast_n(&self, w: &PhysicsWorld, o: Vector<Real>, d: Vector<Real>, max: f32) -> Option<(f32, Vector<Real>)> {
+        if !(o.iter().all(|v| v.is_finite()) && d.iter().all(|v| v.is_finite()) && d.norm_squared() > 1e-12) {
+            return None;
+        }
+        let pred = |_h: ColliderHandle, c: &Collider| c.parent().map_or(true, |b| w.bodies.get(b).map_or(true, |rb| rb.is_fixed()));
+        let filter = QueryFilter::default().exclude_rigid_body(self.body).exclude_sensors().predicate(&pred);
+        let ray = Ray::new(Point::from(o), d);
+        w.queries.cast_ray_and_get_normal(&w.bodies, &w.colliders, &ray, max, true, filter).map(|(_, h)| (h.time_of_impact, h.normal))
     }
 
     /// Nearest living player hitbox (sensor capsule in `GROUP_HITBOX`) along the ray: `(distance, centre)`. Sensors are not
@@ -1216,9 +1363,10 @@ impl CharacterSystem {
         }
         let dir = aim.normalize();
         let eye = pos + Vector::y() * self.eye_above();
-        match self.grapple_target(w, eye, dir) {
-            Some((toi, anchor)) => {
+        match self.grapple_target_kind(w, eye, dir) {
+            Some((toi, anchor, on_player)) => {
                 self.grapple = Some(GrappleState { anchor, len: toi, time: 0.0 });
+                self.rope_player = Some(on_player);
                 // the rope takes over from wall-run and slide (both overwrite velocity every tick); a dash / roll in
                 // progress keeps going and the rope is slack until it ends
                 if matches!(self.state, MoveState::WallRun { .. }) {
@@ -1228,7 +1376,7 @@ impl CharacterSystem {
                 if self.slide.take().is_some() {
                     self.slide_cd = cfg.slide_cd;
                 }
-                if self.state == MoveState::Grounded {
+                if self.state == MoveState::Grounded && !self.pulling_enemy() {
                     self.vel.y = self.vel.y.max(0.0) + cfg.grapple_lift;
                     self.coyote = 0.0;
                     *jumped = true; // leave the ground this tick (no ground stick, no landing snap)
@@ -1244,7 +1392,7 @@ impl CharacterSystem {
 
     /// The rope is on, and its anchor is not geometry: a player hook (hook key again = yank). Needs the solid queries.
     pub fn rope_on_player(&self, w: &PhysicsWorld) -> bool {
-        self.grapple.map_or(false, |g| !self.grapple_anchor_present(w, g.anchor))
+        self.grapple.map_or(false, |g| self.rope_player.unwrap_or_else(|| !self.grapple_anchor_present(w, g.anchor)))
     }
 
     /// Is hookable geometry still within a hair of `anchor`?
@@ -1261,8 +1409,10 @@ impl CharacterSystem {
     }
 
     fn grapple_release(&mut self) {
+        let player_rope = self.pulling_enemy();
         self.grapple = None;
-        self.grapple_cd = self.cfg.grapple_cd;
+        self.rope_player = None;
+        self.grapple_cd = if player_rope { self.cfg.grapple_player_cd } else { self.cfg.grapple_cd };
         self.grapple_event = GrappleEvent::Released;
     }
 
@@ -1274,7 +1424,15 @@ impl CharacterSystem {
         let to = g.anchor - eye;
         let d = to.norm();
         let hook_key = input.grapple_aim.is_some();
-        let arrived = d < cfg.grapple_arrive;
+        let present = self.grapple_anchor_present(w, g.anchor);
+        // what the rope is on: set at the fire; after a reconcile restore, re-derived (a player rope has no geometry at its anchor)
+        let on_player = match self.rope_player {
+            Some(v) => v,
+            None => !present && self.player_near(w, g.anchor, 2.5).is_some(),
+        };
+        self.rope_player = Some(on_player);
+        let pull = on_player && cfg.grapple_pull_max > 0.0;
+        let arrived = d < if pull { cfg.grapple_pull_end } else { cfg.grapple_arrive };
         let mut release = hook_key || g.time > cfg.grapple_max_time || arrived;
         // soft arrival / cancel: the speed is bled off unless the player is deliberately launching (jump held, dash)
         let launch = input.jump_held || input.dash_pressed || self.jump_buf > 0.0;
@@ -1287,8 +1445,10 @@ impl CharacterSystem {
         } else {
             1.0
         };
+        let mut sling = false;
         if !release && self.jump_buf > 0.0 {
             release = true;
+            sling = true;
             if !matches!(self.state, MoveState::WallRun { .. }) {
                 self.jump_buf = 0.0;
                 self.vel.y = self.vel.y.max(0.0) + cfg.grapple_jump_boost;
@@ -1302,20 +1462,24 @@ impl CharacterSystem {
             }
         }
         // the surface must still be there (a block can be evicted or removed mid-swing)
-        if !release && !self.grapple_anchor_present(w, g.anchor) {
-            // not geometry: a player hook follows the player (their hitbox centre near the old anchor), else let go
-            match self.player_near(w, g.anchor, 2.5) {
+        if !release && !present {
+            // a player hook follows the player (their hitbox centre near the old anchor); a geometry anchor that is gone
+            // (the box broke, was evicted) lets go and keeps the slingshot momentum; so does a player who left
+            match if on_player { self.player_near(w, g.anchor, 2.5) } else { None } {
                 Some(c) => {
                     g.anchor = c;
                     self.grapple = Some(g);
                 }
-                None => release = true,
+                None => {
+                    release = true;
+                    sling = true;
+                }
             }
         }
         if release {
             // hook key on a rope that is not on geometry = a player rope: yank (same physics as the cancel brake; the
             // server finds the victim; the longer cooldown rides in `grapple_cd`, so it is predicted exactly)
-            let yank = hook_key && cfg.yank_speed > 0.0 && !self.grapple_anchor_present(w, g.anchor);
+            let yank = hook_key && cfg.yank_speed > 0.0 && on_player;
             self.grapple_release();
             if yank {
                 self.grapple_cd = cfg.yank_cd;
@@ -1323,6 +1487,12 @@ impl CharacterSystem {
             }
             if keep < 1.0 {
                 self.vel *= keep;
+            } else if sling || launch {
+                // slingshot: a launching release adds a share of the speed along the line of flight
+                let sp = self.vel.norm();
+                if sp > 6.0 && cfg.grapple_sling > 0.0 {
+                    self.vel += self.vel / sp * (sp * cfg.grapple_sling).min(cfg.grapple_sling_cap);
+                }
             }
         }
     }
@@ -1384,6 +1554,13 @@ impl CharacterSystem {
         let to = g.anchor - eye;
         let d = to.norm();
         if d < 1e-3 {
+            return;
+        }
+        if self.pulling_enemy() {
+            // enemy hook: the server drags THEM to us; we stay put, the rope is slack and only keeps time
+            g.time += dt;
+            g.len = d;
+            self.grapple = Some(g);
             return;
         }
         let dir = to / d;
