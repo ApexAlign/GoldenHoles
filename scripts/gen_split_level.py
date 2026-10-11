@@ -42,7 +42,7 @@ SIDES = (-1, 1)  # -1 = south tower (z < 0), +1 = north tower
 BRIDGES = [  # (level, brick index 0..6 or "edge", material)
     (1, 6, "wood"), (2, 3, "steel"), (3, 6, "brick"), (5, 2, "wood"), (6, 0, "steel"), (8, 4, "steel"),
     (9, 6, "brick"), (11, 3, "wood"), (12, 0, "steel"), (14, 1, "steel"), (15, 6, "brick"),
-    (13, 6, "wood"), (0, 0, "wood"), (4, 0, "brick"), (7, 6, "steel"),
+    (13, 6, "wood"), (0, 0, "wood"), (10, 0, "wood"), (16, 0, "steel"), (4, 0, "brick"), (7, 6, "steel"),
 ]
 GALLERIES = [2, 5, 8, 11, 14]
 BALCONIES = {2: (1, 5), 5: (4, 5), 8: (2, 5), 11: (1, 5), 14: (3, 5)}  # facade brick index -> door + balcony (galleries only)
@@ -101,6 +101,8 @@ def facade(s):
             T(s, 0.0, 2.0, cuts[i], cuts[i + 1], y0, y1, "brick")
     # parapet on top of the roof edge
     for i in range(len(CUT_U) - 1):
+        if i in door_set(16):
+            continue
         T(s, 0.0, 2.0, CUT_U[i], CUT_U[i + 1], 202.0, 206.0, "brick")
 
 
@@ -208,6 +210,38 @@ for s in SIDES:
     balconies(s)
 bl = bridges()
 
+# ---- rims: 6 m walls on the open ends of landings, the roof edge and the canyon bed, so nobody walks off by accident
+L.section("rims")
+for sd in SIDES:
+    for k in range(0, 17):
+        top = LEVEL_Y(k)
+        ends = [-1.0] if k % 2 == 0 else [1.0]
+        if k in (0, 16):
+            ends = [-1.0, 1.0]
+        for e in ends:
+            xa, xb = (e * 19.0, e * 21.0) if e > 0 else (-21.0, -19.0)
+            for (ua, ub) in [(8.0, 13.0), (13.0, 18.0)]:
+                T(sd, ua, ub, xa, xb, top, top + (6.0 if k < 16 else 4.0), "concrete")
+    for (xa, xb) in [(-15.0, -9.0), (-9.0, -3.0), (3.0, 9.0), (9.0, 15.0)]:  # roof edge between the outer piers
+        T(sd, 24.0, 26.0, xa, xb, 202.0, 206.0, "concrete")
+for e in (-1.0, 1.0):  # ends of the canyon bed
+    xa, xb = (e * 19.0, e * 21.0) if e > 0 else (-21.0, -19.0)
+    for (za, zb) in [(-12.0, -6.0), (-6.0, 0.0), (0.0, 6.0), (6.0, 12.0)]:
+        L.block(xa, xb, 10.0, 16.0, za, zb, "concrete")
+
+# ---- outriggers: 8 m beams sticking out of the outer face, hook anchors / swing lines round the outside of the towers
+L.section("outriggers")
+for sd in SIDES:
+    for k in range(1, 17):
+        xo = (-9.0, 9.0, -9.0, 9.0)[k % 4]
+        T(sd, 26.0, 34.0, xo - 1.0, xo + 1.0, 10.0 + 12.0 * k - 4.0, 10.0 + 12.0 * k - 2.0, "steel")
+
+# ---- canyon bed: a catch floor at the bottom of the canyon (still floating: y 8..10, kill plane -20)
+L.section("canyon bed")
+for i in range(7):
+    for (za, zb) in [(-12.0, -6.0), (-6.0, 0.0), (0.0, 6.0), (6.0, 12.0)]:
+        L.dbox(-18.0 + 6.0 * i, 9.0, (za + zb) / 2, 3.0, 1.0, 3.0, 3.0 * L.hp_for(3.0, 1.0, 3.0, "steel"))
+
 # ---- canyon: gondolas
 L.section("gondolas (hook only)")
 gondolas = []  # (x, top, z)
@@ -243,6 +277,15 @@ for i in range(14):
     if free(x - 2, x + 2, top - 8, top + 12.0, z - 2, z + 2, 1.5):
         L.block(x - 2, x + 2, top - 8, top, z - 2, z + 2, "concrete")
         L.block(x - 1, x + 1, top, top + 12.0, z - 1, z + 1, "steel")  # the cable (nothing holds it: it is a hook line)
+
+for m in range(0, 16):  # one pendant per floor pair, so every height has hook anchors on both sides
+    for xx in (rnd.uniform(-17, -5), rnd.uniform(5, 17), rnd.uniform(-17, 17)):
+        zz = rnd.uniform(-7.0, 7.0)
+        top = 17.0 + 12.0 * m
+        if free(xx - 2, xx + 2, top - 4, top + 8.0, zz - 2, zz + 2, 1.5):
+            L.block(xx - 2, xx + 2, top - 4, top, zz - 2, zz + 2, "concrete")
+            L.block(xx - 1, xx + 1, top, top + 8.0, zz - 1, zz + 1, "steel")
+            break
 
 # ---- girder tightropes across the canyon
 L.section("girders")
@@ -284,15 +327,16 @@ for sd in SIDES:  # antenna pylons on the west landing strip of each roof
 SG = 1
 ramp(SG, -15.0, ROOF, 15.0, ROOF + 12.0, 10.0, 3.0)
 T(SG, 6.0, 12.0, 15.0, 21.0, ROOF + 10.0, ROOF + 12.0, "steel")
-for du in (7.0, 11.0):
-    T(SG, du - 1, du + 1, 19.0, 21.0, ROOF, ROOF + 6.0, "steel")
-    T(SG, du - 1, du + 1, 19.0, 21.0, ROOF + 6.0, ROOF + 10.0, "steel")
+T(SG, 6.0, 8.0, 19.0, 21.0, ROOF, ROOF + 4.0, "steel")  # posts on the end pier / roof rim
+T(SG, 6.0, 8.0, 19.0, 21.0, ROOF + 4.0, ROOF + 10.0, "steel")
+T(SG, 10.0, 12.0, 19.0, 21.0, ROOF + 4.0, ROOF + 10.0, "steel")  # stands on the rim
 L.weapon("yumi", 18.0, ROOF + 12.0 + 1.0, SG * (GAP + 9.0))
 # south crane: a mast, a cab with the second bow, a jib reaching over the canyon
 SC = -1
 mx, mu = 9.0, 22.0
-for i in range(4):  # mast 202 .. 226
-    T(SC, mu - 2, mu + 2, mx - 2, mx + 2, ROOF + 6.0 * i, ROOF + 6.0 * (i + 1), "steel")
+T(SC, mu - 2, mu + 2, mx - 2, mx + 2, ROOF, ROOF + 4.0, "steel")  # mast 202 .. 226
+for i in range(4):
+    T(SC, mu - 2, mu + 2, mx - 2, mx + 2, ROOF + 4.0 + 5.0 * i, ROOF + 4.0 + 5.0 * (i + 1), "steel")
 T(SC, mu - 3, mu + 3, mx - 3, mx + 3, ROOF + 24.0, ROOF + 26.0, "steel")  # the cab deck (y 228)
 for (za, zb) in [(-31.0, -25.0), (-25.0, -19.0), (-19.0, -13.0), (-13.0, -7.0), (-7.0, -1.0), (-1.0, 5.0), (5.0, 10.0)]:
     L.block(mx - 1.0, mx + 1.0, ROOF + 24.0, ROOF + 26.0, za, zb, "steel")
@@ -304,10 +348,13 @@ L.weapon("yumi", mx, ROOF + 26.0 + 1.0, SC * (GAP + mu))
 SP = []  # (x, level_top, z)
 def land(s, k, u=13.0):
     return ((17.0 if k % 2 else -17.0), LEVEL_Y(k), s * (GAP + u))
-SP += [land(-1, k) for k in (1, 4, 7, 10, 13)]
-SP += [land(1, k) for k in (0, 3, 6, 9, 12, 15)]
+# fights start low (the canyon bed, the lobbies and the first floors) and climb: the high places are for those who hook up
+SP += [(-12.0, 10.0, -4.0), (12.0, 10.0, 4.0), (0.0, 10.0, -9.0)]  # canyon bed
+SP += [land(-1, 0), land(1, 0)]
+SP += [land(-1, k) for k in (1, 3, 5, 9)]
+SP += [land(1, k) for k in (2, 4, 6)]
 SP += [(-9.0, ROOF, -1 * (GAP + 5.0)), (-9.0, ROOF, GAP + 4.0)]
-SP += [(0.0, LEVEL_Y(2), -3.0), (-6.0, LEVEL_Y(5), 3.0), (-12.0, LEVEL_Y(14), -3.0)]
+SP += [(0.0, LEVEL_Y(2), -3.0), (-6.0, LEVEL_Y(5), 3.0)]
 for (x, top, z) in SP:
     L.spawn(x, top + 0.81, z)
 for (k, x, z) in [(6, -17.0, 3.0), (8, 6.0, 3.0), (11, 0.0, 3.0), (12, -17.0, 3.0)]:

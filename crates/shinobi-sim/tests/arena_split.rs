@@ -248,7 +248,7 @@ fn one_walkable_network_joins_every_spawn_floor_bridge_and_roof() {
 fn there_are_hook_anchors_within_30_m_of_anywhere() {
     let l = load();
     let net = flood(&l);
-    let anchors: Vec<&LevelBox> = l.level.boxes.iter().filter(|b| b.center[2].abs() < 12.5 || b.center[1] > 207.0).collect();
+    let anchors: Vec<&LevelBox> = l.level.boxes.iter().filter(|b| b.center[2].abs() < 12.5 || b.center[1] > 207.0 || (b.center[2].abs() > 30.0 && b.half[2] >= 3.9)).collect();
     // distance to the nearest point of the box (rolled boxes by their bounding extents)
     let near = |b: &LevelBox, p: [f32; 3]| {
         let (s, c) = b.rot_z.sin_cos();
