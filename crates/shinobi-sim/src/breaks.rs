@@ -38,17 +38,36 @@ pub const COLLAPSE_TICKS: u32 = 18;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BreakCfg {
-    /// Ticks a broken box stays gone (40 s at 60 Hz).
+    /// Ticks a broken box stays gone (40 s at 60 Hz); 0 = it never comes back.
     pub rez_ticks: u32,
     /// Tag blast damage on a box = the tag's player damage at that distance times this.
     pub blast_mult: f32,
     /// Retry delay when a re-form is blocked (a player inside, a support still missing).
     pub retry_ticks: u32,
+    /// Every hit is divided by this (global toughness).
+    pub hp_mult: f32,
+    /// Weapon chip damage (stars, katana, arrows) is multiplied by this.
+    pub chip_mult: f32,
+    /// Ticks between the last support breaking and the box above falling.
+    pub collapse_ticks: u32,
 }
 
 impl Default for BreakCfg {
     fn default() -> Self {
-        Self { rez_ticks: 2400, blast_mult: 5.0, retry_ticks: 60 }
+        Self { rez_ticks: 2400, blast_mult: 5.0, retry_ticks: 60, hp_mult: 1.0, chip_mult: 1.0, collapse_ticks: COLLAPSE_TICKS }
+    }
+}
+
+impl BreakCfg {
+    pub fn from_balance(b: &crate::balance::DestructBalance) -> Self {
+        Self {
+            rez_ticks: (b.rez_s * 60.0).round() as u32,
+            blast_mult: b.blast_mult,
+            retry_ticks: b.retry_ticks.max(1),
+            hp_mult: b.hp_mult.max(1e-3),
+            chip_mult: b.chip_mult,
+            collapse_ticks: b.collapse_ticks,
+        }
     }
 }
 
@@ -197,7 +216,7 @@ impl LevelBreaks {
         if self.entries[e].handle.is_none() || amount <= 0.0 {
             return false;
         }
-        self.entries[e].hurt += amount;
+        self.entries[e].hurt += amount / self.cfg.hp_mult;
         let hp = self.entries[e].b.hp;
         if self.entries[e].hurt < hp {
             let hp_q = ((1.0 - self.entries[e].hurt / hp) * 255.0).round().clamp(1.0, 255.0) as u8;
@@ -210,7 +229,7 @@ impl LevelBreaks {
 
     fn break_entry(&mut self, world: &mut PhysicsWorld, e: usize, tick: u32, cascade: bool, ev: &mut Vec<BreakEvent>) {
         if self.remove(world, e) {
-            self.entries[e].rez_at = tick + self.cfg.rez_ticks;
+            self.entries[e].rez_at = if self.cfg.rez_ticks == 0 { u32::MAX } else { tick.saturating_add(self.cfg.rez_ticks) };
             self.entries[e].collapse_at = None;
             ev.push(BreakEvent::Break { tick, idx: self.entries[e].idx, cascade });
         }
@@ -242,7 +261,7 @@ impl LevelBreaks {
             if self.entries[e].handle.is_some() {
                 let en = &self.entries[e];
                 if !en.static_support && !en.supports.is_empty() && en.supports.iter().all(|&s| self.entries[s].handle.is_none()) {
-                    let at = *self.entries[e].collapse_at.get_or_insert(tick + COLLAPSE_TICKS);
+                    let at = *self.entries[e].collapse_at.get_or_insert(tick + self.cfg.collapse_ticks);
                     if tick >= at {
                         self.break_entry(world, e, tick, true, ev);
                         changed = true;

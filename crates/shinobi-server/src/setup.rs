@@ -32,7 +32,7 @@ pub struct Setup {
     pub level: LevelDesc,
     pub pickups: Vec<PickupDef>,
     /// Gameplay tuning (hp, respawn, weapon damage, match rules). Default = the demo preset;
-    /// `--balance PATH` loads `key = value` lines (`Balance::from_text`, `Balance::default().to_text()` lists keys).
+    /// `--balance PATH` loads `key = value` lines over the demo preset (`Balance::apply_text`, `Balance::default().to_text()` lists keys).
     pub balance: Balance,
     /// Team of each spawn (parallel to `level.spawns`; `NO_TEAM` = either). From `spawn x y z [team]`.
     pub spawn_teams: Vec<u8>,
@@ -71,7 +71,9 @@ impl Setup {
     /// Replace the balance with one parsed from a tuning file.
     pub fn with_balance_file(mut self, path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let b = Balance::from_text(&text).map_err(|errs| format!("{}: {}", path.display(), errs.join("; ")))?;
+        // a tuning file overlays the DEMO preset (the numbers the game is tuned on), so a one-line preset file is enough
+        let mut b = Balance::demo();
+        b.apply_text(&text).map_err(|errs| format!("{}: {}", path.display(), errs.join("; ")))?;
         // validate against a scratch server now so a bad value fails at boot, not at the first rebuild
         Server::new(Cfg::default()).set_balance(b.clone()).map_err(|e| format!("{}: {}", path.display(), e.join("; ")))?;
         self.balance = b;
@@ -121,6 +123,22 @@ mod tests {
         assert_eq!(s.build(Cfg::default()).pickups.active().count(), 2, "every pickup point is live after build");
         // errors come straight from the shared parser (line numbers included)
         assert!(Setup::parse("box 0 0 0 1 1\nspawn 0 0 0").unwrap_err().contains("line 1"));
+    }
+
+    #[test]
+    fn shipped_presets_overlay_the_demo_preset_and_set_destruction() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../balance");
+        let demo = Balance::demo();
+        let d = Setup::standard().with_balance_file(&root.join("demolition.cfg")).unwrap().balance;
+        assert_eq!((d.destruct.hp_mult, d.destruct.rez_s, d.destruct.blast_mult, d.destruct.collapse_ticks), (0.5, 0.0, 8.0, 10));
+        assert_eq!(d.player, demo.player, "everything the file does not name stays the demo preset");
+        assert_eq!(d.combat, demo.combat);
+        let f = Setup::standard().with_balance_file(&root.join("fortress.cfg")).unwrap().balance;
+        assert_eq!((f.destruct.hp_mult, f.destruct.rez_s, f.destruct.chip_mult), (2.5, 20.0, 0.5));
+        // set_balance carries them into the break rules
+        let mut srv = Server::new(Cfg::default());
+        srv.set_balance(d).unwrap();
+        assert_eq!((srv.breaks.cfg.rez_ticks, srv.breaks.cfg.hp_mult, srv.breaks.cfg.collapse_ticks), (0, 0.5, 10));
     }
 
     #[test]

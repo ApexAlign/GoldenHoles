@@ -433,6 +433,24 @@ pub struct EnemyBalance {
     pub disc_speed: f32,
 }
 
+/// Destructible level geometry (`breaks.rs`, docs/destructible.md, docs/destruction_design.md). All server-only: clients just obey
+/// the break / re-form events.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DestructBalance {
+    /// Divides every hit on a destructible box: 2.0 = everything takes twice the punishment.
+    pub hp_mult: f32,
+    /// Seconds a broken box stays gone; 0 = never re-forms (permanent damage for the whole match).
+    pub rez_s: f32,
+    /// Tag / mine blast damage on boxes = player damage at that distance x this.
+    pub blast_mult: f32,
+    /// Shuriken / katana / arrow chip damage on boxes x this.
+    pub chip_mult: f32,
+    /// Ticks between losing the last support and falling (chain pace).
+    pub collapse_ticks: u32,
+    /// Ticks to wait when a re-form is blocked (a player inside, a support missing).
+    pub retry_ticks: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaveBalance {
     pub first_wave_delay_ticks: u32,
@@ -458,6 +476,7 @@ pub struct Balance {
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
     pub wave: WaveBalance,
+    pub destruct: DestructBalance,
 }
 
 impl EnemyBalance {
@@ -617,6 +636,7 @@ impl Default for Balance {
                 dummy_respawn_ticks: 120,
                 disc_speed: 16.0,
             },
+            destruct: DestructBalance { hp_mult: 1.0, rez_s: 40.0, blast_mult: 5.0, chip_mult: 1.0, collapse_ticks: 18, retry_ticks: 60 },
             wave: WaveBalance {
                 first_wave_delay_ticks: 180,
                 inter_wave_ticks: 300,
@@ -862,6 +882,12 @@ impl Balance {
                 v.push(($name.to_string(), Slot::$kind(&mut $place)))
             };
         }
+        s!("destruct.hp_mult", F, self.destruct.hp_mult);
+        s!("destruct.rez_s", F, self.destruct.rez_s);
+        s!("destruct.blast_mult", F, self.destruct.blast_mult);
+        s!("destruct.chip_mult", F, self.destruct.chip_mult);
+        s!("destruct.collapse_ticks", U, self.destruct.collapse_ticks);
+        s!("destruct.retry_ticks", U, self.destruct.retry_ticks);
         s!("player.max_hp", F, self.player.max_hp);
         s!("player.respawn_ticks", U, self.player.respawn_ticks);
         s!("player.invuln_ticks", U, self.player.invuln_ticks);
@@ -1153,6 +1179,9 @@ impl Balance {
     /// Cross-field rules a single key can't express.
     pub fn validate(&self) -> Vec<String> {
         let mut e = Vec::new();
+        if self.destruct.hp_mult <= 0.0 || self.destruct.rez_s < 0.0 || self.destruct.blast_mult < 0.0 || self.destruct.chip_mult < 0.0 {
+            e.push("destruct.hp_mult must be > 0 and rez_s / blast_mult / chip_mult >= 0".into());
+        }
         if self.player.max_hp <= 0.0 {
             e.push("player.max_hp must be > 0".into());
         }

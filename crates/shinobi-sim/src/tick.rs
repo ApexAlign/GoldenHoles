@@ -321,6 +321,7 @@ impl Server {
         self.hazards.cfg.walls_enabled = b.hazards.walls_enabled;
         self.hazards.cfg.obstacles_enabled = b.hazards.obstacles_enabled;
         self.match_state.cfg = b.match_cfg();
+        self.breaks.cfg = crate::breaks::BreakCfg::from_balance(&b.destruct);
         self.balance = b;
         Ok(())
     }
@@ -659,7 +660,7 @@ impl Server {
             for e in &ev {
                 if let CombatEvent::PieceHit { cell, amount, .. } = *e {
                     pieces_changed |= match crate::breaks::world_idx(cell) {
-                        Some(idx) => self.breaks.damage(&mut self.world, idx, amount, tick, &mut self.break_events),
+                        Some(idx) => self.breaks.damage(&mut self.world, idx, amount * self.breaks.cfg.chip_mult, tick, &mut self.break_events),
                         None => self.blocks.damage(&mut self.world, cell, amount, tick, &mut self.block_events),
                     };
                 }

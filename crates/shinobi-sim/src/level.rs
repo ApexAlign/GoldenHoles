@@ -344,7 +344,9 @@ impl LevelDesc {
 
     pub fn apply_to_server(&self, s: &mut Server) {
         let handles = self.insert_into(&mut s.world);
+        let cfg = s.breaks.cfg; // a balance set before the level was loaded stays
         s.breaks = crate::breaks::LevelBreaks::build(self, &handles);
+        s.breaks.cfg = cfg;
     }
 }
 

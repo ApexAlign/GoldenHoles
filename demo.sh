@@ -26,6 +26,9 @@ if [ -z "${LEVEL:-}" ]; then
 fi
 LEVEL_ARGS=()
 [ -f "$LEVEL" ] && LEVEL_ARGS=(--level "$LEVEL")
+# PRESET=demolition|fortress overlays balance/<name>.cfg on the demo preset (destruction severity, docs/destruction_design.md)
+BAL_ARGS=()
+[ -n "${PRESET:-}" ] && [ -f "balance/$PRESET.cfg" ] && BAL_ARGS=(--balance "balance/$PRESET.cfg")
 
 echo ">> building server (release) ..."
 cargo build --release --offline -j "$JOBS" -p shinobi-server -q
@@ -44,7 +47,7 @@ if [ "$TEAM_SIZE" != "0" ]; then
 fi
 
 echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-} ${TEAM_ARGS[*]:-}"
-SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" "${TEAM_ARGS[@]}" &
+SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" "${TEAM_ARGS[@]}" "${BAL_ARGS[@]}" &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM
 sleep 1
