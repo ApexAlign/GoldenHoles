@@ -355,10 +355,9 @@ def land(s, k, u=13.0):
 # fights start low (the canyon bed, the lobbies and the first floors) and climb: the high places are for those who hook up
 SP += [(-18.0, 10.0, 1.0), (-18.0, 10.0, -11.0), (-6.0, 10.0, -5.0), (6.0, 10.0, 1.0), (0.0, 10.0, 8.5), (18.0, 10.0, 7.0), (12.0, 10.0, -11.0)]  # canyon bed
 SP += [land(-1, 0), land(1, 0)]
-SP += [land(-1, k) for k in (1, 9)]
-SP += [land(1, k) for k in (2, 4, 6)]
-SP += [(-9.0, ROOF, -1 * (GAP + 5.0))]
-SP += [(0.0, LEVEL_Y(2), -3.0)]
+SP += [land(-1, 1), land(1, 2), (0.0, LEVEL_Y(2), -3.0)]
+SP += [(-12.0, 10.0, 5.0)]  # an eighth bed spawn
+SP += [land(-1, 5), land(1, 10), (-9.0, ROOF, -1 * (GAP + 5.0))]  # the only high starts: a floor in each of the upper bands
 for (x, top, z) in SP:
     L.spawn(x, top + 0.81, z)
 for (k, x, z) in [(6, -17.0, 3.0), (8, 6.0, 3.0), (11, 0.0, 3.0), (12, -17.0, 3.0)]:
