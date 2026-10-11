@@ -16,7 +16,7 @@ if [ -n "${LAG:-}" ]; then IFS=: read -r LAG_DELAY LAG_JITTER LAG_LOSS <<< "$LAG
 LAG_DELAY="${LAG_DELAY:-}"; LAG_JITTER="${LAG_JITTER:-0}"; LAG_LOSS="${LAG_LOSS:-0}"; LAG_BW_KBPS="${LAG_BW_KBPS:-0}"
 SECS="${SECS:-60}"; AI="${AI:-7}"; CLIENTS="${CLIENTS:-4}"; JOBS="${JOBS:-8}"
 # MAP=sky|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
-if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
 if [ -z "${LEVEL:-}" ]; then if [ -f levels/ffa_small.lvl ]; then LEVEL=levels/ffa_small.lvl; else LEVEL=levels/arena.lvl; fi; fi
 PORT=$((20000 + RANDOM % 20000)); TMP="$(mktemp -d)"
 PROXY=""
