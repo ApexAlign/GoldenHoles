@@ -48,6 +48,29 @@ not the shot origin (now `Cfg::slide_eye_drop` / `CharacterSystem::eye_above`, s
 Residual by design: frame drawn `alpha` into a tick shows the eye up to one tick of travel ahead of the shot origin
 (<= 0.15 m at run speed); thrust/landing eye dips (cosmetic, <~0.1 m, transient). Tests: `tests/aim_accuracy.rs`.
 
+## Upgrades (Cfg keys, defaults on; no wire change; tests `shinobi-sim/tests/grapple_upgrades.rs`)
+- **Anchor assist** (`grapple_assist_deg` 6, `grapple_assist_edge` 2.5; 0 = off): when the aim ray and the player hitboxes find
+  nothing, `CharacterSystem::grapple_assist` casts 3 rings x 8 rays in the cone and takes the lowest score = angle off the aim
+  minus bonuses (a rim within ~0.6 m of the face border: `edge`; a top face: `edge/2`). Same function in `grapple_fire` on server
+  and client prediction (libm, fixed ray order). `grapple_probe` (crosshair "hookable") is unchanged = aim ray only;
+  `grapple_target` / `grapple_assist` give the snapped point for a highlight.
+- **Enemy hook** (`grapple_pull_max` 45 m/s, 0 = the old "reel to the player" behaviour; `grapple_pull_end` 2 m, `grapple_stagger`
+  0.4 s, `grapple_player_cd` 3 s, `grapple_shield_drain` 0.4): a hook that hits a player latches (the rope anchor follows them, as
+  before) but does NOT reel the hooker (`pulling_enemy()`, same on client and server). Server only (`resolve_hook_pulls`): every
+  tick the non-allied player at the anchor is dragged toward the hooker at `grapple_reel_speed(gap)` capped by `grapple_pull_max`
+  (never past the release radius) and kept staggered 0.4 s (no dash/act; outlasts the pull by 0.4 s). The hooker's rope releases
+  within `grapple_pull_end` m, cooldown `grapple_player_cd`. A raised shield facing the hooker stops the pull, drains
+  `grapple_shield_drain` of the guard (breaks it at 0) and drops the rope. Hook key again still yanks (old yank, `yank_cd`).
+  Damage 0. The victim moves by ordinary reconciliation. The rope kind (`rope_player`) is not on the wire: set at the fire,
+  re-derived after a reconcile restore.
+- **Momentum**: `grapple_cd` is 0.4 s after any clean release (miss cooldown unchanged, 0.15 s) so hooks chain. A launching
+  release (jump, dash / jump held, anchor lost) adds `grapple_sling` (25 %) of the speed along the velocity, capped at
+  `grapple_sling_cap` 8 m/s, only above 6 m/s; jump-while-hooked still adds `grapple_jump_boost`.
+- **Destruction**: a geometry anchor that vanishes (box broke, evicted) releases with the slingshot momentum; the rope is gone, so
+  a box that re-forms later cannot catch it (anchors are never re-acquired). Only a player rope re-anchors onto a player.
+- **Range**: `grapple_range` is already 1000 m (docs/traversal_melee.md; DEMO.md's "40 m" is stale); `grapple_speed_per_m`
+  unchanged, so far hooks stay a ~2 s trip.
+
 ## Hardening (demo pass)
 - Rope speed is capped at `grapple_max_speed` (28 m/s, under a dash), the pull eases in over 0.25 s, and the closing
   speed is limited inside the release radius (`grapple_arrive_speed` 14 m/s widening to the reel speed over 6 m), so
