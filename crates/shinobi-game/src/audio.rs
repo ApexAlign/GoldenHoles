@@ -17,6 +17,7 @@ use shinobi_sim::combat::aim_assist::LockEdge;
 use shinobi_sim::combat::SlashKind;
 use shinobi_sim::events::NetEvent;
 
+use crate::hit_audio;
 use crate::mixer::step_interval;
 pub use crate::mixer::AudioSettings;
 use crate::synth::Sound;
@@ -109,6 +110,12 @@ pub struct Frame {
     pub dealt: Vec<(u8, bool, bool)>,
     /// Damage amounts we took (hits our shield absorbed or parried are counted in `absorbed` / `parried` instead).
     pub taken: Vec<u8>,
+    /// One of the damage hits we took this frame was a headshot.
+    pub taken_head: bool,
+    /// Eye position (where near misses are measured from).
+    pub eye: [f32; 3],
+    /// Enemy projectiles in flight (stars, arrows): (position, owner). The backend drops allies.
+    pub threats: Vec<([f32; 3], u16)>,
     /// Hits the shield took (reduced damage) and parried (zero damage) this frame.
     pub absorbed: u32,
     pub parried: u32,
@@ -180,6 +187,16 @@ impl Frame {
             hp: v.hp.map(|h| (h / 100.0).clamp(0.0, 1.0)),
             dealt: v.hits.iter().filter(|h| !h.taken).map(|h| (h.amount, h.kill, h.head)).collect(),
             taken: v.hits.iter().filter(|h| h.taken && h.amount > 0 && !v.blocking).map(|h| h.amount).collect(),
+            taken_head: v.hits.iter().any(|h| h.taken && h.amount > 0 && h.head && !v.blocking),
+            eye: v.eye,
+            threats: v
+                .discs
+                .iter()
+                .enumerate()
+                .map(|(i, (p, _))| (*p, v.disc_owners.get(i).copied().unwrap_or(0)))
+                .chain(v.power_world.arrows.iter().map(|a| (a.pos, a.owner)))
+                .filter(|(_, o)| *o != own_id)
+                .collect(),
             absorbed: v.hits.iter().filter(|h| h.taken && h.amount > 0 && v.blocking).count() as u32,
             parried: v.hits.iter().filter(|h| h.taken && h.amount == 0 && !h.kill && h.other != 0).count() as u32,
             power_own: v.power_events.clone(),
@@ -220,13 +237,12 @@ pub struct Loops {
 
 /// Damage at or above which a dealt hit uses the sharp "heavy hit" tick instead of the body thud.
 pub const HEAVY_HIT: u8 = 60;
-const LOW_HP: f32 = 0.3;
-const HEARTBEAT_PERIOD: f32 = 0.9;
 /// Shield hold time and refill time (mirrors the server's guard balance closely enough for a warning beep).
 const GUARD_HOLD: f32 = 2.5;
 const GUARD_REFILL: f32 = 3.0;
 const GUARD_HIT_COST: f32 = 0.2;
 const GUARD_LOW: f32 = 0.75;
+const MAX_HP: f32 = shinobi_sim::pvp::MAX_HP;
 const ROPE_PULSE: f32 = 0.5;
 
 /// Edge detector over frames: remembers last frame's discs / pieces / ropes and emits a `Cue` for each change.
@@ -249,6 +265,10 @@ pub struct Cuer {
     tag_beep: f32,
     guard_spent: f32,
     guard_beep: f32,
+    prev_threats: Vec<([f32; 3], u16)>,
+    guard_broken: bool,
+    /// `(seconds, intensity)` of the "ear muffle" this frame's hit asks for; read after `update`.
+    pub muffle: Option<(f32, f32)>,
     /// How hard this frame's events should push the music down (0..=1); read after `update`.
     pub duck: f32,
 }
@@ -257,6 +277,7 @@ impl Cuer {
     pub fn update(&mut self, f: &Frame) -> (Vec<Cue>, Loops) {
         let mut cues = Vec::new();
         let mut duck = 0.0f32;
+        self.muffle = None;
 
         if f.ui_click {
             cues.push(Cue::flat(Sound::UiClick, 0.6));
@@ -315,6 +336,18 @@ impl Cuer {
         for (what, p, owner) in &f.power_fx {
             use shinobi_sim::power_pass::*;
             let mine = *owner == f.own_id;
+            // the shield / hit cues below already voice an arrow that lands on us: do not double them
+            let on_me = {
+                let d = [p[0] - f.eye[0], p[1] - f.eye[1], p[2] - f.eye[2]];
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 9.0
+            };
+            if on_me
+                && ((matches!(*what, FX_ARROW_BLOCKED) && f.absorbed > 0)
+                    || (matches!(*what, FX_ARROW_PARRIED) && f.parried > 0)
+                    || (matches!(*what, FX_ARROW_HIT | FX_ARROW_HEAD) && !f.taken.is_empty()))
+            {
+                continue;
+            }
             let (s, v, pitch) = match *what {
                 FX_PICKUP_YUMI | FX_PICKUP_TAG => {
                     cues.push(if mine { Cue::flat(Sound::Refill, 0.8) } else { Cue::flat(Sound::Execute, 0.45).pitched(1.3) });
@@ -493,12 +526,15 @@ impl Cuer {
 
         // the shield: a clang for every absorbed hit, a bright bell for a parry, a beep when it runs low
         for _ in 0..f.absorbed {
-            cues.push(Cue::flat(Sound::Block, 0.8));
+            cues.push(Cue::flat(Sound::Clang, 1.0));
+            duck = duck.max(0.35);
             self.guard_spent = (self.guard_spent + GUARD_HIT_COST).min(1.0);
         }
         for _ in 0..f.parried {
+            // bright chime: the bell, plus a higher octave copy on top
             cues.push(Cue::flat(Sound::Parry, 1.0));
-            duck = duck.max(0.3);
+            cues.push(Cue::flat(Sound::Parry, 0.6).pitched(1.5));
+            duck = duck.max(0.4);
         }
         if f.blocking {
             self.guard_spent = (self.guard_spent + f.dt / GUARD_HOLD).min(1.0);
@@ -511,24 +547,44 @@ impl Cuer {
             self.guard_spent = (self.guard_spent - f.dt / GUARD_REFILL).max(0.0);
             self.guard_beep = 0.0;
         }
-
-        for amount in &f.taken {
-            cues.push(Cue::flat(Sound::Hurt, (0.5 + *amount as f32 / 100.0).min(1.0)));
-            if *amount >= 40 {
-                duck = duck.max(0.4);
-            }
+        // guard broken: the CLIENT's estimate of the guard ran out (the client does not expose the server's guard energy)
+        if self.guard_spent >= 0.999 && !self.guard_broken && (f.absorbed > 0 || f.blocking) {
+            self.guard_broken = true;
+            cues.push(Cue::flat(Sound::GuardBreak, 1.0));
+            duck = duck.max(0.6);
+        } else if self.guard_spent < 0.5 {
+            self.guard_broken = false;
         }
 
-        // low-health heartbeat
-        match f.hp {
-            Some(h) if h > 0.0 && h < LOW_HP => {
+        // we took damage: ONE layered cue for the worst hit of the frame (bigger / headshot = harsher), the world dips
+        if let Some(worst) = f.taken.iter().copied().max() {
+            let (s, v, sp) = hit_audio::hurt_cue(worst, f.taken_head, MAX_HP);
+            cues.push(Cue::flat(s, v).pitched(sp));
+            let total: u32 = f.taken.iter().map(|a| *a as u32).sum();
+            let total = total.min(255) as u8;
+            self.muffle = Some((hit_audio::muffle_secs(total, MAX_HP), hit_audio::intensity(total, MAX_HP)));
+            duck = duck.max(0.4 + 0.4 * hit_audio::intensity(total, MAX_HP));
+        }
+
+        // enemy projectiles zipping past us
+        for p in hit_audio::near_misses(&self.prev_threats, &f.threats, f.eye) {
+            cues.push(Cue::at(Sound::Whoosh, p, 1.0).ranged(40.0));
+        }
+        self.prev_threats = f.threats.clone();
+
+        // low-health heartbeat: faster and louder as health falls, silent when healthy / dead, restarts clean after a respawn
+        if f.respawned || f.my_death.is_some() {
+            self.heart = 0.0;
+        }
+        match f.hp.and_then(|h| hit_audio::heartbeat_period(h).map(|p| (h, p))) {
+            Some((h, period)) => {
                 self.heart -= f.dt;
                 if self.heart <= 0.0 {
-                    self.heart = HEARTBEAT_PERIOD;
-                    cues.push(Cue::flat(Sound::Heartbeat, 0.9));
+                    self.heart = period;
+                    cues.push(Cue::flat(Sound::Heartbeat, hit_audio::heartbeat_vol(h)));
                 }
             }
-            _ => self.heart = 0.0,
+            None => self.heart = 0.0,
         }
 
         // life cycle and match stingers
@@ -670,6 +726,9 @@ mod backend {
         cuer: Cuer,
         limiter: Limiter,
         duck: Ducker,
+        muffle: hit_audio::Muffle,
+        /// This frame's muffle gain (1 = none) for everything that is not an alert.
+        mg: f32,
         device: Device,
         reel: Option<Entity>,
         wall_run: Option<Entity>,
@@ -689,6 +748,8 @@ mod backend {
                 cuer: Cuer::default(),
                 limiter: Limiter::default(),
                 duck: Ducker::default(),
+                muffle: hit_audio::Muffle::default(),
+                mg: 1.0,
                 device: if std::env::var_os("SHINOBI_NOAUDIO").is_some() { Device::Missing } else { Device::Unknown },
                 reel: None,
                 wall_run: None,
@@ -822,8 +883,18 @@ mod backend {
         st.prev_menu = menu_open;
         st.prev_console = console_open;
 
+        // enemy projectiles only: allies' stars do not whoosh
+        let my_team = net.0.game.net.my_team();
+        frame.threats.retain(|(_, o)| my_team.is_none() || net.0.game.net.team_of(*o) != my_team);
         let (mut cues, lp) = st.cuer.update(&frame);
         cues.append(&mut extra.0);
+        if let Some((secs, i)) = st.cuer.muffle {
+            st.muffle.hit(secs, i);
+        }
+        st.mg = st.muffle.update(dt);
+        let mg = st.mg;
+        // alerts first, so a flurry spends the loudness budget on them before footsteps
+        cues.sort_by_key(|c| !hit_audio::is_alert(c.sound));
         let duck = st.cuer.duck;
         st.duck.hit(duck);
         st.limiter.tick(dt);
@@ -845,7 +916,8 @@ mod backend {
                     }
                 }
                 let Some(scale) = st.limiter.admit(c.sound, vol) else { continue };
-                let vol = vol * scale * settings.bus(bus_of(c.sound));
+                let dip = if hit_audio::is_alert(c.sound) { 1.0 } else { mg };
+                let vol = vol * scale * dip * settings.bus(bus_of(c.sound));
                 let mut e = commands.spawn((
                     AudioPlayer(h.clone()),
                     PlaybackSettings::DESPAWN
@@ -892,10 +964,10 @@ mod backend {
         for (kind, sink) in &mut loops {
             let Some(mut sink) = sink else { continue };
             let g = match kind {
-                LoopKind::Reel => 0.5 * settings.bus(Bus::Sfx),
-                LoopKind::WallRun => 0.35 * settings.bus(Bus::Sfx),
-                LoopKind::Wind => 0.5 * wind_gain(height) * settings.bus(Bus::Ambient),
-                LoopKind::Hum => 0.25 * settings.bus(Bus::Ambient),
+                LoopKind::Reel => 0.5 * mg * settings.bus(Bus::Sfx),
+                LoopKind::WallRun => 0.35 * mg * settings.bus(Bus::Sfx),
+                LoopKind::Wind => 0.5 * mg * wind_gain(height) * settings.bus(Bus::Ambient),
+                LoopKind::Hum => 0.25 * mg * settings.bus(Bus::Ambient),
             };
             let cur = sink.volume().to_linear();
             sink.set_volume(Volume::Linear(cur + (g - cur) * (dt * 8.0).min(1.0)));
@@ -965,7 +1037,7 @@ mod backend {
         mut tracks: Query<(Entity, &mut MusicTrack, Option<&mut AudioSink>)>,
     ) {
         let dt = time.delta_secs();
-        let duck = st.duck.update(dt);
+        let duck = st.duck.update(dt) * st.mg;
         let want = settings.music_on && st.device == Device::Ok && !m.playlist.is_empty();
         let mut start = false;
         if !want {
@@ -1234,10 +1306,10 @@ mod tests {
         let mut c = Cuer::default();
         let mut f = frame();
         f.absorbed = 1;
-        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Block]);
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Clang]);
         let mut f = frame();
         f.parried = 1;
-        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Parry]);
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Parry, Sound::Parry], "bell plus its bright octave");
         let mut c = Cuer::default();
         let mut f = frame();
         f.blocking = true;
@@ -1252,6 +1324,97 @@ mod tests {
         }
         f.blocking = true;
         assert!(c.update(&f).0.is_empty(), "a rested shield is silent");
+    }
+
+    #[test]
+    fn taking_damage_plays_one_layered_cue_scaled_by_the_worst_hit() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.taken = vec![8];
+        let l = c.update(&f).0;
+        assert_eq!(sounds(&l), vec![Sound::Hurt]);
+        assert!(c.muffle.is_some(), "the world dips");
+        let mut f = frame();
+        f.taken = vec![10, 34, 12];
+        let h = c.update(&f).0;
+        assert_eq!(sounds(&h), vec![Sound::HurtHeavy], "one cue for the frame, from the worst hit (>= 30 hp)");
+        assert!(h[0].vol > l[0].vol && h[0].speed < l[0].speed);
+        let (ms, _) = c.muffle.unwrap();
+        assert!(ms > 0.25 && c.duck >= 0.4);
+        let mut f = frame();
+        f.taken = vec![12];
+        f.taken_head = true;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::HurtHead], "a headshot is the harshest variant");
+        assert_eq!(c.update(&frame()).0.len(), 0);
+        assert!(c.muffle.is_none());
+    }
+
+    #[test]
+    fn low_hp_heartbeat_speeds_up_and_stops_on_respawn() {
+        let beats = |hp: f32| {
+            let mut c = Cuer::default();
+            let mut f = frame();
+            f.hp = Some(hp);
+            (0..360).map(|_| c.update(&f).0.iter().filter(|q| q.sound == Sound::Heartbeat).count()).sum::<usize>()
+        };
+        assert_eq!(beats(0.5), 0);
+        assert!(beats(0.05) > beats(0.28), "{} vs {}", beats(0.05), beats(0.28));
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.hp = Some(0.1);
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Heartbeat]);
+        f.hp = Some(1.0);
+        f.respawned = true;
+        assert!(c.update(&f).0.iter().all(|q| q.sound != Sound::Heartbeat), "no beat after respawning");
+        f.respawned = false;
+        for _ in 0..200 {
+            assert!(c.update(&f).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn enemy_projectile_passing_close_whooshes_once_far_one_does_not() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.eye = [0.0, 1.6, 0.0];
+        f.threats = vec![([12.0, 1.6, 1.0], 7)];
+        assert!(c.update(&f).0.is_empty());
+        f.threats = vec![([6.0, 1.6, 1.0], 7)];
+        c.update(&f);
+        f.threats = vec![([1.0, 1.6, 1.0], 7)];
+        let w = c.update(&f).0;
+        assert_eq!(sounds(&w), vec![Sound::Whoosh]);
+        assert!(w[0].pos.is_some(), "positional");
+        f.threats = vec![([-5.0, 1.6, 1.0], 7)];
+        assert!(c.update(&f).0.is_empty(), "once per pass");
+        let mut c = Cuer::default();
+        for x in [30.0, 20.0, 10.0, 0.0] {
+            f.threats = vec![([x, 1.6, 9.0], 7)];
+            assert!(c.update(&f).0.is_empty(), "9 m to the side is not a near miss");
+        }
+    }
+
+    #[test]
+    fn guard_breaks_after_enough_shield_hits_and_arrow_on_shield_is_not_doubled() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.blocking = true;
+        f.absorbed = 1;
+        let mut broke = 0;
+        let mut clangs = 0;
+        for _ in 0..6 {
+            let s = sounds(&c.update(&f).0);
+            broke += s.iter().filter(|x| **x == Sound::GuardBreak).count();
+            clangs += s.iter().filter(|x| **x == Sound::Clang).count();
+        }
+        assert_eq!((broke, clangs), (1, 6), "every hit clangs, the broken guard breaks once");
+        let mut f = frame();
+        f.eye = [0.0, 1.6, 0.0];
+        f.absorbed = 1;
+        f.power_fx = vec![(shinobi_sim::power_pass::FX_ARROW_BLOCKED, [0.0, 1.6, 1.0], 9)];
+        assert_eq!(sounds(&Cuer::default().update(&f).0), vec![Sound::Clang], "the world copy of our own block is skipped");
+        f.power_fx = vec![(shinobi_sim::power_pass::FX_ARROW_BLOCKED, [40.0, 1.6, 1.0], 9)];
+        assert_eq!(sounds(&Cuer::default().update(&f).0), vec![Sound::Block, Sound::Clang], "someone else's block is still heard");
     }
 
     #[test]
