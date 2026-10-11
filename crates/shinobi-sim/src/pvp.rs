@@ -314,6 +314,32 @@ pub fn apply_hits(
             let vyaw = shinobi_proto::quant::dq_yaw(vp.yaw);
             let guard = apos.map_or(crate::block::Guard::None, |a| crate::block::guard_vs(&vp.blk, vyaw, vp.pos(world), a, tick, block));
             guard_seen = guard;
+            // a star on a raised shield (block or parry) hurts nobody: it ricochets straight back at its thrower, now the
+            // shield-holder's star (so it can hit the original thrower and credits the holder); the shield pays for it below
+            if kind == DamageKind::Shuriken && matches!(guard, crate::block::Guard::Blocked | crate::block::Guard::Parried) {
+                if let Some(a) = apos {
+                    let v = players[h.victim].pos(world);
+                    let back = Vector::new(a[0] - v[0], a[1] - v[1], a[2] - v[2]);
+                    let dir = if back.norm() > 1e-3 { back.normalize() } else { Vector::new(0.0, 0.0, 1.0) };
+                    let at = Point::new(v[0] + dir.x * 0.9, v[1] + 0.2 + dir.y * 0.9, v[2] + dir.z * 0.9);
+                    if let Some(discs) = players[h.victim].combat.loadout.discs_mut() {
+                        discs.push(crate::combat::shuriken::Disc {
+                            pos: at,
+                            dir,
+                            bounces: 0,
+                            age: 0.0,
+                            speed_scale: 1.0,
+                            homing: None,
+                            mark: false,
+                            kind: crate::combat::stars::StarKind::Standard,
+                            stuck: false,
+                            stick_age: 0.0,
+                            normal: Vector::y(),
+                            uid: 0x8000 | (tick as u16 & 0x7fff),
+                        });
+                    }
+                }
+            }
             match guard {
                 crate::block::Guard::Parried => {
                     let parried = amount;
@@ -331,7 +357,8 @@ pub fn apply_hits(
                     }
                 }
                 crate::block::Guard::Blocked => {
-                    amount = h.amount * block.front_mult; // base cut: no momentum, streak or window bonus
+                    // base cut: no momentum, streak or window bonus; a deflected star does no damage at all
+                    amount = if kind == DamageKind::Shuriken { 0.0 } else { h.amount * block.front_mult };
                     let v = &mut players[h.victim];
                     // a blocked hit costs guard in proportion to its raw damage (a 20 hp cut = `hit_cost`, a 7 hp star a third)
                     v.blk.energy -= block.hit_cost * (h.amount / 20.0).min(2.5);
