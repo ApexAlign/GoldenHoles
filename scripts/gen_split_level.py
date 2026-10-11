@@ -42,7 +42,7 @@ SIDES = (-1, 1)  # -1 = south tower (z < 0), +1 = north tower
 BRIDGES = [  # (level, brick index 0..6 or "edge", material)
     (1, 6, "wood"), (2, 3, "steel"), (3, 6, "brick"), (5, 2, "wood"), (6, 0, "steel"), (8, 4, "steel"),
     (9, 6, "brick"), (11, 3, "wood"), (12, 0, "steel"), (14, 1, "steel"), (15, 6, "brick"),
-    (13, 6, "wood"), (0, 0, "wood"), (10, 0, "wood"), (16, 0, "steel"), (4, 0, "brick"), (7, 6, "steel"),
+    (13, 6, "wood"), (0, 0, "wood"), (2, 0, "wood"), (5, 6, "steel"), (8, 0, "brick"), (11, 6, "wood"), (14, 0, "wood"), (10, 0, "wood"), (16, 0, "steel"), (4, 0, "brick"), (7, 6, "steel"),
 ]
 GALLERIES = [2, 5, 8, 11, 14]
 BALCONIES = {2: (1, 5), 5: (4, 5), 8: (2, 5), 11: (1, 5), 14: (3, 5)}  # facade brick index -> door + balcony (galleries only)
@@ -69,6 +69,8 @@ def ramp(s, xa, ya, xb, yb, uc, hz, mat="concrete", th=0.4):
 def door_set(k):
     """Facade brick indices opened at level k (doors for bridges and balconies)."""
     d = set()
+    if k == 0:
+        d |= {0, 2, 4, 6}  # the lobbies open on the canyon bed through an arcade
     for (lv, idx, _m) in BRIDGES:
         if lv == k:
             d.add(idx)
@@ -88,6 +90,8 @@ def windows(layer):
 def facade(s):
     L.section("facade %s" % ("south" if s < 0 else "north"))
     for li, (y0, y1) in enumerate(LAYERS):
+        if li == 0:
+            continue  # the canyon bed runs under the facade (no trench between the lobby and the bed)
         if li % 2 == 1:  # door layer of level (li-1)/2
             k = (li - 1) // 2
             skip = door_set(k)
@@ -101,7 +105,7 @@ def facade(s):
             T(s, 0.0, 2.0, cuts[i], cuts[i + 1], y0, y1, "brick")
     # parapet on top of the roof edge
     for i in range(len(CUT_U) - 1):
-        if i in door_set(16):
+        if i in door_set(16) or i in (1, 3, 5):
             continue
         T(s, 0.0, 2.0, CUT_U[i], CUT_U[i + 1], 202.0, 206.0, "brick")
 
@@ -239,8 +243,8 @@ for sd in SIDES:
 # ---- canyon bed: a catch floor at the bottom of the canyon (still floating: y 8..10, kill plane -20)
 L.section("canyon bed")
 for i in range(7):
-    for (za, zb) in [(-12.0, -6.0), (-6.0, 0.0), (0.0, 6.0), (6.0, 12.0)]:
-        L.dbox(-18.0 + 6.0 * i, 9.0, (za + zb) / 2, 3.0, 1.0, 3.0, 3.0 * L.hp_for(3.0, 1.0, 3.0, "steel"))
+    for (za, zb) in [(-14.0, -8.0), (-8.0, -2.0), (-2.0, 4.0), (4.0, 10.0), (10.0, 14.0)]:
+        L.dbox(-18.0 + 6.0 * i, 9.0, (za + zb) / 2, 3.0, 1.0, (zb - za) / 2, 12.0 * L.hp_for(3.0, 1.0, (zb - za) / 2, "steel"))
 
 # ---- canyon: gondolas
 L.section("gondolas (hook only)")
@@ -349,18 +353,18 @@ SP = []  # (x, level_top, z)
 def land(s, k, u=13.0):
     return ((17.0 if k % 2 else -17.0), LEVEL_Y(k), s * (GAP + u))
 # fights start low (the canyon bed, the lobbies and the first floors) and climb: the high places are for those who hook up
-SP += [(-12.0, 10.0, -4.0), (12.0, 10.0, 4.0), (0.0, 10.0, -9.0)]  # canyon bed
+SP += [(-18.0, 10.0, 1.0), (-18.0, 10.0, -11.0), (-6.0, 10.0, -5.0), (6.0, 10.0, 1.0), (0.0, 10.0, 8.5), (18.0, 10.0, 7.0), (12.0, 10.0, -11.0)]  # canyon bed
 SP += [land(-1, 0), land(1, 0)]
-SP += [land(-1, k) for k in (1, 3, 5, 9)]
+SP += [land(-1, k) for k in (1, 9)]
 SP += [land(1, k) for k in (2, 4, 6)]
-SP += [(-9.0, ROOF, -1 * (GAP + 5.0)), (-9.0, ROOF, GAP + 4.0)]
-SP += [(0.0, LEVEL_Y(2), -3.0), (-6.0, LEVEL_Y(5), 3.0)]
+SP += [(-9.0, ROOF, -1 * (GAP + 5.0))]
+SP += [(0.0, LEVEL_Y(2), -3.0)]
 for (x, top, z) in SP:
     L.spawn(x, top + 0.81, z)
 for (k, x, z) in [(6, -17.0, 3.0), (8, 6.0, 3.0), (11, 0.0, 3.0), (12, -17.0, 3.0)]:
     L.weapon("tag", x, LEVEL_Y(k) + 1.0, z)
-cubes = [(g[0], g[1] + 1.0, g[2]) for g in gondolas[:3]]
-cubes += [(-17.0, LEVEL_Y(8) + 1.0, -1 * (GAP + 18.0)), (17.0, LEVEL_Y(11) + 1.0, GAP + 8.0), (17.0, LEVEL_Y(7) + 1.0, -1 * (GAP + 8.0))]
+cubes = [(-6.0, 11.0, -5.0), (6.0, 11.0, 1.0), (0.0, 11.0, 7.0), (-17.0, LEVEL_Y(8) + 1.0, -1 * (GAP + 18.0)), (17.0, LEVEL_Y(11) + 1.0, GAP + 8.0)]
+cubes += [(gondolas[0][0], gondolas[0][1] + 1.0, gondolas[0][2])]  # one on a gondola deck, hook only
 for c in cubes:
     L.pickup(*c)
 

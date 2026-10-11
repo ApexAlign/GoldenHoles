@@ -69,7 +69,13 @@ fn run(bots: u16, secs: u32, seed: u64) -> Option<Report> {
                         }
                     }
                 }
-                PvpEvent::Kill { .. } => rep.kills += 1,
+                PvpEvent::Kill { victim, kind, .. } => {
+                    rep.kills += 1;
+                    if std::env::var("SPLIT_STATS").is_ok() {
+                        let vp = s.players.iter().find(|p| p.id == *victim).map(|p| p.pos(&s.world));
+                        println!("kill t={} victim {victim} {:?} at {:?}", t / 60, kind, vp.map(|v| [v[0] as i32, v[1] as i32, v[2] as i32]));
+                    }
+                }
                 _ => {}
             }
         }
@@ -109,6 +115,9 @@ fn run(bots: u16, secs: u32, seed: u64) -> Option<Report> {
             if moved >= 1.0 {
                 window.insert(id, (t, pos));
             } else if t - since >= 10 * 60 {
+                if std::env::var("SPLIT_STATS").is_ok() {
+                    println!("stuck bot {id} at t={}s pos {:?} state {:?}", t / 60, pos, p.ch.state);
+                }
                 rep.stuck.push((id, t, pos[0], pos[2], phase_name(&h, id)));
                 window.insert(id, (t, pos));
             }
