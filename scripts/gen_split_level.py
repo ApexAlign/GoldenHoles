@@ -42,7 +42,7 @@ SIDES = (-1, 1)  # -1 = south tower (z < 0), +1 = north tower
 BRIDGES = [  # (level, brick index 0..6 or "edge", material)
     (1, 6, "wood"), (2, 3, "steel"), (3, 6, "brick"), (5, 2, "wood"), (6, 0, "steel"), (8, 4, "steel"),
     (9, 6, "brick"), (11, 3, "wood"), (12, 0, "steel"), (14, 1, "steel"), (15, 6, "brick"),
-    (13, 6, "wood"), (0, 0, "wood"), (2, 0, "wood"), (5, 6, "steel"), (8, 0, "brick"), (11, 6, "wood"), (14, 0, "wood"), (10, 0, "wood"), (16, 0, "steel"), (4, 0, "brick"), (7, 6, "steel"),
+    (13, 6, "wood"), (2, 1, "wood"), (5, 4, "steel"), (8, 1, "wood"), (11, 5, "brick"), (14, 5, "wood"), (0, 0, "wood"), (2, 0, "wood"), (5, 6, "steel"), (8, 0, "brick"), (11, 6, "wood"), (14, 0, "wood"), (10, 0, "wood"), (16, 0, "steel"), (4, 0, "brick"), (7, 6, "steel"),
 ]
 GALLERIES = [2, 5, 8, 11, 14]
 BALCONIES = {2: (1, 5), 5: (4, 5), 8: (2, 5), 11: (1, 5), 14: (3, 5)}  # facade brick index -> door + balcony (galleries only)
@@ -69,8 +69,11 @@ def ramp(s, xa, ya, xb, yb, uc, hz, mat="concrete", th=0.4):
 def door_set(k):
     """Facade brick indices opened at level k (doors for bridges and balconies)."""
     d = set()
+    d |= {0, 1, 2, 3, 4, 5, 6}  # every floor is fully open on the canyon (the shifted bands above and below carry the facade)
+    if k in GALLERIES:
+        d |= {1, 2, 3, 4, 5}  # arcade onto the gallery
     if k == 0:
-        d |= {0, 2, 4, 6}  # the lobbies open on the canyon bed through an arcade
+        d |= {0, 1, 2, 3, 4, 5, 6}  # the lobbies open on the canyon bed through an arcade
     for (lv, idx, _m) in BRIDGES:
         if lv == k:
             d.add(idx)
@@ -84,7 +87,7 @@ def windows(layer):
     if layer < 2 or layer > 30:
         return set()
     r = (layer * 5 + 2) % 7
-    return {1 + r, 1 + (r + 3) % 7} if layer % 4 == 0 else {1 + (r + 1) % 7}
+    return {1 + r, 1 + (r + 2) % 7, 1 + (r + 4) % 7} if layer % 4 == 0 else {1 + (r + 1) % 7, 1 + (r + 4) % 7}
 
 
 def facade(s):
@@ -112,8 +115,8 @@ def facade(s):
 
 def piers(s):
     L.section("piers %s" % ("south" if s < 0 else "north"))
-    outer = [(-21.0, -15.0), (-3.0, 3.0), (15.0, 21.0)]
-    ends = [(2.0, 8.0), (18.0, 24.0)]
+    outer = [(-21.0, -15.0), (15.0, 21.0)]
+    ends = [(2.0, 8.0)]
     for (y0, y1) in LAYERS:
         for (xa, xb) in outer:
             T(s, 24.0, 26.0, xa, xb, y0, y1, "concrete")
@@ -226,8 +229,6 @@ for sd in SIDES:
             xa, xb = (e * 19.0, e * 21.0) if e > 0 else (-21.0, -19.0)
             for (ua, ub) in [(8.0, 13.0), (13.0, 18.0)]:
                 T(sd, ua, ub, xa, xb, top, top + (6.0 if k < 16 else 4.0), "concrete")
-    for (xa, xb) in [(-15.0, -9.0), (-9.0, -3.0), (3.0, 9.0), (9.0, 15.0)]:  # roof edge between the outer piers
-        T(sd, 24.0, 26.0, xa, xb, 202.0, 206.0, "concrete")
 for e in (-1.0, 1.0):  # ends of the canyon bed
     xa, xb = (e * 19.0, e * 21.0) if e > 0 else (-21.0, -19.0)
     for (za, zb) in [(-12.0, -6.0), (-6.0, 0.0), (0.0, 6.0), (6.0, 12.0)]:
@@ -293,8 +294,8 @@ for m in range(0, 16):  # one pendant per floor pair, so every height has hook a
 
 # ---- girder tightropes across the canyon
 L.section("girders")
-for i in range(8):
-    y = 20.0 + 22.0 * i + rnd.uniform(-3, 3)
+for i in range(14):
+    y = 20.0 + 13.0 * i + rnd.uniform(-3, 3)
     x = rnd.uniform(-16.0, 16.0)
     if put(x - 1, x + 1, y - 1, y + 1, -12.0, 12.0, "steel", 1.0):
         pass
@@ -354,10 +355,10 @@ def land(s, k, u=13.0):
     return ((17.0 if k % 2 else -17.0), LEVEL_Y(k), s * (GAP + u))
 # fights start low (the canyon bed, the lobbies and the first floors) and climb: the high places are for those who hook up
 SP += [(-18.0, 10.0, 1.0), (-18.0, 10.0, -11.0), (-6.0, 10.0, -5.0), (6.0, 10.0, 1.0), (0.0, 10.0, 8.5), (18.0, 10.0, 7.0), (12.0, 10.0, -11.0)]  # canyon bed
-SP += [land(-1, 0), land(1, 0)]
+SP += [(18.0, 10.0, -3.0)]
 SP += [land(-1, 1), land(1, 2), (0.0, LEVEL_Y(2), -3.0)]
 # the high starts sit over the canyon bed (bridge decks) or on a roof: a bot that steps off lands in the fight
-SP += [(-6.0, LEVEL_Y(5), 3.0), (-17.0, LEVEL_Y(10), 3.0), (-9.0, ROOF, -1 * (GAP + 5.0)), (-9.0, ROOF, GAP + 4.0)]
+SP += [(6.0, LEVEL_Y(5), -3.0), (-17.0, LEVEL_Y(10), 3.0), (-9.0, ROOF, -1 * (GAP + 5.0)), (-9.0, ROOF, GAP + 4.0)]
 for (x, top, z) in SP:
     L.spawn(x, top + 0.81, z)
 for (k, x, z) in [(6, -17.0, 3.0), (8, 6.0, 3.0), (11, 0.0, 3.0), (12, -17.0, 3.0)]:

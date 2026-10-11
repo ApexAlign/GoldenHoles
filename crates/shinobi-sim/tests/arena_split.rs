@@ -95,7 +95,7 @@ fn it_floats_the_kill_plane_is_far_below_and_the_towers_are_190_m_tall() {
     // two towers: facade bricks on both sides of a canyon 24 m wide
     for s in [-1.0f32, 1.0] {
         let n = l.level.boxes.iter().filter(|b| b.rot_z == 0.0 && (b.center[2] - s * 13.0).abs() < 0.01 && b.half[2] == 1.0 && b.half[1] * 2.0 >= 5.9).count();
-        assert!(n >= 150, "{n} facade bricks on side {s}");
+        assert!(n >= 60, "{n} facade bricks on side {s}");
     }
     assert!(!l.level.boxes.iter().any(|b| b.rot_z == 0.0 && b.center[2].abs() + b.half[2] < 12.0 && b.half[0] > 14.0), "canyon is blocked by a wide box");
 }
