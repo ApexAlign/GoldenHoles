@@ -20,6 +20,7 @@ mod destructible_fx;
 mod discs;
 mod env_look;
 mod hit_feedback;
+mod hit_indicator;
 mod impacts;
 mod lock;
 mod rope;
@@ -204,7 +205,7 @@ fn main() {
     app.add_plugins(crate::destructible_audio::DestructibleAudioPlugin);
     app.add_plugins(crate::destructible_fx::DestructibleFxPlugin);
     if !off("fx") {
-        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
+        app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::hit_indicator::HitIndicatorPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
     }
     if !off("hud") {
         app.add_plugins(hud_view::HudPlugin);
