@@ -19,8 +19,8 @@ TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs.
 # TEAM_SIZE (8v8) defaults to the 8v8 map; free-for-all defaults to the sky city (levels/ffa_sky.lvl); MAP=small (88 m ground arena), MAP=big (224 m) or LEVEL=<path> pick others.
-# MAP=sky|isles|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
-if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
+# MAP=sky|isles|hive|clock|split|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
 if [ -z "${LEVEL:-}" ]; then
   if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; elif [ -f levels/ffa_sky.lvl ]; then LEVEL=levels/ffa_sky.lvl; elif [ -f levels/ffa_small.lvl ]; then LEVEL=levels/ffa_small.lvl; elif [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi
 fi
