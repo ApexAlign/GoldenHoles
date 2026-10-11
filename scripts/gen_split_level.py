@@ -142,12 +142,12 @@ def floors(s):
         plate_grid(s, [-15.0, -9.0, -3.0, 3.0, 9.0, 15.0], [2.0, 6.0], k, "concrete")
     # roof (level 16): the whole deck, with the lane-B stair well left open
     def hole(xa, xb, ua, ub):
-        return xa >= -15.0 - 1e-6 and xb <= 15.0 + 1e-6 and ua >= 14.0 - 1e-6 and ub <= 20.0 + 1e-6
-    plate_grid(s, [-19.0, -15.0, -9.0, -3.0, 3.0, 9.0, 15.0, 19.0], UC, 16, "concrete", hole)
+        return xa >= -15.0 - 1e-6 and xb <= 15.0 + 1e-6 and ua >= 13.0 - 1e-6 and ub <= 21.0 + 1e-6
+    plate_grid(s, [-19.0, -15.0, -9.0, -3.0, 3.0, 9.0, 15.0, 19.0], [2.0, 8.0, 13.0, 21.0, 24.0], 16, "concrete", hole)
     # the ramps
     for k in range(16):
         if k % 2 == 0:
-            ramp(s, -15.0, LEVEL_Y(k), 15.0, LEVEL_Y(k + 1), 9.0, 3.0)
+            ramp(s, -15.0, LEVEL_Y(k), 15.0, LEVEL_Y(k + 1), 10.0, 3.0)
         else:
             ramp(s, -15.0, LEVEL_Y(k + 1), 15.0, LEVEL_Y(k), 17.0, 3.0)
 
@@ -231,7 +231,8 @@ L.section("counterweights")
 for i in range(8):
     top = rnd.uniform(40.0, 190.0)
     x, z = rnd.uniform(-17.0, 17.0), rnd.uniform(-7.0, 7.0)
-    if put(x - 2, x + 2, top - 8, top, z - 2, z + 2, "concrete", 1.5):
+    if free(x - 2, x + 2, top - 8, top + 12.0, z - 2, z + 2, 1.5):
+        L.block(x - 2, x + 2, top - 8, top, z - 2, z + 2, "concrete")
         L.block(x - 1, x + 1, top, top + 12.0, z - 1, z + 1, "steel")  # the cable (nothing holds it: it is a hook line)
 
 # ---- girder tightropes across the canyon
@@ -267,7 +268,7 @@ for xs in (-9.0, 9.0):  # scaffolds on the south roof: four posts, top frame
     T(-1, 3, 13, xs - 5, xs + 5, ROOF + 12.0, ROOF + 14.0, "wood")
 # north gantry: a lane-A ramp up from the roof to a bow platform (walkable)
 SG = 1
-ramp(SG, -15.0, ROOF, 15.0, ROOF + 12.0, 9.0, 3.0)
+ramp(SG, -15.0, ROOF, 15.0, ROOF + 12.0, 10.0, 3.0)
 T(SG, 6.0, 12.0, 15.0, 21.0, ROOF + 10.0, ROOF + 12.0, "steel")
 for du in (7.0, 11.0):
     T(SG, du - 1, du + 1, 19.0, 21.0, ROOF, ROOF + 6.0, "steel")
@@ -275,14 +276,14 @@ for du in (7.0, 11.0):
 L.weapon("yumi", 18.0, ROOF + 12.0 + 1.0, SG * (GAP + 9.0))
 # south crane: a mast, a cab with the second bow, a jib reaching over the canyon
 SC = -1
-mx, mu = 0.0, 22.0
+mx, mu = 9.0, 22.0
 for i in range(4):  # mast 202 .. 226
     T(SC, mu - 2, mu + 2, mx - 2, mx + 2, ROOF + 6.0 * i, ROOF + 6.0 * (i + 1), "steel")
 T(SC, mu - 3, mu + 3, mx - 3, mx + 3, ROOF + 24.0, ROOF + 26.0, "steel")  # the cab deck (y 228)
 for (za, zb) in [(-31.0, -25.0), (-25.0, -19.0), (-19.0, -13.0), (-13.0, -7.0), (-7.0, -1.0), (-1.0, 5.0), (5.0, 10.0)]:
-    L.block(-1.0, 1.0, ROOF + 24.0, ROOF + 26.0, za, zb, "steel")
-L.block(-1.0, 1.0, ROOF + 12.0, ROOF + 24.0, -17.0, -15.0, "steel")  # the hook line hanging from the jib
-L.block(-2.0, 2.0, ROOF + 8.0, ROOF + 12.0, -18.0, -14.0, "steel")  # the crane block
+    L.block(mx - 1.0, mx + 1.0, ROOF + 24.0, ROOF + 26.0, za, zb, "steel")
+L.block(mx - 1.0, mx + 1.0, ROOF + 12.0, ROOF + 24.0, -5.0, -3.0, "steel")  # the hook line hanging from the jib
+L.block(mx - 2.0, mx + 2.0, ROOF + 8.0, ROOF + 12.0, -6.0, -2.0, "steel")  # the crane block
 L.weapon("yumi", mx, ROOF + 26.0 + 1.0, SC * (GAP + mu))
 
 # ---- spawns / pickups / tags
