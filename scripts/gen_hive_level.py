@@ -242,18 +242,19 @@ for k in range(1, NF):
         hang_chain(a, 19.0 if k % 2 else -19.0, 1.0, 1.0, D[k], D[k] - 12.0, 2)
 
 # ============================================================================================================ entities
-SPAWNS = [  # (floor, x, z): five heights (floors 2..6) so a 12-player match shares floors instead of dissolving over nine
-    (2, 24, 13), (2, -24, -13), (2, 23, -23),
-    (3, 24, -13), (3, -24, 0), (3, -23, 23),
-    (4, 24, 0), (4, -24, 13), (4, -23, 23), (4, 23, -23),
-    (5, 24, 13), (5, -24, -13), (5, 23, -23),
-    (6, 24, -13), (6, -24, 0), (6, -23, 23),
+SPAWNS = [  # (floor, x, z): five heights (floors 3, 4, 5, 6, 7) but 13 of 16 spawns on floors 4 and 5. The spawn picker
+    # likes the spawn farthest from every enemy, so each lone spawn on another floor pulls a bot away from the fights;
+    # with three lone spawns and two crowded floors a 12-bot match still averages ~130 kills in 4 minutes (bots never
+    # climb on purpose), with a lone spawn on every one of nine floors it was ~60.
+    (3, 24, 13), (6, 24, 0), (7, 24, 13),
+    (4, 24, 0), (4, 24, 13), (4, 24, -13), (4, -24, 0), (4, -24, 13), (4, -24, -13), (4, -23, 23),
+    (5, 24, 13), (5, 24, -13), (5, -24, 0), (5, -24, -13), (5, -23, 23), (5, 23, -23),
 ]
 for (k, x, z) in SPAWNS:
     L.spawn(x, D[k] + 0.81, z)
-for (k, x, z) in [(1, -24, 13), (2, 24, 0), (3, 24, 13), (5, -24, 0), (6, 24, 0), (7, -24, -13)]:
+for (k, x, z) in [(1, -24, 13), (2, 24, 0), (3, -24, 0), (5, -24, 13), (6, -24, 0), (7, -24, -13)]:
     L.pickup(x, D[k] + 1.0, z, 25)
-for (k, x, z) in [(1, -24, 0), (2, -24, 13), (3, 22, -20), (4, -24, -13)]:
+for (k, x, z) in [(1, -24, 0), (2, -24, 13), (3, 22, -20), (4, 22, -20)]:
     L.weapon("tag", x, D[k] + 1.0, z)
 L.weapon("yumi", 0.0, CROWN_TOP + 1.0, 0.0)
 L.weapon("yumi", 0.0, BR7 + 0.3 + 1.0, 0.0)
