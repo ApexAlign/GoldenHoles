@@ -161,7 +161,7 @@ fn human_survives(seed: u64, lead_secs: u32, secs: u32) -> Option<bool> {
 
 #[test]
 fn a_joining_human_survives_the_first_30_seconds_in_most_seeds() {
-    let seeds = 1..=20u64;
+    let seeds = 1..=40u64;
     let mut alive = 0;
     for seed in seeds.clone() {
         let Some(ok) = human_survives(seed, 10, 30) else { return };
