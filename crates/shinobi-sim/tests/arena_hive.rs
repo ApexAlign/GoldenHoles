@@ -112,7 +112,7 @@ fn nearly_everything_is_a_destructible_brick_and_bedrock_is_only_the_plinths() {
             assert!(d.iter().cloned().fold(f32::MAX, f32::min) >= 1.9, "sliver brick {b:?}");
         }
     }
-    assert!(girders <= 16, "{girders} long girders");
+    assert!(girders <= 32, "{girders} long girders");
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn one_walkable_network_joins_every_spawn_and_floor_and_the_high_places_stay_dis
         }
         (all, walk)
     };
-    let (crown, crown_w) = off(167.9, 168.1);
+    let (crown, crown_w) = off(164.9, 165.1);
     assert!(crown >= 20 && crown_w == 0, "crown: {crown} cells, {crown_w} walkable");
     let (roof, roof_w) = off(189.9, 190.1);
     assert!(roof >= 800 && roof_w == 0, "roof: {roof} cells, {roof_w} walkable");

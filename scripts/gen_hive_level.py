@@ -145,10 +145,10 @@ def story_walls(k):
 
 
 def partitions(k):
-    """Honeycomb: brick partitions across the east / west strips (aisle x 18..22 stays open) form alcoves."""
+    """Honeycomb: 2 x 2 m brick buttresses on the east / west walls (aisle x 18..24 stays open, bots walk round them) form alcoves."""
     for sx in (-1, 1):
         for z in (-9.0, 9.0):
-            L.block(sx * 22.0 if sx > 0 else -26.0, sx * 26.0 if sx > 0 else -22.0, D[k], D[k] + (5.0 if k == NF - 1 else 6.0), z - 1.0, z + 1.0, MATW)
+            L.block(sx * 24.0 if sx > 0 else -26.0, sx * 26.0 if sx > 0 else -24.0, D[k], D[k] + (5.0 if k == NF - 1 else 6.0), z - 1.0, z + 1.0, MATW)
 
 
 def hang_chain(x, z, hx, hz, y_top, y_bot, links, mat=MATF, gap=0.3):
@@ -185,12 +185,10 @@ for k in range(NF):
 
 # ============================================================================================================ the well
 BR_W = 4.0  # bridge / stripe width
-L.section("walkable bridges across the well (floors 1, 3, 5, 7)")
-for i, k in enumerate((1, 3, 5, 7)):
-    if i % 2 == 0:  # along z at x = 0
-        L.block(-BR_W / 2, BR_W / 2, D[k] - 1.0, D[k], -WELL - 1.0, WELL + 1.0, MATB)
-    else:  # along x at z = 0
-        L.block(-WELL - 1.0, WELL + 1.0, D[k] - 1.0, D[k], -BR_W / 2, BR_W / 2, MATB)
+L.section("walkable bridges across the well: both stripes on EVERY floor (the bots' heightmap only sees the stripes' top, so each must be real)")
+for k in range(NF):
+    L.block(-BR_W / 2, BR_W / 2, D[k] - 1.0, D[k], -WELL - 1.0, WELL + 1.0, MATB)  # along z at x = 0
+    L.block(-WELL - 1.0, WELL + 1.0, D[k] - 1.0, D[k], -BR_W / 2, BR_W / 2, MATB)  # along x at z = 0
 
 L.section("swing lines: steel girders 10 m above every floor (hook only)")
 for k in range(NF - 1):
@@ -204,10 +202,11 @@ L.section("ceiling beams under the roof (y ~187.6) and the crown chains")
 BEAM_Y = ROOF_TOP - 0.75  # centre 189.25, top flush with the roof deck (1.5 m girders, ends tied into the roof plates)
 L.block(-WELL - 1.0, WELL + 1.0, BEAM_Y - 0.75, BEAM_Y + 0.75, -BR_W / 2, BR_W / 2, MATB)
 L.block(-BR_W / 2, BR_W / 2, BEAM_Y - 0.75, BEAM_Y + 0.75, -WELL - 1.0, WELL + 1.0, MATB)
-CROWN_TOP = D[-1] - 2.0  # 168
-L.perm(0.0, CROWN_TOP - 1.0, 0.0, 3.0, 1.0, 4.5)  # the crown platform (bedrock: carries a bow)
-for z in (-3.0, 3.0):
-    hang_chain(0.0, z, 1.0, 1.0, BEAM_Y + 0.75, CROWN_TOP - 1.0, 4, MATB)
+CROWN_TOP = D[-2] + 15.0  # 165: between the floor 7 swing line (160) and the floor 8 bridge (169..170)
+L.perm(0.0, CROWN_TOP - 1.0, 0.0, 2.0, 1.0, 4.5)  # the crown platform (bedrock: carries a bow)
+for z in (-3.0, 3.0):  # two runs: roof beam -> floor 8 bridge (tied into it), floor 8 bridge -> crown
+    hang_chain(0.0, z, 1.0, 1.0, BEAM_Y + 0.75, D[-1], 4, MATB)
+    hang_chain(0.0, z, 1.0, 1.0, D[-1], CROWN_TOP - 1.0, 1, MATB)
 # a weapon plinth on the floor 7 bridge (bow 2): the bridge there runs along x (i = 3)
 BR7 = D[7]
 L.perm(0.0, BR7 + 0.15, 0.0, 1.5, 0.15, 1.5)
@@ -241,18 +240,20 @@ for k in range(1, NF):
     sh = [-13.0, 13.0] if k % 2 else [-14.0, 14.0]
     for a in sh:
         hang_chain(a, 19.0 if k % 2 else -19.0, 1.0, 1.0, D[k], D[k] - 12.0, 2)
-        hang_chain(19.0 if k % 2 else -19.0, -a, 1.0, 1.0, D[k], D[k] - 12.0, 2)
 
 # ============================================================================================================ entities
-SPAWNS = [  # (floor, x, z)
-    (0, 24, 0), (0, -24, -14), (1, -23, 23), (1, 24, 13), (2, 23, -23), (2, -24, 0), (3, 24, -13), (3, -23, 23),
-    (4, -23, 23), (4, 24, 0), (5, -24, 13), (6, 23, -23), (6, -24, -13), (7, 24, 13), (8, -24, 0), (8, 23, -23),
+SPAWNS = [  # (floor, x, z): five heights (floors 2..6) so a 12-player match shares floors instead of dissolving over nine
+    (2, 24, 13), (2, -24, -13), (2, 23, -23),
+    (3, 24, -13), (3, -24, 0), (3, -23, 23),
+    (4, 24, 0), (4, -24, 13), (4, -23, 23), (4, 23, -23),
+    (5, 24, 13), (5, -24, -13), (5, 23, -23),
+    (6, 24, -13), (6, -24, 0), (6, -23, 23),
 ]
 for (k, x, z) in SPAWNS:
     L.spawn(x, D[k] + 0.81, z)
-for (k, x, z) in [(0, -24, 14), (3, 24, 13), (4, -24, 0), (6, 24, 0), (7, -24, -13), (8, 24, 13)]:
+for (k, x, z) in [(1, -24, 13), (2, 24, 0), (3, 24, 13), (5, -24, 0), (6, 24, 0), (7, -24, -13)]:
     L.pickup(x, D[k] + 1.0, z, 25)
-for (k, x, z) in [(1, -24, 0), (2, 24, 13), (3, -24, -13), (4, 24, -13)]:
+for (k, x, z) in [(1, -24, 0), (2, -24, 13), (3, 22, -20), (4, -24, -13)]:
     L.weapon("tag", x, D[k] + 1.0, z)
 L.weapon("yumi", 0.0, CROWN_TOP + 1.0, 0.0)
 L.weapon("yumi", 0.0, BR7 + 0.3 + 1.0, 0.0)
