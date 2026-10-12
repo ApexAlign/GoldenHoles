@@ -40,7 +40,7 @@ use shinobi_sim::level::LevelDesc;
 use shinobi_sim::movement::{refresh_solid, step_player_with};
 use shinobi_sim::own_state::OwnState;
 use shinobi_sim::rapier3d::prelude::*;
-use shinobi_sim::tick::{to_player_input, view_dir};
+use shinobi_sim::tick::{to_player_input_scaled, view_dir};
 
 use crate::controls_card::{ControlRow, ControlsCard, Use};
 use crate::camera::{CameraFeel, CameraInput, CameraPose, FpsCamera, FpsCameraCfg, WeaponPose};
@@ -331,8 +331,8 @@ impl Predicted {
 
 /// The tick's `PlayerInput` as the server will build it: stick + buttons, plus the katana lunge decision made
 /// from the (restored or live) cooldown mirror in `ch`. Shared by the catch-up and the replay hook.
-fn lunge_input(katana: &KatanaCfg, it: &PlayerIntent, ch: &mut CharacterSystem) -> PlayerInput {
-    let mut input = to_player_input(it);
+fn lunge_input(katana: &KatanaCfg, walk_mult: f32, it: &PlayerIntent, ch: &mut CharacterSystem) -> PlayerInput {
+    let mut input = to_player_input_scaled(it, walk_mult);
     let mut cd = ch.slice_cooldown();
     let aim = CombatAim { origin: vector![0.0, 0.0, 0.0], yaw: dq_yaw(it.aim_yaw), pitch: 0.0 };
     predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut input);
@@ -561,6 +561,8 @@ pub struct RenderView {
     pub power_world: PowerWorld,
     /// Our own power-weapon moments since the previous view (bow drawn, arrow loosed, tag thrown...), for pose and sound.
     pub power_events: Vec<PowerEvent>,
+    /// The bow's focus zoom this frame (`camera.fov` already carries it): HUD reticle, view-model fade (`zoom.rs`).
+    pub zoom: crate::zoom::ZoomView,
     /// Every live block as `(owner, cell)`; centre = `(cell + 0.5) * block_size`. Server-confirmed plus our own pending.
     pub blocks: Vec<BlockInfo>,
     /// Edge length of a block cell, metres. Slab geometry: `block_geometry`.
@@ -686,6 +688,8 @@ pub struct ClientGame {
     /// The bow is the weapon in hand (key `2`; `1` goes back to the katana) and whether the draw button is held.
     bow_up: bool,
     bow_hold: bool,
+    /// The bow's focus zoom (client-only camera state, `zoom.rs`).
+    zoom: crate::zoom::ZoomState,
     /// Number of corrections applied (replays), for stats / debug overlay.
     pub corrections: u32,
     /// The local death in progress (see `death_cam`).
@@ -760,6 +764,7 @@ impl ClientGame {
             fire_release_len: 0,
             bow_up: false,
             bow_hold: false,
+            zoom: Default::default(),
             corrections: 0,
             death: None,
             last_kill: None,
@@ -898,6 +903,13 @@ impl ClientGame {
         s.apply_to_touch(&mut self.touch, self.screen.0, self.screen.1);
     }
 
+    /// Walk multiplier of a drawn bow as the server applies it (full draw = the focus state walks slower). Replays
+    /// of the few ticks around the full-draw moment use the current value: a sub-centimetre difference.
+    fn walk_mult(&self) -> f32 {
+        let cfg = PowerCfg::default();
+        shinobi_sim::power::draw_walk_mult(self.power.full(&cfg), &cfg.yumi)
+    }
+
     // ---- network in ----
 
     pub fn on_datagram(&mut self, buf: &[u8], local_tick: f64) -> DecodeResult<()> {
@@ -906,6 +918,7 @@ impl ClientGame {
 
     /// Authoritative own-state for an acked intent tick. Creates the predictor on the first one.
     pub fn on_own_state(&mut self, ack: OwnAck) {
+        let walk = self.walk_mult();
         let Some(pred) = &mut self.pred else {
             self.start_prediction(ack);
             return;
@@ -921,7 +934,7 @@ impl ClientGame {
             rendered,
             &mut pred.ch,
             &mut pred.world,
-            &mut |it, ch| lunge_input(&katana, it, ch),
+            &mut |it, ch| lunge_input(&katana, walk, it, ch),
         );
         if let Some(p) = r {
             self.corrections += 1;
@@ -939,6 +952,7 @@ impl ClientGame {
     }
 
     fn start_prediction(&mut self, ack: OwnAck) {
+        let walk = self.walk_mult();
         let cfg = self.cfg.sim;
         let mut world = PhysicsWorld {
             bodies: RigidBodySet::new(),
@@ -986,7 +1000,7 @@ impl ClientGame {
         // catch up: every intent already sent after the acked tick
         let replay: Vec<_> = self.pending.drain(..).filter(|i| i.tick > ack.tick).collect();
         for it in replay {
-            let input = lunge_input(&p.katana, &it, &mut p.ch);
+            let input = lunge_input(&p.katana, walk, &it, &mut p.ch);
             let pos = p.step(&input);
             self.reconciler.record(it, pos);
         }
@@ -1040,7 +1054,8 @@ impl ClientGame {
         // block: the view is frozen where it was when the shield went up (the server applies no other aim while it is up)
         let blocking = self.block_held && self.death.is_none();
         // a drawn bow slows the turn (docs/powerups.md: `combat.yumi.turn_mult`)
-        let turn_k = if self.power.drawing { PowerCfg::default().yumi.turn_mult } else { 1.0 };
+        // and a zoomed bow turns with the FOV (`zoom.rs`): the same angular speed per screen pixel
+        let turn_k = self.zoom.turn_k(self.power.drawing, self.camera.cfg.base_fov, &PowerCfg::default().yumi);
         // a flash-dazed player turns slowly (`combat.star.flash_daze_turn`); the server does not clamp it, the aim is the client's
         let turn_k = if self.blind_left > 0 { turn_k * StarCfg::default().flash_daze_turn } else { turn_k };
         let (dx, dy) = if blocking { (0.0, 0.0) } else { (dx * turn_k, dy * turn_k) };
@@ -1210,6 +1225,7 @@ impl ClientGame {
         // the bow: with it up, the held slice button is the draw (the server slows the walk by it while the bow is in hand)
         intent.draw = self.bow_up && self.bow_hold && self.power.kind == PowerKind::Yumi && !blocking && !dead;
         // the weapon's own state machine, with exactly the inputs the server gives its copy
+        let walk_pre = self.walk_mult(); // the server builds this tick's walk from the state BEFORE the weapon steps
         if dead {
             self.power.clear();
         } else {
@@ -1221,6 +1237,16 @@ impl ClientGame {
                     self.tag_throws.push(tick);
                 }
                 self.power_events.push(e);
+            }
+        }
+        // the focus zoom follows the draw; a hit on us drops it
+        {
+            let cfg = PowerCfg::default();
+            let hp = self.net.hp();
+            let df = self.power.draw_frac(&cfg);
+            self.zoom.tick(TICK_DT, df, hp, &cfg.yumi);
+            if dead {
+                self.zoom = Default::default();
             }
         }
         let star_fire_ok = !self.power.blocks_star();
@@ -1262,7 +1288,7 @@ impl ClientGame {
                 }
                 // combat first, like the server: cosmetics + cooldown mirror (lunge is not applied, see Predicted)
                 let mut ev = Vec::new();
-                let mut sink = to_player_input(&intent);
+                let mut sink = to_player_input_scaled(&intent, walk_pre);
                 // the other players as our screen shows them: the lock-on (and the assisted throw) read these, so the
                 // predictor finds the same target as the server's rewound hitboxes
                 let own_id = self.net.player_id();
@@ -1587,6 +1613,30 @@ impl ClientGame {
             DeathView { t, total: self.net.respawn_secs().unwrap_or(2.5), pos: d.pos, killer: d.killer, fresh }
         });
         let dead = death.is_some();
+        // the bow's focus zoom: narrow the camera FOV, and range the aimed point for the readout / drop tick
+        let zoom = {
+            let pcfg = PowerCfg::default();
+            let base = if camera.fov > 1.0 { camera.fov } else { 90.0 };
+            if dead || self.zoom.zoom <= 0.001 {
+                crate::zoom::ZoomView { fov_deg: base, ..Default::default() }
+            } else {
+                camera.fov = self.zoom.fov(base, &pcfg.yumi);
+                let (sy, cy, sp, cp) = (aim.yaw.sin(), aim.yaw.cos(), aim.pitch.sin(), aim.pitch.cos());
+                let d = [-sy * cp, sp, -cy * cp];
+                let max = pcfg.yumi.range + 50.0;
+                let world = self.pred.as_ref().and_then(|p| {
+                    let ray = Ray::new(Point::new(eye[0], eye[1], eye[2]), vector![d[0], d[1], d[2]]);
+                    let f = QueryFilter::default().exclude_sensors().groups(InteractionGroups::new(GROUP_MELEE, shinobi_sim::combat::solid_groups()));
+                    p.world.queries.cast_ray(&p.world.bodies, &p.world.colliders, &ray, max, true, f).map(|(_, toi)| toi)
+                });
+                let player = remotes
+                    .iter()
+                    .filter_map(|(_, smp)| crate::zoom::ray_sphere_range(eye, d, [smp.pos[0], smp.pos[1] + 0.9, smp.pos[2]], 0.7, max))
+                    .fold(f32::MAX, f32::min);
+                let range = world.unwrap_or(f32::MAX).min(player);
+                self.zoom.view(base, self.power.full(&pcfg), (range < max).then_some(range), &pcfg.yumi)
+            }
+        };
         RenderView {
             blocking: self.blocking,
             star: self.star_est,
@@ -1622,6 +1672,7 @@ impl ClientGame {
             power,
             power_world,
             power_events: std::mem::take(&mut self.power_events),
+            zoom,
             blocks,
             block_size: BlockCfg::default().size,
             block_thickness: BlockCfg::default().thickness,

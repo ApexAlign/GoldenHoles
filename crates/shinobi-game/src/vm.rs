@@ -626,6 +626,30 @@ pub fn update(
     if let Ok(mut v) = vis.get_mut(ents.shuriken) {
         *v = if s.scale <= 0.001 { Visibility::Hidden } else { Visibility::Visible };
     }
+
+    // the bow's zoom: the hands sink out of frame (the overlay camera keeps its own 90 deg FOV, so they would not match the
+    // narrowed world anyway), and the swing arc and speed lines go with them
+    let k = shinobi_client::viewmodel::zoom_fade(view.0.zoom.frac);
+    let hidden = k < 0.02;
+    if k < 1.0 {
+        for e in [ents.blade, ents.shuriken, ents.left_hand, ents.launcher, ents.shield] {
+            if let Ok(mut t) = tf.get_mut(e) {
+                t.translation.y -= (1.0 - k) * 0.8;
+            }
+        }
+    }
+    for e in [ents.blade, ents.left_hand, ents.launcher, ents.ribbons] {
+        if let Ok(mut v) = vis.get_mut(e) {
+            v.set_if_neq(if hidden || (e == ents.ribbons && view.0.zoom.frac > 0.05) { Visibility::Hidden } else { Visibility::Inherited });
+        }
+    }
+    if hidden || view.0.zoom.frac > 0.05 {
+        for e in [ents.streaks, ents.shield, ents.shuriken] {
+            if let Ok(mut v) = vis.get_mut(e) {
+                v.set_if_neq(Visibility::Hidden);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

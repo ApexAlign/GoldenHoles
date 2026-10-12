@@ -872,7 +872,8 @@ fn follow_camera(view: Res<ViewRes>, vm: Res<crate::vm::Vm>, _fx: Res<FxRes>, mu
     if let Projection::Perspective(p) = &mut **proj {
         // CameraPose is all-zero until the first sim tick has produced a pose: keep a sane FOV until then
         let base = if v.camera.fov > 1.0 { v.camera.fov } else { 90.0 };
-        p.fov = (base + vm.katana.fov_kick_deg()).to_radians();
+        // `v.camera.fov` already carries the bow's zoom; the dash FOV kick fades out with it
+        p.fov = (base + vm.katana.fov_kick_deg() * (1.0 - v.zoom.frac)).to_radians();
     }
 }
 

@@ -128,3 +128,24 @@ fn the_predicted_walk_of_a_drawn_bow_is_the_servers_walk() {
         assert_eq!(to_player_input(&plain).walk_slow, 0.0);
     }
 }
+
+#[test]
+fn a_fully_drawn_bow_walks_at_the_focus_speed_on_the_server() {
+    let mut s = server();
+    let y = s.balance.combat.power.yumi;
+    assert!(y.focus_move_mult < y.move_mult);
+    let it = PlayerIntent { move_z: -127, draw: true, aim_yaw: q_yaw(0.0), ..Default::default() };
+    let mut xs = Vec::new();
+    for _ in 0..140 {
+        feed(&mut s, it);
+        let p = s.players.iter().find(|p| p.id == A).unwrap();
+        xs.push(p.pos(&s.world)[2]);
+    }
+    // per-tick speed (m/s) while the draw is still short of full (tick 28) and once it has been full a while (tick 130)
+    let speed = |t: usize| ((xs[t] - xs[t - 1]) * 60.0).abs();
+    let (early, late) = (speed(28), speed(130));
+    assert!(early > 1.0, "walking: {early}");
+    let want = y.focus_move_mult / y.move_mult;
+    assert!((late / early - want).abs() < 0.06, "late {late} / early {early} = {} vs {want}", late / early);
+    assert!(player_power(&s).full(&s.balance.combat.power));
+}

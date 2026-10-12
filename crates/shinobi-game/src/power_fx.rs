@@ -28,6 +28,9 @@ const TAGS: usize = 8;
 const PEDS: usize = 12;
 const PIPS: usize = 12;
 const BOW_SEGS: usize = 8;
+/// Zoom fraction at which our own bow leaves the screen.
+const LOCAL_BOW_HIDE_ZOOM: f32 = 0.35;
+
 /// Length of the laser line of a drawn bow (m).
 const LASER_LEN: f32 = 90.0;
 const TAG_RING_R: f32 = 0.55;
@@ -359,7 +362,10 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
     let v = &view.0;
     let me = net.0.own_id().unwrap_or(0);
     let mut list: Vec<BowDraw> = v.power_world.draws.iter().filter(|d| d.owner != me).map(|d| BowDraw { eye: Vec3::from(d.pos), dir: Vec3::from(d.dir).normalize_or(Vec3::NEG_Z), owner: d.owner, frac: d.frac, local: false }).collect();
-    if let Some(p) = v.power.filter(|p| p.kind == PowerKind::Yumi && p.draw > 0.0) {
+    // zoomed in, our own bow is out of frame (gone by `LOCAL_BOW_HIDE_ZOOM`); on the way there it is scaled with the FOV so it keeps
+    // its hip-fire size on screen instead of ballooning in the narrowed view
+    let fov_k = if v.camera.fov > 1.0 { ((v.camera.fov.to_radians() * 0.5).tan() / (45f32).to_radians().tan()).clamp(0.1, 1.5) } else { 1.0 };
+    if let Some(p) = v.power.filter(|p| p.kind == PowerKind::Yumi && p.draw > 0.0 && v.zoom.frac < LOCAL_BOW_HIDE_ZOOM) {
         list.insert(0, BowDraw { eye: Vec3::from(v.eye), dir: Vec3::from(view_dir(v.aim.yaw, v.aim.pitch)), owner: me, frac: p.draw, local: true });
     }
     let t = time.elapsed_secs();
@@ -376,18 +382,19 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
         let right = d.dir.cross(Vec3::Y).normalize_or(Vec3::X);
         let up = right.cross(d.dir).normalize_or(Vec3::Y);
         // our own bow sits low and to the left of the view; another player's out in front of their chest
-        let centre = if d.local { d.eye + d.dir * 0.78 - right * 0.42 - up * 0.3 } else { d.eye + d.dir * 0.8 - up * 0.28 };
-        let th = if d.local { 0.6 } else { 1.0 };
+        let k = if d.local { fov_k } else { 1.0 };
+        let centre = if d.local { d.eye + d.dir * 0.78 - (right * 0.42 + up * 0.3) * k } else { d.eye + d.dir * 0.8 - up * 0.28 };
+        let th = if d.local { 0.6 * k } else { 1.0 };
         let col = if d.local { GOLD } else { colour_of(&net, d.owner) };
         tint(&mut mats, &slot.mat, col, if d.local { 1.1 + 0.6 * d.frac } else { 2.0 + 1.0 * d.frac });
-        let pts = bow_points(centre, up, d.dir);
+        let pts = bow_points(centre, up, d.dir).map(|q| centre + (q - centre) * k);
         for (k, e) in slot.bow.iter().enumerate() {
             if let Ok((mut tr, mut vis)) = q.get_mut(*e) {
                 *tr = seg(pts[k], pts[k + 1], 0.035 * th);
                 *vis = Visibility::Visible;
             }
         }
-        let nock = centre - d.dir * (0.32 * d.frac);
+        let nock = centre - d.dir * (0.32 * d.frac * k);
         for (k, tip) in [pts[0], pts[BOW_SEGS]].into_iter().enumerate() {
             if let Ok((mut tr, mut vis)) = q.get_mut(slot.string[k]) {
                 *tr = seg(tip, nock, 0.012 * th);
@@ -395,7 +402,7 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
             }
         }
         if let Ok((mut tr, mut vis)) = q.get_mut(slot.arrow) {
-            *tr = seg(nock - d.dir * 0.05, nock + d.dir * 0.95, 0.03 * th);
+            *tr = seg(nock - d.dir * 0.05 * k, nock + d.dir * 0.95 * k, 0.03 * th);
             *vis = Visibility::Visible;
         }
         // the aim line: a faint glint for everyone, a bright one on the head it points at

@@ -45,3 +45,6 @@ with the string back, a bow drawn straight at us with its bright laser glint and
 `power_world_tagblast.png` (blast shell mid-pop), `power_world_pedestals.png` (a bow and tag pedestals glowing, one dimmed after being taken).
 HUD frames (CPU, `hud_dump`): `hud_cpu_power_draw.png`, `hud_cpu_power_full.png` (ring closed, RELEASE), `hud_cpu_power_tags_live.png` (DETONATE prompt),
 `hud_cpu_power_tag_on_me.png` (TAG ON YOU countdown), `hud_cpu_power_glint.png` (bow drawn on you + a pickup call-out).
+
+## Bow zoom
+`bow_zoom_hip.png`, `bow_zoom_half.png`, `bow_zoom_full.png`: the yumi at draw 0 / 0.65 / 1 (`SHOT_FX=bowzoom:D,lineup SHOT_LINE=80 SHOT_LINE_PICK=1`, levels/ffa.lvl, spawn 3, lavapipe). FOV 90 / ~57 / 30, ring tightens, hands and bow leave the frame, range readout shows a fixed 118 M (synthetic).

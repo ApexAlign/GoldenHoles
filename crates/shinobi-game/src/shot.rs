@@ -301,6 +301,30 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 v.power_world.arrows.push(ArrowObj { pos: [bx - 3.0, by + 0.5, bz - 9.0], vel: [0.0, 0.0, -90.0], owner: 2, reflected: false });
                 v.power_world.arrows.push(ArrowObj { pos: [bx + 2.2, by + 0.8, bz - 6.0], vel: [0.0, 0.0, 90.0], owner: 5, reflected: true });
             }
+            // `bowzoom:D`: our bow drawn to fraction D (0..1) with the focus zoom that goes with it (FOV, reticle ring, range
+            // readout to a fixed 118 m, drop tick, vignette, hands faded). Pair with `lineup` + SHOT_LINE for a target.
+            "bowzoom" => {
+                use shinobi_client::power_view::PowerView;
+                use shinobi_sim::power::{self, PowerCfg, PowerState};
+                let cfg = PowerCfg::default();
+                let mut s = PowerState::default();
+                s.drawing = true;
+                s.draw = cfg.yumi.draw_s * p.clamp(0.0, 1.0);
+                let mut pv = PowerView::of(&s, &cfg, 0, 0).unwrap();
+                pv.up = true;
+                v.power = Some(pv);
+                let base = 90.0;
+                let frac = power::zoom_of_draw(p, &cfg.yumi);
+                let range = Some(118.0);
+                v.zoom = shinobi_client::zoom::ZoomView {
+                    frac,
+                    fov_deg: power::zoom_fov_deg(base, frac, &cfg.yumi),
+                    focus: p >= 1.0,
+                    range,
+                    drop_rad: power::arrow_drop_angle(118.0, &cfg.yumi),
+                };
+                v.camera.fov = v.zoom.fov_deg;
+            }
             // `reload`: our bow just loosed, 40 % of the 2.2 s reload done (the bar under the crosshair)
             "reload" => {
                 use shinobi_client::power_view::PowerView;

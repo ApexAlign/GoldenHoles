@@ -565,7 +565,10 @@ impl Server {
             // the bow slows the walk only while it is in the hands (the client sets the same bit only then)
             it.draw = it.draw && self.players[i].power.kind == crate::power::PowerKind::Yumi;
             let (aim_yaw, aim_pitch) = (self.players[i].yaw, self.players[i].pitch);
-            let mut input = to_player_input_scaled(&PlayerIntent { aim_yaw, ..it }, self.balance.combat.power.yumi.move_mult);
+            let mut input = to_player_input_scaled(
+                &PlayerIntent { aim_yaw, ..it },
+                crate::power::draw_walk_mult(self.players[i].power.full(&self.balance.combat.power), &self.balance.combat.power.yumi),
+            );
             // shots and slashes start at the EYE (`CharacterSystem::eye_above`, the height the client camera uses), so the
             // crosshair and the projectile agree; hitboxes stay centred on the capsule
             let origin = vector![before[0], before[1] + self.players[i].ch.eye_above(), before[2]];
