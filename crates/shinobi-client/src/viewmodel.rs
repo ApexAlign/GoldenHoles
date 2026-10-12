@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::PI;
 
-use shinobi_sim::rapier3d::na::{UnitQuaternion, Vector3};
+use shinobi_sim::rapier3d::na::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 
 use shinobi_sim::combat::CombatEvent;
 
@@ -68,8 +68,9 @@ pub struct ViewModelPose {
 impl ViewModelPose {
     fn rest() -> Self {
         Self {
-            translation: Vector3::new(0.32, -0.28, -0.55),
-            rotation: UnitQuaternion::from_euler_angles(0.25, 0.15, -0.1),
+            // chudan-ish guard: hand low right, blade rising across the lower right toward the centre, edge up
+            translation: Vector3::new(0.22, -0.20, -0.46),
+            rotation: UnitQuaternion::from_euler_angles(0.42, 0.50, 0.60),
         }
     }
 
@@ -172,8 +173,9 @@ impl KatanaViewModel {
         let e = 1.0 - (1.0 - u).powi(3); // ease-out: explosive start
         let start = Vector3::new(sign * hw * c.overshoot, -hh * 0.9, -c.depth);
         let end = Vector3::new(-sign * hw * c.overshoot, hh * 0.9, -c.depth);
-        // bows toward the camera mid-swing (bigger on screen, never smaller than the edge points)
-        start.lerp(&end, e) + Vector3::new(0.0, 0.0, 0.25 * c.depth * (PI * e).sin())
+        // bows toward the camera mid-swing (bigger on screen, never smaller than the edge points) and sags
+        // slightly below the straight diagonal so the cut reads as a drawn katana arc, not a ruler line
+        start.lerp(&end, e) + Vector3::new(0.0, -0.14 * hh * (PI * e).sin(), 0.25 * c.depth * (PI * e).sin())
     }
 
     /// Blade pose + ribbon points for progress `u`.
@@ -185,7 +187,12 @@ impl KatanaViewModel {
         let n = if n.norm() > 1e-6 { n.normalize() } else { Vector3::y() };
         let len = self.cfg.blade_len;
         let hand = tip - n * len;
-        let rotation = UnitQuaternion::rotation_between(&-Vector3::z(), &n).unwrap_or_else(UnitQuaternion::identity);
+        // roll so the cutting edge (local +X) leads the swing; the blade's local -Z runs along `n`
+        let tdir = t.normalize();
+        let xa = (tdir - n * tdir.dot(&n)).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+        let za = -n;
+        let ya = za.cross(&xa);
+        let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[xa, ya, za])));
         (
             ViewModelPose { translation: hand, rotation },
             [tip, hand + n * (len * 0.6), hand + n * (len * 0.3)],

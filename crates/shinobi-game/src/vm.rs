@@ -71,6 +71,61 @@ fn star_mesh() -> Mesh {
         .with_inserted_indices(bevy::mesh::Indices::U32(idx))
 }
 
+/// Curved katana blade along -Z (hilt end at z=0, tip at z=-len), edge on +X. The sori bows the edge side outward
+/// (spine is the concave side) while the tip returns to the axis, so the ribbon/tip maths in `viewmodel.rs` stay
+/// valid. Cross-section: flat spine, shinogi ridge, bevel down to the cutting edge; the kissaki converges to a
+/// point. Returns (body with baked shading, thin glowing edge strip).
+fn blade_meshes(len: f32) -> (Mesh, Mesh) {
+    const SAG: f32 = 0.04;
+    // (x, y, shade) of the cross-section: spine top, ridge top, edge, ridge bottom, spine bottom
+    const SEC: [(f32, f32, f32); 5] =
+        [(-0.011, 0.0065, 0.22), (0.004, 0.0060, 0.55), (0.021, 0.0, 1.0), (0.004, -0.0060, 0.55), (-0.011, -0.0065, 0.22)];
+    let mut us: Vec<f32> = (0..=22).map(|i| i as f32 / 22.0 * 0.94).collect();
+    us.extend([0.97, 1.0]);
+    let ring = |u: f32| -> (f32, f32) {
+        // (z, x offset, width scale)
+        let bow = SAG * 4.0 * u * (1.0 - u);
+        let taper = 1.0 - 0.3 * u;
+        let tip = if u > 0.94 { ((1.0 - u) / 0.06).max(0.0) } else { 1.0 };
+        (bow, taper * tip)
+    };
+    let (mut bp, mut bc, mut bi) = (Vec::<[f32; 3]>::new(), Vec::<[f32; 4]>::new(), Vec::<u32>::new());
+    let (mut ep, mut ei) = (Vec::<[f32; 3]>::new(), Vec::<u32>::new());
+    for &u in &us {
+        let (bow, w) = ring(u);
+        let z = -u * len;
+        for &(x, y, sh) in &SEC {
+            bp.push([bow + x * w, y * w, z]);
+            // shading also brightens slightly toward the tip so the point catches bloom
+            let k = sh * (0.85 + 0.35 * u);
+            bc.push([k, k, k, 1.0]);
+        }
+        let xe = SEC[2].0;
+        for (dx, dy) in [(-0.0035f32, 0.0018f32), (0.0015, 0.0), (-0.0035, -0.0018)] {
+            ep.push([bow + (xe + dx) * w, dy * w, z]);
+        }
+    }
+    for i in 0..us.len() - 1 {
+        let (a, b) = (i as u32 * 5, (i as u32 + 1) * 5);
+        for k in 0..5u32 {
+            let k2 = (k + 1) % 5;
+            bi.extend_from_slice(&[a + k, b + k, b + k2, a + k, b + k2, a + k2]);
+        }
+        let (a, b) = (i as u32 * 3, (i as u32 + 1) * 3);
+        for k in 0..2u32 {
+            ei.extend_from_slice(&[a + k, b + k, b + k + 1, a + k, b + k + 1, a + k + 1]);
+        }
+    }
+    let body = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, bp)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, bc)
+        .with_inserted_indices(bevy::mesh::Indices::U32(bi));
+    let edge = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, ep)
+        .with_inserted_indices(bevy::mesh::Indices::U32(ei));
+    (body, edge)
+}
+
 fn spawn(
     mut commands: Commands,
     shot: Option<Res<ShotImage>>,
@@ -103,26 +158,42 @@ fn spawn(
         cam.insert(RenderTarget::Image(img.0.clone().into()));
     }
 
-    // blade: core + hot edge + hilt, parented to one root that follows the katana pose
+    // katana: curved bevelled blade + neon edge strip, habaki, tsuba (guard), wrapped tsuka, kashira. One root
+    // follows the katana pose; blade tip is at -blade_len, hand near the origin.
     let len = ViewCfg::default().blade_len;
-    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    let (core, edge, hilt) = (mats.add(unlit(pal.cyan, 1.4)), mats.add(unlit(pal.orange, 3.2)), mats.add(unlit(pal.magenta, 1.6)));
+    let (core, edge, guard) = (mats.add(unlit(pal.cyan, 1.2)), mats.add(unlit(pal.orange, 3.4)), mats.add(unlit(pal.magenta, 0.7)));
+    let (trim, grip) = (mats.add(unlit(pal.cyan, 2.4)), mats.add(unlit(pal.magenta, 0.3)));
     let star = mats.add(unlit(pal.cyan, 3.0));
-    let glow = vec![(core.clone(), pal.cyan, 1.4), (edge.clone(), pal.orange, 3.2), (hilt.clone(), pal.magenta, 1.6), (star.clone(), pal.cyan, 3.0)];
+    let glow = vec![
+        (core.clone(), pal.cyan, 1.2),
+        (edge.clone(), pal.orange, 3.4),
+        (guard.clone(), pal.magenta, 0.7),
+        (trim.clone(), pal.cyan, 2.4),
+        (grip.clone(), pal.magenta, 0.3),
+        (star.clone(), pal.cyan, 3.0),
+    ];
     let blade = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
-    for (mat, scale, t) in [
-        (core, Vec3::new(0.045, 0.012, len), Vec3::new(0.0, 0.0, -len * 0.5)),
-        (edge, Vec3::new(0.008, 0.014, len), Vec3::new(0.0265, 0.0, -len * 0.5)),
-        (hilt, Vec3::new(0.034, 0.034, 0.15), Vec3::new(0.0, 0.0, 0.075)),
-    ] {
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_translation(t).with_scale(scale),
-            ChildOf(blade),
-            layer.clone(),
-        ));
+    let (body_mesh, edge_mesh) = blade_meshes(len);
+    let along_z = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2); // Bevy cylinders/tori have their axis on Y
+    let mut part = |mesh: Handle<Mesh>, mat: &Handle<StandardMaterial>, t: Transform| {
+        commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), t, ChildOf(blade), layer.clone()));
+    };
+    part(meshes.add(body_mesh), &core, Transform::IDENTITY);
+    part(meshes.add(edge_mesh), &edge, Transform::IDENTITY);
+    // habaki (blade collar)
+    part(meshes.add(Cuboid::new(0.030, 0.016, 0.045)), &edge, Transform::from_xyz(0.004, 0.0, -0.02));
+    // tsuba: oval disc with a glowing rim
+    part(meshes.add(Cylinder::new(0.052, 0.007)), &guard, Transform::from_xyz(0.0, 0.0, 0.006).with_rotation(along_z).with_scale(Vec3::new(1.0, 1.0, 0.8)));
+    part(meshes.add(Torus::new(0.0485, 0.0535)), &trim, Transform::from_xyz(0.0, 0.0, 0.006).with_rotation(along_z).with_scale(Vec3::new(1.0, 1.0, 0.8)));
+    // tsuka: dark core wrapped with alternating glowing bands, fuchi collar and kashira pommel
+    part(meshes.add(Cylinder::new(0.0155, 0.27)), &grip, Transform::from_xyz(0.0, 0.0, 0.15).with_rotation(along_z));
+    let wrap = meshes.add(Torus::new(0.0150, 0.0185));
+    for i in 0..10 {
+        let tilt = if i % 2 == 0 { 0.55 } else { -0.55 };
+        part(wrap.clone(), &trim, Transform::from_xyz(0.0, 0.0, 0.034 + i as f32 * 0.026).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 + tilt)));
     }
+    part(meshes.add(Cylinder::new(0.020, 0.014)), &edge, Transform::from_xyz(0.0, 0.0, 0.020).with_rotation(along_z));
+    part(meshes.add(Sphere::new(0.021)), &trim, Transform::from_xyz(0.0, 0.0, 0.292).with_scale(Vec3::new(1.0, 1.0, 0.7)));
 
     // swing-arc ribbons: rebuilt every frame (additive, vertex-coloured)
     let ribbons_mesh = meshes.add(degenerate());
@@ -225,6 +296,35 @@ pub fn update(
             col.push(r.color);
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+    }
+    // swept-blade sheet: quads between the tip trail and the inner (0.3 blade) trail, fading toward the hilt
+    {
+        let (mut tip, mut inner) = (Vec::new(), Vec::new());
+        for sg in vm.katana.segments() {
+            match sg.ribbon {
+                0 => tip.push(sg),
+                2 => inner.push(sg),
+                _ => {}
+            }
+        }
+        let pal = Palette::TRON;
+        for (t, i) in tip.iter().zip(inner.iter()) {
+            if (t.alpha - i.alpha).abs() > 0.05 {
+                continue;
+            }
+            let v = |p: shinobi_sim::rapier3d::na::Vector3<f32>| [p.x, p.y, p.z];
+            let base = pos.len() as u32;
+            let (hot, cool) = (pal.orange, pal.magenta);
+            pos.extend_from_slice(&[v(t.a), v(t.b), v(i.b), v(i.a)]);
+            let ha = t.alpha * 0.3;
+            col.extend_from_slice(&[
+                [hot.0 * 1.6, hot.1 * 1.6, hot.2 * 1.6, ha],
+                [hot.0 * 1.6, hot.1 * 1.6, hot.2 * 1.6, ha],
+                [cool.0, cool.1, cool.2, 0.0],
+                [cool.0, cool.1, cool.2, 0.0],
+            ]);
+            idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
     }
     if let Some(mut m) = meshes.get_mut(&ents.ribbons_mesh) {
         *m = if pos.is_empty() {
