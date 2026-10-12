@@ -147,7 +147,9 @@ fn drive(
     mut strategy: Option<ResMut<TimeUpdateStrategy>>,
 ) {
     let t = time.elapsed_secs();
-    if !cfg.slashed && t >= cfg.secs - 0.12 {
+    // SHOT_SLASH_LEAD=<secs>: how long before capture the slash fires (default 0.12; ~0.07 catches mid-swing)
+    let lead = std::env::var("SHOT_SLASH_LEAD").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.12);
+    if !cfg.slashed && t >= cfg.secs - lead {
         fx.slash_edge = true;
         cfg.slashed = true;
     }
