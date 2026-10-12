@@ -109,10 +109,31 @@ pub enum Sound {
     CollapseFar,
     /// A broken box re-forms: quiet rising neon shimmer (~0.5 s).
     Reform,
+    /// Storm: low earth rumble (1.6 s), retriggered and swelling during a quake warning and the shaking.
+    QuakeRumble,
+    /// Storm: loose-debris rattle (0.4 s) during the shaking.
+    QuakeRattle,
+    /// Storm: the settle thud when a quake ends.
+    QuakeThud,
+    /// Storm: rising electrical whine of a marked bolt (0.5 s, retriggered faster and higher as it nears).
+    BoltWhine,
+    /// Storm: thunder crack + rolling rumble (3.2 s).
+    Thunder,
+    /// Storm: `Thunder` heard from far away: dark and muffled.
+    ThunderFar,
+    /// Storm: ringing in the ears after a very close strike.
+    EarRing,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 65] = [
+    pub const ALL: [Sound; 72] = [
+        Sound::QuakeRumble,
+        Sound::QuakeRattle,
+        Sound::QuakeThud,
+        Sound::BoltWhine,
+        Sound::Thunder,
+        Sound::ThunderFar,
+        Sound::EarRing,
         Sound::HurtHeavy,
         Sound::HurtHead,
         Sound::Whoosh,
@@ -316,6 +337,31 @@ fn collapse() -> Vec<f32> {
         (lowpass(&noise_burst(0.4, 223, |t| env(t, 0.4, 0.004, 1.5)), 0.5), 1.3),
         (rattle(d, 90.0, 225, 0.3), 1.0),
     ])
+}
+
+/// Scale so the loudest sample is `peak` (silence stays silent).
+fn normalized(v: Vec<f32>, peak: f32) -> Vec<f32> {
+    let m = v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    if m < 1e-6 {
+        return v;
+    }
+    scaled(v, peak / m)
+}
+
+/// Sharp crack, a deep boom, then a long rolling rumble that swells and fades (3.2 s).
+fn thunder() -> Vec<f32> {
+    let d = 3.2;
+    let roll = lowpass(&noise_burst(d, 341, |t| env(t, d, 0.08, 1.1) * (0.6 + 0.4 * (TAU * 4.0 * t).sin() * (TAU * 1.3 * t).cos())), 0.06);
+    normalized(
+        mix(&[
+            (highpass(&noise_burst(0.25, 343, |t| env(t, 0.25, 0.001, 2.2)), 0.35), 1.6),
+            (lowpass(&noise_burst(0.6, 345, |t| env(t, 0.6, 0.002, 1.8)), 0.4), 1.4),
+            (sweep(1.0, 85.0, 28.0, 0, |t| env(t, 1.0, 0.004, 1.5)), 1.1),
+            (roll, 7.0),
+            (rattle(2.0, 40.0, 347, 0.2), 1.0),
+        ]),
+        0.95,
+    )
 }
 
 /// Muffled far-away copy: dark low-pass, a bit louder to make up for the lost level.
@@ -602,6 +648,49 @@ pub fn render(s: Sound) -> Vec<f32> {
                 (scaled(highpass(&noise_burst(d, 235, |t| env(t, d, 0.2, 1.2) * (0.5 + 0.5 * (TAU * 18.0 * t).sin())), 0.2), 0.5), 1.0),
             ])
         }
+        Sound::QuakeRumble => {
+            let d = 1.6;
+            let r = lowpass(&noise_burst(d, 301, |t| env(t, d, 0.35, 0.6) * (0.65 + 0.35 * (TAU * 7.0 * t).sin())), 0.05);
+            normalized(mix(&[(r, 6.0), (sweep(d, 46.0, 36.0, 0, |t| env(t, d, 0.3, 0.8)), 0.5), (rattle(d, 30.0, 303, 0.15), 1.0)]), 0.8)
+        }
+        Sound::QuakeRattle => {
+            let d = 0.4;
+            let chop = |t: f32| 0.55 + 0.45 * (TAU * 38.0 * t).sin();
+            normalized(
+                mix(&[
+                    (highpass(&noise_burst(d, 311, |t| env(t, d, 0.01, 1.3) * chop(t)), 0.2), 1.0),
+                    (rattle(d, 140.0, 313, 0.5), 1.0),
+                    (sweep(d, 120.0, 70.0, 0, |t| env(t, d, 0.01, 1.8)), 0.3),
+                ]),
+                0.7,
+            )
+        }
+        Sound::QuakeThud => normalized(
+            mix(&[
+                (sweep(0.7, 72.0, 28.0, 0, |t| env(t, 0.7, 0.004, 1.7)), 1.0),
+                (lowpass(&noise_burst(0.5, 321, |t| env(t, 0.5, 0.004, 1.6)), 0.12), 4.0),
+                (rattle(0.7, 50.0, 323, 0.2), 1.0),
+            ]),
+            0.9,
+        ),
+        Sound::BoltWhine => {
+            let d = 0.5;
+            let trem = |t: f32| 0.7 + 0.3 * (TAU * 55.0 * t).sin();
+            normalized(
+                mix(&[
+                    (sweep(d, 520.0, 2600.0, 1, |t| env(t, d, 0.35, 0.5) * trem(t)), 0.35),
+                    (sweep(d, 1040.0, 5200.0, 0, |t| env(t, d, 0.35, 0.5)), 0.25),
+                    (highpass(&noise_burst(d, 331, |t| env(t, d, 0.4, 0.6) * trem(t)), 0.3), 0.25),
+                ]),
+                0.7,
+            )
+        }
+        Sound::Thunder => thunder(),
+        Sound::ThunderFar => normalized(muffled(&thunder(), 2.4), 0.8),
+        Sound::EarRing => {
+            let d = 1.2;
+            normalized(mix(&[(tone(4200.0, d, 1.4, 1.0), 1.0), (tone(3100.0, d, 1.8, 1.0), 0.5)]), 0.35)
+        }
         // loops: integer-Hz partials so the 1 s buffer is seamless
         Sound::Hum => {
             let n = len(1.0);
@@ -792,6 +881,20 @@ mod tests {
         let zc = |v: &[f32]| v.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
         assert!(zc(&render(Sound::ShatterFar)) < zc(&render(Sound::Shatter)) / 2);
         assert!(zc(&render(Sound::CollapseFar)) < zc(&render(Sound::Collapse)) / 2);
+    }
+
+    #[test]
+    fn storm_sounds_have_their_lengths_and_far_thunder_is_darker() {
+        let secs = |s| render(s).len() as f32 / SR as f32;
+        assert!((3.1..3.3).contains(&secs(Sound::Thunder)));
+        assert!((1.5..1.7).contains(&secs(Sound::QuakeRumble)));
+        assert!(secs(Sound::BoltWhine) < 0.6 && secs(Sound::QuakeRattle) < 0.5);
+        let zc = |v: &[f32]| v.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        assert!(zc(&render(Sound::ThunderFar)) < zc(&render(Sound::Thunder)) / 2);
+        // the whine rises
+        let v = render(Sound::BoltWhine);
+        let h = v.len() / 2;
+        assert!(zc(&v[h..]) > zc(&v[..h]));
     }
 
     #[test]
