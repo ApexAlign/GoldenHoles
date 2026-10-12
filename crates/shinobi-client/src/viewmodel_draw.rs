@@ -10,7 +10,7 @@ use crate::hud::{Palette, Rgba};
 use crate::viewmodel::KatanaViewModel;
 
 /// Segment widths (m) for blade tip ribbon and the two inner ribbons.
-const RIBBON_WIDTH: [f32; 3] = [0.028, 0.018, 0.012];
+const RIBBON_WIDTH: [f32; 3] = [0.040, 0.020, 0.012];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BladeDraw {
