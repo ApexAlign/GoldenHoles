@@ -288,3 +288,21 @@ fn a_raised_shield_stops_the_pull_and_drains_the_guard() {
     assert!(s.players[0].ch.grapple.is_none(), "rope dropped");
     assert!(s.players[1].blk.energy < e0 - 0.2, "guard drained");
 }
+
+#[test]
+fn an_enemy_hook_opens_the_hook_to_air_slash_window_on_release() {
+    let mut s = scene();
+    put(&mut s, 1, [0.0, 0.81, 0.0]);
+    put(&mut s, 2, [0.0, 0.81, -12.0]);
+    step(&mut s, &[]);
+    step(&mut s, &[(1, zip())]);
+    assert!(s.players[0].ch.pulling_enemy());
+    let mut window = false;
+    for _ in 0..120 {
+        step(&mut s, &[(1, PlayerIntent::default())]);
+        if s.players[0].ch.grapple.is_none() {
+            window |= s.players[0].ch.hook_age <= s.balance.combat.katana.hook_air_window;
+        }
+    }
+    assert!(window, "rope off -> hook_age inside the hook_air window (damage bonus applies)");
+}
