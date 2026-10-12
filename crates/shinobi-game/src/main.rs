@@ -40,6 +40,8 @@ mod record;
 mod shot;
 mod sky;
 mod star_fx;
+mod storm_audio;
+mod storm_fx;
 mod vm;
 
 use std::net::SocketAddr;
@@ -204,6 +206,7 @@ fn main() {
     app.add_plugins((crate::team::TeamPlugin, crate::audio::AudioFxPlugin));
     app.add_plugins(crate::destructible_audio::DestructibleAudioPlugin);
     app.add_plugins(crate::destructible_fx::DestructibleFxPlugin);
+    app.add_plugins((crate::storm_fx::StormFxPlugin, crate::storm_audio::StormAudioPlugin));
     if !off("fx") {
         app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::hit_indicator::HitIndicatorPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
     }

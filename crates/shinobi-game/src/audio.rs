@@ -44,6 +44,11 @@ pub struct Cue {
 #[derive(Resource, Default)]
 pub struct ExtraCues(pub Vec<Cue>);
 
+/// An "ear muffle" another system asks for (`storm_audio`: a lightning strike next to you): `(seconds, intensity 0..1)`.
+/// The backend takes it each frame and feeds it to the same muffle a heavy hit uses.
+#[derive(Resource, Default)]
+pub struct ExtraMuffle(pub Option<(f32, f32)>);
+
 impl ExtraCues {
     pub fn push(&mut self, c: Cue) {
         if self.0.len() >= 32 {
@@ -680,7 +685,7 @@ pub struct AudioFxPlugin;
 
 impl Plugin for AudioFxPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(crate::mixer::load_prefs()).init_resource::<MusicCmds>().init_resource::<ExtraCues>();
+        app.insert_resource(crate::mixer::load_prefs()).init_resource::<MusicCmds>().init_resource::<ExtraCues>().init_resource::<ExtraMuffle>();
         #[cfg(feature = "audio")]
         backend::install(app);
     }
@@ -838,6 +843,7 @@ mod backend {
         mode: Option<Res<crate::play::ModeRes>>,
         mut loops: Query<(&LoopKind, Option<&mut AudioSink>)>,
         mut extra: ResMut<ExtraCues>,
+        mut extra_muffle: ResMut<ExtraMuffle>,
     ) {
         let Some(bank) = bank else { return };
         let dt = time.delta_secs();
@@ -889,6 +895,9 @@ mod backend {
         let (mut cues, lp) = st.cuer.update(&frame);
         cues.append(&mut extra.0);
         if let Some((secs, i)) = st.cuer.muffle {
+            st.muffle.hit(secs, i);
+        }
+        if let Some((secs, i)) = extra_muffle.0.take() {
             st.muffle.hit(secs, i);
         }
         st.mg = st.muffle.update(dt);
