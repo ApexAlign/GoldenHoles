@@ -71,6 +71,15 @@ Residual by design: frame drawn `alpha` into a tick shows the eye up to one tick
 - **Range**: `grapple_range` is already 1000 m (docs/traversal_melee.md; DEMO.md's "40 m" is stale); `grapple_speed_per_m`
   unchanged, so far hooks stay a ~2 s trip.
 
+## Combat hook (hook -> air-slash)
+Rules and tunables are the Enemy hook / Momentum entries above (`grapple_pull_max`, `grapple_pull_end`, `grapple_stagger`,
+`grapple_player_cd` = the anti-spam cooldown, `grapple_shield_drain`, `grapple_sling`, `grapple_sling_cap`). The player rope
+release sets `hook_age = 0`, so a katana cut within `combat.katana.hook_air_window` gets `hook_air_mult` (test
+`an_enemy_hook_opens_the_hook_to_air_slash_window_on_release`). A guard facing the hooker negates the hook (no stagger).
+Bots (`shinobi-ai` fsm): hook a visible target 7..90 m (0.6 % per tick chance under 16 m, 1.2 % beyond, 7 s apart), cut as soon as
+the rope is on or just off (`PlayerView::hook_recent`), and when an enemy rope latches on them raise the shield with
+probability `0.8 x evade_chance` (so Easy bots are hookable, Hard ones usually are not).
+
 ## Hardening (demo pass)
 - Rope speed is capped at `grapple_max_speed` (28 m/s, under a dash), the pull eases in over 0.25 s, and the closing
   speed is limited inside the release radius (`grapple_arrive_speed` 14 m/s widening to the reel speed over 6 m), so

@@ -28,6 +28,8 @@ pub struct PlayerView {
     /// Rope attached / wrist grapple ready to fire (the katana turns a hooked swing into a hook-strike).
     pub hooked: bool,
     pub hook_ready: bool,
+    /// The rope let go within the hook-strike window (hook -> air-slash).
+    pub hook_recent: bool,
     pub double_used_hint: bool,
     pub is_bot: bool,
     /// `Player.team` (replicated to every client, so fair to read).
@@ -77,6 +79,7 @@ impl<'a> WorldView<'a> {
                     dash_ready: p.ch.dash_ready(),
                     hooked: p.ch.grapple.is_some(),
                     hook_ready: p.ch.grapple.is_none() && p.ch.grapple_cooldown() <= 0.0,
+                    hook_recent: p.ch.grapple.is_none() && p.ch.hook_age <= cfg.hookstrike_window.max(server.balance.combat.katana.hook_air_window),
                     double_used_hint: p.ch.double_jumped,
                     is_bot: is_bot(p.id),
                     team: p.team,

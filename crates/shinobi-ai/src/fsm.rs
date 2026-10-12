@@ -39,6 +39,9 @@ pub const STRIKE_RANGE: f32 = 6.0;
 /// Bots hook a visible target between these distances now and then (per-tick chance), then swing when close: a
 /// hook-strike. The katana reach while hooked / wall-running is `balance.combat.katana.{hook,wall}_reach` + the speed bonus.
 const HOOK_MIN: f32 = 16.0;
+/// Moderate-range enemy hook (pulls the target in and staggers it, then the bot air-slashes): own chance and range.
+const HOOK_NEAR_MIN: f32 = 7.0;
+const HOOK_NEAR_CHANCE: f32 = 0.006;
 const HOOK_MAX: f32 = 90.0;
 const HOOK_CHANCE: f32 = 0.012;
 const HOOK_COOLDOWN_TICKS: u32 = 420;
@@ -525,10 +528,10 @@ impl BotMem {
                 && me.hook_ready
                 && t.los
                 && !t.view.spawn_protected
-                && (HOOK_MIN..=HOOK_MAX).contains(&t.dist)
+                && (HOOK_NEAR_MIN..=HOOK_MAX).contains(&t.dist)
                 && tick >= self.hook_ok
                 && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
-                && rng.chance(HOOK_CHANCE)
+                && rng.chance(if t.dist < HOOK_MIN { HOOK_NEAR_CHANCE } else { HOOK_CHANCE })
             {
                 zip = true;
                 self.hook_ok = tick + HOOK_COOLDOWN_TICKS;
@@ -643,9 +646,9 @@ impl BotMem {
 
         // ---- hook-strike / wall slash: hooked or wall-running, swing as soon as the target is inside the longer reach
         let on_wall = matches!(me.state, shinobi_sim::character::MoveState::WallRun { .. });
-        if (me.hooked || on_wall) && t.los && !t.view.spawn_protected && tick >= self.slice_ok {
+        if (me.hooked || me.hook_recent || on_wall) && t.los && !t.view.spawn_protected && tick >= self.slice_ok {
             let kb = &ctx.world.server.balance.combat.katana;
-            let reach = STRIKE_RANGE + if me.hooked { kb.hook_reach } else { kb.wall_reach } * 0.7 + me.flat_speed() * 0.12;
+            let reach = STRIKE_RANGE + if me.hooked || me.hook_recent { kb.hook_reach } else { kb.wall_reach } * 0.7 + me.flat_speed() * 0.12;
             if t.dist <= reach {
                 self.stats.strikes += 1;
                 self.slice_off = 0.0;
@@ -1304,3 +1307,10 @@ fn incoming_disc(ctx: &ThinkCtx) -> bool {
     })
 }
 
+
+/// Some other player's rope is latched on this player (an enemy hook is pulling them in).
+fn roped_by_enemy(ctx: &ThinkCtx, me: u16, pos: V3) -> bool {
+    ctx.world.server.players.iter().any(|q| {
+        q.id != me && q.ch.pulling_enemy() && q.ch.grapple.map_or(false, |g| (g.anchor - pos).norm() <= 2.5)
+    })
+}
