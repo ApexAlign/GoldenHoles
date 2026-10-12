@@ -12,6 +12,8 @@ Cfg limits used: single jump 1.6 m, jump + double ~2.8 m, wall-run 11 m/s for 1.
 Positions scale with HALF/112; sizes do not (so the XL map is the same buildings with more distance, plus an outer ring).
 """
 import math, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 
 # debugging aid: SKIP=boulevards,canyon,towers,sky,hub,cover,alcoves drops those sections (AI-friendliness bisecting)
 SKIP = set(filter(None, os.environ.get('SKIP', '').split(',')))
@@ -335,6 +337,10 @@ def build(half):
     # apart. (Enclosed alcoves made the AI stall: it steers, it does not path-find.) ----
     all_boxes = [b for _, bs in L.parts for b in bs]
     L.spawns = find_spawns(all_boxes, half, 28)
+
+    # ---- run walls: long tall wall-run panels, each with a hook anchor past its end (scripts/runwalls.py) ----
+    rw = runwalls.boxes('ffa' if half < 140 else 'ffa_xl')
+    L.section('run walls: 20 m x 7 m wall-run panels, a hook anchor 8 m past each end and 2 m above', [L.box(cx, cy, cz, hx, hy, hz) for _k, cx, cy, cz, hx, hy, hz in rw])
 
     # ---- pickups: contested spots ----
     pk = []

@@ -11,7 +11,11 @@ be. Cfg limits used: single jump 1.6 m, jump + double ~2.8 m, wall-run 11 m/s fo
 Tests: crates/shinobi-sim/tests/arena_small.rs
 """
 import math
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 
 HALF = 44.0
 R20 = 0.35
@@ -107,6 +111,9 @@ part("cover pillars (z mirror)", [(15, 1.6, -15, 1.5, 1.6, 1.5, 0, 150)], mx=Tru
 
 # monoliths: 6 m x 4 m x 1 m slabs that split the diagonals
 part("monoliths", [(-8, 3, -14, 2, 3, 0.5, 0, 200)], rot180=True)
+
+# run walls: long tall wall-run panels, each with a hook anchor past its end (scripts/runwalls.py)
+part("run walls: 20 m x 7 m panels, anchors 8 m past each end and 2 m above", [b[1:] for b in runwalls.boxes("small")])
 
 # floating anchor slabs: rope highways and power-up perches
 part("anchor slabs", [(-27, 11, 0, 5, 0.4, 5, 0)], rot180=True)

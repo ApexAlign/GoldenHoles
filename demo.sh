@@ -3,7 +3,7 @@
 #   ./demo.sh              build, start a local server, open the game window on this machine's display
 #   ./demo.sh              free-for-all against 7 AI opponents (the default game)
 #   BOTS=3 ./demo.sh       fewer / more AI opponents (BOTS=0 for none)
-#   ./demo.sh              the sky city: a floating vertical world, four tiers (levels/ffa_sky.lvl, the default); MAP=isles for the Skyfall Archipelago, MAP=small|big|xl for the ground maps
+#   ./demo.sh              the sky city: a floating vertical world, four tiers (levels/ffa_sky.lvl, the default); MAP=isles for the Skyfall Archipelago, MAP=runs for the Run Gauntlet, MAP=small|big|xl for the ground maps
 #   TEAM_SIZE=8 ./demo.sh  8v8 Cyan vs Orange team deathmatch, bots fill empty slots (opt-in; instead of BOTS)
 #   ./demo.sh --server-only   just run the server (connect the game yourself)
 # Quit: close the window or press Ctrl-C; the server is stopped automatically. Game log: playtest/game-<time>.log
@@ -19,8 +19,8 @@ TEAM_SIZE="${TEAM_SIZE:-0}"
 JOBS="${JOBS:-8}"
 # server and client MUST load the same level or client prediction desyncs.
 # TEAM_SIZE (8v8) defaults to the 8v8 map; free-for-all defaults to the sky city (levels/ffa_sky.lvl); MAP=small (88 m ground arena), MAP=big (224 m) or LEVEL=<path> pick others.
-# MAP=sky|isles|hive|clock|split|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
-if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
+# MAP=sky|isles|runs|hive|clock|split|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; runs) LEVEL=levels/ffa_runs.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
 if [ -z "${LEVEL:-}" ]; then
   if [ "$TEAM_SIZE" != "0" ] && [ -f levels/8v8.lvl ]; then LEVEL=levels/8v8.lvl; elif [ -f levels/ffa_sky.lvl ]; then LEVEL=levels/ffa_sky.lvl; elif [ -f levels/ffa_small.lvl ]; then LEVEL=levels/ffa_small.lvl; elif [ -f levels/ffa.lvl ]; then LEVEL=levels/ffa.lvl; else LEVEL=levels/arena.lvl; fi
 fi

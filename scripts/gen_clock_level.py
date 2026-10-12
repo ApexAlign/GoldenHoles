@@ -16,6 +16,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 from lvl_lib import Level, _cuts  # noqa: E402
 
 L = Level("THE CLOCKWORK: a 54 m octagonal brick drum, 210 m tall, spiral ramps, cogs, pendulums, hooks everywhere", hp_scale=1.0)
@@ -213,6 +214,10 @@ L.weapon("yumi", -3.0, COL_TOP + 1.0, -3.0)
 L.weapon("yumi", 3.0, COL_TOP + 1.0, 3.0)
 for (x, y, z) in tags:
     L.weapon("tag", x, y, z)
+
+L.section("run walls: 6 m tall wall-run panels of 6 m concrete bricks (2 m thick), hook anchors beside them (destructible)")
+for _kind, _cx, _cy, _cz, _hx, _hy, _hz in runwalls.bricks("clock"):
+    L.block(_cx - _hx, _cx + _hx, _cy - _hy, _cy + _hy, _cz - _hz, _cz + _hz, "concrete" if _kind == "panel" else "steel")
 
 out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "levels", "ffa_clock.lvl")
 L.write(out, header=[

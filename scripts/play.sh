@@ -26,8 +26,8 @@ if [ -n "$_CH" ] && [ -f "$_CH" ]; then export SHINOBI_CHARACTER="$(cd "$(dirnam
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-7777}"; BOTS="${BOTS:-5}"; BOT_SKILL="${BOT_SKILL:-normal}"; JOBS="${JOBS:-8}"
-# MAP=sky|isles|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
-if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
+# MAP=sky|isles|runs|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; runs) LEVEL=levels/ffa_runs.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
 LEVEL="${LEVEL:-levels/ffa_small.lvl}"
 [ -f "$LEVEL" ] || { echo "level $LEVEL not found (run from the repo; try LEVEL=levels/arena.lvl)"; exit 1; }
 OFFLINE_ARG=(); [ "${OFFLINE:-0}" = "1" ] && OFFLINE_ARG=(--offline)

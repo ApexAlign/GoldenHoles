@@ -18,6 +18,13 @@ discs, slice with a katana, and print floors/walls out of the grid that others c
   CASCADE (west, rice terraces by stairs and a 46 m waterfall wall), BAMBOO GROVE (north, 1 m stalks to wall-run, some leaning) and DRAGON BOWL
   (south, a sunken duel pit). A 66 m spire and a spiral of floating stones climb to the SKY SANCTUM (y 140, a bow), four corner shards and
   ~28 drifting rocks are hook / wall-run only. Bots walk every island. `MAP=isles ./demo.sh` (friends: same `MAP=` on `scripts/join.sh`).
+- `MAP=runs` (**Run Gauntlet**, `levels/ffa_runs.lvl`, built by `scripts/gen_runs_level.py`): a serpentine of five 180 m decks (y 9.6) over a ground
+  floor, broken by gaps that grow from 10 m to 18 m. A 7 m run-wall panel stands over every gap (jump on, wall-run across) and a hook anchor hangs over
+  every gap middle (hook on when the wall-run ends). Six ramps and twelve 20-30 m hook towers bring you back up after a fall; the bows sit on the two
+  central 30 m towers. `MAP=runs ./demo.sh` (friends: same `MAP=` on `scripts/join.sh`).
+- Run walls on the other maps: every shipped level also carries 8-14 long (12-20 m), tall (6-7 m) wall-run panels with a hook anchor 8 m past one end
+  (data in `scripts/runwalls.py`, emitted by each `scripts/gen_*_level.py`, pinned by `crates/shinobi-sim/tests/runwalls.rs`). The Split's panels are
+  permanent like the rest of that level.
 - Map: `levels/ffa.lvl`, fixed (no shrinking, no void-start in the demo). Default `levels/ffa.lvl` = 224 m across (HALF=112). `levels/ffa_xl.lvl` = 336 m across (HALF=168) is optional; measured
   density favours the 224 m map (18.7 vs 8.7 kills/min with 16 players, Network). Layered: ground, mid towers, sky layer. Void edges + kill
   plane. 24+ spread spawn pads, no mutual sightlines.

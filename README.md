@@ -134,7 +134,7 @@ cargo build --release -p shinobi-server
 ```bash
 ./demo.sh                 # builds, starts a local server with 5 bots, opens the game
 BOTS=3 ./demo.sh          # fewer opponents (BOTS=0 for none)
-MAP=small ./demo.sh       # pick a map: sky | isles | small | big | xl
+MAP=small ./demo.sh       # pick a map: sky | isles | runs | small | big | xl
 TEAM_SIZE=8 ./demo.sh     # 8v8 team deathmatch with bots filling empty slots
 ```
 

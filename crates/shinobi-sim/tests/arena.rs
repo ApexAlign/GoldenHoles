@@ -304,9 +304,9 @@ fn every_spawn_pickup_and_tier_is_reachable_with_cfg_limits() {
 fn corridor_maths_fit_the_wall_run_and_wall_jump_limits() {
     let l = arena();
     let cfg = Cfg::default();
-    // corridor walls: thin (x-extent <= 0.6), tall (>= 2.5 half height), not the perimeter
+    // corridor walls: thin (x-extent <= 0.6), tall (>= 2.5 half height), 25 m+ long, not the perimeter
     let walls: Vec<&LevelBox> =
-        l.level.boxes.iter().filter(|b| b.half[0] <= 0.6 && b.half[1] >= 2.5 && b.center[0].abs() < HALF - 1.0 && b.rot_z == 0.0).collect();
+        l.level.boxes.iter().filter(|b| b.half[0] <= 0.6 && b.half[1] >= 2.5 && b.center[0].abs() < HALF - 1.0 && b.rot_z == 0.0 && b.half[2] >= 12.5).collect(); // the 20 m run walls (runwalls.rs) are not corridors
     assert_eq!(walls.len(), 4, "two corridors, two walls each");
     let mut corridors = 0;
     for a in &walls {

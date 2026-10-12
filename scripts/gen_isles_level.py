@@ -20,7 +20,11 @@ Cfg limits used: step 0.35 m, ramps <= 24 degrees, jump ~2.8 m double, grapple 1
 Tests: crates/shinobi-sim/tests/arena_isles.rs, walkable.rs
 """
 import math
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 
 BOXES = []
 _cur = None
@@ -342,6 +346,12 @@ for (px, pz, top) in [(E_X1 - 1.6, 20.0, E_TOP), (W_X0 + 1.6, 22.0, W_TOP), (-25
 # hub spawns last so the torii pass above can frame them
 spawns = [(16.0, 16.0, HUB_TOP), (-16.0, 16.0, HUB_TOP), (16.0, -16.0, HUB_TOP), (-16.0, -16.0, HUB_TOP)] + spawns
 pickups.append((12.0, HUB_TOP + 1.0, 0.0, 25))
+
+# =============================================================================================== run walls
+# long tall wall-run panels, each with a hook anchor 8 m past its end and 2 m above its top (scripts/runwalls.py); permanent
+section("run walls: 20 m x 7 m wall-run panels with a hook anchor beside each")
+for _kind, _cx, _cy, _cz, _hx, _hy, _hz in runwalls.boxes("isles"):
+    add(_cx, _cy, _cz, _hx, _hy, _hz)
 
 # =============================================================================================== write
 WEAPON_RESPAWN = 45

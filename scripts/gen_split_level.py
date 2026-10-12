@@ -24,6 +24,7 @@ import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 from lvl_lib import Level  # noqa: E402
 
 L = Level("THE SPLIT")
@@ -367,6 +368,10 @@ cubes = [(-9.0, 11.0, -8.0), (9.0, 11.0, -3.0), (-3.0, 11.0, 4.0), (-17.0, LEVEL
 cubes += [(gondolas[0][0], gondolas[0][1] + 1.0, gondolas[0][2])]  # one on a gondola deck, hook only
 for c in cubes:
     L.pickup(*c)
+
+L.section("run walls: 20 m x 7 m wall-run panels with a hook anchor beside each (permanent like the rest of the Split)")
+for _kind, _cx, _cy, _cz, _hx, _hy, _hz in runwalls.boxes("split"):
+    L.perm(_cx, _cy, _cz, _hx, _hy, _hz)
 
 DESTRUCTIBLE = os.environ.get("SPLIT_DESTRUCTIBLE") == "1"  # default OFF: every box is permanent (no breaking, no collapse)
 if not DESTRUCTIBLE:
