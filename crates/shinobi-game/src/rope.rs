@@ -1,7 +1,9 @@
 //! Wrist-grapple rope: a glowing tron cable from the hand to the anchor, with light pulses running toward the anchor,
 //! a slight sag when slack, an attach flash and a release snap. Own rope only (`RenderView::rope`); remote ropes need
 //! the anchor on the wire. Attach / release are detected from the rope appearing / vanishing, same moment as
-//! `CombatEvent::GrappleAttach` / `GrappleRelease`. Purely cosmetic.
+//! `CombatEvent::GrappleAttach` / `GrappleRelease`. Hooking an ENEMY (`LocalFx::grapple_pulling_enemy`): the rope
+//! goes taut-bright and white-hot with a tension pulse that snaps on at the catch and settles to a throb, and the
+//! packets race to the victim (`hook_tension`). Purely cosmetic.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -22,6 +24,8 @@ struct Slot {
     last: Option<(Vec3, Vec3)>,
     /// Seconds since release; the snapping rope fades over `SNAP_S`.
     snap: Option<(f32, Vec3, Vec3)>,
+    /// Seconds since the rope caught an enemy (own rope only); `None` = not hooking one.
+    hooked: Option<f32>,
 }
 
 /// Slot `None` is our own rope; `Some(id)` is a remote player's.
@@ -32,6 +36,18 @@ struct Ropes {
 }
 
 const SNAP_S: f32 = 0.18;
+
+/// Brightness / width multiplier of a rope that has hooked an enemy, `age` seconds after the catch: a hard snap
+/// (2.6x) that decays in a fraction of a second into a steady throb (1.0 .. 1.2x) while the victim is reeled in.
+pub fn hook_tension(age: f32) -> f32 {
+    let age = age.max(0.0);
+    1.0 + 1.6 * (-6.0 * age).exp() + 0.2 * (age * std::f32::consts::TAU * 3.0).sin().abs()
+}
+
+/// Colour of a rope on an enemy: the team colour pushed halfway to white-hot.
+pub fn hooked_colour(team: [f32; 3]) -> [f32; 3] {
+    team.map(|c| c + (1.0 - c) * 0.55)
+}
 
 pub struct RopePlugin;
 
@@ -84,7 +100,7 @@ pub fn cable(hand: Vec3, anchor: Vec3, tension: f32, t: f32) -> Vec<(Vec3, f32)>
         .collect()
 }
 
-fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3], eye: Vec3) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
+fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3], eye: Vec3, boost: f32) -> (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<u32>) {
     let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
     for k in 0..pts.len() - 1 {
         let fwd = (pts[k + 1].0 - pts[k].0).normalize_or(Vec3::NEG_Z);
@@ -95,8 +111,8 @@ fn geometry(pts: &[(Vec3, f32)], fade: f32, tc: [f32; 3], eye: Vec3) -> (Vec<[f3
             for (p, pulse) in [pts[k], pts[k + 1]] {
                 // width follows distance from the eye (about constant on screen); a fixed world width balloons near the hand
                 // (clamp is 3 m: the old 0.12 m cap made a rope beyond ~55 m shrink to a sub-pixel line on screen)
-                let w = (0.006 + 0.0022 * p.distance(eye)).min(3.0) * (1.0 + 0.8 * pulse);
-                let g = (1.4 + 2.2 * pulse) * fade;
+                let w = (0.006 + 0.0022 * p.distance(eye)).min(3.0) * (1.0 + 0.8 * pulse) * (1.0 + 0.5 * (boost - 1.0));
+                let g = (1.4 + 2.2 * pulse) * fade * boost;
                 let c = [tc[0] * g + 0.4 * pulse, tc[1] * g + 0.4 * pulse, tc[2] * g + 0.4 * pulse, fade];
                 pos.push((p + axis * w).to_array());
                 pos.push((p - axis * w).to_array());
@@ -157,7 +173,7 @@ fn update(
             let entity = commands
                 .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling))
                 .id();
-            Slot { entity, mesh, last: None, snap: None }
+            Slot { entity, mesh, last: None, snap: None, hooked: None }
         });
         // edges: attach flash at the anchor (shooter's team colour), release snap
         match (slot.last, cur) {
@@ -167,8 +183,22 @@ fn update(
         }
         slot.last = cur.map(|(e, a)| (a, e));
 
+        // our rope on an enemy: the catch lands a bright burst on them and the rope snaps taut
+        let pulling = id.is_none() && cur.is_some() && view.0.fx.grapple_pulling_enemy;
+        match (slot.hooked, pulling, cur) {
+            (None, true, Some((_, a))) => {
+                impacts.0.push(Impact { pos: a, color: [1.0, 0.3, 0.2], kind: ImpactKind::Hit { kill: false } });
+                slot.hooked = Some(0.0);
+            }
+            (Some(age), true, _) => slot.hooked = Some(age + dt),
+            (_, false, _) => slot.hooked = None,
+            _ => {}
+        }
         let draw = if let Some((eye, anchor)) = cur {
-            Some((cable(hand_from(eye, anchor), anchor, 1.0, t), 1.0, eye))
+            match slot.hooked {
+                Some(age) => Some((cable(hand_from(eye, anchor), anchor, 1.0, t * 2.5), 1.0, eye, hook_tension(age), hooked_colour(team))),
+                None => Some((cable(hand_from(eye, anchor), anchor, 1.0, t), 1.0, eye, 1.0, team)),
+            }
         } else if let Some((age, a, e)) = slot.snap.as_mut() {
             *age += dt;
             if *age >= SNAP_S {
@@ -176,7 +206,7 @@ fn update(
                 None
             } else {
                 let (k, a, e) = (1.0 - *age / SNAP_S, *a, *e);
-                Some((cable(hand_from(e, a), a, 0.0, t), k, e))
+                Some((cable(hand_from(e, a), a, 0.0, t), k, e, 1.0, team))
             }
         } else {
             None
@@ -184,8 +214,8 @@ fn update(
 
         let Ok(mut v) = vis.get_mut(slot.entity) else { continue };
         match draw {
-            Some((pts, fade, eye)) => {
-                let (pos, col, idx) = geometry(&pts, fade, team, eye);
+            Some((pts, fade, eye, boost, tc)) => {
+                let (pos, col, idx) = geometry(&pts, fade, tc, eye, boost);
                 if let Some(mut m) = meshes.get_mut(&slot.mesh) {
                     *m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
                         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
@@ -234,6 +264,23 @@ mod tests {
         let at = |t: f32| cable(h, a, 1.0, t).iter().map(|p| p.1).enumerate().max_by(|x, y| x.1.total_cmp(&y.1)).unwrap().0;
         assert_ne!(at(0.0), at(0.05));
         assert!(cable(h, a, 1.0, 0.3).iter().all(|p| (0.0..=1.0).contains(&p.1)));
+    }
+
+    #[test]
+    fn hook_tension_snaps_on_then_settles_to_a_throb() {
+        assert!(hook_tension(0.0) > 2.4);
+        assert!(hook_tension(0.0) > hook_tension(0.15) && hook_tension(0.15) > hook_tension(0.6));
+        for i in 0..200 {
+            let v = hook_tension(1.0 + i as f32 * 0.05);
+            assert!((1.0..1.3).contains(&v), "settled throb stays near 1: {v}");
+        }
+        assert_eq!(hook_tension(-1.0), hook_tension(0.0));
+    }
+
+    #[test]
+    fn hooked_rope_is_whiter_than_the_team_colour() {
+        let c = hooked_colour([0.0, 0.9, 1.0]);
+        assert!(c[0] > 0.5 && c[1] > 0.9 && c[2] >= 1.0 && c.iter().all(|v| *v <= 1.0));
     }
 
     #[test]

@@ -105,6 +105,54 @@ pub fn run_offline(secs: f32, out: String, o: ShotOpts) {
 #[derive(Resource)]
 struct OfflineSpawn([f32; 3]);
 
+/// Review shots of the reworked weapons: `SHOT_WEAPONS=barrel|canister|flash|hook` (static frames at ~2 s), plus
+/// `barrelburst` / `canisterburst` (blast at frame 112), `dazed` (white-out clearing + the DAZED cue) and `hookaim`
+/// (crosshair on a player: red). Offline only; unset = untouched.
+fn weapons_preview(v: &mut shinobi_client::client_game::RenderView, what: &str, frame: u32, base: [f32; 3]) {
+    use shinobi_client::client_game::StarObj;
+    use shinobi_sim::combat::stars::StarKind;
+    use shinobi_sim::events::{NetEvent, STAR_FX_BARREL_BURST, STAR_FX_CANISTER_BURST, STAR_FX_FLASH_BURST};
+    let [bx, by, bz] = base;
+    let fl = by - 0.8; // floor under the spawn
+    let obj = |kind, dx: f32, dz: f32, left: f32| StarObj { kind, pos: [bx + dx, fl + if kind == StarKind::Barrel { 0.4 } else { 0.19 }, bz + dz], normal: [0.0, 1.0, 0.0], owner: 2, armed: true, life_left: left };
+    let burst = |what: u8, dz: f32| NetEvent::StarFx { tick: 0, what, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by + 0.2, bz + dz]) };
+    match what {
+        "barrel" => {
+            // three resting barrels at fresh / half / nearly-out fuses and one tumbling through the air
+            v.star_objs.extend([obj(StarKind::Barrel, -1.6, -4.5, 0.95), obj(StarKind::Barrel, 1.4, -6.0, 0.5), obj(StarKind::Barrel, -0.2, -8.5, 0.1)]);
+            v.discs.push(([bx + 2.2, by + 0.5, bz - 3.2], [0.3, 0.25, -1.0]));
+            v.disc_owners.push(2);
+            v.disc_kinds.push(StarKind::Barrel);
+        }
+        "canister" => {
+            v.star_objs.extend([obj(StarKind::Canister, -1.2, -4.0, 0.9), obj(StarKind::Canister, 1.0, -5.5, 0.4)]);
+            v.discs.push(([bx + 0.4, by + 0.3, bz - 3.0], [0.1, 0.05, -1.0]));
+            v.disc_owners.push(2);
+            v.disc_kinds.push(StarKind::Canister);
+        }
+        "barrelburst" if frame == 112 => v.events.push(burst(STAR_FX_BARREL_BURST, -8.0)),
+        "canisterburst" if frame == 112 => v.events.push(burst(STAR_FX_CANISTER_BURST, -7.0)),
+        "flash" if frame == 112 => v.events.push(burst(STAR_FX_FLASH_BURST, -7.0)),
+        // the white-out clearing (45 % strength left) with the DAZED cue and its draining bar
+        "dazed" => {
+            v.blind = 0.45;
+            v.dazed = 0.55;
+        }
+        // our rope has caught player 4: from frame 112 (the catch snaps on, then it throbs)
+        "hook" | "hookaim" => {
+            let target = v.remotes.iter().find(|(id, _)| *id == 4).map_or([bx + 8.0, by + 1.4, bz - 14.0], |(_, s)| [s.pos[0], s.pos[1] + 0.9, s.pos[2]]);
+            if what == "hook" && frame >= 112 {
+                v.rope = Some((v.eye, target));
+                v.fx.grappling = true;
+                v.fx.grapple_pulling_enemy = true;
+            }
+            v.fx.grapple_hookable = true;
+            v.fx.grapple_target_player = what == "hookaim";
+        }
+        _ => {}
+    }
+}
+
 /// Visual-review aid: `SHOT_FX=lock:0.5,locked,break:0.4,pieces,discs` (comma list) overlays synthetic lock-on state,
 /// pieces and discs on the published view so the offline shot shows them. Unset = untouched (goldens stay exact).
 fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base: Res<OfflineSpawn>, mut frame: Local<u32>) {
@@ -123,6 +171,9 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
     if let Some(l) = nums("SHOT_LOOK").filter(|l| l.len() == 2) {
         v.aim.yaw = l[0];
         v.aim.pitch = l[1];
+    }
+    if let Ok(w) = std::env::var("SHOT_WEAPONS") {
+        weapons_preview(v, &w, frame, base.0);
     }
     let Ok(spec) = std::env::var("SHOT_FX") else { return };
     for item in spec.split(',') {
@@ -252,25 +303,7 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.hits.push(m(2, 35, KIND_SLASH, true, false, false, false));
                 }
             }
-            // star variants (docs/stars.md): `mine` (one armed enemy mine near, one faint far one), `smoke` (a cloud),
-            // `flash` (burst at frame 112), `mineburst` (frame 112), `blind:X` (white-out strength X on the HUD)
-            "mine" => {
-                use shinobi_client::client_game::StarObj;
-                let fl = by - 0.8;
-                for (owner, dx, dz, armed) in [(2u16, -1.2f32, -4.0f32, true), (5, 2.5, -6.5, true), (1, 0.0, -14.0, false), (6, -4.0, -22.0, true)] {
-                    v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Barrel, pos: [bx + dx, fl, bz + dz], normal: [0.0, 1.0, 0.0], owner, armed, life_left: 0.8 });
-                }
-            }
-            "smoke" => {
-                use shinobi_client::client_game::StarObj;
-                v.star_objs.push(StarObj { kind: shinobi_sim::combat::stars::StarKind::Canister, pos: [bx + 1.0, by - 0.8, bz - 9.0], normal: [0.0, 1.0, 0.0], owner: 2, armed: false, life_left: 0.7 });
-            }
-            "flash" | "mineburst" => {
-                if frame == 112 {
-                    let what = if name == "flash" { shinobi_sim::events::STAR_FX_FLASH_BURST } else { shinobi_sim::events::STAR_FX_BARREL_BURST };
-                    v.events.push(shinobi_sim::events::NetEvent::StarFx { tick: 0, what, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by + 0.6, bz - 7.0]) });
-                }
-            }
+            // star variants: `blind:X` (white-out strength X on the HUD); the weapons themselves are `SHOT_WEAPONS`
             "blind" => v.blind = p,
             // power weapons (docs/powerups.md). `yumi`: our bow drawn (gold, bottom of view), a player drawing a bow straight at us
             // (the bright glint, owner 2) and one aiming off to the side (faint, owner 5), two arrows streaking past (one parried back)

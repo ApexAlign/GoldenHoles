@@ -32,11 +32,12 @@ More `SHOT_FX` hooks: `print` (pieces appear at frame 108: scan-in mid-build), `
 `hud_cpu_star_locked.png` (dry pool, RECHARGE, out-of-stars hint), `hud_cpu_guard_low.png` (red guard pulse, shield-low hint), `hud_cpu_star_mark_charge.png`, `hud_cpu_star_refill_flash.png`; `hud_cpu_spawn.png` / `hud_cpu_fight_lock.png` re-rendered (controls card block + star rows, pips). CPU-rendered, same as the other hud_cpu frames.
 
 ## Star variants (docs/stars.md)
-World frames (lavapipe, `SHOT_FX=mine|smoke|flash|mineburst|starkinds|blind:0.7`, same recipe as above): `star_world_mine.png` (glyph rings
-of four mines: owners 2 and 5 armed and near = bright, owner 1 unarmed and 6 armed far = faint), `star_world_smoke.png` (the 4 m cloud),
-`star_world_flash.png` (burst shell mid-pop), `star_world_mineburst.png`, `star_world_starkinds.png` (flying mine / flash / smoke discs),
-`star_world_blind.png` (full white-out). HUD frames (CPU, `hud_dump`): `hud_cpu_star_sel_{mine,flash,smoke,mine_dry}.png` (selector, cost rings,
-unaffordable in magenta), `hud_cpu_star_cycle_hint.png`, `hud_cpu_star_blind.png`.
+World frames of the reworked weapons (lavapipe, same recipe as above, `SHOT_WEAPONS=barrel|barrelburst|canister|canisterburst|flash|dazed|hook|hookaim`,
+plus `SHOT_FX=blind:0.7`): `weapons_barrel.png` (three resting barrels at fresh / half / nearly-out fuses and one tumbling), `weapons_barrelburst.png`
+(blast 8 m away, 0.13 s in: fireball + screen flash), `weapons_canister.png`, `weapons_canisterburst.png`, `weapons_flash.png` (burst, 0.13 s in),
+`weapons_dazed.png` (white-out clearing, DAZED cue), `weapons_hook.png` (rope on an enemy: white-hot). `hookaim` (red reticle on a player) has no
+frame: the reticle is hidden by the viewmodel in these shots. `star_world_blind.png` (full white-out; predates the retune). HUD frames (CPU, `hud_dump`):
+`hud_cpu_star_sel_{mine,flash,smoke,mine_dry}.png` (the old selector labels MINE / SMOKE; BARREL / CANISTER now), `hud_cpu_star_cycle_hint.png`, `hud_cpu_star_blind.png`.
 
 ## Power weapons (docs/powerups.md)
 World frames (lavapipe, same recipe as above, `SHOT_FX=yumi|arrows|tags|tagblast|pedestals`): `power_world_yumi.png` (our own drawn bow bottom left
