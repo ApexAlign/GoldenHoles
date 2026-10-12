@@ -277,6 +277,16 @@ impl CombatSystem {
         self.loadout.charge(weapon::Trigger::Secondary)
     }
 
+    /// Skill combo counter (connected katana cuts in a row) for the HUD.
+    pub fn combo_count(&self) -> u32 {
+        self.loadout.combo_count()
+    }
+
+    /// The owner took damage: the combo counter and wall chain reset.
+    pub fn on_hurt(&mut self) {
+        self.loadout.on_hurt();
+    }
+
     /// Star energy as (charges, pool size, locked out); `None` when the balance has no pool.
     pub fn shuriken_energy(&self) -> Option<(f32, f32, bool)> {
         self.loadout.energy()
@@ -331,6 +341,11 @@ impl CombatSystem {
         let found = if self.suppress_lock { None } else { aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &skip, ch.body, held) };
         self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
         let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.target_vel });
+        // cancel: a dash, hook or wall jump started out of a cut frees the blade at once (costs a little star energy)
+        let hook = player_input.grapple_aim.is_some() && ch.grapple.is_none() && ch.grapple_cooldown() <= 0.0;
+        if (player_input.dash_pressed && ch.dash_ready()) || hook || (player_input.jump_pressed && ch.wall_normal().is_some()) {
+            self.loadout.cancel_slice();
+        }
         self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }

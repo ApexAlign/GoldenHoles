@@ -407,6 +407,9 @@ pub fn apply_hits(
         }
         v.vitals.hp -= amount;
         if amount > 0.0 {
+            v.combat.on_hurt();
+        }
+        if amount > 0.0 {
             v.vitals.last_damage_tick = tick;
         }
         let victim_id = v.id;

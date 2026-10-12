@@ -62,6 +62,21 @@ pub struct KatanaCfg {
     /// (multiplier = 1 + scale x parried / base damage, parried capped at 2 x base).
     pub counter_range: f32,
     pub counter_scale: f32,
+    /// Skill combat (see `KatanaBalance`): combo stacks, wall chain / wall-kick, hook / wall-jump air-cut bonuses, cancels.
+    pub combo_dmg: f32,
+    pub combo_speed: f32,
+    pub combo_max: f32,
+    pub wall_chain_max: f32,
+    pub wall_chain_window: f32,
+    pub wallkick_mult: f32,
+    pub wallkick_reach: f32,
+    pub hook_air_mult: f32,
+    pub hook_air_window: f32,
+    pub walljump_air_mult: f32,
+    pub walljump_air_window: f32,
+    pub cancel_cost: f32,
+    /// 1 = cancels on, 0 = off.
+    pub cancel: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -114,6 +129,19 @@ impl KatanaCfg {
             whirl_recover: 0.6,
             counter_range: 7.0,
             counter_scale: 0.5,
+            combo_dmg: 0.0,
+            combo_speed: 0.0,
+            combo_max: 0.0,
+            wall_chain_max: 0.0,
+            wall_chain_window: 1.5,
+            wallkick_mult: 1.0,
+            wallkick_reach: 0.0,
+            hook_air_mult: 1.0,
+            hook_air_window: 0.0,
+            walljump_air_mult: 1.0,
+            walljump_air_window: 0.0,
+            cancel_cost: 0.0,
+            cancel: 0.0,
         }
     }
 }
@@ -244,11 +272,18 @@ pub struct Katana {
     heavy: Option<f32>,
     /// Recovery of the swing that just happened (`Weapon::cooldown_after`).
     recover: f32,
+    /// Skill combo counter: cuts in a row that connected (reset by a whiff, a hit taken, or `combo_window` of idling).
+    streak: u32,
+    /// Seconds since the last swing (the counter's idle timeout).
+    since_swing: f32,
+    /// Connected wall-run slashes in a row, and `now` of the last one: at `wall_chain_max` the next is the wall-kick.
+    wall_chain: u32,
+    last_wall: f32,
 }
 
 impl Katana {
     pub fn new(cfg: KatanaCfg) -> Self {
-        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY, prev: false, held: 0.0, heavy: None, recover: cfg.cooldown }
+        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY, prev: false, held: 0.0, heavy: None, recover: cfg.cooldown, streak: 0, since_swing: 99.0, wall_chain: 0, last_wall: f32::NEG_INFINITY }
     }
 }
 
@@ -304,7 +339,30 @@ impl Weapon for Katana {
         }
     }
 
+    fn combo_count(&self) -> u32 {
+        self.streak
+    }
+
+    fn on_hurt(&mut self) {
+        self.streak = 0;
+        self.combo = 0;
+        self.wall_chain = 0;
+    }
+
+    fn cancel_cost(&self) -> f32 {
+        if self.cfg.cancel > 0.5 { self.cfg.cancel_cost } else { -1.0 }
+    }
+
+    fn tick(&mut self, dt: f32, _ctx: &mut super::weapon::TickCtx) {
+        self.since_swing += dt;
+        if self.since_swing > self.cfg.combo_window {
+            self.streak = 0;
+        }
+    }
+
     fn reset(&mut self) {
+        self.streak = 0;
+        self.wall_chain = 0;
         self.combo = 0;
         self.last_swing = f32::NEG_INFINITY;
         self.prev = false;
@@ -348,11 +406,21 @@ impl Weapon for Katana {
         // combo: every swing that connected within the window brings the finisher closer; it hits harder and reaches further
         if ctx.now - self.last_swing > c.combo_window {
             self.combo = 0;
+            self.streak = 0;
         }
-        let finisher = chains && self.combo + 1 >= COMBO_LEN;
+        if ctx.now - self.last_wall > c.wall_chain_window {
+            self.wall_chain = 0;
+        }
+        // wall-run slashes chain on their own (`wall_chain`) into a wall-kick; they do not feed the plain finisher
+        let wall_slash = mode == Mode::Light && ctx.ch.strike_kind() == Some(crate::character::StrikeKind::Wall);
+        let wallkick = wall_slash && c.wall_chain_max >= 1.0 && self.wall_chain as f32 >= c.wall_chain_max;
+        let finisher = chains && !wall_slash && self.combo + 1 >= COMBO_LEN;
         if finisher {
             c.damage *= c.finisher_mult;
             c.blade_len += c.finisher_reach;
+        }
+        if wallkick {
+            c.blade_len += c.wallkick_reach;
         }
         self.recover = c.cooldown;
         let mut move_mult = 1.0f32;
@@ -365,11 +433,23 @@ impl Weapon for Katana {
             Mode::Air => {
                 move_mult = c.air_mult;
                 c.half_height = c.air_half_height;
+                // hook -> air-slash, wall-jump -> air-slash: the move you came out of hands the cut a bonus
+                let hook = if ctx.ch.hook_age <= c.hook_air_window { c.hook_air_mult } else { 1.0 };
+                let wj = if ctx.ch.walljump_age <= c.walljump_air_window { c.walljump_air_mult } else { 1.0 };
+                move_mult *= hook.max(wj);
             }
             Mode::Whirl => self.recover = c.whirl_recover,
             Mode::Counter(_, parried) => move_mult = 1.0 + c.counter_scale * (parried / c.damage.max(1.0)).clamp(0.0, 2.0),
             Mode::Light => {}
         }
+        if wallkick {
+            move_mult *= c.wallkick_mult;
+        }
+        // combo counter: every connected cut in the streak quickens the recovery; the damage bonus starts after the
+        // third (the finisher): a combo that carries on keeps climbing
+        let stacks = self.streak.min(c.combo_max.max(0.0) as u32) as f32;
+        move_mult *= 1.0 + c.combo_dmg * (stacks - 2.0).max(0.0);
+        self.recover = (self.recover * (1.0 - c.combo_speed * stacks)).max(0.12);
         let mut dir = ctx.aim.flat_forward();
 
         // Walls stop both lunge and blade: truncate the longest possible reach at the first solid.
@@ -546,7 +626,8 @@ impl Weapon for Katana {
         }
 
         self.last_swing = ctx.now;
-        self.combo = if hits.is_empty() || finisher || !chains { 0 } else { self.combo + 1 };
+        self.since_swing = 0.0;
+        self.combo = if hits.is_empty() || finisher || !chains || wall_slash { 0 } else { self.combo + 1 };
 
         // what one connecting blow is worth
         let amount = if matches!(mode, Mode::Whirl) { c.whirl_damage } else { c.damage * strike_dmg * move_mult };
@@ -560,6 +641,15 @@ impl Weapon for Katana {
             if !hits.contains(h) {
                 hits.push(*h);
             }
+        }
+        // skill counters: a cut that found nothing (or only the rope) breaks the streak and the wall chain
+        let connected = !hits.is_empty();
+        self.streak = if connected { self.streak + 1 } else { 0 };
+        if wall_slash && connected && !wallkick {
+            self.wall_chain += 1;
+            self.last_wall = ctx.now;
+        } else {
+            self.wall_chain = 0;
         }
         for h in &hits {
             let Some(col) = ctx.world.colliders.get(*h) else { continue };
@@ -722,9 +812,11 @@ mod tests {
         let hits = hold_slice(2.4, None);
         let dmg: Vec<f32> = hits.iter().map(|h| h.1).collect();
         assert!(dmg.len() >= 5, "clicking keeps cutting: {hits:?}");
-        assert_eq!(dmg[..5], [20.0, 20.0, 30.0, 20.0, 20.0], "combo: two cuts, a 30 hp finisher, then it starts over");
+        // the combo counter adds 5 % per cut once the combo carries past the finisher: 20, 20, 30, then 20 +5 %, +10 %
+        let want = [20.0f32, 20.0, 30.0, 20.0 * 1.05, 20.0 * 1.10];
+        assert!(dmg[..5].iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3), "combo: two cuts, a finisher, the counter keeps climbing: {dmg:?}");
         let gaps: Vec<f32> = hits.windows(2).map(|w| w[1].0 - w[0].0).collect();
-        assert!(gaps.iter().all(|g| (0.38..0.47).contains(g)), "swings come round every ~0.42 s: {gaps:?}");
+        assert!(gaps.iter().all(|g| (0.30..0.47).contains(g)), "swings come round every ~0.42 s, quicker as the counter climbs: {gaps:?}");
         // five cuts = 20+20+30+20+20 = 110 >= 100 hp: a kill ~1.7 s after the first cut
         let ttk = hits[4].0 - hits[0].0;
         eprintln!("katana-only kill: 5 cuts in {ttk:.2} s");
@@ -733,6 +825,206 @@ mod tests {
         // the target steps out of reach for one swing after the second cut (a whiff) and comes back: the combo starts over
         let hits = hold_slice(2.4, Some((0.6, 1.1)));
         let dmg: Vec<f32> = hits.iter().map(|h| h.1).collect();
-        assert_eq!(dmg[..3], [20.0, 20.0, 20.0], "the whiff took the finisher away: {hits:?}");
+        assert!(dmg[..3] == [20.0, 20.0, 20.0], "the whiff took the finisher (and the counter) away: {hits:?}");
+    }
+
+    /// A demo-balance swordsman at the origin facing a standing target 1.6 m ahead, driven swing by swing.
+    struct Rig {
+        w: PhysicsWorld,
+        ch: CharacterSystem,
+        combat: CombatSystem,
+        now: f32,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let cfg = Cfg::default();
+            let mut w = PhysicsWorld { bodies: RigidBodySet::new(), colliders: ColliderSet::new(), islands: IslandManager::new(), queries: QueryPipeline::new() };
+            let body = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().translation(vector![0.0, 0.81, 0.0]).build());
+            w.colliders.insert(
+                ColliderBuilder::cuboid(0.4, 0.9, 0.4)
+                    .translation(vector![0.0, 0.81, -1.6])
+                    .collision_groups(InteractionGroups::new(crate::combat::GROUP_ENEMY, Group::ALL))
+                    .user_data(7)
+                    .build(),
+            );
+            let mut ch = CharacterSystem::new(body, cfg);
+            ch.state = crate::character::MoveState::Grounded;
+            let mut combat = CombatSystem::ninja(&cfg);
+            combat.apply_balance(&crate::balance::Balance::demo(), &cfg);
+            Self { w, ch, combat, now: 0.0 }
+        }
+
+        /// Advance `secs` with no input.
+        fn idle(&mut self, secs: f32) {
+            let mut t = 0.0;
+            while t < secs {
+                self.tick(false, PlayerInput::default());
+                t += DT;
+            }
+        }
+
+        fn tick(&mut self, slice: bool, mut input: PlayerInput) -> Vec<CombatEvent> {
+            self.w.queries.update(&self.w.colliders);
+            let aim = Aim { origin: vector![0.0, 0.81, 0.0], yaw: 0.0, pitch: 0.0 };
+            let mut ev = Vec::new();
+            self.combat.update(DT, self.now, &CombatInput::new(false, slice), &aim, &self.w, &self.ch, &mut input, &mut ev);
+            self.now += DT;
+            ev
+        }
+
+        /// Release, click, and report the damage of the cut that came out (None = whiffed or not ready).
+        fn cut(&mut self) -> Option<f32> {
+            self.tick(false, PlayerInput::default());
+            let ev = self.tick(true, PlayerInput::default());
+            ev.iter().find_map(|e| match e {
+                CombatEvent::Slash { hits, damage, .. } if *hits > 0 => Some(*damage),
+                _ => None,
+            })
+        }
+
+        /// Wait out the recovery, then cut.
+        fn cut_when_ready(&mut self) -> Option<f32> {
+            while self.combat.slice_cooldown_left() > 0.0 {
+                self.tick(false, PlayerInput::default());
+            }
+            self.cut()
+        }
+    }
+
+    fn wall() -> crate::character::MoveState {
+        crate::character::MoveState::WallRun { normal: vector![0.0, 0.0, 1.0], tangent: vector![1.0, 0.0, 0.0], time_left: 1.0 }
+    }
+
+    #[test]
+    fn the_combo_counter_adds_damage_and_speed_and_a_hit_taken_resets_it() {
+        let mut r = Rig::new();
+        let first = r.cut().unwrap();
+        assert_eq!(first, 20.0, "no stacks yet");
+        assert_eq!(r.combat.combo_count(), 1);
+        let cd1 = r.combat.slice_cooldown_left();
+        let second = r.cut_when_ready().unwrap();
+        assert_eq!(second, 20.0, "a pair of cuts adds no damage yet");
+        // the recovery shortens with the stacks: 4 % per stack off the 0.42 s swing
+        assert!(r.combat.slice_cooldown_left() < cd1 - 0.01, "quicker: {} vs {cd1}", r.combat.slice_cooldown_left());
+        let third = r.cut_when_ready().unwrap();
+        assert_eq!(third, 30.0, "the third cut is the finisher");
+        let fourth = r.cut_when_ready().unwrap();
+        assert!((fourth - 21.0).abs() < 1e-3, "carrying on past the finisher: +5 %: {fourth}");
+        assert_eq!(r.combat.combo_count(), 4);
+        // taking a hit resets it
+        r.combat.on_hurt();
+        assert_eq!(r.combat.combo_count(), 0);
+        let after = r.cut_when_ready().unwrap();
+        assert_eq!(after, 20.0, "back to the base cut");
+        // idling out the window resets it too
+        r.idle(1.2);
+        assert_eq!(r.combat.combo_count(), 0);
+    }
+
+    #[test]
+    fn a_whiff_resets_the_combo_counter() {
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        r.cut_when_ready().unwrap();
+        assert_eq!(r.combat.combo_count(), 2);
+        let tgt = r.w.colliders.iter().find(|(_, c)| c.user_data == 7).map(|(h, _)| h).unwrap();
+        r.w.colliders.remove(tgt, &mut r.w.islands, &mut r.w.bodies, false);
+        assert!(r.cut_when_ready().is_none(), "nothing to hit");
+        assert_eq!(r.combat.combo_count(), 0);
+    }
+
+    #[test]
+    fn three_wall_run_slashes_chain_into_a_wall_kick_finisher() {
+        let mut r = Rig::new();
+        r.ch.state = wall();
+        let d: Vec<f32> = (0..5).map(|_| r.cut_when_ready().unwrap()).collect();
+        let slash = |stacks: f32| 20.0 * 1.35 * (1.0 + 0.05 * (stacks - 2.0).max(0.0));
+        for (i, want) in [slash(0.0), slash(1.0), slash(2.0)].iter().enumerate() {
+            assert!((d[i] - want).abs() < 0.05, "wall slash {i}: {} vs {want}", d[i]);
+        }
+        let kick = 20.0 * 1.35 * 1.6 * 1.05;
+        assert!((d[3] - kick).abs() < 0.05, "the fourth wall cut is the wall-kick: {} vs {kick}", d[3]);
+        assert!(d[3] > d[2] * 1.5);
+        // the chain starts over after the kick
+        assert!((d[4] - slash(4.0)).abs() < 0.05, "fifth: {}", d[4]);
+    }
+
+    #[test]
+    fn a_broken_wall_chain_loses_the_wall_kick() {
+        let mut r = Rig::new();
+        r.ch.state = wall();
+        r.cut_when_ready().unwrap();
+        r.cut_when_ready().unwrap();
+        // a plain cut off the wall in between breaks the chain
+        r.ch.state = crate::character::MoveState::Grounded;
+        r.cut_when_ready().unwrap();
+        r.ch.state = wall();
+        let d = r.cut_when_ready().unwrap();
+        assert!(d < 20.0 * 1.35 * 1.4, "just a wall slash: {d}");
+    }
+
+    #[test]
+    fn hook_and_wall_jump_into_an_air_cut_hit_harder() {
+        let air = |hook: f32, wj: f32| {
+            let mut r = Rig::new();
+            r.ch.state = crate::character::MoveState::Airborne;
+            r.ch.hook_age = hook;
+            r.ch.walljump_age = wj;
+            r.cut().unwrap()
+        };
+        let base = air(9.0, 9.0);
+        assert!((base - 25.0).abs() < 1e-3, "plain air cut: {base}");
+        assert!((air(0.5, 9.0) - 25.0 * 1.3).abs() < 1e-3, "hook -> air-slash");
+        assert!((air(9.0, 0.5) - 25.0 * 1.25).abs() < 1e-3, "wall-jump -> air-slash");
+        assert!((air(1.5, 9.0) - base).abs() < 1e-3, "the hook window is over");
+    }
+
+    #[test]
+    fn a_dash_hook_or_wall_jump_cancels_the_recovery_for_a_little_energy() {
+        let energy = |r: &Rig| r.combat.shuriken_energy().map(|e| e.0);
+        // dash
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        let e0 = energy(&r);
+        assert!(r.combat.slice_cooldown_left() > 0.2);
+        r.tick(false, PlayerInput::default());
+        assert!(r.combat.slice_cooldown_left() > 0.2, "no cancel without an input");
+        r.tick(false, PlayerInput { dash_pressed: true, ..Default::default() });
+        assert_eq!(r.combat.slice_cooldown_left(), 0.0, "dash cancels the cut");
+        if let (Some(a), Some(b)) = (e0, energy(&r)) {
+            assert!(b < a + 0.1 - 0.3, "and costs energy: {a} -> {b}");
+        }
+        // hook
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        r.tick(false, PlayerInput { grapple_aim: Some(vector![0.0, 0.3, -1.0]), ..Default::default() });
+        assert_eq!(r.combat.slice_cooldown_left(), 0.0, "hook cancels the cut");
+        // wall jump needs a wall
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        r.tick(false, PlayerInput { jump_pressed: true, ..Default::default() });
+        assert!(r.combat.slice_cooldown_left() > 0.2, "a jump on the ground is no cancel");
+        r.ch.state = wall();
+        r.tick(false, PlayerInput { jump_pressed: true, ..Default::default() });
+        assert_eq!(r.combat.slice_cooldown_left(), 0.0, "wall jump cancels the cut");
+        // an empty pool refuses the cancel
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        if let Some(d) = r.combat.loadout.discs_mut() {
+            d.clear();
+        }
+        let spent = r.combat.shuriken_energy().is_some();
+        if spent {
+            for _ in 0..30 {
+                r.combat.loadout.cancel_slice(); // burn the pool: every call needs a recovery to cut, so re-arm it
+                r.combat.set_slice_cooldown_left(0.4);
+            }
+            r.combat.set_slice_cooldown_left(0.4);
+            let (e, _, _) = r.combat.shuriken_energy().unwrap();
+            assert!(e < 0.4, "pool drained to {e}");
+            r.tick(false, PlayerInput { dash_pressed: true, ..Default::default() });
+            assert!(r.combat.slice_cooldown_left() > 0.2, "cannot pay: no cancel");
+        }
     }
 }

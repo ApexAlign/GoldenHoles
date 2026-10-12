@@ -250,6 +250,17 @@ impl Weapon for ShurikenLauncher {
         out.extend(self.discs.iter().filter(|d| !d.stuck).map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
     }
 
+    fn spend_energy(&mut self, amount: f32) -> bool {
+        if self.cfg.energy_max <= 0.0 {
+            return true;
+        }
+        if self.locked || self.energy + 1e-4 < amount {
+            return false;
+        }
+        self.energy -= amount;
+        true
+    }
+
     fn discs_mut(&mut self) -> Option<&mut Vec<Disc>> {
         Some(&mut self.discs)
     }

@@ -390,6 +390,8 @@ pub struct HudState {
     pub dash_ready: f32,    // 0..=1 (1 = ready); katana lunge shares the dash cooldown
     pub shuriken_ready: f32, // 0..=1
     pub slice_ready: f32,    // 0..=1 katana
+    /// Skill combo counter (connected cuts in a row); shown from 2.
+    pub combo: u32,
     /// Crosshair spread 0..=1 (moving / airborne / just threw): widens the reticle gap.
     pub spread: f32,
     pub ult: f32,           // 0..=1 (1 = ready)
@@ -1224,6 +1226,17 @@ impl Hud {
         // flash star: the whole frame, crosshair included, washes to white
         if s.blind > 0.01 {
             out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(1.0, 1.0, 1.0, 0.96 * s.blind.min(1.0)), glow: 0.0 });
+        }
+        // skill combo counter under the reticle: grows a little with the streak, gold at the top
+        if s.combo >= 2 {
+            let hot = s.combo >= 5;
+            out.push(Prim::Text {
+                pos: (0.5, 0.575),
+                text: format!("x{} COMBO", s.combo),
+                size: 0.022 + 0.002 * s.combo.min(6) as f32,
+                color: if hot { p.gold.a(0.95) } else { p.cyan.a(0.85) },
+                align: Align::Center,
+            });
         }
         // flash star: DAZED cue (flicker + draining bar) drawn over the wash so it reads while the white is still up
         if s.dazed > 0.0 {
@@ -2956,6 +2969,16 @@ mod tests {
                 .unwrap()
         };
         assert!(bar(0.9) > bar(0.3), "the bar drains as the daze runs out");
+    }
+
+    #[test]
+    fn combo_counter_shows_from_two_cuts() {
+        let p = Palette::TRON;
+        let find = |c: u32| Hud::build_with(&HudState { hp: 1.0, combo: c, ..Default::default() }, &p).iter().any(|x| matches!(x, Prim::Text { text, .. } if text.ends_with("COMBO")));
+        assert!(!find(0) && !find(1));
+        assert!(find(2) && find(7));
+        let t = Hud::build_with(&HudState { hp: 1.0, combo: 3, ..Default::default() }, &p).iter().find_map(|x| if let Prim::Text { text, .. } = x { text.ends_with("COMBO").then(|| text.clone()) } else { None });
+        assert_eq!(t.as_deref(), Some("x3 COMBO"));
     }
 
     #[test]
