@@ -170,6 +170,28 @@ fn a_full_draw_looses_an_arrow_for_80_body_or_120_head() {
 }
 
 #[test]
+fn a_full_draw_headshot_kills_an_unhurt_player_outright_on_the_demo_numbers() {
+    let mut kills = 0;
+    for pitch in [-0.03, -0.01, 0.0, 0.006, 0.012, 0.018] {
+        // the demo preset as it ships (max hp from `Balance::demo()`, no override): only regen is off so the hp stays put
+        let mut s = server_with(-30.0, LevelBox::new([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]), |b| {
+            *b = Balance::demo();
+            b.player.regen_per_s = 0.0;
+        });
+        let ev = shoot(&mut s, 40, pitch, 40);
+        let head = arrow_hits(&ev).iter().any(|(_, head)| *head);
+        let killed = ev.iter().any(|e| matches!(e, PvpEvent::Kill { killer: A, victim: B, kind: DamageKind::Arrow, .. }));
+        if head {
+            assert!(killed, "the headshot killed (pitch {pitch})");
+            kills += 1;
+        } else if !arrow_hits(&ev).is_empty() {
+            assert!(!killed && hp(&s, B) > 0.0, "a body shot hurts but does not kill (pitch {pitch})");
+        }
+    }
+    assert!(kills >= 1, "at least one of the aims was a headshot");
+}
+
+#[test]
 fn an_arrow_drops_a_little_over_distance_and_has_a_range() {
     let mut s = server(-30.0);
     give(&mut s, A, PowerKind::Yumi, 0);

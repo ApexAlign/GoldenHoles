@@ -78,7 +78,7 @@ impl Default for ShurikenCfg {
             assist_cone_deg: 10.0,
             assist_strength: 0.95,
             assist_lead: 1.0,
-            assist_range: 80.0,
+            assist_range: 20.0,
             homing_turn: 5.0,
             bounce_retention: 0.9,
             piece_damage: 12.0,
@@ -87,7 +87,7 @@ impl Default for ShurikenCfg {
             energy_regen_s: 0.45,
             energy_resume: 2.0,
             mark_cost: 2.0,
-            range: 0.0, // the lab default is unlimited; the demo preset sets 14 m
+            range: 14.0, // a close-range tool; the client predictor runs on these defaults, so they ARE the demo numbers
             full_range: 7.0,
             far_mult: 0.5,
             star: StarCfg::default(),

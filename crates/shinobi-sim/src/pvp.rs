@@ -804,11 +804,13 @@ mod tests {
     fn near_miss_hits(assist: bool, settle: u32) -> bool {
         // target 1.5 m off the crosshair at 20 m (~4.3 deg): a clean miss without assist
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [1.5, 0.81, -20.0])]);
+        let mut b = sim.s.balance.clone();
+        b.combat.shuriken.range = 0.0; // 20 m is past a star's 14 m range and its 20 m assist reach
+        b.combat.shuriken.assist_range = 80.0;
         if !assist {
-            let mut b = sim.s.balance.clone();
             b.combat.shuriken.assist_strength = 0.0;
-            sim.s.set_balance(b).unwrap();
         }
+        sim.s.set_balance(b).unwrap();
         for _ in 0..settle {
             sim.tick(&[(A, IDLE, 0), (B, IDLE, 0)]);
         }
@@ -835,6 +837,8 @@ mod tests {
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [-4.0, 0.81, -dist])]);
         let mut b = sim.s.balance.clone();
         b.combat.shuriken.speed = 70.0; // the demo's flat, fast stars
+        b.combat.shuriken.range = 0.0; // up to 30 m in this test, past a star's 14 m range
+        b.combat.shuriken.assist_range = 80.0;
         b.combat.shuriken.assist_lead = lead;
         b.combat.shuriken.homing_turn = 0.0; // this test is about the lead; homing has its own
         sim.s.set_balance(b).unwrap();
