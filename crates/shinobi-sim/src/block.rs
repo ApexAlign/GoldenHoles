@@ -31,6 +31,8 @@ pub struct BlockCfg {
     pub hit_cost: f32,
     /// Once the guard is spent, no block until this many ticks have passed.
     pub rearm_ticks: u32,
+    /// A block lowered without having absorbed a hit cannot be re-raised for this long (anti spam-raise; 0 = off).
+    pub lockout_ticks: u32,
     /// A parried melee attacker cannot act this long.
     pub stagger_ticks: u32,
     /// The strike window after one's own swing.
@@ -63,6 +65,8 @@ pub struct BlockState {
     /// Guard left, 0..=1.
     pub energy: f32,
     rearm_until: u32,
+    /// This hold has absorbed at least one hit (block or parry): lowering it is then free.
+    used: bool,
     /// Cannot act until this tick (parried).
     pub stagger_until: u32,
     /// Strike window open until this tick.
@@ -73,7 +77,7 @@ pub struct BlockState {
 
 impl Default for BlockState {
     fn default() -> Self {
-        Self { held: false, since: 0, energy: 1.0, rearm_until: 0, stagger_until: 0, open_until: 0, mercy_until: 0 }
+        Self { held: false, since: 0, energy: 1.0, rearm_until: 0, used: false, stagger_until: 0, open_until: 0, mercy_until: 0 }
     }
 }
 
@@ -85,12 +89,17 @@ impl BlockState {
             if !self.held {
                 self.held = true;
                 self.since = tick;
+                self.used = false;
             }
             self.energy -= 1.0 / cfg.max_hold_ticks.max(1) as f32;
             if self.energy <= 0.0 {
                 self.break_guard(tick, cfg);
             }
         } else {
+            // lowered by choice without the shield ever taking a hit: spam-raise is punished with a lockout
+            if self.held && !want && !self.used && can {
+                self.rearm_until = self.rearm_until.max(tick + cfg.lockout_ticks);
+            }
             self.held = false;
             if tick >= self.rearm_until {
                 self.energy = (self.energy + 1.0 / cfg.regen_ticks.max(1) as f32).min(1.0);
@@ -104,6 +113,11 @@ impl BlockState {
         self.energy = 0.0;
         self.rearm_until = tick + cfg.rearm_ticks;
         self.mercy_until = tick + cfg.mercy_ticks;
+    }
+
+    /// The shield took a hit (blocked or parried): lowering it is no longer a wasted raise.
+    pub fn mark_used(&mut self) {
+        self.used = true;
     }
 
     /// Inside the grace after a guard break.

@@ -915,6 +915,7 @@ impl Server {
             let vyaw = shinobi_proto::quant::dq_yaw(self.players[j].yaw);
             if crate::block::guard_vs(&self.players[j].blk, vyaw, c, me, tick, &bcfg) != crate::block::Guard::None {
                 let blk = &mut self.players[j].blk;
+                blk.mark_used();
                 blk.energy -= cfg.grapple_shield_drain;
                 if blk.energy <= 0.0 {
                     blk.break_guard(tick, &bcfg);

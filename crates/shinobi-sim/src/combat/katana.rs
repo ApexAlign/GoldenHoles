@@ -77,6 +77,8 @@ pub struct KatanaCfg {
     pub cancel_cost: f32,
     /// 1 = cancels on, 0 = off.
     pub cancel: f32,
+    /// A swing that hits nothing locks the blade out for at least this many seconds (a whiff is punished; 0 = off).
+    pub whiff_recover: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -142,6 +144,7 @@ impl KatanaCfg {
             walljump_air_window: 0.0,
             cancel_cost: 0.0,
             cancel: 0.0,
+            whiff_recover: 0.0,
         }
     }
 }
@@ -645,6 +648,10 @@ impl Weapon for Katana {
         // skill counters: a cut that found nothing (or only the rope) breaks the streak and the wall chain
         let connected = !hits.is_empty();
         self.streak = if connected { self.streak + 1 } else { 0 };
+        // commit: a whiffed cut cannot be followed up at once (a cancel into dash / hook / wall jump still frees it)
+        if !connected {
+            self.recover = self.recover.max(c.whiff_recover);
+        }
         if wall_slash && connected && !wallkick {
             self.wall_chain += 1;
             self.last_wall = ctx.now;

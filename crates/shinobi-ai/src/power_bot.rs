@@ -95,8 +95,12 @@ fn flat_dist(a: V3, b: V3) -> f32 {
     ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt()
 }
 
+/// Flight time (ticks) before impact at which a bot raises its shield for an arrow: the parry window is ~8 ticks.
+pub const PARRY_LEAD_TICKS: f32 = 5.0;
+
 impl PowerBrain {
-    /// An enemy arrow within 20 m (~13 ticks out: a shield raised now parries it) closing on `me`.
+    /// An enemy arrow about to land (inside `PARRY_LEAD_TICKS` of flight, closing on `me`): a shield raised now is inside
+    /// the parry window when it arrives.
     fn arrow_coming(arrows: &[Arrow], me: V3, id: u16, team_of: impl Fn(u16) -> u8, my_team: u8) -> bool {
         arrows.iter().any(|a| {
             if a.owner == id || (my_team != shinobi_sim::tick::NO_TEAM && team_of(a.owner) == my_team) {
@@ -105,7 +109,8 @@ impl PowerBrain {
             let to = me - vector![a.pos[0], a.pos[1], a.pos[2]];
             let dist = to.norm();
             let v = vector![a.vel[0], a.vel[1], a.vel[2]];
-            dist < 20.0 && dist > 1.0 && to.dot(&v) / (dist * v.norm().max(1e-3)) > 0.985
+            let per_tick = (v.norm() / 60.0).max(1e-3);
+            dist / per_tick <= PARRY_LEAD_TICKS && dist > 1.0 && to.dot(&v) / (dist * v.norm().max(1e-3)) > 0.985
         })
     }
 

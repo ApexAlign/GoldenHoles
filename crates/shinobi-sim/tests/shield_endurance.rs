@@ -24,6 +24,7 @@ fn old_guard() -> GuardBalance {
         regen_s: 3.0,
         hit_cost: 0.2,
         rearm_s: 1.0,
+        lockout_s: 0.0,
         stagger_s: 0.8,
         swing_open_s: 0.25,
         counter_open_s: 1.0,

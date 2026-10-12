@@ -50,6 +50,13 @@ const HEAVY_CHANCE: f32 = 0.2;
 const HEAVY_HOLD_TICKS: u32 = 50;
 const HEAVY_GAP_TICKS: u32 = 600;
 const COUNTER_CHANCE: f32 = 0.5;
+/// A raised shield is held this long: just past the 8-tick parry window, never a turtle.
+const PARRY_HOLD_TICKS: u32 = 10;
+/// A foe this close, facing me with a ready blade, is read as about to cut.
+const PARRY_RANGE: f32 = 5.0;
+/// The per-tick roll is `parry_skill / PARRY_ROLL_DIV`: a threat that stands for a second is parried-at about 2 times in 3 by a
+/// normal bot (a raise at a random moment, so only part of those land inside the 8-tick window).
+const PARRY_ROLL_DIV: f32 = 30.0;
 const WHIRL_CHANCE: f32 = 0.4;
 const WHIRL_RANGE: f32 = 3.0;
 /// No shuriken inside this range: point-blank is for the katana.
@@ -214,6 +221,8 @@ pub struct BotMem {
     combo: u32,
     block_until: u32,
     block_ok: u32,
+    /// Next tick a bot may try to read a katana cut and parry it.
+    parry_ok: u32,
     /// Heavy cut: hold the katana button until this tick, then release (0 = not charging).
     heavy_until: u32,
     /// Next tick a heavy cut may be started (a charge is a standstill: keep the bots moving).
@@ -283,6 +292,7 @@ impl BotMem {
             combo: 0,
             block_until: 0,
             block_ok: 0,
+            parry_ok: 0,
             heavy_until: 0,
             heavy_ok: 0,
             was_blocking: false,
@@ -462,9 +472,10 @@ impl BotMem {
             self.stats.strikes += 1;
         }
         if pout.block && tick >= self.block_ok && !matches!(self.phase, Phase::Strike { .. }) {
-            self.block_ok = tick + 60;
-            if rng.chance((self.skill.evade_chance * 0.7).min(0.9)) {
-                self.block_until = tick + 14;
+            // a timed block: the arrow is ~5 ticks out, so a raise now is inside the parry window; a bot that misjudges it pays the lockout
+            self.block_ok = tick + 90;
+            if rng.chance(self.skill.parry_skill) {
+                self.block_until = tick + PARRY_HOLD_TICKS;
             }
         }
 
@@ -472,7 +483,24 @@ impl BotMem {
         if tick >= self.block_ok && incoming_disc(ctx) && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
             self.block_ok = tick + 150;
             if rng.chance(self.skill.evade_chance * 0.3) {
-                self.block_until = tick + 14;
+                self.block_until = tick + PARRY_HOLD_TICKS;
+            }
+        }
+        // 5b2. melee parry: a foe in cutting range, facing me, with a ready blade is about to swing. Bots do not turtle: they
+        // raise for one parry window (never longer) and the odds are their skill; guessing wrong costs the shield lockout.
+        if tick >= self.block_ok && tick >= self.parry_ok && self.skill.parry_skill > 0.0 && !matches!(self.phase, Phase::Strike { .. } | Phase::Dead) {
+            if let Some(t) = p.target {
+                let foe_ready = ctx.world.server.players.iter().find(|q| q.id == t.view.id).map_or(false, |q| q.combat.slice_cooldown_left() <= 0.0 && !q.blk.staggered(tick));
+                let to_me = flat(ctx.me.pos - t.view.pos);
+                let facing = to_me.norm() > 1e-3 && unit_or_zero(to_me).dot(&vector![-t.view.yaw.sin(), 0.0, -t.view.yaw.cos()]) > 0.85;
+                if t.los && t.dist <= PARRY_RANGE && facing && foe_ready && !t.view.spawn_protected {
+                    // one roll per tick while the threat stands: the cut lands at a random moment, so the chance of
+                    // having the shield up inside the window is the skill, not a certainty
+                    if rng.chance(self.skill.parry_skill / PARRY_ROLL_DIV) {
+                        self.block_until = tick + PARRY_HOLD_TICKS;
+                        self.block_ok = tick + 90;
+                    }
+                }
             }
         }
         // 5c. katana moves (docs/melee.md): a parry opens the counter window (drop the shield and cut), and a cut right
@@ -551,7 +579,9 @@ impl BotMem {
         if tick < self.pause_until && !matches!(self.phase, Phase::Strike { .. } | Phase::Evade { .. }) && matches!(self.trav, Traverse::Free) {
             pace *= 0.1;
         }
-        let (sx, sz) = stick_for(dir, mag * self.skill.move_scale * pace, yaw);
+        // a raised shield locks the view server-side: the stick is read against the locked yaw, not the one the bot wants
+        let locked = ctx.world.server.players.iter().find(|q| q.id == self.id).map_or(false, |q| q.blk.held);
+        let (sx, sz) = stick_for(dir, mag * self.skill.move_scale * pace, if locked { ctx.me.yaw } else { yaw });
         out.intent = PlayerIntent {
             tick,
             buttons: Buttons(buttons),
