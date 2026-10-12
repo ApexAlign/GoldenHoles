@@ -78,6 +78,10 @@ pub enum NetEvent {
     /// Environmental event (`env_events.rs`): `what` = `ENV_*`, `id` names a lightning bolt (mark and strike share it), `pos`
     /// the bolt's strike point (quantized like every position; zero for quakes), `aux` ticks: warning / shaking length.
     EnvFx { what: u8, id: u8, pos: [i32; 3], aux: u16 },
+    /// `player`'s stealth cloak (`cloak.rs`, docs/melee.md "Cloak") came up (`on` true) or ended / broke (`on` false).
+    /// Rare (a few per minute per player), so a reliable event rather than a per-snapshot flag; every client can see
+    /// the shimmer regardless of distance, so this is fair game to read.
+    CloakFx { tick: u32, player: u16, on: bool },
 }
 
 /// `NetEvent::EnvFx::what`.
@@ -319,6 +323,12 @@ impl NetEvent {
                 write_v3(w, *pos, [0; 3]);
                 w.write_bits(*aux as u32, 16);
             }
+            Self::CloakFx { tick, player, on } => {
+                w.write_bits(30, 5);
+                w.write_varint(*tick);
+                w.write_bits(*player as u32, 16);
+                w.write_bool(*on);
+            }
         }
     }
 
@@ -432,6 +442,7 @@ impl NetEvent {
             28 => Self::WorldRez { idx: r.read_bits(16)? as u16 },
             29 => Self::WorldCrack { idx: r.read_bits(16)? as u16, hp_q: r.read_bits(8)? as u8 },
             31 => Self::EnvFx { what: r.read_bits(3)? as u8, id: r.read_bits(8)? as u8, pos: read_v3(r, [0; 3])?, aux: r.read_bits(16)? as u16 },
+            30 => Self::CloakFx { tick: r.read_varint()?, player: r.read_bits(16)? as u16, on: r.read_bool()? },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -674,6 +685,8 @@ mod tests {
             NetEvent::EnvFx { what: ENV_QUAKE_WARN, id: 0, pos: [0, 0, 0], aux: 150 },
             NetEvent::EnvFx { what: ENV_BOLT_MARK, id: 255, pos: [-20_000, 512, 33_333], aux: 120 },
             NetEvent::EnvFx { what: ENV_BOLT_STRIKE, id: 9, pos: [1, -2, 3], aux: 0 },
+            NetEvent::CloakFx { tick: 70_004, player: 6, on: true },
+            NetEvent::CloakFx { tick: 70_005, player: 65_535, on: false },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

@@ -89,6 +89,9 @@ pub struct NetClient {
     events: Vec<NetEvent>,
     /// Hooked ropes of other players (and us): player id -> anchor in metres. Kept from the reliable events.
     ropes: HashMap<u16, [f32; 3]>,
+    /// Players currently cloaked (`cloak.rs`), from `NetEvent::CloakFx`. Fair to read: the shimmer is visible to
+    /// everyone regardless of distance.
+    cloaked: std::collections::HashSet<u16>,
     /// Team of every player (from `TeamAssign`), team kills and the match result (from `TeamScore`).
     teams: HashMap<u16, u8>,
     /// Custom looks of every player (from `CharacterLook`), validated again by `from_wire`.
@@ -174,6 +177,7 @@ impl Default for NetClient {
             inbox: EventInbox::default(),
             events: Vec::new(),
             ropes: HashMap::new(),
+            cloaked: std::collections::HashSet::new(),
             teams: HashMap::new(),
             looks: HashMap::new(),
             my_look: None,
@@ -323,10 +327,21 @@ impl NetClient {
                 NetEvent::RopeRelease { player, .. } | NetEvent::Kill { victim: player, .. } => {
                     self.ropes.remove(&player);
                 }
-                NetEvent::MapChange { .. } => self.ropes.clear(),
+                NetEvent::MapChange { .. } => {
+                    self.ropes.clear();
+                    self.cloaked.clear();
+                }
+                NetEvent::CloakFx { player, on, .. } => {
+                    if on {
+                        self.cloaked.insert(player);
+                    } else {
+                        self.cloaked.remove(&player);
+                    }
+                }
                 NetEvent::TeamAssign { player, team } if team == shinobi_sim::events::TEAM_NONE => {
                     self.teams.remove(&player);
                     self.looks.remove(&player);
+                    self.cloaked.remove(&player);
                 }
                 NetEvent::CharacterLook { player, wire } => {
                     if Some(player) == self.player_id() && self.my_look == Some(wire) {
@@ -752,6 +767,11 @@ impl NetClient {
     /// Where `player`'s rope is hooked, if it is (from `RopeAttach` / `RopeRelease`).
     pub fn rope_anchor(&self, player: u16) -> Option<[f32; 3]> {
         self.ropes.get(&player).copied()
+    }
+
+    /// `player`'s stealth cloak is up right now (from `CloakFx`): draw the shimmer, not the ordinary body.
+    pub fn is_cloaked(&self, player: u16) -> bool {
+        self.cloaked.contains(&player)
     }
 
     /// Reliable events (walls, obstacles) received since last call, in order.

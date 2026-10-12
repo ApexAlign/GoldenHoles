@@ -603,7 +603,7 @@ impl Enemies {
                 }
                 DiscStep::Hit { collider, .. } => {
                     if let Some(v) = players.iter().position(|p| p.vitals.hitbox == collider) {
-                        hits.push(PvpHit { attacker: owner, victim: v, amount: dmg, cause: Cause::Weapon(DamageKind::Shuriken), head: false });
+                        hits.push(PvpHit { attacker: owner, victim: v, amount: dmg, cause: Cause::Weapon(DamageKind::Shuriken), head: false, stealth: false });
                     }
                     self.discs.remove(i);
                 }
@@ -680,7 +680,7 @@ impl Enemies {
             });
             for h in hit {
                 if let Some(v) = players.iter().position(|p| p.vitals.hitbox == h) {
-                    hits.push(PvpHit { attacker: id, victim: v, amount: st.damage, cause: Cause::Weapon(DamageKind::Slash), head: false });
+                    hits.push(PvpHit { attacker: id, victim: v, amount: st.damage, cause: Cause::Weapon(DamageKind::Slash), head: false, stealth: false });
                 }
             }
         } else {

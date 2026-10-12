@@ -98,12 +98,15 @@ pub struct PlayerIntent {
     /// Held (a level, repeated with the last intent): the bow is being drawn (right button while a yumi is in hand,
     /// `shinobi_sim::power`). The walk slows while it is set; releasing it after a full draw looses the arrow.
     pub draw: bool,
+    /// Held (a level, repeated like `block` / `draw`): the stealth cloak button (`shinobi_sim::cloak`). Releasing it
+    /// ends the cloak early, same as running out of charge; attacking or taking a hit ends it too (server-side).
+    pub cloak: bool,
 }
 
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false }
     }
 }
 
@@ -140,6 +143,7 @@ impl PlayerIntent {
             && self.mark == o.mark
             && self.star == o.star
             && self.draw == o.draw
+            && self.cloak == o.cloak
     }
 
     fn write_body(&self, w: &mut BitWriter) {
@@ -162,6 +166,7 @@ impl PlayerIntent {
             w.write_bits(self.star as u32 & 3, 2);
         }
         w.write_bool(self.draw);
+        w.write_bool(self.cloak);
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
@@ -178,7 +183,8 @@ impl PlayerIntent {
         let (zip, block, mark) = (r.read_bool()?, r.read_bool()?, r.read_bool()?);
         let star = if buttons.has(Buttons::FIRE) { r.read_bits(2)? as u8 } else { 0 };
         let draw = r.read_bool()?;
-        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star, draw })
+        let cloak = r.read_bool()?;
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star, draw, cloak })
     }
 }
 
@@ -538,7 +544,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false }
     }
 
     #[test]

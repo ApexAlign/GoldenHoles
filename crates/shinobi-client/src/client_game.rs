@@ -79,6 +79,9 @@ pub enum Action {
     /// (left click) is the draw: hold to draw, release a full draw to loose. Stars stay on the throw button either way.
     Katana,
     Bow,
+    /// Stealth cloak (cloak.rs, docs/melee.md "Cloak"): held. A faint, flickering shimmer in place of full
+    /// invisibility; attacking or taking a hit breaks it.
+    Cloak,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -624,6 +627,9 @@ pub struct ClientGame {
     /// The block key is down (raw), and whether the shield is actually up this tick (not while dead).
     block_held: bool,
     blocking: bool,
+    /// The cloak key is down (raw, held like `block_held`); `cloak.rs` on the server decides whether it is actually
+    /// active (duration, cooldown).
+    cloak_held: bool,
     /// Throw button held for this many sim ticks (None = up). The throw happens on RELEASE: a tap is a normal star, a hold
     /// of `MARK_CHARGE_TICKS` or more is a MARK star.
     fire_hold: Option<u32>,
@@ -725,6 +731,7 @@ impl ClientGame {
             latch: ButtonLatch::default(),
             zip_edge: false,
             block_held: false,
+            cloak_held: false,
             blocking: false,
             fire_hold: None,
             fire_release: None,
@@ -829,6 +836,7 @@ impl ClientGame {
             Action::Slide => self.latch.set(Buttons::SLIDE, e.down),
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
             Action::Block => self.block_held = e.down,
+            Action::Cloak => self.cloak_held = e.down,
             Action::StarNext if e.down => {
                 self.star_sel = self.star_sel.next();
                 self.star_cycled = true;
@@ -1216,6 +1224,7 @@ impl ClientGame {
         let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
         intent.block = blocking;
+        intent.cloak = self.cloak_held && !blocking && !dead;
         intent.mark = mark_now;
         // the throwable a plain press sends rides with the FIRE edge (a MARK star ignores it)
         intent.star = if intent.buttons.has(Buttons::FIRE) && !mark_now { self.star_sel as u8 } else { 0 };

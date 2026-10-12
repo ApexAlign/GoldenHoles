@@ -33,6 +33,8 @@ impl BotSkill {
                 move_scale: 1.0,
                 slice_miss: 0.4,
                 parry_skill: 0.2,
+                cloak_skill: 0.05,
+                cloak_notice: 0.2,
             },
             Self::Normal => SkillParams {
                 reaction_ticks: 16,
@@ -45,6 +47,8 @@ impl BotSkill {
                 move_scale: 1.0,
                 slice_miss: 0.25,
                 parry_skill: 0.5,
+                cloak_skill: 0.15,
+                cloak_notice: 0.5,
             },
             Self::Hard => SkillParams {
                 reaction_ticks: 5,
@@ -57,6 +61,8 @@ impl BotSkill {
                 move_scale: 1.0,
                 slice_miss: 0.12,
                 parry_skill: 0.85,
+                cloak_skill: 0.3,
+                cloak_notice: 0.85,
             },
         }
     }
@@ -85,6 +91,12 @@ pub struct SkillParams {
     /// Skill at the timed block (0..1): the chance a bot raises its shield inside the parry window of an arrow it sees
     /// coming, and how readily it parries a katana cut it reads. A miss costs the 1 s block lockout, so bots do not spam.
     pub parry_skill: f32,
+    /// Stealth cloak (cloak.rs, docs/melee.md "Cloak"): chance per decision window (`CLOAK_DECIDE_TICKS`) to raise the
+    /// cloak while approaching a target at medium range, aiming for a stealth kill.
+    pub cloak_skill: f32,
+    /// Chance per decision window to notice a nearby cloaked foe despite the visual stealth (0 at long range, scaled
+    /// up close; `fsm::notices_cloak`). A foe sprinting, dashing or roped is always noticed regardless.
+    pub cloak_notice: f32,
 }
 
 /// Behaviour profile. Light = cyber-ninja (flank, wall, perch, shurikens from odd angles).

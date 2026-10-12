@@ -34,6 +34,10 @@ pub struct PlayerView {
     pub is_bot: bool,
     /// `Player.team` (replicated to every client, so fair to read).
     pub team: u8,
+    /// Stealth cloak up (`cloak.rs`): every client sees this as the shimmer outline, so fair to read.
+    pub cloaked: bool,
+    /// Loud despite the cloak: sprinting, dashing/rolling or the grapple attached (`shinobi_sim::cloak::loud`).
+    pub cloak_loud: bool,
 }
 
 impl PlayerView {
@@ -83,6 +87,13 @@ impl<'a> WorldView<'a> {
                     double_used_hint: p.ch.double_jumped,
                     is_bot: is_bot(p.id),
                     team: p.team,
+                    cloaked: p.cloak.active,
+                    cloak_loud: shinobi_sim::cloak::loud(
+                        (p.ch.vel.x * p.ch.vel.x + p.ch.vel.z * p.ch.vel.z).sqrt(),
+                        cfg.run_speed,
+                        p.ch.evading().is_some(),
+                        p.ch.grapple.is_some(),
+                    ),
                 }
             })
             .collect();

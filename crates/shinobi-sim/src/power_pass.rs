@@ -421,13 +421,13 @@ impl Server {
                             v.blk.break_guard(tick, &bcfg);
                             v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
                         }
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: yc.damage * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false });
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: yc.damage * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
                         fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(hitp) }));
                     }
                     crate::block::Guard::None => {
                         let head = hitp[1] >= vpos[1] + self.balance.combat.head_min_height;
                         let amount = yc.damage * if head { yc.head_mult } else { 1.0 };
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head });
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head, stealth: false });
                         fx.push((a.owner, CombatEvent::PowerFx { what: if head { FX_ARROW_HEAD } else { FX_ARROW_HIT }, pos: pt(hitp) }));
                     }
                 }
@@ -487,7 +487,7 @@ impl Server {
             let k = if me { tc.self_mult } else { 1.0 };
             let amount = blast_damage(tc, d) * k;
             if amount > 0.0 {
-                hits.push(PvpHit { attacker: t.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Tag), head: false });
+                hits.push(PvpHit { attacker: t.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Tag), head: false, stealth: false });
             }
             let push = blast_push(tc, centre, owner_pos, qpos);
             let v = &mut self.players[j];

@@ -357,6 +357,7 @@ fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) 
         (k(KeyCode::KeyC), Action::Slide),
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
+        (k(KeyCode::KeyF), Action::Cloak), // stealth cloak (hold): a faint shimmer, not full invisibility
         (m(MouseButton::Left), Action::Slice),
         // weapon select: 1 = katana, 2 = yumi (bow up: left click draws it)
         (k(KeyCode::Digit1), Action::Katana),
@@ -763,6 +764,10 @@ fn sync_remotes(
             }
             ent.rig.flash(&mut commands, &hitfx.white);
         }
+        // stealth cloak (cloak.rs, docs/melee.md "Cloak"): not literal invisibility, but the range-readability aids
+        // (beacon, head gem) are the first thing to go, and the glow shrinks to almost nothing, so a cloaked player
+        // reads as a faint, flickering outline up close and is much easier to miss at any distance.
+        let cloaked = s.game.net.is_cloaked(*id);
         // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
         if let Ok(mut bt) = tf.get_mut(ent.beacon) {
@@ -770,12 +775,13 @@ fn sync_remotes(
             bt.translation = Vec3::new(0.0, 4.2, 0.0);
             bt.scale = Vec3::new(w, 6.5, w);
         }
-        // aura: soft glow ellipsoid hugging the body, wider with distance
+        // aura: soft glow ellipsoid hugging the body, wider with distance (dimmed to a sliver while cloaked)
         if let Ok(mut at) = tf.get_mut(ent.aura) {
             // hugging the body (a rim of colour, not a ghost blob over it); the black outline and bright core carry the read
-            let w = 0.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.6);
+            let shimmer = if cloaked { 0.1 + 0.05 * (t * 9.0).sin().abs() } else { 1.0 };
+            let w = 0.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.6) * shimmer;
             at.translation = Vec3::ZERO;
-            at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25), w);
+            at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25) * shimmer, w);
         }
         // block shield: a glowing panel held out in front (local -Z is the facing), shown while the player guards
         // a big framed panel (bigger with distance so it still reads): that is the whole "block pose" of a remote player
@@ -809,10 +815,10 @@ fn sync_remotes(
             gt.scale = Vec3::splat(gem_size(dist));
         }
         if let Ok(mut gv) = vis.get_mut(ent.gem) {
-            gv.set_if_neq(if dist > 3.0 && dist < GEM_MAX_DIST { Visibility::Inherited } else { Visibility::Hidden });
+            gv.set_if_neq(if !cloaked && dist > 3.0 && dist < GEM_MAX_DIST { Visibility::Inherited } else { Visibility::Hidden });
         }
         if let Ok(mut bv) = vis.get_mut(ent.beacon) {
-            bv.set_if_neq(if dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
+            bv.set_if_neq(if !cloaked && dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
         }
 
         if let Ok(mut r) = tf.get_mut(ent.root) {
@@ -1040,10 +1046,9 @@ mod binding_tests {
             assert_eq!(down, vec![ButtonEvent { action: Action::Block, down: true }], "{code:?} {btn:?} press");
             assert_eq!(up, vec![ButtonEvent { action: Action::Block, down: false }], "{code:?} {btn:?} release");
         }
-        // F and V no longer block; Q throws a star, 4 rolls, LMB slices
-        for code in [KeyCode::KeyF, KeyCode::KeyV] {
-            assert!(events_for_press(Some(code), None).0.is_empty(), "{code:?} is unbound");
-        }
+        // F and V no longer block; Q throws a star, 4 rolls, LMB slices. F is now the stealth cloak; V stays unbound.
+        assert!(events_for_press(Some(KeyCode::KeyV), None).0.is_empty(), "KeyV is unbound");
+        assert_eq!(events_for_press(Some(KeyCode::KeyF), None).0, vec![ButtonEvent { action: Action::Cloak, down: true }]);
         assert_eq!(events_for_press(Some(KeyCode::KeyQ), None).0, vec![ButtonEvent { action: Action::Fire, down: true }]);
         assert_eq!(events_for_press(Some(KeyCode::Digit4), None).0, vec![ButtonEvent { action: Action::Roll, down: true }]);
         // and the attack buttons are untouched
