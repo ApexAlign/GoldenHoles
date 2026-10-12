@@ -17,6 +17,7 @@ pub mod demo_script;
 pub mod hud_bridge;
 pub mod hud_energy;
 pub mod hud_power;
+pub mod zoom;
 pub mod power_view;
 pub mod hud_geom;
 pub mod overlay;

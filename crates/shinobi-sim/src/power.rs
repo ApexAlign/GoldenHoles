@@ -47,6 +47,13 @@ pub struct YumiCfg {
     /// Walk speed multiplier while the bow is held out, and the look-speed multiplier the client applies (slow turn assist).
     pub move_mult: f32,
     pub turn_mult: f32,
+    /// ZOOM (client-only camera, but the walk part is sim): the view starts to narrow once the draw passes `zoom_start`
+    /// (0..1 of the draw, so a tap or a quick release stays hip-fire) and reaches `zoom_fov` degrees at full draw; at full
+    /// draw (the focus state) the walk drops from `move_mult` to `focus_move_mult`. A hit on you drops the zoom for `zoom_hurt_s`.
+    pub zoom_fov: f32,
+    pub zoom_start: f32,
+    pub focus_move_mult: f32,
+    pub zoom_hurt_s: f32,
     /// Arrow speed (m/s), gravity on it (m/s^2: the slight drop), range (m) and the radius of its hit reach (m).
     pub speed: f32,
     pub gravity: f32,
@@ -71,9 +78,13 @@ impl Default for YumiCfg {
             tap_s: 0.15,
             move_mult: 0.75,
             turn_mult: 0.5,
-            speed: 90.0,
-            gravity: 5.0,
-            range: 140.0,
+            zoom_fov: 30.0,
+            zoom_start: 0.25,
+            focus_move_mult: 0.6,
+            zoom_hurt_s: 0.35,
+            speed: 110.0,
+            gravity: 4.0,
+            range: 250.0,
             radius: 0.35,
             damage: 80.0,
             head_mult: 1.5,
@@ -135,6 +146,34 @@ impl Default for TagCfg {
             drop_life_s: 25.0,
         }
     }
+}
+
+/// Zoom 0..=1 from the draw progress 0..=1: 0 until `zoom_start` (hip-fire), then an eased ramp to 1 at full draw.
+pub fn zoom_of_draw(draw_frac: f32, cfg: &YumiCfg) -> f32 {
+    let t = ((draw_frac - cfg.zoom_start) / (1.0 - cfg.zoom_start).max(1e-3)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Vertical FOV (degrees) at `zoom` (0 = `base`, 1 = `zoom_fov`).
+pub fn zoom_fov_deg(base: f32, zoom: f32, cfg: &YumiCfg) -> f32 {
+    base + (cfg.zoom_fov.min(base) - base) * zoom.clamp(0.0, 1.0)
+}
+
+/// Look-speed scale that keeps the angular speed per screen pixel constant at `fov` (tan ratio against `base`).
+pub fn fov_turn_scale(base: f32, fov: f32) -> f32 {
+    ((fov.to_radians() * 0.5).tan() / (base.to_radians() * 0.5).tan()).clamp(0.05, 1.0)
+}
+
+/// The walk multiplier of a bow in the hands and drawn: `move_mult`, `focus_move_mult` once the draw is full.
+pub fn draw_walk_mult(full: bool, cfg: &YumiCfg) -> f32 {
+    if full { cfg.focus_move_mult.min(cfg.move_mult) } else { cfg.move_mult }
+}
+
+/// Angle (radians) an arrow released along the aim has fallen below it by the time it has flown `dist` metres: the
+/// compensation the zoom HUD ticks off. Uses the arrow's own flight (path length = speed * t, constant gravity).
+pub fn arrow_drop_angle(dist: f32, cfg: &YumiCfg) -> f32 {
+    let t = dist.max(0.0) / cfg.speed.max(1.0);
+    (0.5 * cfg.gravity * t * t / dist.max(1.0)).atan()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -435,6 +474,39 @@ pub fn blast_push(cfg: &TagCfg, centre: V3, from: V3, pos: V3) -> V3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_waits_out_the_tap_then_eases_to_the_target_fov() {
+        let c = YumiCfg::default();
+        assert_eq!(zoom_of_draw(0.0, &c), 0.0);
+        assert_eq!(zoom_of_draw(c.tap_s / c.draw_s, &c), 0.0, "a tap or a quick release stays hip-fire");
+        assert_eq!(zoom_of_draw(1.0, &c), 1.0);
+        let (a, b) = (zoom_of_draw(0.5, &c), zoom_of_draw(0.75, &c));
+        assert!(0.0 < a && a < b && b < 1.0);
+        assert_eq!(zoom_fov_deg(90.0, 0.0, &c), 90.0);
+        assert_eq!(zoom_fov_deg(90.0, 1.0, &c), 30.0);
+        assert_eq!(zoom_fov_deg(25.0, 1.0, &c), 25.0, "never wider than the base");
+        // turning follows the FOV: 30 deg of view turns at tan(15)/tan(45)
+        assert!((fov_turn_scale(90.0, 30.0) - 0.2679).abs() < 1e-3);
+        assert_eq!(fov_turn_scale(90.0, 90.0), 1.0);
+        assert!(draw_walk_mult(true, &c) < draw_walk_mult(false, &c));
+        assert_eq!(draw_walk_mult(false, &c), c.move_mult);
+    }
+
+    #[test]
+    fn a_200_m_shot_is_feasible_and_the_range_reaches_250() {
+        let c = YumiCfg::default();
+        // flight time and drop to 200 m (the arrow lives while speed * age <= range)
+        let t = 200.0 / c.speed;
+        let drop = 0.5 * c.gravity * t * t;
+        assert!(t < 2.0 && (5.0..9.0).contains(&drop), "200 m: {t:.2} s in the air, {drop:.1} m of drop");
+        // a runner (~9 m/s) crosses 16 m meanwhile: the lead is a few body widths, not a different postcode
+        assert!(9.0 * t < 20.0);
+        assert!(250.0 / c.speed * c.speed <= c.range + 1e-3 && c.range >= 250.0);
+        // the HUD tick: the drop angle grows with range and is ~1.9 deg at 200 m
+        let (a50, a200) = (arrow_drop_angle(50.0, &c), arrow_drop_angle(200.0, &c));
+        assert!(a50 < a200 && (a200.to_degrees() - 1.9).abs() < 0.1, "{}", a200.to_degrees());
+    }
 
     const DT: f32 = 1.0 / 60.0;
 

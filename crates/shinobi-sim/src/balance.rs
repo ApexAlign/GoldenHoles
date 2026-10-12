@@ -1143,6 +1143,10 @@ impl Balance {
         s!("combat.yumi.tap_s", F, self.combat.power.yumi.tap_s);
         s!("combat.yumi.move_mult", F, self.combat.power.yumi.move_mult);
         s!("combat.yumi.turn_mult", F, self.combat.power.yumi.turn_mult);
+        s!("combat.yumi.zoom_fov", F, self.combat.power.yumi.zoom_fov);
+        s!("combat.yumi.zoom_start", F, self.combat.power.yumi.zoom_start);
+        s!("combat.yumi.focus_move_mult", F, self.combat.power.yumi.focus_move_mult);
+        s!("combat.yumi.zoom_hurt_s", F, self.combat.power.yumi.zoom_hurt_s);
         s!("combat.yumi.speed", F, self.combat.power.yumi.speed);
         s!("combat.yumi.gravity", F, self.combat.power.yumi.gravity);
         s!("combat.yumi.range", F, self.combat.power.yumi.range);
@@ -1343,7 +1347,7 @@ impl Balance {
             e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
         }
         let (y, t) = (&self.combat.power.yumi, &self.combat.power.tag);
-        if y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || [y.gravity, y.radius, y.damage, y.cut_pad, y.reload_s].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) {
+        if y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || !(0.05..=1.0).contains(&y.focus_move_mult) || !(0.0..1.0).contains(&y.zoom_start) || !(10.0..=90.0).contains(&y.zoom_fov) || y.zoom_hurt_s < 0.0 || [y.gravity, y.radius, y.damage, y.cut_pad, y.reload_s].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) {
             e.push("combat.yumi.*: draw_s > tap_s >= 0, speed / range > 0, move_mult and turn_mult 0.05..1, head_mult >= 1, block_drain 0..1, the rest >= 0".into());
         }
         if t.count == 0 || t.count > 9 || t.max_live == 0 || t.carry_s <= 0.0 || t.throw_speed <= 0.0 || t.radius <= 0.0 || t.fuse_s <= t.arm_s || t.arm_s < 0.0 || !(0.0..=1.0).contains(&t.edge_frac) || !(0.0..=1.0).contains(&t.self_mult) || [t.gravity, t.flight_s, t.damage, t.knock, t.cut_pad, t.cooldown_s, t.stick_radius, t.drop_life_s].iter().any(|v| *v < 0.0) {

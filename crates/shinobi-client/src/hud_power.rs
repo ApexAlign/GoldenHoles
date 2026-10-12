@@ -43,6 +43,8 @@ pub struct PowerHud {
     pub glint: f32,
     pub callouts: Vec<Callout>,
     pub time: f32,
+    /// The bow's focus zoom (`zoom.rs`); the reticle ring, range readout and drop tick draw while it is above ~0.
+    pub zoom: Option<crate::zoom::ZoomView>,
 }
 
 /// Keeps the call-outs and the clocks between frames.
@@ -102,7 +104,7 @@ impl PowerHudFx {
         }
         let tag_on_me = view.power_world.tag_on(local_id).map(|t| TagOnMe { secs: t.fuse_left * shinobi_sim::power::TagCfg::default().fuse_s, armed: t.armed });
         let glint = if view.death.is_some() { 0.0 } else { glint_at(&view.power_world, local_id, view.eye) };
-        Some(PowerHud { view: view.power, tag_on_me, glint, callouts: self.callouts.clone(), time: self.time })
+        Some(PowerHud { view: view.power, tag_on_me, glint, callouts: self.callouts.clone(), time: self.time, zoom: Some(view.zoom).filter(|z| z.frac > 0.001 && view.death.is_none()) })
     }
 }
 
@@ -127,6 +129,9 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
     let Some(h) = &s.power else { return };
     if s.dead {
         return;
+    }
+    if let Some(z) = &h.zoom {
+        zoom_reticle(out, z, h.time, p, ax);
     }
     // call-outs, top centre under the match banner
     for (i, c) in h.callouts.iter().enumerate() {
@@ -203,6 +208,46 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
     }
 }
 
+/// Hip-fire ring radius (screen-height fraction) the zoom reticle starts from, and the radius it tightens to at focus.
+pub const ZOOM_RING_HIP: f32 = 0.075;
+pub const ZOOM_RING_FOCUS: f32 = 0.018;
+
+/// Screen-height offset below the centre of the arrow-drop tick: `tan(drop) / tan(fov / 2)` of the half height.
+pub fn drop_tick_offset(z: &crate::zoom::ZoomView) -> f32 {
+    (0.5 * z.drop_rad.tan() / (z.fov_deg.to_radians() * 0.5).tan()).clamp(0.0, 0.45)
+}
+
+/// The zoom's Tron look: a thin neon ring that tightens as the draw zooms in (and settles still at focus), a small range
+/// readout to the aimed point, a drop-compensation tick under the centre and a faint edge vignette. No scope mask.
+fn zoom_reticle(out: &mut Vec<Prim>, z: &crate::zoom::ZoomView, time: f32, p: &Palette, ax: f32) {
+    let f = z.frac.clamp(0.0, 1.0);
+    let col = if z.focus { Rgba(1.0, 0.95, 0.55, 1.0) } else { p.cyan };
+    let r = ZOOM_RING_HIP + (ZOOM_RING_FOCUS - ZOOM_RING_HIP) * f;
+    // the ring breathes while the aim is still settling and holds dead still at focus
+    let sway = if z.focus { 0.0 } else { f * 0.004 };
+    let c = (0.5 + sway * (time * 1.7).sin() * ax, 0.5 + sway * (time * 2.3).cos());
+    out.push(Prim::Vignette { start: 0.6, max_a: 0.2 * f, tint: p.bg.a(1.0) });
+    out.push(Prim::Ring { c, r, color: col.a(0.25 + 0.6 * f), fill: false, glow: if z.focus { 0.005 } else { 0.002 } });
+    if z.focus {
+        // four hairlines reach in from the ring: the steady-aim cue
+        let (a, b) = (r + 0.012, r + 0.032);
+        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            out.push(Prim::Line { a: (0.5 + dx * a * ax, 0.5 + dy * a), b: (0.5 + dx * b * ax, 0.5 + dy * b), color: col.a(0.8), glow: 0.003 });
+        }
+    }
+    // range readout to the right of the ring, under the draw-state label height
+    let text = match z.range {
+        Some(m) => format!("{:.0} M", m),
+        None => "--- M".to_string(),
+    };
+    out.push(Prim::Text { pos: (0.5 + (r + 0.02) * ax, 0.5 + 0.006), text, size: 0.016, color: col.a(0.35 + 0.6 * f), align: Align::Left });
+    // arrow drop at that range: a tick below the centre, where the arrow lands when loosed along the crosshair
+    let y = 0.5 + drop_tick_offset(z);
+    let w = 0.012 * ax;
+    out.push(Prim::Line { a: (0.5 - w, y), b: (0.5 + w, y), color: col.a(0.3 + 0.6 * f), glow: 0.002 });
+    out.push(Prim::Line { a: (0.5, y), b: (0.5, y + 0.008), color: col.a(0.3 + 0.6 * f), glow: 0.0 });
+}
+
 /// The bow's reload bar under the crosshair: a track with a gold fill that grows over the 2.2 s and brightens when ready.
 fn reload_bar(out: &mut Vec<Prim>, v: &PowerView, col: Rgba, ax: f32) {
     let (cx, y) = (0.5, 0.5 + RING_R + 0.022);
@@ -263,6 +308,69 @@ mod tests {
         assert!(!t0.iter().any(|t| t == "RELEASE") && !t1.iter().any(|t| t == "RELEASE"));
         assert!(t2.iter().any(|t| t == "RELEASE"));
         assert!(t0.iter().any(|t| t == "YUMI"), "{t0:?}");
+    }
+
+    fn zoom_hud(z: crate::zoom::ZoomView) -> Vec<Prim> {
+        let mut s = state(yumi_view(z.frac, 1.0));
+        s.power.as_mut().unwrap().zoom = Some(z);
+        let mut out = Vec::new();
+        draw(&mut out, &s, &Palette::TRON, 1.0);
+        out
+    }
+
+    fn zv(frac: f32, range: Option<f32>) -> crate::zoom::ZoomView {
+        let cfg = shinobi_sim::power::YumiCfg::default();
+        let fov = shinobi_sim::power::zoom_fov_deg(90.0, frac, &cfg);
+        crate::zoom::ZoomView { frac, fov_deg: fov, focus: frac >= 1.0, range, drop_rad: shinobi_sim::power::arrow_drop_angle(range.unwrap_or(150.0), &cfg) }
+    }
+
+    fn ring_r(out: &[Prim]) -> f32 {
+        out.iter().find_map(|x| if let Prim::Ring { r, .. } = x { Some(*r) } else { None }).unwrap()
+    }
+
+    #[test]
+    fn the_zoom_ring_tightens_with_the_zoom_and_the_readout_names_the_range() {
+        let (hip, half, full) = (zoom_hud(zv(0.1, Some(40.0))), zoom_hud(zv(0.5, Some(40.0))), zoom_hud(zv(1.0, Some(142.4))));
+        assert!(ring_r(&hip) > ring_r(&half) && ring_r(&half) > ring_r(&full), "{} {} {}", ring_r(&hip), ring_r(&half), ring_r(&full));
+        assert!((ring_r(&full) - ZOOM_RING_FOCUS).abs() < 1e-6);
+        assert!(texts(&full).iter().any(|t| t == "142 M"), "{:?}", texts(&full));
+        assert!(texts(&zoom_hud(zv(0.5, None))).iter().any(|t| t == "--- M"));
+        let vig = |o: &[Prim]| o.iter().find_map(|x| if let Prim::Vignette { max_a, .. } = x { Some(*max_a) } else { None }).unwrap();
+        assert!(vig(&full) > vig(&half) && vig(&full) <= crate::hud::VIGNETTE_MAX_A, "faint");
+        // no zoom: none of it
+        let mut s = state(yumi_view(0.0, 1.0));
+        s.power.as_mut().unwrap().zoom = None;
+        let mut out = Vec::new();
+        draw(&mut out, &s, &Palette::TRON, 1.0);
+        assert!(!out.iter().any(|x| matches!(x, Prim::Ring { .. } | Prim::Vignette { .. })));
+    }
+
+    #[test]
+    fn the_drop_tick_sits_below_the_centre_and_sinks_with_range() {
+        let near = drop_tick_offset(&zv(1.0, Some(50.0)));
+        let far = drop_tick_offset(&zv(1.0, Some(200.0)));
+        assert!(near > 0.0 && far > near && far < 0.45, "{near} {far}");
+        // 200 m at 30 deg FOV: 4 m/s^2 over 1.82 s = 6.6 m = 1.9 deg = about 0.062 of the screen height
+        assert!((far - 0.062).abs() < 0.01, "{far}");
+        // the same drop reads bigger on screen the tighter the FOV
+        let wide = drop_tick_offset(&crate::zoom::ZoomView { fov_deg: 90.0, ..zv(1.0, Some(200.0)) });
+        assert!(far > wide * 2.0);
+    }
+
+    #[test]
+    fn focus_holds_the_ring_still_and_hip_zoom_sways_it() {
+        let c = |out: &[Prim]| out.iter().find_map(|x| if let Prim::Ring { c, .. } = x { Some(*c) } else { None }).unwrap();
+        let at = |frac: f32, t: f32| {
+            let mut s = state(yumi_view(frac, 1.0));
+            s.power.as_mut().unwrap().time = t;
+            s.power.as_mut().unwrap().zoom = Some(zv(frac, None));
+            let mut out = Vec::new();
+            draw(&mut out, &s, &Palette::TRON, 1.0);
+            c(&out)
+        };
+        assert_eq!(at(1.0, 0.3), (0.5, 0.5));
+        assert_eq!(at(1.0, 1.9), (0.5, 0.5));
+        assert_ne!(at(0.6, 0.3), at(0.6, 1.9));
     }
 
     #[test]

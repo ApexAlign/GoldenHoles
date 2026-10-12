@@ -49,6 +49,14 @@ impl Default for ViewCfg {
     }
 }
 
+/// Scale 0..=1 of the first-person katana / shield / star while the bow is zoomed: full in hip-fire, gone by `zoom` 0.5
+/// (the hands are out of frame when you look down a long shot, and the overlay camera keeps its own FOV, so what is
+/// left would look wrong against the narrowed world).
+pub fn zoom_fade(zoom: f32) -> f32 {
+    let t = (1.0 - zoom.clamp(0.0, 1.0) * 2.0).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl ViewCfg {
     /// Visible half-width/half-height at `depth`: `d * tan(fov/2) * aspect`, `d * tan(fov/2)`.
     /// `fov_deg` is vertical; pass the camera's current value when it changes.
@@ -280,6 +288,18 @@ mod tests {
                 assert!(lo <= -1.0 && hi >= 1.0, "fov {fov} aspect {aspect} flip {flip}: x in [{lo}, {hi}]");
             }
         }
+    }
+
+    #[test]
+    fn the_hands_fade_out_as_the_bow_zooms() {
+        assert_eq!(zoom_fade(0.0), 1.0);
+        assert_eq!(zoom_fade(0.5), 0.0);
+        assert_eq!(zoom_fade(1.0), 0.0);
+        let (a, b) = (zoom_fade(0.1), zoom_fade(0.3));
+        assert!(1.0 > a && a > b && b > 0.0, "{a} {b}");
+        // the zoom ramp starts after the tap: a hip-fire draw leaves the hands alone
+        let cfg = shinobi_sim::power::YumiCfg::default();
+        assert_eq!(zoom_fade(shinobi_sim::power::zoom_of_draw(cfg.tap_s / cfg.draw_s, &cfg)), 1.0);
     }
 
     #[test]
