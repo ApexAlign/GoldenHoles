@@ -71,6 +71,13 @@ const EVADE_TICKS: u32 = 16;
 const EVADE_COOLDOWN: u32 = 50;
 const THREAT_MARGIN: f32 = 0.21; // ~12 deg: react before being fully on screen
 
+/// Stealth cloak (cloak.rs, docs/melee.md "Cloak"): range band a bot will try raising it in while approaching, one
+/// activation decision per this many ticks, and the window a "do I notice that cloaked foe" roll holds for.
+const CLOAK_TRY_MIN: f32 = 6.0;
+const CLOAK_TRY_MAX: f32 = 30.0;
+const CLOAK_DECIDE_TICKS: u32 = 90;
+const CLOAK_NOTICE_WINDOW_TICKS: u32 = 90;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Assignment {
     pub target: Option<u16>,
@@ -273,6 +280,8 @@ pub struct BotMem {
     /// Power weapons (docs/powerups.md, `power_bot.rs`): the brain and the look it wants this tick.
     power: crate::power_bot::PowerBrain,
     power_aim: Option<(f32, f32)>,
+    /// Stealth cloak (cloak.rs): next tick a fresh activation roll is allowed (`CLOAK_DECIDE_TICKS`).
+    cloak_try_ok: u32,
 }
 
 impl BotMem {
@@ -327,6 +336,7 @@ impl BotMem {
             flash_ok: 0,
             power: Default::default(),
             power_aim: None,
+            cloak_try_ok: 0,
         }
     }
 
@@ -341,15 +351,30 @@ impl BotMem {
 
     pub fn perceive(&self, ctx: &ThinkCtx) -> Perception {
         let me = ctx.me;
-        let target = ctx.assign.target.and_then(|id| ctx.world.player(id)).filter(|t| t.alive).map(|t| {
+        let target = ctx.assign.target.and_then(|id| ctx.world.player(id)).filter(|t| t.alive).and_then(|t| {
             let dist = (t.pos - me.pos).norm();
+            // a cloaked, quiet foe is noticed only with a skill-scaled chance per decision window (docs/melee.md
+            // "Cloak"): bots are not trivially blind, but are not trivially all-seeing either. Sprinting, dashing
+            // or roping gives the cloak away regardless (`cloak_loud`).
+            if t.cloaked && !t.cloak_loud && !self.notices_cloak(ctx.world.tick, t.id, dist) {
+                return None;
+            }
             let los = dist < 80.0 && ctx.world.los(me.eye(), t.eye());
             let angles = ctx.frustum.angles(t.eye(), t.yaw, t.pitch, me.pos);
             let on_screen = los && ctx.frustum.contains(t.eye(), t.yaw, t.pitch, me.pos, 0.0);
             let near_screen = los && ctx.frustum.contains(t.eye(), t.yaw, t.pitch, me.pos, THREAT_MARGIN);
-            TargetInfo { view: *t, dist, los, angles, on_screen, near_screen }
+            Some(TargetInfo { view: *t, dist, los, angles, on_screen, near_screen })
         });
         Perception { target }
+    }
+
+    /// Chance to notice a cloaked, quiet target this decision window (`CLOAK_NOTICE_WINDOW_TICKS`): full strength
+    /// (`skill.cloak_notice`) within a few metres, fading to a quarter of it by 18 m. One roll per window (keyed on
+    /// `tick / window`, not `tick`), so a foe is not spotted for certain within a second of passing nearby.
+    fn notices_cloak(&self, tick: u32, target_id: u16, dist: f32) -> bool {
+        let near = (1.0 - dist / 18.0).clamp(0.0, 1.0);
+        let p = (self.skill.cloak_notice * (0.25 + 0.75 * near)).clamp(0.0, 1.0);
+        Rng::new(self.seed, target_id, tick / CLOAK_NOTICE_WINDOW_TICKS, 11).chance(p)
     }
 
     fn strike_ready(&self, ctx: &ThinkCtx) -> bool {
@@ -566,6 +591,23 @@ impl BotMem {
             }
         }
 
+        // ---- 7b. stealth cloak (cloak.rs, docs/melee.md "Cloak"): approach a target at medium range cloaked, for a
+        // shot at a stealth kill. Own state only (fair play: never peeks at another player's hidden fields).
+        let mut cloak_held = false;
+        if let Some(own) = ctx.world.server.players.iter().find(|q| q.id == self.id) {
+            if own.cloak.active {
+                // keep holding while there is still something to approach; dropping it mid-walk wastes the charge
+                cloak_held = p.target.is_some() && !matches!(self.phase, Phase::Retreat | Phase::Evade { .. });
+            } else if own.cloak.cooldown <= 0.0
+                && matches!(self.phase, Phase::Advance | Phase::Flank)
+                && p.target.map_or(false, |t| (CLOAK_TRY_MIN..=CLOAK_TRY_MAX).contains(&t.dist))
+                && tick >= self.cloak_try_ok
+            {
+                self.cloak_try_ok = tick + CLOAK_DECIDE_TICKS;
+                cloak_held = rng.chance(self.skill.cloak_skill);
+            }
+        }
+
         // wall-run bookkeeping (stats only)
         let wr = matches!(me.state, shinobi_sim::character::MoveState::WallRun { .. });
         if wr && !self.was_wallrun {
@@ -599,6 +641,7 @@ impl BotMem {
             mark: false,
             star: if buttons & Buttons::FIRE != 0 { self.star_pick } else { 0 },
             draw: pout.draw && !blocking,
+            cloak: cloak_held && !blocking,
         };
         // leaving Strike hands the ticket back
         if released {

@@ -114,6 +114,9 @@ pub struct PvpHit {
     pub cause: Cause,
     /// A headshot (shuriken above `HeadCfg::min_height`).
     pub head: bool,
+    /// The attacker was still cloaked when this hit left their hands / blade: a stealth kill
+    /// (`combat.cloak.stealth_mult`, see `apply_hits`). Never set on a hazard hit.
+    pub stealth: bool,
 }
 
 pub fn new_vitals(world: &mut PhysicsWorld, cfg: &Cfg, id: u16, spawn: [f32; 3], max_hp: f32) -> Vitals {
@@ -227,7 +230,7 @@ pub fn player_hits(
                     let centre_y = world.colliders.get(collider).map_or(point.y, |c| c.translation().y);
                     let is_head = kind == DamageKind::Shuriken && point.y - centre_y >= head.min_height;
                     let amount = if is_head { amount * head.mult } else { amount };
-                    out.push(PvpHit { attacker: atk.id, victim: v, amount, cause: Cause::Weapon(kind), head: is_head });
+                    out.push(PvpHit { attacker: atk.id, victim: v, amount, cause: Cause::Weapon(kind), head: is_head, stealth: false });
                 }
             }
         }
@@ -247,7 +250,7 @@ pub fn player_hits(
             }
             let Some((p0, p1)) = rewound_segment(&p.history, rt) else { continue };
             if swept_hit([a0.x, a0.y, a0.z], [a1.x, a1.y, a1.z], body, p0, p1, hit_body(cfg)).is_some() {
-                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash), head: false });
+                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash), head: false, stealth: false });
                 // the box test missed this target (it moved across the tick), so no raw `Damage` exists yet: emit
                 // it, so every `PvpEvent::Hit` has its combat-side twin (FX, hit markers, bookkeeping)
                 synthesized.push(CombatEvent::Damage {
@@ -273,7 +276,7 @@ pub fn void_hits(players: &[Player], world: &PhysicsWorld, plane_y: f32, tick: u
         .map(|(i, p)| {
             // ring-out: whoever hit this player a moment ago gets the kill
             let pusher = p.melee.last_hit.filter(|(_, t)| melee.ring_ticks > 0 && tick.wrapping_sub(*t) <= melee.ring_ticks).map(|(a, _)| a);
-            PvpHit { attacker: pusher.unwrap_or(NO_ATTACKER), victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false }
+            PvpHit { attacker: pusher.unwrap_or(NO_ATTACKER), victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false, stealth: false }
         })
         .collect()
 }
@@ -288,6 +291,7 @@ pub fn apply_hits(
     respawn_ticks: u32,
     block: &crate::block::BlockCfg,
     melee: &crate::melee::MeleeCfg,
+    cloak: &crate::cloak::CloakCfg,
     out: &mut Vec<PvpEvent>,
 ) {
     let mut died: Vec<usize> = Vec::new();
@@ -373,7 +377,12 @@ pub fn apply_hits(
                         let v = &players[h.victim];
                         (v.blk.mercy(tick), v.blk.open(tick), v.blk.staggered(tick), v.vitals.hp, v.vitals.max_hp)
                     };
-                    if kind == DamageKind::Slash && melee.executes(vhp, vmax, stunned) {
+                    if h.stealth && cloak.stealth_mult > 0.0 {
+                        // stealth kill: a first strike landed while the attacker was still cloaked (cloak.rs) hits
+                        // like an execute, same pattern as `melee.exec_frac` below
+                        amount *= cloak.stealth_mult;
+                        bonus = true;
+                    } else if kind == DamageKind::Slash && melee.executes(vhp, vmax, stunned) {
                         // execute: a stunned player at low hp does not survive a blow
                         amount = amount.max(vhp);
                         bonus = true;
@@ -663,6 +672,7 @@ mod tests {
         mark: false,
         star: 0,
         draw: false,
+        cloak: false,
     };
 
     #[test]

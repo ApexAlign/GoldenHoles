@@ -67,6 +67,8 @@ pub struct Replicator {
     log: Vec<String>,
     /// Last rope anchor (1/512 m) broadcast per roped player: changes become `RopeAttach` / `RopeRelease`.
     ropes: HashMap<u16, [i32; 3]>,
+    /// Players currently broadcast as cloaked (`cloak.rs`); edges become `CloakFx`.
+    cloaks: std::collections::HashSet<u16>,
     /// Last team broadcast per player (`TeamAssign`), and the last `TeamScore` sent.
     teams: HashMap<u16, u8>,
     /// Last custom look broadcast per player (`CharacterLook`).
@@ -103,6 +105,7 @@ impl Replicator {
             features: Features::default(),
             log: Vec::new(),
             ropes: HashMap::new(),
+            cloaks: std::collections::HashSet::new(),
             teams: HashMap::new(),
             looks: HashMap::new(),
             last_team_score: None,
@@ -201,6 +204,12 @@ impl Replicator {
         for (player, anchor) in roped {
             st.outbox.push(NetEvent::RopeAttach { tick: now_tick, player, anchor });
         }
+        // players already cloaked when this peer joined (sorted: deterministic)
+        let mut cloaked: Vec<u16> = self.cloaks.iter().copied().collect();
+        cloaked.sort_unstable();
+        for player in cloaked {
+            st.outbox.push(NetEvent::CloakFx { tick: now_tick, player, on: true });
+        }
         self.peers.insert(id, st);
     }
 
@@ -211,6 +220,9 @@ impl Replicator {
         }
         if self.ropes.remove(&id).is_some() {
             self.broadcast(NetEvent::RopeRelease { tick: now_tick, player: id });
+        }
+        if self.cloaks.remove(&id) {
+            self.broadcast(NetEvent::CloakFx { tick: now_tick, player: id, on: false });
         }
         self.peers.remove(&id);
     }
@@ -242,6 +254,7 @@ impl Replicator {
         // The sim clears these event vecs at the start of its next `frame()`: drain now or lose them.
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
+        self.sync_cloaks(server, tick);
         self.sync_teams(server, tick);
         self.sync_looks(server);
         self.sync_blocks(server);
@@ -450,6 +463,22 @@ impl Replicator {
                     self.broadcast(NetEvent::RopeRelease { tick, player: p.id });
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Stealth cloak edges (`cloak.rs`) -> reliable `CloakFx`: everyone can see the shimmer, so this is a plain
+    /// broadcast like a rope attach, not an owner-only fact.
+    fn sync_cloaks(&mut self, server: &Server, tick: u32) {
+        for p in &server.players {
+            let now = p.vitals.alive() && p.cloak.active;
+            let was = self.cloaks.contains(&p.id);
+            if now && !was {
+                self.cloaks.insert(p.id);
+                self.broadcast(NetEvent::CloakFx { tick, player: p.id, on: true });
+            } else if !now && was {
+                self.cloaks.remove(&p.id);
+                self.broadcast(NetEvent::CloakFx { tick, player: p.id, on: false });
             }
         }
     }

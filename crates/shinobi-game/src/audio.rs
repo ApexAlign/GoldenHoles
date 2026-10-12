@@ -883,7 +883,11 @@ mod backend {
             if let Some(prev) = st.prev_pos.get(&id16) {
                 let d = [smp.pos[0] - prev[0], smp.pos[2] - prev[2]];
                 let speed = (d[0] * d[0] + d[1] * d[1]).sqrt() / dt.max(1e-3);
-                if speed < 40.0 && (smp.pos[1] - prev[1]).abs() < 0.05 {
+                // stealth cloak (cloak.rs): a cloaked player's footsteps are a tell only while loud (sprinting /
+                // dashing); a slow walk or crouch stays as quiet as the shimmer looks
+                let cloaked = net.0.game.net.is_cloaked(*id);
+                let quiet = cloaked && !shinobi_sim::cloak::loud(speed, net.0.game.cfg.sim.run_speed, false, false);
+                if speed < 40.0 && (smp.pos[1] - prev[1]).abs() < 0.05 && !quiet {
                     frame.remote_moving.push((id16, smp.pos, speed));
                 }
             }

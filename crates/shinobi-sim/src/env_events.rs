@@ -297,7 +297,7 @@ impl Server {
                 continue;
             }
             let k = 1.0 - 0.6 * (d / r).min(1.0);
-            hits.push(PvpHit { attacker: NO_ATTACKER, victim: j, amount: cfg.bolt_player_dmg * k, cause: Cause::Hazard(LIGHTNING), head: false });
+            hits.push(PvpHit { attacker: NO_ATTACKER, victim: j, amount: cfg.bolt_player_dmg * k, cause: Cause::Hazard(LIGHTNING), head: false, stealth: false });
             // launched away from the strike, and up
             let (dx, dz) = (pp[0] - b.pos[0], pp[2] - b.pos[2]);
             let dl = (dx * dx + dz * dz).sqrt().max(1e-3);

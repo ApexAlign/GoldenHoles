@@ -141,6 +141,8 @@ pub struct CombatBalance {
     /// Power weapons: the yumi (every player's primary bow) and the explosive tag (pickup) (`power.rs`, docs/powerups.md).
     pub power: crate::power::PowerCfg,
     pub katana: KatanaBalance,
+    /// Stealth cloak (`cloak.rs`, docs/melee.md "Cloak").
+    pub cloak: crate::cloak::CloakCfg,
     /// Horizontal speed (m/s) a hit gives an enemy, before its own `knockback_scale`.
     pub knockback_slash: f32,
     pub knockback_shuriken: f32,
@@ -584,6 +586,7 @@ impl Default for Balance {
                 },
                 star: s.star,
                 power: crate::power::PowerCfg::default(),
+                cloak: crate::cloak::CloakCfg::default(),
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0, whiff_recover: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
@@ -847,6 +850,11 @@ impl Balance {
         b.hazards.obstacle_damage = 60.0;
         b.hazards.rearm_ticks = 60;
         b.hazards.owner_immune = true;
+        // cloak: 6 s of charge, 5 s cooldown after it ends or breaks; a katana hit landed while still cloaked is
+        // 6x damage (120 against the demo's 100 hp: a guaranteed stealth kill, same pattern as `melee.exec_frac`)
+        b.combat.cloak.duration_s = 6.0;
+        b.combat.cloak.cooldown_s = 5.0;
+        b.combat.cloak.stealth_mult = 6.0;
         b.matches.warmup_ticks = 3 * crate::match_state::TICK_HZ;
         b.matches.min_players = 1;
         b.matches.frag_limit = 10;
@@ -1184,6 +1192,9 @@ impl Balance {
         s!("combat.tag.cooldown_s", F, self.combat.power.tag.cooldown_s);
         s!("combat.tag.stick_radius", F, self.combat.power.tag.stick_radius);
         s!("combat.tag.drop_life_s", F, self.combat.power.tag.drop_life_s);
+        s!("combat.cloak.duration_s", F, self.combat.cloak.duration_s);
+        s!("combat.cloak.cooldown_s", F, self.combat.cloak.cooldown_s);
+        s!("combat.cloak.stealth_mult", F, self.combat.cloak.stealth_mult);
 
         s!("blocks.thickness", F, self.blocks.thickness);
         s!("blocks.max_per_owner", U, self.blocks.max_per_owner);
@@ -1363,6 +1374,10 @@ impl Balance {
         }
         if t.count == 0 || t.count > 9 || t.max_live == 0 || t.carry_s <= 0.0 || t.throw_speed <= 0.0 || t.radius <= 0.0 || t.fuse_s <= t.arm_s || t.arm_s < 0.0 || !(0.0..=1.0).contains(&t.edge_frac) || !(0.0..=1.0).contains(&t.self_mult) || [t.gravity, t.flight_s, t.damage, t.knock, t.cut_pad, t.cooldown_s, t.stick_radius, t.drop_life_s].iter().any(|v| *v < 0.0) {
             e.push("combat.tag.*: count 1..9, max_live >= 1, fuse_s > arm_s >= 0, radius / throw_speed / carry_s > 0, edge_frac and self_mult 0..1, the rest >= 0".into());
+        }
+        let c = &self.combat.cloak;
+        if c.duration_s < 0.0 || c.cooldown_s < 0.0 || c.stealth_mult < 0.0 {
+            e.push("combat.cloak.*: duration_s, cooldown_s and stealth_mult must be >= 0".into());
         }
         let m = &self.melee;
         if [m.momentum_per_mps, m.momentum_cap, m.knock_speed, m.knock_pop, m.juggle_up, m.splat_window_s, m.splat_damage, m.splat_stun_s, m.ring_window_s, m.mark_window_s, m.mark_bonus, m.streak_window_s, m.streak_bonus, m.streak_heal, m.exec_frac, m.slam_speed, m.shock_radius, m.shock_knock, m.counter_window_s].iter().any(|v| *v < 0.0) {

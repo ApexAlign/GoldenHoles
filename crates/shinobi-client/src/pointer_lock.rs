@@ -88,10 +88,11 @@ fn bit(a: Action) -> u16 {
         Action::StarPrev => 12,
         Action::Katana => 13,
         Action::Bow => 14,
+        Action::Cloak => 15,
     }
 }
 
-const ALL: [Action; 15] = [Action::Jump, Action::Dash, Action::Roll, Action::Slice, Action::Fire, Action::Cling, Action::Slide, Action::Grapple, Action::BuildFloor, Action::BuildWall, Action::Block, Action::StarNext, Action::StarPrev, Action::Katana, Action::Bow];
+const ALL: [Action; 16] = [Action::Jump, Action::Dash, Action::Roll, Action::Slice, Action::Fire, Action::Cling, Action::Slide, Action::Grapple, Action::BuildFloor, Action::BuildWall, Action::Block, Action::StarNext, Action::StarPrev, Action::Katana, Action::Bow, Action::Cloak];
 
 impl ButtonTracker {
     pub fn apply(&mut self, e: &ButtonEvent) {

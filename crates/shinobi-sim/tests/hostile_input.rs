@@ -120,6 +120,7 @@ fn fuzz(seed: u64, players: u16, ticks: u32) {
         mark: false,
                     star: (h.yaw & 3) as u8,
                     draw: h.yaw & 4 != 0,
+                    cloak: false,
                 })
                 .collect();
             seqs[i] = seqs[i].wrapping_add(1);

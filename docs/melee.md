@@ -123,4 +123,49 @@ Parry is a TIMED BLOCK on the existing block button; there is no new key. The de
 - Arrows: a block raised inside the parry window negates the arrow and reflects it back along the line to the shooter (no guard drain). A plain held shield takes `block_drain` and the arrow's damage cut (`front_mult`); a headshot is not stopped any further by a plain shield, only a timed parry negates it.
 - Bots (`SkillParams::parry_skill`: 0.2 / 0.5 / 0.85 for easy / normal / hard): they raise for an arrow about 5 ticks before impact with probability `parry_skill`, and read a foe in cutting range that faces them with a ready blade with a per-tick roll of `parry_skill / 30`. A raise lasts 14 ticks only, so bots never hold a shield up; a wrong guess costs them the 1 s lockout.
 - The client's cooldown prediction (`predict_slice`) does not know about whiffs (the server decides), the same gap as for heavy cuts; a whiffed swing is corrected by reconciliation.
+
+## Cloak: a stealth window, not invisibility (`cloak.rs`; `combat.cloak.*` keys)
+
+The LAST piece of the combat redesign. The arena is a bright Tron grid, so a cloak that made a player literally
+invisible would read as a bug; instead it is a cosmetic stealth window with a reward attached to using it well.
+
+**Key:** `F` (held). The server's `CloakState` (`cloak.rs`) is the only authority on whether the cloak is actually up;
+the key is just the want-to-be-cloaked signal (`PlayerIntent.cloak`, a held wire bit like `block` / `draw`).
+
+**Numbers (`Balance::demo().combat.cloak`):**
+
+| Knob | Value | What it does |
+| --- | --- | --- |
+| `duration_s` | 6 s | Charge a fresh activation gets; drains to empty while held. |
+| `cooldown_s` | 5 s | Seconds before the cloak can be raised again, after it ends or breaks by ANY means. |
+| `stealth_mult` | 6x | Damage multiplier of a hit landed while the attacker is still cloaked. |
+
+**Breaks the cloak at once** (and starts the cooldown): releasing the key early, running out of charge, attacking
+(a katana swing, a star throw, a bow shot or the ultimate) and taking any damage. A cloak is a one-shot gamble, not a
+sustained advantage — the moment it is used for anything, it is gone.
+
+**Stealth kill.** A hit (any weapon) landed while the attacker is still cloaked is multiplied by `stealth_mult`
+(`pvp::apply_hits`, same slot as `melee.exec_frac`): at the demo's katana damage (20) and 100 hp, that is a guaranteed
+one-hit kill, same pattern as an execute. It only applies to a clean hit (`block::Guard::None`) — a block or a parry
+still works exactly as it would against an uncloaked attacker.
+
+**Visual (client-only, no gameplay effect):** not full invisibility. A cloaked player's distance aids (the head gem
+and the beacon) are hidden outright, and the glow aura shrinks to a faint flicker (`play.rs::sync_remotes`) — easy to
+miss at range, still a silhouette up close. The predator lock-on also will not auto-acquire a cloaked foe
+(`CombatSystem::hidden`), though a manual aim that finds them still hits normally.
+
+**Noise:** a cloaked player's footsteps are a tell only while loud — sprinting, dashing, or the grapple attached
+(`cloak::loud`); a slow walk or a crouch stays as quiet as the shimmer looks (`audio.rs`, gated the same way for
+other players' footstep cues). Dashing and hook-shots are never silenced regardless of cloak.
+
+**Bots** (`SkillParams::cloak_skill` / `cloak_notice`: 0.15/0.2, 0.45/0.5, 0.8/0.85 for easy/normal/hard):
+approaching a target at 6-30 m while advancing or flanking, a bot rolls `cloak_skill` once per ~1.5 s decision window
+to raise its own cloak for a stealth kill attempt (`fsm::think`). Perceiving a cloaked, quiet enemy is gated by
+`cloak_notice`, scaled up close and faded by 18 m, rolled once per decision window rather than every tick (so a
+cloaked player is not spotted for certain within a second of passing by); a loud cloaked foe (sprinting, dashing,
+roped) is always noticed.
+
+Tests: `crates/shinobi-sim/src/cloak.rs` (activation, drain to expiry, cooldown gating, voluntary release, `brk`,
+`clear`, the loudness tell) and `crates/shinobi-sim/tests/cloak_stealth.rs` (server-level: break on attack, break on
+taking damage, the stealth-kill bonus through a live `Server`).
 - Soak note: the Split / Hive / Clock bot soaks are chaotic. Any change to bot choices can expose an existing nav wedge in "flank" (a bot pinned to a wall). On default seeds they pass; on a sweep of seeds 1..10 the baseline wedges on 1 of 20 runs (split seed 4) and this branch on 2 of 16 (split seed 1, hive seed 5).

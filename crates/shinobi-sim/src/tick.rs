@@ -98,6 +98,8 @@ pub struct Player {
     pub blind_until: u32,
     /// The weapon in hand: the bow (default) or fuda tags (`power.rs`).
     pub power: crate::power::PowerState,
+    /// Stealth cloak (`cloak.rs`, docs/melee.md "Cloak").
+    pub cloak: crate::cloak::CloakState,
 }
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
@@ -303,6 +305,7 @@ impl Server {
             melee: Default::default(),
             blind_until: 0,
             power: Default::default(),
+            cloak: Default::default(),
         });
     }
 
@@ -559,6 +562,9 @@ impl Server {
             }
             // dead players neither move nor fight (their intents are still consumed, so nothing queues up)
             if frozen || !self.players[i].vitals.alive() {
+                if !self.players[i].vitals.alive() {
+                    self.players[i].cloak.clear();
+                }
                 continue;
             }
             let mut it = intent.unwrap_or_default();
@@ -578,6 +584,12 @@ impl Server {
             // (skipped when nothing can query: the rebuild is the expensive part with many players)
             // a raised shield or a stagger (parried) means no throwing, cutting or dashing
             let shut = self.players[i].blk.held || self.players[i].blk.staggered(tick);
+            // stealth cloak (cloak.rs, docs/melee.md "Cloak"): a held press drains it; an attack this tick (below)
+            // breaks it at once. `was_cloaked` is this tick's state BEFORE that break, so a swing thrown the instant
+            // the cloak ends is still the stealth kill.
+            let cloak_cfg = self.balance.combat.cloak;
+            self.players[i].cloak.update(dt, it.cloak && !shut, !shut, &cloak_cfg);
+            let was_cloaked = self.players[i].cloak.active;
             let slice_in = it.buttons.has(Buttons::SLICE) && !shut;
             // power weapons (docs/powerups.md): the bow and the tags take the right button over while they are in hand
             let mut fire_in = it.buttons.has(Buttons::FIRE) && !shut;
@@ -590,6 +602,10 @@ impl Server {
                 p.power.update(dt, &crate::power::PowerInput { draw: it.draw && !shut, fire: fire_in, live_tags: live, armed_tags: armed, can_act: !shut }, &pcfg, &mut pev);
                 if p.power.blocks_star() {
                     fire_in = false;
+                }
+                // a loosed arrow or a thrown tag is an attack: breaks the cloak just like a katana swing
+                if pev.iter().any(|e| matches!(e, crate::power::PowerEvent::Loose | crate::power::PowerEvent::TagThrow)) {
+                    p.cloak.brk(&cloak_cfg);
                 }
                 let dir = aim.forward();
                 for ev in pev {
@@ -609,6 +625,10 @@ impl Server {
                 // teammates AND the owner's own hitbox: never assisted toward, locked onto, hit or bounced off
                 let allies: Vec<ColliderHandle> =
                     self.players.iter().enumerate().filter(|(j, q)| *j == i || allied(team, q.team)).map(|(_, q)| q.vitals.hitbox).collect();
+                // a cloaked foe never auto-acquires the lock-on (docs/melee.md "Cloak"): harder to spot, not immune to a
+                // manual aim, which still sees the shimmer and can still hit them
+                let hidden: Vec<ColliderHandle> =
+                    self.players.iter().filter(|q| q.cloak.active && q.vitals.alive() && !allied(team, q.team)).map(|q| q.vitals.hitbox).collect();
                 // katana moves: the parried attacker's hitbox (counter cut), the shield just lowered (whirl cut)
                 let counter = self.players[i]
                     .kmoves
@@ -617,6 +637,7 @@ impl Server {
                 let just_unblocked = self.players[i].kmoves.just_unblocked(tick);
                 let p = &mut self.players[i];
                 p.combat.allies = allies;
+                p.combat.hidden = hidden;
                 p.combat.suppress_lock = tick < p.blind_until;
                 p.combat.set_moves(crate::combat::MoveCtx { counter, just_unblocked });
                 p.combat.update(
@@ -641,6 +662,10 @@ impl Server {
             if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
                 self.players[i].blk.open_for(tick, bcfg.swing_open_ticks);
             }
+            // a katana swing or a star throw is an attack: breaks the cloak at once, same as a bow/tag above
+            if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. } | CombatEvent::ShurikenThrown { .. } | CombatEvent::UltimateStart { .. })) {
+                self.players[i].cloak.brk(&cloak_cfg);
+            }
             // katana moves: an air cut slams what it hits (settled in `apply_hits`), a counter cut spends the window
             for e in &ev {
                 if let CombatEvent::Slash { kind, .. } = *e {
@@ -655,6 +680,13 @@ impl Server {
             let head = pvp::HeadCfg { min_height: self.balance.combat.head_min_height, mult: self.balance.combat.headshot_mult };
             let first_hit = hits.len();
             hits.extend(pvp::player_hits(&self.world, &self.players, i, &ev, tick, &self.cfg, head, &mut synthesized));
+            // stealth kill: a hit this attacker landed on someone else while still cloaked (`was_cloaked`, captured
+            // before the attack broke it above) is marked for the bonus in `apply_hits`
+            if was_cloaked {
+                for h in hits[first_hit..].iter_mut() {
+                    h.stealth = true;
+                }
+            }
             // wall clash: the first katana hit inside the window wins the exchange: bigger hit, loser thrown off the wall
             if let Some((foe, until)) = self.players[i].clash {
                 if tick <= until {
@@ -759,7 +791,7 @@ impl Server {
                 if let Some(by) = mcfg.splat(&mut p.melee, moved, airborne, tick) {
                     p.blk.stagger_until = tick + mcfg.splat_stagger_ticks;
                     p.blk.open_for(tick, mcfg.splat_stagger_ticks);
-                    hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false });
+                    hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false, stealth: false });
                 }
             }
             // air-cut slam: when the slammed player lands, a shock-wave goes off (applied once everyone has moved)
@@ -842,8 +874,17 @@ impl Server {
                 }
             }
         }
+        // taking any damage breaks a cloak at once (cloak.rs): a stealth kill is a free first hit, not a free fight
+        let cloak_cfg = self.balance.combat.cloak;
+        for h in &hits {
+            if h.amount > 0.0 {
+                if let Some(v) = self.players.get_mut(h.victim) {
+                    v.cloak.brk(&cloak_cfg);
+                }
+            }
+        }
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &self.balance.combat.cloak, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {

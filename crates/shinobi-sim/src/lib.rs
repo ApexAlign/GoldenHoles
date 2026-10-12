@@ -9,6 +9,7 @@ pub mod block;
 pub mod blocks;
 pub mod breaks;
 pub mod character;
+pub mod cloak;
 pub mod combat;
 pub mod enemies;
 pub mod env_events;
