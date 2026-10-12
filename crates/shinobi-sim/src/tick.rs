@@ -96,7 +96,7 @@ pub struct Player {
     pub melee: crate::melee::MeleeState,
     /// White-out from a flash star lasts until this tick: no lock-on forms and the lock breaks (`star_pass.rs`).
     pub blind_until: u32,
-    /// The power weapon in hand: yumi or fuda tags (`power.rs`).
+    /// The weapon in hand: the bow (default) or fuda tags (`power.rs`).
     pub power: crate::power::PowerState,
 }
 
@@ -186,8 +186,6 @@ pub struct Server {
     /// Owners that pressed detonate this tick, and the counter that names arrows / tags / floor drops.
     pub(crate) power_launch: Vec<crate::power_pass::Launch>,
     pub(crate) power_uid: u16,
-    /// Tag blasts of the last power pass (owner, centre): the next `star_pass` lets them set off barrels and canisters.
-    pub(crate) pending_blasts: Vec<(u16, [f32; 3])>,
     pub(crate) drop_seq: u32,
     /// Movement-only broad phase (solid colliders), rebuilt once per tick before the player loop.
     solid_queries: QueryPipeline,
@@ -238,7 +236,6 @@ impl Server {
             arrows: Vec::new(),
             tags: Vec::new(),
             power_launch: Vec::new(),
-            pending_blasts: Vec::new(),
             power_uid: 0,
             drop_seq: 0,
             solid_queries: QueryPipeline::new(),
@@ -384,8 +381,12 @@ impl Server {
         });
     }
 
-    /// Fixed power-weapon pedestal (the yumi or a fuda tag, `power.rs`): up at tick 0, `respawn_secs` after each pickup.
+    /// Fixed power-weapon pedestal (a fuda tag, `power.rs`): up at tick 0, `respawn_secs` after each pickup. The yumi is
+    /// every player's own bow now, so a `yumi` pedestal in a level file is ignored.
     pub fn add_weapon_pickup(&mut self, id: u32, pos: [f32; 3], weapon: crate::power::PowerKind, respawn_secs: f32) {
+        if weapon != crate::power::PowerKind::Tag {
+            return;
+        }
         self.pickups.add_point(crate::pickups::PickupPoint {
             id,
             pos,

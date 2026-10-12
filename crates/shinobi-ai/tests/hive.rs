@@ -145,6 +145,7 @@ fn hive_bots_fight_without_freezing_or_walking_into_the_well() {
         // the well is a 190 m drop: slashes launch their victims and a ring-out is a kill (credited, not counted here); walking, dashing or lunging in by themselves is a bug
         assert!(r.void_deaths <= 5, "seed {seed}: {} bots walked or fell into the well in 240 s", r.void_deaths);
         assert!(r.tiers_seen >= 4, "seed {seed}: bots only stood on {} floor(s)", r.tiers_seen);
-        assert!(r.kills >= 100, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
+        // (was 100 before stars became a 14 m close-range tool: the bots' long pokes are gone, the bow only partly makes up for it)
+        assert!(r.kills >= 70, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
     }
 }

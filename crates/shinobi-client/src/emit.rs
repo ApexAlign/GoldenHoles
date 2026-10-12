@@ -272,16 +272,6 @@ impl EmitterSystem {
                 em.seed = tick;
                 self.out.push(em);
             }
-            // a barrel / canister landed (ours, predicted): a small grey-white puff off the surface
-            CombatEvent::StarStuck { pos, normal, .. } => {
-                let mut em = self.mk(EmitterKind::HitSpark, p.text, 2.0);
-                em.origin = [pos.x, pos.y, pos.z];
-                em.dir = norm3([normal.x, normal.y, normal.z], [0.0, 1.0, 0.0]);
-                em.count = 8;
-                em.spread = 0.7;
-                em.seed = tick;
-                self.out.push(em);
-            }
             // flash burst (predicted for our own throws): white sparks in every direction; the volume FX is the world layer's
             CombatEvent::StarFlash { pos } => {
                 let mut em = self.mk(EmitterKind::HitSpark, p.text, 6.0);
@@ -294,7 +284,7 @@ impl EmitterSystem {
                 self.out.push(em);
             }
             // server-side outcomes: the world FX layer draws them from `NetEvent::StarFx`
-            CombatEvent::StarBurst { .. } | CombatEvent::StarGone { .. } | CombatEvent::StarBlind { .. } => {}
+            CombatEvent::StarBlind { .. } => {}
             CombatEvent::Recoil { .. } | CombatEvent::PickedUp { .. } | CombatEvent::GrappleRelease { .. } | CombatEvent::PowerFx { .. } => {}
         }
     }

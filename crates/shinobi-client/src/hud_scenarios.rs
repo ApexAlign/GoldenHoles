@@ -174,14 +174,12 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     let full = HudState { star: Some(StarHud { charges: 6.0, max: 6.0, flash: Some(0.15), idle: 0.1, ..Default::default() }), ..base() };
     out.push(("star_refill_flash", Hud::build_with(&full, &p)));
     // star variants: the selector under the pips (cost rings on the pips a throw spends), a fresh switch with its blurb, a cycle hint,
-    // an unaffordable barrel, and the flash white-out
+    // an unaffordable flash, and the flash white-out
     {
         use shinobi_sim::combat::stars::StarKind;
         let sel = |k: StarKind, c: f32, sw: Option<f32>| HudState { star: Some(StarHud { charges: c, max: 6.0, idle: 0.2, sel: k, switched: sw, ..Default::default() }), ..base() };
-        out.push(("star_sel_barrel", Hud::build_with(&sel(StarKind::Barrel, 6.0, Some(0.3)), &p)));
-        out.push(("star_sel_flash", Hud::build_with(&sel(StarKind::Flash, 5.0, None), &p)));
-        out.push(("star_sel_canister", Hud::build_with(&sel(StarKind::Canister, 4.0, Some(0.3)), &p)));
-        out.push(("star_sel_barrel_dry", Hud::build_with(&sel(StarKind::Barrel, 2.0, None), &p)));
+        out.push(("star_sel_flash", Hud::build_with(&sel(StarKind::Flash, 5.0, Some(0.3)), &p)));
+        out.push(("star_sel_flash_dry", Hud::build_with(&sel(StarKind::Flash, 1.0, None), &p)));
         let hint = HudState { hint: Some((HintId::StarCycle, 1.0)), ..sel(StarKind::Standard, 5.0, None) };
         out.push(("star_cycle_hint", Hud::build_with(&hint, &p)));
         let blind = HudState { blind: 0.75, ..sel(StarKind::Standard, 5.0, None) };
@@ -194,17 +192,19 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         use crate::power_view::PowerView;
         use shinobi_sim::power::{PowerCfg, PowerKind, PowerState};
         let cfg = PowerCfg::default();
-        let yumi = |draw: f32, ammo: u8| {
+        let yumi = |draw: f32, reload: f32| {
             let mut s = PowerState::default();
-            s.grant(PowerKind::Yumi, ammo, 0.0, &cfg);
+            s.cooldown = cfg.yumi.reload_s * (1.0 - reload);
             let mut v = PowerView::of(&s, &cfg, 0, 0).unwrap();
+            v.up = true;
             v.draw = draw;
             v.full = draw >= 1.0;
             v
         };
         let with = |h: PowerHud| HudState { power: Some(h), star: Some(StarHud { charges: 6.0, max: 6.0, idle: 5.0, ..Default::default() }), ..base() };
-        out.push(("power_draw", Hud::build_with(&with(PowerHud { view: Some(yumi(0.55, 3)), time: 0.3, ..Default::default() }), &p)));
-        out.push(("power_full", Hud::build_with(&with(PowerHud { view: Some(yumi(1.0, 2)), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_draw", Hud::build_with(&with(PowerHud { view: Some(yumi(0.55, 1.0)), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_full", Hud::build_with(&with(PowerHud { view: Some(yumi(1.0, 1.0)), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_reload", Hud::build_with(&with(PowerHud { view: Some(yumi(0.0, 0.4)), time: 0.3, ..Default::default() }), &p)));
         let mut tags = PowerView::of(&PowerState::default(), &cfg, 2, 1).unwrap();
         tags.kind = PowerKind::Tag;
         tags.ammo = 0;
@@ -214,7 +214,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         out.push(("power_tags_live", Hud::build_with(&with(PowerHud { view: Some(tags), time: 0.3, ..Default::default() }), &p)));
         out.push(("power_tag_on_me", Hud::build_with(&with(PowerHud { tag_on_me: Some(TagOnMe { secs: 1.3, armed: true }), time: 0.3, ..Default::default() }), &p)));
         let callouts = vec![Callout { text: format!("{} TOOK THE YUMI", callsign(5)), age: 0.6, kind: 0, mine: false }];
-        out.push(("power_glint", Hud::build_with(&with(PowerHud { glint: 0.9, callouts, view: Some(yumi(0.0, 1)), time: 0.3, ..Default::default() }), &p)));
+        out.push(("power_glint", Hud::build_with(&with(PowerHud { glint: 0.9, callouts, view: Some(yumi(0.0, 1.0)), time: 0.3, ..Default::default() }), &p)));
     }
     let low = HudState {
         guarding: true,

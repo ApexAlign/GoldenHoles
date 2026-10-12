@@ -1,5 +1,5 @@
 //! Star variants through the real `Server` (demo balance): flash (white-out only for enemies who face it) and the energy
-//! each variant costs. Barrels and canisters live in `explosives.rs`.
+//! each variant costs.
 
 use std::time::Duration;
 
@@ -173,7 +173,7 @@ fn a_blinded_player_cannot_lock_on() {
 }
 
 #[test]
-fn each_variant_draws_its_own_cost_from_the_same_pool() {
+fn each_star_draws_its_own_cost_from_the_same_pool() {
     let mut s = server(-30.0);
     let (e0, locked) = energy(&s);
     assert!(!locked && (e0 - 6.0).abs() < 1e-3);
@@ -182,22 +182,27 @@ fn each_variant_draws_its_own_cost_from_the_same_pool() {
         feed(s, throw(0.0, -0.2, k), idle(B_YAW));
         before - energy(s).0
     };
-    let m = spend(&mut s, StarKind::Barrel);
-    assert!((2.9..3.1).contains(&m), "barrel costs 3 ({m})");
-    wait(&mut s, 12);
     let f = spend(&mut s, StarKind::Flash);
     assert!((1.9..2.1).contains(&f), "flash costs 2 ({f})");
     wait(&mut s, 12);
-    // 6 - 3 - 2 + ~0.9 regen = ~1.9: a canister (2) is refused, nothing thrown, pool unchanged
-    let before = energy(&s).0;
-    let thrown = |s: &Server| s.events.iter().filter(|(id, e)| *id == A && matches!(e, CombatEvent::ShurikenThrown { kind: StarKind::Canister, .. })).count();
-    feed(&mut s, throw(0.0, -0.2, StarKind::Canister), idle(B_YAW));
-    if before + 1e-3 < 2.0 {
-        assert_eq!(thrown(&s), 0, "not enough energy for a canister: refused");
-    }
     // wait for a refill: a standard star is 1
     wait(&mut s, 300);
     assert!((energy(&s).0 - 6.0).abs() < 1e-3);
     let st = spend(&mut s, StarKind::Standard);
     assert!((0.9..1.1).contains(&st), "a standard star is still 1 ({st})");
+}
+
+#[test]
+fn a_star_is_a_close_range_tool_full_damage_inside_7_m_gone_by_14_m() {
+    let lost = |dist: f32| {
+        let mut s = server(-dist);
+        feed(&mut s, throw(0.0, 0.0, StarKind::Standard), idle(B_YAW));
+        wait(&mut s, 90);
+        100.0 - hp(&s, B)
+    };
+    let (near, mid, edge, far) = (lost(4.0), lost(10.5), lost(13.5), lost(18.0));
+    assert!(near > 5.0, "a close star hurts: {near}");
+    assert!(mid < near && mid > near * 0.5, "falls off between 7 and 14 m: {near} -> {mid}");
+    assert!(edge <= mid && edge >= near * 0.5 - 0.01, "about half at the edge of its range: {edge}");
+    assert_eq!(far, 0.0, "past 14 m the star is gone before it arrives");
 }

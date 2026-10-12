@@ -135,6 +135,13 @@ fn sixty_seconds_of_duelling_is_consistent_and_honest() {
                     tally.entry(killer).or_default().0 += 1;
                     tally.entry(victim).or_default().1 += 1;
                 }
+                // a level hazard (the standard level has one) is a death, and a kill for whoever last hit the victim
+                PvpEvent::HazardKill { victim, killer, .. } => {
+                    tally.entry(victim).or_default().1 += 1;
+                    if let Some(k) = killer {
+                        tally.entry(k).or_default().0 += 1;
+                    }
+                }
                 PvpEvent::Respawn { .. } => respawns += 1,
                 PvpEvent::Hit { tick: ht, .. } => {
                     assert_eq!(ht, t, "a Hit is reported in the same frame the damage happened");

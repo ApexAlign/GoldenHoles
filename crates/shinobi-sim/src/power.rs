@@ -1,9 +1,11 @@
-//! Pickup-only ninja power weapons (docs/powerups.md): the YUMI (digital bow) and the EXPLOSIVE TAG (fuda).
+//! Ninja power weapons (docs/powerups.md): the YUMI (digital bow, a PRIMARY weapon every player always has) and the
+//! EXPLOSIVE TAG (fuda, a pickup).
 //!
-//! Nobody starts with one. A weapon lives in the player's hands (`Player::power`), is taken from a pedestal or from a dead
-//! player's drop (`pickups.rs`), and replaces the right mouse button while held. This file is the pure part: the carried
-//! state machine (`PowerState`: draw timer, ammo, carry timer), the tunables (`combat.yumi.*`, `combat.tag.*`) and the
-//! geometry helpers. It is a function of ticks only and the client's predictor runs the very same code, so the draw ring,
+//! `Player::power` is the bow by default: hold the draw to pull it, a full draw released looses an arrow, then the bow
+//! reloads for `combat.yumi.reload_s` (the reload bar). A fuda tag picked up from a pedestal or a dead player's drop
+//! (`pickups.rs`) takes the slot for as long as it lasts; when it is spent or expires the bow is back. This file is the pure
+//! part: the state machine (`PowerState`: draw timer, reload, tag ammo and carry timer), the tunables (`combat.yumi.*`,
+//! `combat.tag.*`) and the geometry helpers. It is a function of ticks only and the client's predictor runs the very same code, so the draw ring,
 //! the slowed walk and the moment of release agree on both sides (`tests/power_parity.rs`). Arrows in flight, stuck tags and
 //! the blast live on the server (`power_pass.rs`).
 
@@ -38,9 +40,6 @@ impl PowerKind {
 /// `combat.yumi.*` (Balance).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct YumiCfg {
-    /// Seconds the bow can be carried, arrows per pickup.
-    pub carry_s: f32,
-    pub arrows: u32,
     /// Full draw time; releasing before it cancels the draw (no arrow spent). A release inside `tap_s` is a tap: the
     /// button press counts as an ordinary star throw instead.
     pub draw_s: f32,
@@ -61,17 +60,13 @@ pub struct YumiCfg {
     pub block_drain: f32,
     /// A katana swing whose blade passes this close (beyond its own half width) to an arrow cuts it down.
     pub cut_pad: f32,
-    /// Seconds between loosing an arrow and the next draw.
-    pub cooldown_s: f32,
-    /// How long the bow lies on the floor after its owner died.
-    pub drop_life_s: f32,
+    /// Seconds between loosing an arrow and the next draw (the reload bar).
+    pub reload_s: f32,
 }
 
 impl Default for YumiCfg {
     fn default() -> Self {
         Self {
-            carry_s: 30.0,
-            arrows: 3,
             draw_s: 0.6,
             tap_s: 0.15,
             move_mult: 0.75,
@@ -84,8 +79,7 @@ impl Default for YumiCfg {
             head_mult: 1.5,
             block_drain: 0.7,
             cut_pad: 0.35,
-            cooldown_s: 0.5,
-            drop_life_s: 25.0,
+            reload_s: 2.2,
         }
     }
 }
@@ -150,20 +144,17 @@ pub struct PowerCfg {
 }
 
 impl PowerCfg {
-    /// Ammo handed out by a fresh pickup of `kind` and the seconds it can be carried.
+    /// Ammo handed out by a fresh pickup of `kind` and the seconds it can be carried (the bow is always carried: 1 arrow).
     pub fn fresh(&self, kind: PowerKind) -> (u8, f32) {
         match kind {
-            PowerKind::Yumi => (self.yumi.arrows.min(9) as u8, self.yumi.carry_s),
+            PowerKind::Yumi => (1, 0.0),
             PowerKind::Tag => (self.tag.count.min(9) as u8, self.tag.carry_s),
             PowerKind::None => (0, 0.0),
         }
     }
 
-    pub fn drop_life_s(&self, kind: PowerKind) -> f32 {
-        match kind {
-            PowerKind::Yumi => self.yumi.drop_life_s,
-            _ => self.tag.drop_life_s,
-        }
+    pub fn drop_life_s(&self, _kind: PowerKind) -> f32 {
+        self.tag.drop_life_s
     }
 }
 
@@ -193,44 +184,67 @@ pub enum PowerEvent {
     TagThrow,
     /// A press with the hands empty sets off the armed tags.
     TagDetonate,
-    /// The carry timer ran out; the weapon is gone.
+    /// The tag carry timer ran out; the bow is back.
     Expired,
-    /// The last arrow / tag is spent; the weapon is gone.
+    /// The last tag is spent; the bow is back (reported by the server's pass, not `update`).
     Spent,
 }
 
 /// The weapon in a player's hands. Server and client predictor step it with the same inputs.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PowerState {
     pub kind: PowerKind,
-    /// Arrows / tags left in hand.
+    /// Tags left in hand (the bow always holds its one arrow: 1).
     pub ammo: u8,
-    /// Carry seconds left.
+    /// Tag carry seconds left (unused by the bow, which is never lost).
     pub left: f32,
     /// Yumi: drawing now, seconds drawn.
     pub drawing: bool,
     pub draw: f32,
+    /// Seconds until the weapon can act again: the bow's reload, a tag's throw delay.
     pub cooldown: f32,
     /// The press of this tick was used up by the weapon (no star may be thrown with it). Reset every `update`.
     pub used_fire: bool,
 }
 
+impl Default for PowerState {
+    /// Everyone carries the bow, loaded.
+    fn default() -> Self {
+        Self { kind: PowerKind::Yumi, ammo: 1, left: 0.0, drawing: false, draw: 0.0, cooldown: 0.0, used_fire: false }
+    }
+}
+
 impl PowerState {
+    /// A pickup weapon (the fuda tags) is in the hands in place of the bow.
     pub fn held(&self) -> bool {
-        self.kind != PowerKind::None
+        self.kind == PowerKind::Tag
     }
 
+    /// Back to the loaded bow (death, a spent or expired pickup weapon).
     pub fn clear(&mut self) {
         *self = Self::default();
     }
 
-    /// Take a weapon into empty hands. `ammo`/`secs` of 0 mean a fresh load.
+    /// Reload progress 0..=1 for the HUD bar (1 = ready, also while a tag is in hand).
+    pub fn reload_frac(&self, cfg: &PowerCfg) -> f32 {
+        if self.kind != PowerKind::Yumi || cfg.yumi.reload_s <= 0.0 {
+            return 1.0;
+        }
+        (1.0 - self.cooldown / cfg.yumi.reload_s).clamp(0.0, 1.0)
+    }
+
+    /// Take a pickup weapon (the tags) in place of the bow. `ammo`/`secs` of 0 mean a fresh load. The bow cannot be
+    /// picked up (every player has it); granting it just reloads it.
     pub fn grant(&mut self, kind: PowerKind, ammo: u8, secs: f32, cfg: &PowerCfg) -> bool {
         if self.held() || kind == PowerKind::None {
             return false;
         }
+        if kind == PowerKind::Yumi {
+            self.clear();
+            return true;
+        }
         let (a, s) = cfg.fresh(kind);
-        *self = Self { kind, ammo: if ammo == 0 { a } else { ammo }, left: if secs <= 0.0 { s } else { secs }, ..Self::default() };
+        *self = Self { kind, ammo: if ammo == 0 { a } else { ammo }, left: if secs <= 0.0 { s } else { secs }, drawing: false, draw: 0.0, cooldown: 0.0, used_fire: false };
         true
     }
 
@@ -256,15 +270,14 @@ impl PowerState {
     /// Advance one tick.
     pub fn update(&mut self, dt: f32, inp: &PowerInput, cfg: &PowerCfg, out: &mut Vec<PowerEvent>) {
         self.used_fire = false;
-        if !self.held() {
-            return;
-        }
-        self.left -= dt;
         self.cooldown = (self.cooldown - dt).max(0.0);
-        if self.left <= 0.0 {
-            self.clear();
-            out.push(PowerEvent::Expired);
-            return;
+        if self.kind == PowerKind::Tag {
+            self.left -= dt;
+            if self.left <= 0.0 {
+                self.clear();
+                out.push(PowerEvent::Expired);
+                return;
+            }
         }
         match self.kind {
             PowerKind::Yumi => {
@@ -279,19 +292,13 @@ impl PowerState {
                         self.draw = 0.0;
                         if full && inp.can_act {
                             self.used_fire = true;
-                            self.ammo = self.ammo.saturating_sub(1);
-                            self.cooldown = cfg.yumi.cooldown_s;
+                            self.cooldown = cfg.yumi.reload_s;
                             out.push(PowerEvent::Loose);
-                            if self.ammo == 0 {
-                                self.clear();
-                                self.used_fire = true;
-                                out.push(PowerEvent::Spent);
-                            }
                         } else {
                             out.push(PowerEvent::DrawCancel { tap });
                         }
                     }
-                } else if want && self.cooldown <= 0.0 && self.ammo > 0 {
+                } else if want && self.cooldown <= 0.0 {
                     self.drawing = true;
                     self.draw = 0.0;
                     out.push(PowerEvent::DrawStart);
@@ -457,13 +464,13 @@ mod tests {
         assert!(s.full(&cfg) && s.draw_frac(&cfg) > 0.999, "0.6 s at 60 Hz is 36 ticks");
         let ev = run(&mut s, &cfg, 1, IDLE);
         assert_eq!(ev, vec![PowerEvent::Loose]);
-        assert_eq!(s.ammo, 2);
-        assert!(s.used_fire && !s.drawing);
+        assert!(s.used_fire && !s.drawing && s.held() == false && s.kind == PowerKind::Yumi, "the bow is never used up");
+        assert!((s.cooldown - 2.2).abs() < 1e-4, "2.2 s reload");
         // a half draw cancels and costs nothing; inside the tap time it is a tap
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 20, HOLD);
         assert_eq!(run(&mut s, &cfg, 1, IDLE), vec![PowerEvent::DrawCancel { tap: false }]);
-        assert_eq!(s.ammo, 3);
+        assert_eq!(s.cooldown, 0.0, "a cancelled draw costs nothing");
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 4, HOLD);
         assert_eq!(run(&mut s, &cfg, 1, IDLE), vec![PowerEvent::DrawCancel { tap: true }]);
@@ -471,27 +478,22 @@ mod tests {
     }
 
     #[test]
-    fn the_bow_has_a_cooldown_runs_out_of_arrows_and_of_time() {
+    fn the_bow_reloads_for_2_2_seconds_and_is_never_lost() {
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 37, HOLD);
         run(&mut s, &cfg, 1, IDLE);
-        run(&mut s, &cfg, 5, HOLD);
-        assert!(!s.drawing, "cooling down: no new draw yet");
-        run(&mut s, &cfg, 30, IDLE);
+        assert!(s.reload_frac(&cfg) < 0.01);
+        run(&mut s, &cfg, 60, HOLD);
+        assert!(!s.drawing, "reloading: no new draw yet");
+        assert!(s.reload_frac(&cfg) > 0.4 && s.reload_frac(&cfg) < 0.6, "half way: {}", s.reload_frac(&cfg));
+        run(&mut s, &cfg, 80, IDLE);
+        assert_eq!(s.reload_frac(&cfg), 1.0);
         run(&mut s, &cfg, 1, HOLD);
-        assert!(s.drawing);
-        // last arrow spends the weapon
+        assert!(s.drawing, "reloaded: the next draw starts");
+        // the bow does not time out or run dry
         let (mut s, cfg) = yumi();
-        s.ammo = 1;
-        run(&mut s, &cfg, 37, HOLD);
-        let ev = run(&mut s, &cfg, 1, IDLE);
-        assert_eq!(ev, vec![PowerEvent::Loose, PowerEvent::Spent]);
-        assert!(!s.held());
-        // carry time
-        let (mut s, cfg) = yumi();
-        let ev = run(&mut s, &cfg, 60 * 31, IDLE);
-        assert_eq!(ev, vec![PowerEvent::Expired]);
-        assert!(!s.held());
+        let ev = run(&mut s, &cfg, 60 * 120, IDLE);
+        assert!(ev.is_empty() && s.kind == PowerKind::Yumi);
     }
 
     #[test]
@@ -500,7 +502,7 @@ mod tests {
         run(&mut s, &cfg, 36, HOLD);
         let ev = run(&mut s, &cfg, 1, PowerInput { can_act: false, ..HOLD });
         assert_eq!(ev, vec![PowerEvent::DrawCancel { tap: false }], "no arrow from a guard that went up");
-        assert_eq!(s.ammo, 3);
+        assert_eq!(s.cooldown, 0.0);
     }
 
     #[test]
@@ -525,10 +527,15 @@ mod tests {
     }
 
     #[test]
-    fn an_occupied_hand_takes_nothing() {
-        let (mut s, cfg) = yumi();
-        assert!(!s.grant(PowerKind::Tag, 0, 0.0, &cfg));
-        assert_eq!(s.kind, PowerKind::Yumi);
+    fn tags_take_the_slot_and_hand_back_the_bow() {
+        let cfg = PowerCfg::default();
+        let mut s = PowerState::default();
+        assert_eq!((s.kind, s.ammo), (PowerKind::Yumi, 1), "everyone starts with a loaded bow");
+        assert!(s.grant(PowerKind::Tag, 0, 0.0, &cfg) && s.held());
+        assert!(!s.grant(PowerKind::Tag, 0, 0.0, &cfg), "an occupied hand takes nothing");
+        let ev = run(&mut s, &cfg, 60 * 61, IDLE);
+        assert_eq!(ev, vec![PowerEvent::Expired]);
+        assert_eq!(s.kind, PowerKind::Yumi, "the carry timer ran out: the bow is back");
     }
 
     #[test]

@@ -160,7 +160,7 @@ fn a_full_draw_looses_an_arrow_for_80_body_or_120_head() {
         give(&mut s, A, PowerKind::Yumi, 0);
         let hits = arrow_hits(&shoot(&mut s, 40, pitch, 40));
         assert!(hits.len() <= 1, "one arrow, at most one hit");
-        assert_eq!(player(&mut s, A).power.ammo, 2, "one arrow spent");
+        assert!(player(&mut s, A).power.cooldown > 1.0, "the bow is reloading");
         for (amount, head) in hits {
             assert_eq!(amount, if head { 120.0 } else { 80.0 }, "80 body / x1.5 head");
             hit_kinds.push(head);
@@ -209,7 +209,7 @@ fn a_short_draw_cancels_and_costs_no_arrow() {
     give(&mut s, A, PowerKind::Yumi, 0);
     let ev = shoot(&mut s, 20, -0.02, 40);
     assert!(arrow_hits(&ev).is_empty());
-    assert_eq!(player(&mut s, A).power.ammo, 3);
+    assert_eq!(player(&mut s, A).power.cooldown, 0.0, "a cancelled draw does not start the reload");
     assert!(s.arrows.is_empty());
 }
 
@@ -231,13 +231,14 @@ fn drawing_slows_the_walk_by_a_quarter() {
     assert!(free > 3.0 && slow > 1.0, "both walked: {free} {slow}");
     let ratio = slow / free;
     assert!((0.6..0.9).contains(&ratio), "about -25 %: {slow} / {free} = {ratio}");
-    // the bit means nothing without a bow in the hands
+    // the bit means nothing while a tag bag is in the hands instead of the bow
     let mut s = server(60.0);
+    give(&mut s, A, PowerKind::Tag, 0);
     for _ in 0..90 {
         feed(&mut s, walk, idle(B_YAW));
     }
     let bare = -s.players.iter().find(|p| p.id == A).unwrap().pos(&s.world)[2];
-    assert!((bare - free).abs() < 0.01, "no bow, no slowdown: {bare} {free}");
+    assert!((bare - free).abs() < 0.01, "tags in hand, no slowdown: {bare} {free}");
 }
 
 #[test]
@@ -326,7 +327,7 @@ fn a_drawn_bow_throws_no_stars_but_a_tap_still_does() {
     }
     feed(&mut s, press(0.0, 0.0), idle(B_YAW));
     assert!(s.projectiles().iter().any(|(o, _)| *o == A), "a tap is a star");
-    assert_eq!(player(&mut s, A).power.ammo, 3);
+    assert_eq!(player(&mut s, A).power.cooldown, 0.0);
 }
 
 // ---- tags ----
@@ -518,42 +519,39 @@ fn watch(s: &mut Server, a: PlayerIntent, b: PlayerIntent, n: u32, seen: &mut Se
 }
 
 #[test]
-fn a_pedestal_gives_the_weapon_respawns_on_its_timer_and_wants_empty_hands() {
+fn a_tag_pedestal_gives_the_bag_respawns_on_its_timer_and_wants_the_bow_hand_free() {
     let mut s = server(-30.0);
     let at = [10.0, 0.81, 0.0];
-    s.add_weapon_pickup(100, at, PowerKind::Yumi, 3.0);
-    s.add_weapon_pickup(101, [10.0, 0.81, 6.0], PowerKind::Tag, 3.0);
+    // a yumi pedestal in a level file is ignored: everybody has the bow already
+    s.add_weapon_pickup(100, [20.0, 0.81, 0.0], PowerKind::Yumi, 3.0);
+    s.add_weapon_pickup(101, at, PowerKind::Tag, 3.0);
     let mut seen = Seen::default();
     watch(&mut s, idle(0.0), idle(B_YAW), 2, &mut seen);
-    assert_eq!(seen.spawned, 2, "both pedestals announce themselves");
+    assert_eq!(seen.spawned, 1, "only the tag pedestal announces itself");
+    assert_eq!(player(&mut s, A).power.kind, PowerKind::Yumi, "the bow is in hand from the start");
     tp(&mut s, A, at);
     watch(&mut s, idle(0.0), idle(B_YAW), 3, &mut seen);
-    assert_eq!(seen.taken, vec![(A, PowerKind::Yumi)]);
+    assert_eq!(seen.taken, vec![(A, PowerKind::Tag)]);
     let (kind, ammo, left) = {
         let p = player(&mut s, A);
         (p.power.kind, p.power.ammo, p.power.left)
     };
-    assert_eq!((kind, ammo), (PowerKind::Yumi, 3));
-    assert!((29.0..=30.0).contains(&left), "30 s carry: {left}");
-    // hands full: A standing on the tag pedestal takes nothing
-    tp(&mut s, A, [10.0, 0.81, 6.0]);
-    watch(&mut s, idle(0.0), idle(B_YAW), 5, &mut seen);
-    assert_eq!(seen.taken.len(), 1);
-    assert_eq!(s.pickups.active_weapons().filter(|w| w.2 == PowerKind::Tag).count(), 1, "still there for someone else");
-    // the yumi pedestal is back 3 s later and B (empty-handed) takes it
+    assert_eq!((kind, ammo), (PowerKind::Tag, 2));
+    assert!((59.0..=60.0).contains(&left), "60 s carry: {left}");
+    // the pedestal is back 3 s later and B (bow in hand) takes it
     tp(&mut s, A, [0.0, 0.81, 0.0]);
     watch(&mut s, idle(0.0), idle(B_YAW), 200, &mut seen);
-    assert_eq!(s.pickups.active_weapons().filter(|w| w.2 == PowerKind::Yumi).count(), 1, "respawned");
-    assert_eq!(seen.spawned, 3);
+    assert_eq!(s.pickups.active_weapons().filter(|w| w.2 == PowerKind::Tag).count(), 1, "respawned");
+    assert_eq!(seen.spawned, 2);
     tp(&mut s, B, at);
     watch(&mut s, idle(0.0), idle(B_YAW), 3, &mut seen);
-    assert_eq!(seen.taken.last(), Some(&(B, PowerKind::Yumi)));
+    assert_eq!(seen.taken.last(), Some(&(B, PowerKind::Tag)));
 }
 
 #[test]
 fn the_weapon_of_a_dead_player_lies_where_they_fell_with_what_was_left() {
     let mut s = server(-30.0);
-    give(&mut s, A, PowerKind::Yumi, 2);
+    give(&mut s, A, PowerKind::Tag, 2);
     // A is one scratch from death and stands on their own tag
     player(&mut s, A).vitals.hp = 4.0;
     world_tag(&mut s, A, [0.0, 0.03, 0.0]);
@@ -572,13 +570,13 @@ fn the_weapon_of_a_dead_player_lies_where_they_fell_with_what_was_left() {
         }
     }
     let (_, pos, weapon) = dropped.expect("a drop was announced");
-    assert_eq!(weapon, PowerKind::Yumi);
+    assert_eq!(weapon, PowerKind::Tag);
     assert!(!player(&mut s, A).power.held(), "the owner lost it");
-    // B takes it with the two arrows that were left
+    // B takes it with the two tags that were left
     tp(&mut s, B, [pos[0], 0.81, pos[2]]);
     for _ in 0..3 {
         feed(&mut s, idle(0.0), idle(B_YAW));
     }
     let b = player(&mut s, B);
-    assert_eq!((b.power.kind, b.power.ammo), (PowerKind::Yumi, 2));
+    assert_eq!((b.power.kind, b.power.ammo), (PowerKind::Tag, 2));
 }

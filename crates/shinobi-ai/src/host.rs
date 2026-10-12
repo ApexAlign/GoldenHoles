@@ -105,6 +105,8 @@ pub struct BotHost {
     summoned: Vec<(u16, u16, u32)>,
     /// Tick the first human was seen (starts the aggression warm-up).
     human_joined: Option<u32>,
+    /// Wedge watch per bot: `(bot, position, tick it was taken, unstick count then)`; see `rescue_wedged`.
+    wedge: Vec<(u16, [f32; 3], u32, u32)>,
 }
 
 /// Three consecutive tick durations summing to exactly 3/60 s.
@@ -124,6 +126,7 @@ impl BotHost {
             human_action: Vec::new(),
             summoned: Vec::new(),
             human_joined: None,
+            wedge: Vec::new(),
             sticky: Vec::new(),
         }
     }
@@ -288,6 +291,7 @@ impl BotHost {
         if !self.perches_built {
             self.rebuild_perches(server);
         }
+        self.rescue_wedged(server);
         let intents = self.think_all(server);
         let tick = server.tick;
         for (id, it) in intents {
@@ -322,6 +326,46 @@ impl BotHost {
             self.bots.retain(|b| b.id != id);
             self.tickets.release(id, tick);
             self.sticky.retain(|s| s.0 != id);
+        }
+    }
+
+    /// A bot jammed in level geometry the controller cannot slide out of (a V-gap under a ramp, a slab grazing its head) keeps
+    /// asking to move, backs out and dashes, and never goes anywhere. If it has tried to unstick at least twice and has not
+    /// moved half a metre in 8 seconds it is put back on a spawn, like a respawn without the death.
+    fn rescue_wedged(&mut self, server: &mut Server) {
+        const WATCH_TICKS: u32 = 8 * TICK_HZ;
+        let tick = server.tick;
+        let mut rescue: Vec<u16> = Vec::new();
+        for b in &self.bots {
+            let Some(p) = server.players.iter().find(|p| p.id == b.id) else { continue };
+            let pos = p.pos(&server.world);
+            if !p.vitals.alive() {
+                self.wedge.retain(|w| w.0 != b.id);
+                continue;
+            }
+            match self.wedge.iter_mut().find(|w| w.0 == b.id) {
+                Some(w) => {
+                    let moved = ((pos[0] - w.1[0]).powi(2) + (pos[1] - w.1[1]).powi(2) + (pos[2] - w.1[2]).powi(2)).sqrt();
+                    if moved > 0.5 {
+                        *w = (b.id, pos, tick, b.stats.unsticks);
+                    } else if tick.wrapping_sub(w.2) >= WATCH_TICKS {
+                        if b.stats.unsticks >= w.3 + 2 {
+                            rescue.push(b.id);
+                        }
+                        *w = (b.id, pos, tick, b.stats.unsticks);
+                    }
+                }
+                None => self.wedge.push((b.id, pos, tick, b.stats.unsticks)),
+            }
+        }
+        for id in rescue {
+            let at = server.pick_spawn(Some(id));
+            if let Some(p) = server.players.iter().find(|p| p.id == id) {
+                let body = p.ch.body;
+                server.world.bodies[body].set_position(shinobi_sim::rapier3d::prelude::Isometry::translation(at[0], at[1], at[2]), true);
+                shinobi_sim::character::sync_body_colliders(&mut server.world, body);
+            }
+            self.wedge.retain(|w| w.0 != id);
         }
     }
 

@@ -19,8 +19,12 @@ pub struct PowerView {
     /// Draw progress 0..=1 and whether releasing now looses the arrow.
     pub draw: f32,
     pub full: bool,
-    /// Between arrows / throws (can't draw / throw yet), seconds left.
+    /// Between arrows / throws (can't draw / throw yet), seconds left. The bow's is the reload.
     pub cooldown: f32,
+    /// The bow's reload progress, 0..=1 (1 = loaded and ready; always 1 with tags in hand).
+    pub reload: f32,
+    /// The bow is the weapon in hand (key `2`): the HUD shows its ring even when idle.
+    pub up: bool,
     /// Own fuda tags out there and how many of them are armed (a press with empty hands sets those off).
     pub live_tags: u32,
     pub armed_tags: u32,
@@ -28,9 +32,7 @@ pub struct PowerView {
 
 impl PowerView {
     pub fn of(s: &PowerState, cfg: &PowerCfg, live_tags: u32, armed_tags: u32) -> Option<Self> {
-        if !s.held() && live_tags == 0 {
-            return None;
-        }
+        // the bow is always in the hands (or a tag bag is): there is always a view while alive
         let (max, carry) = cfg.fresh(s.kind);
         Some(Self {
             kind: s.kind,
@@ -41,6 +43,8 @@ impl PowerView {
             draw: s.draw_frac(cfg),
             full: s.full(cfg),
             cooldown: s.cooldown,
+            reload: s.reload_frac(cfg),
+            up: false,
             live_tags,
             armed_tags,
         })
@@ -160,16 +164,19 @@ mod tests {
     }
 
     #[test]
-    fn the_view_shows_nothing_with_empty_hands_and_no_tags_out() {
+    fn the_view_is_the_bow_by_default_and_shows_the_reload() {
         let cfg = PowerCfg::default();
-        assert!(PowerView::of(&PowerState::default(), &cfg, 0, 0).is_none());
+        let v = PowerView::of(&PowerState::default(), &cfg, 0, 0).unwrap();
+        assert_eq!((v.kind, v.reload, v.draw), (PowerKind::Yumi, 1.0, 0.0));
         let mut s = PowerState::default();
-        s.grant(PowerKind::Yumi, 0, 0.0, &cfg);
+        s.cooldown = cfg.yumi.reload_s * 0.25;
         let v = PowerView::of(&s, &cfg, 0, 0).unwrap();
-        assert_eq!((v.kind, v.ammo, v.ammo_max), (PowerKind::Yumi, 3, 3));
-        assert!(v.left > 0.99 && v.draw == 0.0);
-        // a spent bag with a tag still counting down keeps a view (the detonate hint)
-        let v = PowerView::of(&PowerState::default(), &cfg, 1, 0).unwrap();
-        assert_eq!(v.live_tags, 1);
+        assert!((v.reload - 0.75).abs() < 1e-4 && v.cooldown > 0.0);
+        // a tag bag takes the slot
+        let mut s = PowerState::default();
+        s.grant(PowerKind::Tag, 0, 0.0, &cfg);
+        let v = PowerView::of(&s, &cfg, 1, 0).unwrap();
+        assert_eq!((v.kind, v.ammo, v.ammo_max, v.live_tags), (PowerKind::Tag, 2, 2, 1));
+        assert!(v.left > 0.99);
     }
 }
