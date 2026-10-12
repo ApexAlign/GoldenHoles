@@ -235,6 +235,7 @@ fn spawn(
 ) {
     let pal = Palette::TRON;
     let layer = RenderLayers::layer(LAYER);
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let unlit = |c: shinobi_client::hud::Rgba, gain: f32| StandardMaterial {
         base_color: Color::linear_rgb(c.0 * gain, c.1 * gain, c.2 * gain),
         unlit: true,
