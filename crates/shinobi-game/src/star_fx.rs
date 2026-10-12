@@ -165,7 +165,7 @@ fn update_objects(time: Res<Time>, view: Res<ViewRes>, net: Res<Net>, look: Opti
     }
     // ---- smoke ----
     let clouds: Vec<_> = v.star_objs.iter().filter(|o| o.kind == StarKind::Canister).collect();
-    let radius = StarCfg::default().smoke_radius;
+    let radius = StarCfg::default().canister_radius;
     for (ci, puffs) in look.puffs.iter().enumerate() {
         let cloud = clouds.get(ci);
         for (pi, (e, m)) in puffs.iter().enumerate() {
@@ -199,7 +199,7 @@ fn spawn_bursts(mut commands: Commands, look: Option<Res<Look>>, view: Res<ViewR
         let p = Vec3::from(shinobi_proto::quant::dq_pos3(*pos));
         let (colour, size, life, gain) = match *what {
             STAR_FX_FLASH_BURST => ([1.0, 1.0, 1.0], sc.flash_radius * 0.5, 0.28, 6.0),
-            STAR_FX_BARREL_BURST => ([1.0, 0.45, 0.08], sc.mine_burst_radius, 0.35, 4.0),
+            STAR_FX_BARREL_BURST => ([1.0, 0.45, 0.08], sc.barrel_radius, 0.35, 4.0),
             _ => continue,
         };
         let m = mats.add(StandardMaterial {
