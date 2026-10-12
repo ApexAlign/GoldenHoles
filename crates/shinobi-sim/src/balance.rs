@@ -64,6 +64,11 @@ pub struct ShurikenBalance {
     pub energy_regen_s: f32,
     pub energy_resume: f32,
     pub mark_cost: f32,
+    /// Close-range tool: a star vanishes after `range` m (0 = unlimited), deals full damage up to `full_range` and falls off
+    /// linearly to `far_mult` of it at `range` (`combat/shuriken.rs`).
+    pub range: f32,
+    pub full_range: f32,
+    pub far_mult: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,9 +134,9 @@ pub struct KatanaBalance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatBalance {
     pub shuriken: ShurikenBalance,
-    /// Star variants: barrel, canister, flash (`combat/stars.rs`).
+    /// Star variants: flash (`combat/stars.rs`).
     pub star: crate::combat::stars::StarCfg,
-    /// Pickup-only power weapons: the yumi and the explosive tag (`power.rs`, docs/powerups.md).
+    /// Power weapons: the yumi (every player's primary bow) and the explosive tag (pickup) (`power.rs`, docs/powerups.md).
     pub power: crate::power::PowerCfg,
     pub katana: KatanaBalance,
     /// Horizontal speed (m/s) a hit gives an enemy, before its own `knockback_scale`.
@@ -567,6 +572,9 @@ impl Default for Balance {
                     energy_regen_s: s.energy_regen_s,
                     energy_resume: s.energy_resume,
                     mark_cost: s.mark_cost,
+                    range: s.range,
+                    full_range: s.full_range,
+                    far_mult: s.far_mult,
                 },
                 star: s.star,
                 power: crate::power::PowerCfg::default(),
@@ -816,6 +824,10 @@ impl Balance {
         b.combat.shuriken.energy_regen_s = 0.45;
         b.combat.shuriken.energy_resume = 2.0;
         b.combat.shuriken.mark_cost = 2.0;
+        b.combat.shuriken.range = 14.0; // a close-range tool: the bow is the long gun
+        b.combat.shuriken.full_range = 7.0;
+        b.combat.shuriken.far_mult = 0.5;
+        b.combat.shuriken.assist_range = 20.0;
         b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
         // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
@@ -863,6 +875,9 @@ impl Balance {
             energy_regen_s: b.energy_regen_s,
             energy_resume: b.energy_resume,
             mark_cost: b.mark_cost,
+            range: b.range,
+            full_range: b.full_range,
+            far_mult: b.far_mult,
             star: self.combat.star,
             ..ShurikenCfg::default()
         }
@@ -1060,26 +1075,9 @@ impl Balance {
         s!("combat.shuriken.energy_regen_s", F, self.combat.shuriken.energy_regen_s);
         s!("combat.shuriken.energy_resume", F, self.combat.shuriken.energy_resume);
         s!("combat.shuriken.mark_cost", F, self.combat.shuriken.mark_cost);
-        s!("combat.star.barrel_cost", F, self.combat.star.barrel_cost);
-        s!("combat.star.barrel_speed", F, self.combat.star.barrel_speed);
-        s!("combat.star.barrel_gravity", F, self.combat.star.barrel_gravity);
-        s!("combat.star.barrel_bounce", F, self.combat.star.barrel_bounce);
-        s!("combat.star.barrel_grip", F, self.combat.star.barrel_grip);
-        s!("combat.star.barrel_fuse_s", F, self.combat.star.barrel_fuse_s);
-        s!("combat.star.barrel_radius", F, self.combat.star.barrel_radius);
-        s!("combat.star.barrel_damage", F, self.combat.star.barrel_damage);
-        s!("combat.star.barrel_edge", F, self.combat.star.barrel_edge);
-        s!("combat.star.barrel_knock", F, self.combat.star.barrel_knock);
-        s!("combat.star.barrel_launch", F, self.combat.star.barrel_launch);
-        s!("combat.star.barrel_hit_radius", F, self.combat.star.barrel_hit_radius);
-        s!("combat.star.canister_cost", F, self.combat.star.canister_cost);
-        s!("combat.star.canister_speed", F, self.combat.star.canister_speed);
-        s!("combat.star.canister_fuse_s", F, self.combat.star.canister_fuse_s);
-        s!("combat.star.canister_radius", F, self.combat.star.canister_radius);
-        s!("combat.star.canister_damage", F, self.combat.star.canister_damage);
-        s!("combat.star.canister_edge", F, self.combat.star.canister_edge);
-        s!("combat.star.canister_knock", F, self.combat.star.canister_knock);
-        s!("combat.star.canister_launch", F, self.combat.star.canister_launch);
+        s!("combat.shuriken.range", F, self.combat.shuriken.range);
+        s!("combat.shuriken.full_range", F, self.combat.shuriken.full_range);
+        s!("combat.shuriken.far_mult", F, self.combat.shuriken.far_mult);
         s!("combat.star.flash_cost", F, self.combat.star.flash_cost);
         s!("combat.star.flash_fuse_s", F, self.combat.star.flash_fuse_s);
         s!("combat.star.flash_radius", F, self.combat.star.flash_radius);
@@ -1141,8 +1139,6 @@ impl Balance {
         s!("combat.ultimate_max_radius", F, self.combat.ultimate_max_radius);
         s!("combat.ultimate_damage", F, self.combat.ultimate_damage);
         s!("combat.pickup_charge_secs", F, self.combat.pickup_charge_secs);
-        s!("combat.yumi.carry_s", F, self.combat.power.yumi.carry_s);
-        s!("combat.yumi.arrows", U, self.combat.power.yumi.arrows);
         s!("combat.yumi.draw_s", F, self.combat.power.yumi.draw_s);
         s!("combat.yumi.tap_s", F, self.combat.power.yumi.tap_s);
         s!("combat.yumi.move_mult", F, self.combat.power.yumi.move_mult);
@@ -1155,8 +1151,7 @@ impl Balance {
         s!("combat.yumi.head_mult", F, self.combat.power.yumi.head_mult);
         s!("combat.yumi.block_drain", F, self.combat.power.yumi.block_drain);
         s!("combat.yumi.cut_pad", F, self.combat.power.yumi.cut_pad);
-        s!("combat.yumi.cooldown_s", F, self.combat.power.yumi.cooldown_s);
-        s!("combat.yumi.drop_life_s", F, self.combat.power.yumi.drop_life_s);
+        s!("combat.yumi.reload_s", F, self.combat.power.yumi.reload_s);
         s!("combat.tag.carry_s", F, self.combat.power.tag.carry_s);
         s!("combat.tag.count", U, self.combat.power.tag.count);
         s!("combat.tag.max_live", U, self.combat.power.tag.max_live);
@@ -1332,28 +1327,24 @@ impl Balance {
             e.push("combat.shuriken.energy_max must cover at least one star and one mark star".into());
         }
         let st = &self.combat.star;
-        let costs = [st.barrel_cost, st.flash_cost, st.canister_cost];
-        let nonneg = [
-            st.barrel_gravity, st.barrel_fuse_s, st.barrel_radius, st.barrel_damage, st.barrel_knock, st.barrel_launch, st.barrel_hit_radius,
-            st.canister_fuse_s, st.canister_radius, st.canister_damage, st.canister_knock, st.canister_launch,
-            st.flash_fuse_s, st.flash_radius, st.flash_secs, st.flash_self_radius, st.flash_daze_damage,
-        ];
+        let costs = [st.flash_cost];
+        let nonneg = [st.flash_fuse_s, st.flash_radius, st.flash_secs, st.flash_self_radius, st.flash_daze_damage];
         if costs.iter().any(|c| *c <= 0.0)
-            || st.barrel_speed <= 0.0
-            || st.canister_speed <= 0.0
             || nonneg.iter().any(|v| *v < 0.0)
-            || ![st.barrel_bounce, st.barrel_grip, st.barrel_edge, st.canister_edge].iter().all(|v| (0.0..=1.0).contains(v))
             || !(0.05..=1.0).contains(&st.flash_daze_turn)
             || !(0.0..=180.0).contains(&st.flash_cone_deg)
         {
-            e.push("combat.star.*: costs and speeds > 0, times / radii / damage / knock / launch / gravity >= 0, barrel_bounce, barrel_grip and *_edge in 0..=1, flash_daze_turn in 0.05..=1, flash_cone_deg in 0..=180".into());
+            e.push("combat.star.*: flash_cost > 0, times / radii / damage >= 0, flash_daze_turn in 0.05..=1, flash_cone_deg in 0..=180".into());
+        }
+        if sh.range < 0.0 || (sh.range > 0.0 && (sh.full_range < 0.0 || sh.full_range >= sh.range)) || !(0.0..=1.0).contains(&sh.far_mult) {
+            e.push("combat.shuriken.range >= 0 (0 = unlimited); with a range, 0 <= full_range < range and far_mult in 0..=1".into());
         }
         if sh.energy_max > 0.0 && sh.energy_max + 1e-4 < costs.iter().cloned().fold(0.0, f32::max) {
             e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
         }
         let (y, t) = (&self.combat.power.yumi, &self.combat.power.tag);
-        if y.arrows == 0 || y.arrows > 9 || y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.carry_s <= 0.0 || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || [y.gravity, y.radius, y.damage, y.cut_pad, y.cooldown_s, y.drop_life_s].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) {
-            e.push("combat.yumi.*: arrows 1..9, draw_s > tap_s >= 0, carry_s / speed / range > 0, move_mult and turn_mult 0.05..1, head_mult >= 1, block_drain 0..1, the rest >= 0".into());
+        if y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || [y.gravity, y.radius, y.damage, y.cut_pad, y.reload_s].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) {
+            e.push("combat.yumi.*: draw_s > tap_s >= 0, speed / range > 0, move_mult and turn_mult 0.05..1, head_mult >= 1, block_drain 0..1, the rest >= 0".into());
         }
         if t.count == 0 || t.count > 9 || t.max_live == 0 || t.carry_s <= 0.0 || t.throw_speed <= 0.0 || t.radius <= 0.0 || t.fuse_s <= t.arm_s || t.arm_s < 0.0 || !(0.0..=1.0).contains(&t.edge_frac) || !(0.0..=1.0).contains(&t.self_mult) || [t.gravity, t.flight_s, t.damage, t.knock, t.cut_pad, t.cooldown_s, t.stick_radius, t.drop_life_s].iter().any(|v| *v < 0.0) {
             e.push("combat.tag.*: count 1..9, max_live >= 1, fuse_s > arm_s >= 0, radius / throw_speed / carry_s > 0, edge_frac and self_mult 0..1, the rest >= 0".into());

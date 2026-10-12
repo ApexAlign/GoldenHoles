@@ -240,8 +240,6 @@ fn update(
     for (i, e) in pool.0.iter().enumerate() {
         let Ok((mut t, mut v)) = q.get_mut(*e) else { continue };
         match view.0.discs.get(i) {
-            // flying barrels and canisters are solid props drawn by `star_fx`; only their trail comes from here
-            Some(_) if matches!(view.0.disc_kinds.get(i), Some(StarKind::Barrel | StarKind::Canister)) => *v = Visibility::Hidden,
             Some((p, d)) => {
                 let dir = Vec3::from(*d).normalize_or(Vec3::NEG_Z);
                 let up = if dir.y.abs() > 0.95 { Vec3::X } else { Vec3::Y };
@@ -273,11 +271,9 @@ fn update(
 
 /// Colour of disc `i`: its owner's player / team colour (cyan if the owner is unknown).
 fn disc_colour(net: &Net, view: &shinobi_client::client_game::RenderView, i: usize) -> [f32; 3] {
-    // star variants fly in their own colour: barrel hot orange, flash white, canister gas yellow-green
+    // the flash star flies white
     match view.disc_kinds.get(i) {
-        Some(StarKind::Barrel) => return [1.0, 0.45, 0.08],
         Some(StarKind::Flash) => return [1.0, 1.0, 1.0],
-        Some(StarKind::Canister) => return [0.7, 0.95, 0.15],
         _ => {}
     }
     match view.disc_owners.get(i).copied().filter(|o| *o != 0) {

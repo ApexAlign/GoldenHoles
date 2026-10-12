@@ -123,16 +123,6 @@ pub enum Sound {
     ThunderFar,
     /// Storm: ringing in the ears after a very close strike.
     EarRing,
-    /// Barrel blast: deep boom, rumble and a crackle of debris (~1.5 s).
-    BarrelBoom,
-    /// Gas canister blast: a sharp bang with a short tail (~0.5 s).
-    CanisterBang,
-    /// A barrel lands: heavy steel clunk.
-    BarrelThud,
-    /// A canister sticks: small metallic clunk.
-    CanisterClunk,
-    /// A lit fuse: a short hiss with sparks, retriggered while it burns.
-    FuseHiss,
     /// Flash star bursts: a hard crack with a zap on top (~0.5 s).
     FlashBang,
     /// Dazed by a flash: a thin high whine that fades over ~3.3 s.
@@ -142,7 +132,7 @@ pub enum Sound {
 }
 
 impl Sound {
-    pub const ALL: [Sound; 80] = [
+    pub const ALL: [Sound; 75] = [
         Sound::QuakeRumble,
         Sound::QuakeRattle,
         Sound::QuakeThud,
@@ -150,11 +140,6 @@ impl Sound {
         Sound::Thunder,
         Sound::ThunderFar,
         Sound::EarRing,
-        Sound::BarrelBoom,
-        Sound::CanisterBang,
-        Sound::BarrelThud,
-        Sound::CanisterClunk,
-        Sound::FuseHiss,
         Sound::FlashBang,
         Sound::Tinnitus,
         Sound::WhipCrack,
@@ -715,36 +700,6 @@ pub fn render(s: Sound) -> Vec<f32> {
             let d = 1.2;
             normalized(mix(&[(tone(4200.0, d, 1.4, 1.0), 1.0), (tone(3100.0, d, 1.8, 1.0), 0.5)]), 0.35)
         }
-        Sound::BarrelBoom => mix(&[
-            (sweep(0.9, 80.0, 22.0, 0, |t| env(t, 0.9, 0.004, 1.4)), 1.1),
-            (lowpass(&noise_burst(0.7, 301, |t| env(t, 0.7, 0.002, 1.3)), 0.2), 1.9),
-            (lowpass(&noise_burst(1.4, 303, |t| env(t, 1.4, 0.1, 1.1)), 0.05), 4.0),
-            (highpass(&noise_burst(0.08, 305, |t| env(t, 0.08, 0.0, 1.4)), 0.3), 1.0),
-            (rattle(1.3, 140.0, 307, 0.35), 1.0),
-        ]),
-        Sound::CanisterBang => mix(&[
-            (highpass(&noise_burst(0.1, 311, |t| env(t, 0.1, 0.0, 1.5)), 0.25), 2.0),
-            (sweep(0.25, 150.0, 55.0, 0, |t| env(t, 0.25, 0.002, 2.0)), 1.0),
-            (lowpass(&noise_burst(0.22, 313, |t| env(t, 0.22, 0.0, 1.8)), 0.3), 1.2),
-            (tone(1800.0, 0.25, 3.0, 0.2), 1.0),
-            (rattle(0.5, 80.0, 315, 0.25), 1.0),
-        ]),
-        Sound::BarrelThud => mix(&[
-            (sweep(0.22, 95.0, 42.0, 0, |t| env(t, 0.22, 0.002, 2.0)), 1.0),
-            (lowpass(&noise_burst(0.07, 321, |t| env(t, 0.07, 0.0, 2.0)), 0.3), 1.0),
-            (tone(520.0, 0.25, 3.0, 0.16), 1.0),
-            (tone(830.0, 0.18, 3.5, 0.1), 1.0),
-        ]),
-        Sound::CanisterClunk => mix(&[
-            (sweep(0.1, 220.0, 120.0, 0, |t| env(t, 0.1, 0.001, 2.0)), 0.7),
-            (tone(1300.0, 0.18, 3.0, 0.3), 1.0),
-            (tone(2100.0, 0.12, 3.0, 0.15), 1.0),
-            (noise_burst(0.015, 323, |t| env(t, 0.015, 0.0, 1.0)), 0.4),
-        ]),
-        Sound::FuseHiss => mix(&[
-            (highpass(&noise_burst(0.3, 331, |t| env(t, 0.3, 0.03, 0.8) * (0.7 + 0.3 * (TAU * 38.0 * t).sin())), 0.15), 0.9),
-            (rattle(0.3, 220.0, 333, 0.2), 1.0),
-        ]),
         Sound::FlashBang => mix(&[
             (highpass(&noise_burst(0.06, 341, |t| env(t, 0.06, 0.0, 1.2)), 0.2), 2.0),
             (sweep(0.25, 5000.0, 900.0, 2, |t| env(t, 0.25, 0.001, 2.0)), 0.2),

@@ -1,4 +1,4 @@
-//! Bots and the power weapons (docs/powerups.md): a bow in a bot's hands draws (the telegraph) and looses at a distant target,
+//! Bots and the power weapons (docs/powerups.md): the bow every bot carries draws (the telegraph) and looses at a target 12-40 m off,
 //! tags go out at a target in range and go off, a bot walks to a pedestal now and then, and an arrow coming at a bot is
 //! sometimes met with a raised shield.
 mod common;
@@ -37,27 +37,27 @@ fn human_faces_bot() -> shinobi_proto::intent::PlayerIntent {
 }
 
 #[test]
-fn a_bot_with_the_bow_draws_where_it_can_be_seen_then_looses_at_a_far_target() {
-    let mut s = arena([0.0, 0.81, -50.0]);
-    let mut h = host(11);
-    spawn_bot(&mut h, &mut s, 201, [0.0, 0.81, 0.0], Archetype::Light, BotSkill::Hard);
-    give(&mut s, 201, PowerKind::Yumi);
-    let (mut looses, mut hits, mut longest_draw, mut draw_run) = (0u32, 0u32, 0u32, 0u32);
-    for _ in 0..60 * 40 {
-        push_human(&mut s, HUMAN, human_faces_bot());
-        step(&mut h, &mut s);
-        let me = s.players.iter().find(|p| p.id == 201).unwrap();
-        draw_run = if me.power.drawing { draw_run + 1 } else { 0 };
-        longest_draw = longest_draw.max(draw_run);
-        looses += s.events.iter().filter(|(id, e)| *id == 201 && matches!(e, CombatEvent::PowerFx { what, .. } if *what == FX_LOOSE)).count() as u32;
-        hits += s.pvp_events.iter().filter(|e| matches!(e, PvpEvent::Hit { attacker: 201, victim: HUMAN, kind: DamageKind::Arrow, .. })).count() as u32;
-        if !s.players.iter().find(|p| p.id == 201).unwrap().power.held() {
-            break;
+fn a_bot_draws_the_bow_where_it_can_be_seen_then_looses_at_a_target_12_to_40_m_off() {
+    // a bot starts a draw now and then rather than on every sighting, so add up a handful of seeds
+    let (mut looses, mut hits, mut longest_draw) = (0u32, 0u32, 0u32);
+    for seed in 1..=60u64 {
+        let mut s = arena([0.0, 0.81, -30.0]);
+        let mut h = host(seed);
+        spawn_bot(&mut h, &mut s, 201, [0.0, 0.81, 0.0], Archetype::Light, BotSkill::Hard);
+        let mut draw_run = 0u32;
+        for _ in 0..60 * 12 {
+            push_human(&mut s, HUMAN, human_faces_bot());
+            step(&mut h, &mut s);
+            let me = s.players.iter().find(|p| p.id == 201).unwrap();
+            draw_run = if me.power.drawing { draw_run + 1 } else { 0 };
+            longest_draw = longest_draw.max(draw_run);
+            looses += s.events.iter().filter(|(id, e)| *id == 201 && matches!(e, CombatEvent::PowerFx { what, .. } if *what == FX_LOOSE)).count() as u32;
+            hits += s.pvp_events.iter().filter(|e| matches!(e, PvpEvent::Hit { attacker: 201, victim: HUMAN, kind: DamageKind::Arrow, .. })).count() as u32;
         }
     }
-    assert!(looses >= 1, "the bot loosed at least one arrow");
+    assert!(looses >= 3, "bots loosed arrows: {looses}");
     assert!(longest_draw >= 36, "and drew the full 0.6 s first, a telegraph a target can read: {longest_draw} ticks");
-    assert!(hits >= 1, "a Hard bot standing off 50 m from a still target hits with at least one of its three: {hits} of {looses}");
+    assert!(hits >= 1, "a Hard bot standing off from a still target hits with at least one arrow: {hits} of {looses}");
 }
 
 #[test]

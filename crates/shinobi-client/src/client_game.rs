@@ -22,8 +22,8 @@ use shinobi_proto::datagram::KickReason;
 use shinobi_proto::gameplay::{Board, HitMsg};
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{dq_pitch, dq_yaw};
-use shinobi_proto::quant::{dq_pos, dq_pos3, dq_vel};
-use shinobi_proto::snapshot::{disc_kind, EntityId, DISC_ARMED, DISC_STUCK, POWER_ID_BASE, PROJECTILE_ID_BASE, STUCK_NORMAL_SPEED};
+use shinobi_proto::quant::{dq_pos, dq_vel};
+use shinobi_proto::snapshot::{disc_kind, EntityId, POWER_ID_BASE, PROJECTILE_ID_BASE};
 use shinobi_sim::power::{PowerCfg, PowerEvent, PowerInput, PowerKind, PowerState};
 use crate::power_view::{PowerView, PowerWorld};
 use shinobi_proto::TICK_DT;
@@ -33,7 +33,7 @@ use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceK
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
 use shinobi_sim::combat::katana::{predict_slice, KatanaCfg};
 use shinobi_sim::combat::shuriken::ShurikenCfg;
-use shinobi_sim::combat::stars::{within, StarCfg, StarKind};
+use shinobi_sim::combat::stars::{StarCfg, StarKind};
 use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_HITBOX, GROUP_MELEE, GROUP_PLAYER, GROUP_PROJECTILE};
 use shinobi_sim::events::NetEvent;
 use shinobi_sim::level::LevelDesc;
@@ -72,9 +72,13 @@ pub enum Action {
     /// Held: the block / parry shield. The view is locked where it was when the hold began (look input is ignored) while
     /// movement, jump, dash, grapple and wall-run keep working; throwing and cutting are shut while it is up.
     Block,
-    /// Cycle the throwable the throw button sends (mouse wheel / `R`): star, barrel, flash, canister. One-tick edges.
+    /// Cycle the throwable the throw button sends (mouse wheel / `R`): star, flash. One-tick edges.
     StarNext,
     StarPrev,
+    /// Weapon select edges (keys `1` / `2`): the katana in hand, or the yumi (bow) up. With the bow up the slice button
+    /// (left click) is the draw: hold to draw, release a full draw to loose. Stars stay on the throw button either way.
+    Katana,
+    Bow,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -535,8 +539,7 @@ pub struct RenderView {
     pub star_sel: StarKind,
     pub star_cycled: bool,
     pub star_throws: u32,
-    /// Landed barrels and canisters (all players'), and the kind of each flying disc in `discs`.
-    pub star_objs: Vec<StarObj>,
+    /// The kind of each flying disc in `discs`.
     pub disc_kinds: Vec<StarKind>,
     /// Flash white-out right now, 0..=1 (screen flash strength, `whiteout_level` over the server's blind time).
     pub blind: f32,
@@ -576,19 +579,6 @@ pub fn whiteout_level(frac_left: f32) -> f32 {
     k * k * (3.0 - 2.0 * k)
 }
 
-/// A landed star object (barrel or canister) for the renderer.
-#[derive(Clone, Copy, Debug)]
-pub struct StarObj {
-    pub kind: StarKind,
-    pub pos: [f32; 3],
-    pub normal: [f32; 3],
-    pub owner: u16,
-    /// Explosives: the fuse is burning (landed).
-    pub armed: bool,
-    /// Fraction of its life left, 1 = fresh.
-    pub life_left: f32,
-}
-
 impl RenderView {
     /// (yaw, pitch) the camera must render with: exactly the aim that goes out in intents, so the crosshair is
     /// where the shot goes. Recoil, bob, roll and the FX look-kick are NOT added here (roll / FOV are separate
@@ -607,8 +597,6 @@ const STAR_REGEN_S: f32 = 0.45;
 const STAR_RESUME: f32 = 2.0;
 const MARK_COST: f32 = 2.0;
 pub const MARK_CHARGE_TICKS: u32 = 24;
-/// A throw-button hold up to this many ticks with a bow in the hands is a tap (still a star); `YumiCfg::tap_s` at 60 Hz.
-const YUMI_TAP_TICKS: u32 = 10;
 /// Ticks a thrown tag may be missing from the snapshot before the client stops counting it as live.
 const TAG_SNAPSHOT_GRACE: u32 = 24;
 
@@ -695,6 +683,9 @@ pub struct ClientGame {
     tag_throws: Vec<u32>,
     power_events: Vec<PowerEvent>,
     fire_release_len: u32,
+    /// The bow is the weapon in hand (key `2`; `1` goes back to the katana) and whether the draw button is held.
+    bow_up: bool,
+    bow_hold: bool,
     /// Number of corrections applied (replays), for stats / debug overlay.
     pub corrections: u32,
     /// The local death in progress (see `death_cam`).
@@ -767,6 +758,8 @@ impl ClientGame {
             tag_throws: Vec::new(),
             power_events: Vec::new(),
             fire_release_len: 0,
+            bow_up: false,
+            bow_hold: false,
             corrections: 0,
             death: None,
             last_kill: None,
@@ -807,7 +800,17 @@ impl ClientGame {
             Action::Jump => self.latch.set_jump(e.down),
             Action::Dash => self.latch.set(Buttons::DASH, e.down),
             Action::Roll => self.latch.set(Buttons::ROLL, e.down),
+            Action::Slice if self.bow_up => self.bow_hold = e.down, // the bow is up: the slice button draws it instead
             Action::Slice => self.latch.set(Buttons::SLICE, e.down),
+            Action::Katana if e.down => {
+                self.bow_up = false;
+                self.bow_hold = false;
+            }
+            Action::Bow if e.down => {
+                self.bow_up = true;
+                self.latch.set(Buttons::SLICE, false);
+            }
+            Action::Katana | Action::Bow => {}
             Action::Fire => {
                 // the throw happens on release so a held press can become a charged MARK star
                 if e.down {
@@ -1097,14 +1100,11 @@ impl ClientGame {
             *h += 1;
         }
         if let Some(m) = self.fire_release.take() {
-            // a bow in the hands: the held button WAS the draw. A release after a real draw is the shot (or its cancel), no
-            // throw; only a tap still throws the star. Tags take every press as theirs and never charge a MARK star.
-            let bow_draw = self.power.kind == PowerKind::Yumi && self.fire_release_len > YUMI_TAP_TICKS;
-            if !bow_draw {
-                self.latch.set(Buttons::FIRE, true);
-                self.latch.set(Buttons::FIRE, false);
-                mark_now = m && self.power.kind == PowerKind::None;
-            }
+            // the throw button always throws (the bow has its own draw button now). Tags take every press as theirs and
+            // never charge a MARK star.
+            self.latch.set(Buttons::FIRE, true);
+            self.latch.set(Buttons::FIRE, false);
+            mark_now = m && self.power.kind != PowerKind::Tag;
         }
         // the weapon the server says we hold (re-synced when its kind / ammo report changes, never on a stale repeat)
         match self.net.power_report() {
@@ -1207,8 +1207,8 @@ impl ClientGame {
         if intent.buttons.has(Buttons::FIRE) && !mark_now && !tag_press {
             self.star_throws += 1;
         }
-        // the bow: the held throw button is the draw (the server also needs it to be a yumi, and slows the walk by it)
-        intent.draw = self.fire_hold.is_some() && self.power.kind == PowerKind::Yumi && !blocking && !dead;
+        // the bow: with it up, the held slice button is the draw (the server slows the walk by it while the bow is in hand)
+        intent.draw = self.bow_up && self.bow_hold && self.power.kind == PowerKind::Yumi && !blocking && !dead;
         // the weapon's own state machine, with exactly the inputs the server gives its copy
         if dead {
             self.power.clear();
@@ -1313,8 +1313,6 @@ impl ClientGame {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
-                // a landed barrel / canister is the server's from here on (it can burst or be shot): our copy only bridges the gap
-                p.combat.drop_landed_stars(0.5);
                 if let Some(edge) = p.combat.lock_edge {
                     self.lock_edges.push(edge);
                 }
@@ -1405,30 +1403,6 @@ impl ClientGame {
         self.net.next_packet(intent, local_tick)
     }
 
-    /// Landed barrels / canisters: our own predicted ones (until the snapshot brings the authoritative copy) plus every one in the
-    /// newest snapshot. Pure of `self` borrows so the tick can call it while `pred` is held.
-    fn star_objects_of(net: &NetClient, pred: Option<&Predicted>, own: Option<EntityId>) -> Vec<StarObj> {
-        let sc = StarCfg::default();
-        let mut out: Vec<StarObj> = Vec::new();
-        if let (Some(p), Some(me)) = (pred, own) {
-            for d in p.combat.loadout.discs().into_iter().filter(|d| d.stuck) {
-                out.push(StarObj { kind: d.kind, pos: [d.pos.x, d.pos.y, d.pos.z], normal: [d.normal.x, d.normal.y, d.normal.z], owner: me, armed: d.armed(&sc), life_left: d.life_left(&sc) });
-            }
-        }
-        if let Some(newest) = net.interp.newest_tick().and_then(|t| net.interp.get(t)) {
-            for (_, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && *id < POWER_ID_BASE && st.flags & DISC_STUCK != 0) {
-                let (pos, kind) = (dq_pos3(st.pos), StarKind::from_u8(disc_kind(st.flags)));
-                // our own copy of it (landed a moment ago, not yet dropped) already covers it
-                if out.iter().any(|o| o.owner == st.yaw && o.kind == kind && within(o.pos, pos, 0.6)) {
-                    out.retain(|o| !(o.owner == st.yaw && o.kind == kind && within(o.pos, pos, 0.6)));
-                }
-                let n = [dq_vel(st.vel[0]) / STUCK_NORMAL_SPEED, dq_vel(st.vel[1]) / STUCK_NORMAL_SPEED, dq_vel(st.vel[2]) / STUCK_NORMAL_SPEED];
-                out.push(StarObj { kind, pos, normal: n, owner: st.yaw, armed: st.flags & DISC_ARMED != 0, life_left: (st.fx & 15) as f32 / 15.0 });
-            }
-        }
-        out
-    }
-
     /// Fraction of the current flash daze left (`None` = not dazed).
     fn blind_frac(&self) -> Option<f32> {
         (self.blind_left > 0 && self.blind_total > 0).then(|| (self.blind_left as f32 / self.blind_total as f32).min(1.0))
@@ -1450,10 +1424,10 @@ impl ClientGame {
         // other players' shurikens ride in the snapshot; our own are drawn from the prediction (no latency)
         let mut discs: Vec<([f32; 3], [f32; 3])> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.projectiles());
         let mut disc_owners: Vec<u16> = vec![own_id.unwrap_or(0); discs.len()];
-        let mut disc_kinds: Vec<StarKind> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.loadout.discs().iter().filter(|d| !d.stuck).map(|d| d.kind).collect());
+        let mut disc_kinds: Vec<StarKind> = self.pred.as_ref().map_or_else(Vec::new, |p| p.combat.loadout.discs().iter().map(|d| d.kind).collect());
         disc_kinds.resize(discs.len(), StarKind::Standard);
         if let (Some(rt), Some(newest)) = (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
-            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && *id < POWER_ID_BASE && st.flags & DISC_STUCK == 0 && Some(st.yaw) != own_id) {
+            for (id, st) in newest.entities.iter().filter(|(id, st)| *id >= PROJECTILE_ID_BASE && *id < POWER_ID_BASE && Some(st.yaw) != own_id) {
                 if let Some(s) = self.net.interp.sample(*id, rt) {
                     let v = [dq_vel(st.vel[0]), dq_vel(st.vel[1]), dq_vel(st.vel[2])];
                     discs.push((s.pos, v));
@@ -1577,7 +1551,10 @@ impl ClientGame {
         };
         let (own_live, own_armed) = power_world.tags_of(own_id.unwrap_or(0));
         let live_for_view = own_live.max(self.tag_throws.len() as u32);
-        let power = PowerView::of(&self.power, &PowerCfg::default(), live_for_view, own_armed).filter(|_| self.death.is_none());
+        let power = PowerView::of(&self.power, &PowerCfg::default(), live_for_view, own_armed).filter(|_| self.death.is_none()).map(|mut v| {
+            v.up = self.bow_up;
+            v
+        });
         // who killed us (for the kill-cam): the Kill event can land before or after the dead flag
         if let Some(me) = own_id {
             for e in &events {
@@ -1616,7 +1593,6 @@ impl ClientGame {
             star_sel: self.star_sel,
             star_cycled: self.star_cycled,
             star_throws: self.star_throws,
-            star_objs: Self::star_objects_of(&self.net, self.pred.as_ref(), own_id),
             disc_kinds,
             blind: self.blind_frac().map_or(0.0, |f| self.blind_strength * whiteout_level(f)),
             dazed: self.blind_frac().unwrap_or(0.0),

@@ -110,8 +110,6 @@ pub enum DamageKind {
     Shuriken,
     Slash,
     GridBeam,
-    /// A barrel or canister blast (`stars.rs`).
-    Explosive,
     /// A yumi arrow (`power.rs`).
     Arrow,
     /// An explosive fuda tag's blast (`power.rs`).
@@ -164,14 +162,8 @@ pub enum CombatEvent {
         kind: SlashKind,
     },
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real>, kind: stars::StarKind },
-    /// A barrel came to rest or a canister stuck at `pos` (surface `normal`); a barrel that struck a player is "stuck" with its fuse spent.
-    StarStuck { kind: stars::StarKind, pos: Point<Real>, normal: Vector<Real> },
     /// A flash star burst at `pos` (impact or fuse). The server turns it into white-outs (`StarBlind`).
     StarFlash { pos: Point<Real> },
-    /// A barrel or canister went off at `pos` (server only).
-    StarBurst { pos: Point<Real>, kind: stars::StarKind },
-    /// A landed explosive ran past its fuse without the server detonating it (failsafe, server only).
-    StarGone { kind: stars::StarKind, pos: Point<Real> },
     /// Server only: `victim` is white-out blind for `ticks` at `strength_q` / 255 (events of the thrower).
     StarBlind { victim: u16, strength_q: u8, ticks: u16 },
     /// A power weapon moment for sound / FX (`power::FX_*`), at `pos` (server only, forwarded as `NetEvent::PowerFx`).
@@ -306,13 +298,6 @@ impl CombatSystem {
     /// in flight). Lets the server skip lag-comp work for idle players.
     pub fn busy(&self) -> bool {
         self.loadout.active() || !self.powerups.bursts().is_empty()
-    }
-
-    /// Client prediction: forget landed barrels / canisters older than `grace` seconds (the server's copy takes over).
-    pub fn drop_landed_stars(&mut self, grace: f32) {
-        if let Some(d) = self.loadout.discs_mut() {
-            d.retain(|d| !(d.stuck && d.stick_age > grace));
-        }
     }
 
     /// Owner died: drop everything in flight.

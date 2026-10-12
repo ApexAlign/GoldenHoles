@@ -34,7 +34,10 @@ struct Outcome {
 
 /// `strafe`: target lateral speed m/s (direction flips every `flip` s); `bob`: vertical amplitude (wall-run / jump).
 fn run(dist: f32, strafe: f32, bob: f32, assist: bool, touch: bool, seed: u64) -> Outcome {
-    let b = Balance::default();
+    // the harness measures aiming out to 30 m, past a star's 14 m range and its 20 m assist reach
+    let mut b = Balance::default();
+    b.combat.shuriken.range = 0.0;
+    b.combat.shuriken.assist_range = 80.0;
     let lock_cfg = LockCfg { lock_secs: b.combat.lock_secs, pull_min: b.combat.lock_pull_min, break_secs: b.combat.lock_break_secs, blend_secs: b.combat.lock_blend_secs };
     let cone = b.combat.shuriken.assist_cone_deg;
     let mut w = PhysicsWorld { bodies: RigidBodySet::new(), colliders: ColliderSet::new(), islands: IslandManager::new(), queries: QueryPipeline::new() };

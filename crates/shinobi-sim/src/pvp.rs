@@ -297,7 +297,7 @@ pub fn apply_hits(
         let mut guard_seen = crate::block::Guard::None;
         let mut mom = 1.0f32;
         // arrows, tag blasts and star explosions are resolved against shield, parry and cut-down (`power_pass.rs`, `star_pass.rs`) before they get here
-        let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag | DamageKind::Explosive));
+        let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag));
         if let (Cause::Weapon(kind), false) = (h.cause, pre_resolved) {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
             // momentum + kill streak: a fast, hot swordsman cuts harder (but only against an open target: a shield is
@@ -332,13 +332,7 @@ pub fn apply_hits(
                             homing: None,
                             mark: false,
                             kind: crate::combat::stars::StarKind::Standard,
-                            stuck: false,
-                            stick_age: 0.0,
-                            normal: Vector::y(),
-                            uid: 0x8000 | (tick as u16 & 0x7fff),
-                            vel: Vector::zeros(),
-                            attach: None,
-                            attach_off: None,
+                            travelled: 0.0,
                         });
                     }
                 }
@@ -813,11 +807,13 @@ mod tests {
     fn near_miss_hits(assist: bool, settle: u32) -> bool {
         // target 1.5 m off the crosshair at 20 m (~4.3 deg): a clean miss without assist
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [1.5, 0.81, -20.0])]);
+        let mut b = sim.s.balance.clone();
+        b.combat.shuriken.range = 0.0; // 20 m is past a star's 14 m range and its 20 m assist reach
+        b.combat.shuriken.assist_range = 80.0;
         if !assist {
-            let mut b = sim.s.balance.clone();
             b.combat.shuriken.assist_strength = 0.0;
-            sim.s.set_balance(b).unwrap();
         }
+        sim.s.set_balance(b).unwrap();
         for _ in 0..settle {
             sim.tick(&[(A, IDLE, 0), (B, IDLE, 0)]);
         }
@@ -844,6 +840,8 @@ mod tests {
         let mut sim = Sim::new(&[(A, [0.0, 0.81, 0.0]), (B, [-4.0, 0.81, -dist])]);
         let mut b = sim.s.balance.clone();
         b.combat.shuriken.speed = 70.0; // the demo's flat, fast stars
+        b.combat.shuriken.range = 0.0; // up to 30 m in this test, past a star's 14 m range
+        b.combat.shuriken.assist_range = 80.0;
         b.combat.shuriken.assist_lead = lead;
         b.combat.shuriken.homing_turn = 0.0; // this test is about the lead; homing has its own
         sim.s.set_balance(b).unwrap();

@@ -357,6 +357,9 @@ fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) 
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (m(MouseButton::Left), Action::Slice),
+        // weapon select: 1 = katana, 2 = yumi (bow up: left click draws it)
+        (k(KeyCode::Digit1), Action::Katana),
+        (k(KeyCode::Digit2), Action::Bow),
         (m(MouseButton::Right), Action::Fire),
         // hold: shield + parry, view locked. Several keys on purpose: Ctrl is eaten by some window managers / layouts
         (k(KeyCode::ControlLeft), Action::Block),

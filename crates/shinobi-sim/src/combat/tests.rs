@@ -148,6 +148,9 @@ fn shuriken_bounces_twice_then_dies_at_constant_speed() {
     w.queries.update(&w.colliders);
 
     let mut sys = CombatSystem::ninja(&cfg);
+    let mut lab = crate::balance::Balance::default();
+    lab.combat.shuriken.range = 0.0; // these corridor / corner shots are longer than a star's 14 m range
+    sys.apply_balance(&lab, &cfg);
     let mut input = PlayerInput::default();
     let mut ev = Vec::new();
     sys.update(DT, 0.0, &CombatInput::new(true, false), &Aim::level(origin, -0.4), &w, &ch, &mut input, &mut ev);
@@ -169,6 +172,9 @@ fn shuriken_reflects_off_wall_and_hits_enemy_around_the_corner() {
     w.queries.update(&w.colliders);
 
     let mut sys = CombatSystem::ninja(&cfg);
+    let mut lab = crate::balance::Balance::default();
+    lab.combat.shuriken.range = 0.0; // these corridor / corner shots are longer than a star's 14 m range
+    sys.apply_balance(&lab, &cfg);
     let mut input = PlayerInput::default();
     let mut ev = Vec::new();
     // dir = (0.6, 0, -0.8): hits the wall at x = 7.5 and reflects toward the enemy
@@ -379,7 +385,7 @@ mod disc_physics {
         add_enemy(&mut w, vector![3.0, 1.0, -20.0], 9); // 8.5 degrees off the line of fire
         w.queries.update(&w.colliders);
         let target = w.colliders.iter().find(|(_, c)| c.user_data == 9).map(|(h, _)| h).unwrap();
-        let cfg = ShurikenCfg { speed: 60.0, ..ShurikenCfg::default() };
+        let cfg = ShurikenCfg { speed: 60.0, range: 0.0, ..ShurikenCfg::default() };
         let run = |homing: Option<ColliderHandle>| {
             let mut d = disc([0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
             d.homing = homing;

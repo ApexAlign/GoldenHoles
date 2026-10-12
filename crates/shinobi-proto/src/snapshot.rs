@@ -334,14 +334,10 @@ mod tests {
 }
 
 /// Snapshot entity ids at or above this are in-flight shurikens (yaw = owner id, vel = direction * speed), not players.
-/// `flags` of such an entity: bits 0..2 bounce count, bits 2..4 the star kind (`StarKind`), `DISC_STUCK`, `DISC_ARMED`.
-/// A landed mine / smoke (`DISC_STUCK`) is a world object: `vel` = surface normal * `STUCK_NORMAL_SPEED`, `fx` = life left
-/// in 1/15ths, and its id is stable for its whole life (`STUCK_ID_BASE..`) so it does not interpolate between objects.
+/// `flags` of such an entity: bits 0..2 bounce count, bits 2..4 the star kind (`StarKind`: 0 standard, 2 flash). (Landed
+/// barrel / canister world objects, ids from 0x5000, are gone since v23.)
 pub const PROJECTILE_ID_BASE: EntityId = 0x4000;
-/// Landed star objects (mines, smoke) get ids from here up (stable across snapshots).
-pub const STUCK_ID_BASE: EntityId = 0x5000;
-pub const DISC_STUCK: u8 = 1 << 4;
-pub const DISC_ARMED: u8 = 1 << 5;
+/// Scale of a surface normal / aim direction packed into a snapshot entity's `vel` (tags, the drawn-bow glint).
 pub const STUCK_NORMAL_SPEED: f32 = 8.0;
 
 /// Power-weapon entities (docs/powerups.md), ids from `POWER_ID_BASE` (stable for the object's life, `uid & 0xFF`):
@@ -380,9 +376,9 @@ pub fn entity_class(id: EntityId) -> EntityClass {
     }
 }
 
-/// Pack a disc's `flags`: bounce count (0..=3), star kind (0..=3) and the landed / armed bits.
-pub fn disc_flags(bounces: u8, kind: u8, stuck: bool, armed: bool) -> u8 {
-    (bounces.min(3)) | ((kind & 3) << 2) | if stuck { DISC_STUCK } else { 0 } | if armed { DISC_ARMED } else { 0 }
+/// Pack a disc's `flags`: bounce count (0..=3) and star kind (0..=3).
+pub fn disc_flags(bounces: u8, kind: u8) -> u8 {
+    (bounces.min(3)) | ((kind & 3) << 2)
 }
 
 /// Star kind (`StarKind` wire value) of a projectile entity's `flags`.

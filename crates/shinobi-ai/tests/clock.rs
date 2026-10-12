@@ -131,6 +131,7 @@ fn clock_bots_fight_up_and_down_the_drum_without_freezing_or_falling_out() {
         // 12 bots x 4 minutes: a roof is not a cliff. Slashes now launch their victims and a ring-out is a kill (melee heighteners), so shoves off the roofs are part of the fight; a flood of them is a bug.
         assert!(r.void_deaths <= 5, "seed {seed}: {} bots fell out of the drum in 240 s", r.void_deaths);
         assert!(r.tiers_seen >= 4, "seed {seed}: bots only stood in {} height band(s): they are not climbing the spiral", r.tiers_seen);
-        assert!(r.kills >= 100, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
+        // (was 100 before stars became a 14 m close-range tool: the bots' long pokes are gone, the bow only partly makes up for it)
+        assert!(r.kills >= 70, "seed {seed}: only {} kills in 240 s: the bots are not reaching each other", r.kills);
     }
 }

@@ -85,18 +85,18 @@ fn aim() -> PlayerIntent {
 
 #[test]
 fn drawing_and_loosing_a_bow_steps_identically_on_both_sides() {
-    // walk + draw 40 ticks, release; a short tap; a half draw; a second full draw until the bow is empty
+    // walk + draw 40 ticks, release; a short tap; a half draw; two more full draws after the 2.2 s reload
     let script = |t: u32| {
         let mut it = PlayerIntent { move_z: 127, ..aim() };
-        it.draw = matches!(t, 5..=45 | 80..=84 | 120..=140 | 200..=240 | 300..=340);
-        if t == 85 {
+        it.draw = matches!(t, 5..=45 | 80..=84 | 100..=140 | 200..=204 | 220..=240 | 260..=300 | 450..=490);
+        if t == 205 {
             it.buttons = Buttons(Buttons::FIRE); // the tap's star
         }
         it
     };
-    let (_, c) = run(PowerKind::Yumi, script, 400);
+    let (_, c) = run(PowerKind::Yumi, script, 540);
     let looses: Vec<u32> = c.iter().filter(|(_, e)| *e == PowerEvent::Loose).map(|(t, _)| *t).collect();
-    assert_eq!(looses, vec![46, 241, 341], "the arrows leave on the release ticks of the full draws");
+    assert_eq!(looses, vec![46, 301, 491], "the arrows leave on the release ticks of the full draws");
     assert!(c.iter().any(|(_, e)| matches!(e, PowerEvent::DrawCancel { tap: true })));
     assert!(c.iter().any(|(_, e)| matches!(e, PowerEvent::DrawCancel { tap: false })));
 }

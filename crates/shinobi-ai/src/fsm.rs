@@ -56,7 +56,7 @@ const WHIRL_RANGE: f32 = 3.0;
 const POKE_MIN_RANGE: f32 = 3.0;
 /// Bots ask for a ticket this far out so it is ready when they arrive.
 pub const REQUEST_RANGE: f32 = 13.0;
-const SHURIKEN_RANGE: f32 = 34.0;
+const SHURIKEN_RANGE: f32 = 13.0;
 const EVADE_TICKS: u32 = 16;
 const EVADE_COOLDOWN: u32 = 50;
 const THREAT_MARGIN: f32 = 0.21; // ~12 deg: react before being fully on screen
@@ -247,13 +247,17 @@ pub struct BotMem {
     stuck_check: ([f32; 2], u32),
     unstick_until: u32,
     unstick_dir: V3,
-    /// Star variants (docs/stars.md): which throwable this tick's FIRE sends (0 = standard), when each kind may be
-    /// thrown again, and the window in which the bot raises its aim to lob a barrel (`lob_add` radians above the flat aim).
+    /// After a wedge, plan a path even to a target inside 5 m until this tick (a wall between us and it, a floor apart).
+    replan_until: u32,
+    /// Consecutive ticks the void-edge guard has refused every direction (a pillar top, an alcove): after a few seconds
+    /// the bot takes its chances rather than standing there for good.
+    edge_frozen: u32,
+    /// This tick's unstick asks for a dash (set by `traverse`, applied after the void-edge guard, which would strip it).
+    unstick_dash: bool,
+    /// Star variants (docs/stars.md): which throwable this tick's FIRE sends (0 = standard), and when the flash may be
+    /// thrown again.
     star_pick: u8,
-    barrel_ok: u32,
     flash_ok: u32,
-    lob_until: u32,
-    lob_add: f32,
     /// Power weapons (docs/powerups.md, `power_bot.rs`): the brain and the look it wants this tick.
     power: crate::power_bot::PowerBrain,
     power_aim: Option<(f32, f32)>,
@@ -303,11 +307,11 @@ impl BotMem {
             stuck_check: ([0.0; 2], 0),
             unstick_until: 0,
             unstick_dir: Vector::zeros(),
+            replan_until: 0,
+            edge_frozen: 0,
+            unstick_dash: false,
             star_pick: 0,
-            barrel_ok: 0,
             flash_ok: 0,
-            lob_until: 0,
-            lob_add: 0.0,
             power: Default::default(),
             power_aim: None,
         }
@@ -506,6 +510,10 @@ impl BotMem {
             let (d3, m3) = self.edge_guard(nav, ctx, dir, mag, yaw, to_target, &mut buttons);
             dir = d3;
             mag = m3;
+        }
+
+        if std::mem::take(&mut self.unstick_dash) {
+            buttons |= Buttons::DASH;
         }
 
         // ---- 7. long hook at a visible target now and then (normal / hard bots; the strike follows in select_phase)
@@ -970,14 +978,31 @@ impl BotMem {
         }
         let reach = 1.8 + 0.3 * me.flat_speed();
         if !nav.edge_ahead(me.pos, dir, reach, feet) {
+            self.edge_frozen = 0;
             return (dir, mag);
         }
         self.stats.edge_stops += 1;
         for k in [0.5f32, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3] {
             let alt = rotate_y(dir, k);
             if !nav.edge_ahead(me.pos, alt, reach, feet) {
+                self.edge_frozen = 0;
                 return (alt, mag * 0.8);
             }
+        }
+        // every way has a drop inside the full probe (a platform narrower than the probe, or an alcove): shuffle along the
+        // direction that still has solid floor a body-length ahead instead of freezing there for good
+        let short = 0.9;
+        for k in [0.0f32, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, std::f32::consts::PI] {
+            let alt = rotate_y(dir, k);
+            if !nav.edge_ahead(me.pos, alt, short, feet) {
+                self.edge_frozen = 0;
+                return (alt, mag * 0.5);
+            }
+        }
+        // nowhere is safe (a pillar top): after a few seconds of standing there, walk off and let the respawn sort it out
+        self.edge_frozen += 1;
+        if self.edge_frozen > 180 {
+            return (dir, mag);
         }
         (dir, 0.0)
     }
@@ -1036,6 +1061,15 @@ impl BotMem {
         // wedged on geometry the plan cannot see (a body pinned against a wall corner): same place for 1.5 s while
         // trying to move -> back out along the freest direction for a moment, then plan again
         if tick < self.unstick_until {
+            // a body jammed under a low slab ignores the stick (the controller sees a ceiling touch in every direction): a
+            // dash is an impulse and gets it out
+            if (self.unstick_until - tick) % 20 == 0 {
+                let feet = me.pos.y - cfg.half_height - cfg.radius;
+                // (never toward a drop: on the floating maps a dash off a deck is a death)
+                if ctx.nav.map_or(true, |n| !n.edge_ahead(me.pos, self.unstick_dir, 7.0, feet)) {
+                    self.unstick_dash = true;
+                }
+            }
             return (self.unstick_dir, 1.0);
         }
         if tick.wrapping_sub(self.stuck_check.1) >= 90 {
@@ -1069,6 +1103,7 @@ impl BotMem {
                 }
                 self.unstick_dir = best.1;
                 self.unstick_until = tick + 40;
+                self.replan_until = tick + 600;
                 self.path.clear();
                 self.stats.unsticks += 1;
                 return (self.unstick_dir, 1.0);
@@ -1079,7 +1114,7 @@ impl BotMem {
         // (alcoves with baffled doors, big maps). Retreat / evade / strike keep their own direction.
         let planned = match (ctx.nav, p.target) {
             (Some(nav), Some(t))
-                if t.dist > 5.0
+                if (t.dist > 5.0 || tick < self.replan_until)
                     && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
                     && (!t.los || !nav.straight_walkable([me.pos.x, me.pos.z], [t.view.pos.x, t.view.pos.z])) =>
             {
@@ -1159,9 +1194,9 @@ impl BotMem {
 
     // ------------------------------------------------------------------ attacks & aim
 
-    /// Now and then a bot throws something other than a plain star: a flash at a target that is looking at it, or a lobbed
-    /// barrel at one 9-20 m away (outside its own blast). Only with the energy to spare, and never faster than the
-    /// per-kind gaps below, so the variants stay seasoning and the plain star stays the bot's poke.
+    /// Now and then a bot throws something other than a plain star: a flash at a target that is looking at it. Only with
+    /// the energy to spare, and never faster than the gap below, so the flash stays seasoning and the plain star stays the
+    /// bot's poke.
     fn star_variants(&mut self, ctx: &ThinkCtx, p: &Perception, buttons: &mut u8, rng: &mut Rng) {
         let (tick, me) = (ctx.world.tick, ctx.me);
         let Some((energy, _, locked)) = ctx.world.server.players.iter().find(|q| q.id == me.id).and_then(|q| q.combat.shuriken_energy()) else { return };
@@ -1173,31 +1208,13 @@ impl BotMem {
         if !t.los || t.view.spawn_protected || !matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone | Phase::Perch) {
             return;
         }
-        let (want_yaw, flat_pitch) = self.aim_angles(ctx, &t);
+        let (want_yaw, _) = self.aim_angles(ctx, &t);
         if wrap_pi(want_yaw - me.yaw).abs() >= 0.10 + self.skill.aim_error {
             return;
         }
-        // a barrel in preparation: wait until the aim has come up to the lob, then throw
-        if tick < self.lob_until {
-            if (me.pitch - (flat_pitch + self.lob_add)).abs() < 0.08 && energy >= sc.barrel_cost {
-                self.lob_until = 0;
-                *buttons |= Buttons::FIRE;
-                self.star_pick = 1;
-                self.stats.shurikens += 1;
-                self.fire_ok = tick + self.skill.fire_gap_ticks;
-            }
-            return;
-        }
-        let pick = if t.on_screen && (7.0..=16.0).contains(&t.dist) && energy >= sc.flash_cost + 1.0 && tick >= self.flash_ok && rng.chance(0.012) {
+        let pick = if t.on_screen && (5.0..=13.0).contains(&t.dist) && energy >= sc.flash_cost + 1.0 && tick >= self.flash_ok && rng.chance(0.012) {
             self.flash_ok = tick + 420;
             2
-        } else if (9.0..=20.0).contains(&t.dist) && energy >= sc.barrel_cost + 1.5 && tick >= self.barrel_ok && rng.chance(0.01) {
-            // the low arc that lands a barrel at this range
-            let sin2 = (sc.barrel_gravity * t.dist / (sc.barrel_speed * sc.barrel_speed).max(1.0)).clamp(0.0, 0.95);
-            self.lob_add = 0.5 * sin2.asin();
-            self.lob_until = tick + 30;
-            self.barrel_ok = tick + 600;
-            return;
         } else {
             return;
         };
@@ -1253,11 +1270,6 @@ impl BotMem {
                 let d = flat(t.view.pos - me.pos);
                 (yaw_of(d) + self.slice_off, 0.0)
             }
-            // lobbing a barrel: aim above the target by the arc
-            (Some(t), _) if ctx.world.tick < self.lob_until => {
-                let (y, pch) = self.aim_angles(ctx, &t);
-                (y, (pch + self.lob_add).clamp(-1.2, 1.2))
-            }
             // a drawn bow / a thrown tag aims with lead and drop (`power_bot.rs`)
             _ if self.power_aim.is_some() => self.power_aim.unwrap(),
             (Some(t), _) => self.aim_angles(ctx, &t),
@@ -1291,3 +1303,4 @@ fn incoming_disc(ctx: &ThinkCtx) -> bool {
         dist < 18.0 && dist > 0.5 && to.dot(&d.dir) / dist > 0.97
     })
 }
+

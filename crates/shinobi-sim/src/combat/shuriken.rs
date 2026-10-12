@@ -50,7 +50,12 @@ pub struct ShurikenCfg {
     pub energy_resume: f32,
     /// Charges a MARK star (hold to charge) costs: it does no damage and marks its target for the katana.
     pub mark_cost: f32,
-    /// The barrel / canister / flash variants (`combat.star.*`).
+    /// Stars are a close-range tool: they vanish after `range` metres of flight, deal full damage up to `full_range`, and
+    /// fall off linearly to `far_mult` of it at `range`. `range` 0 = unlimited (no falloff).
+    pub range: f32,
+    pub full_range: f32,
+    pub far_mult: f32,
+    /// The flash variant (`combat.star.*`).
     pub star: StarCfg,
     /// Collider groups this disc damages when it touches them.
     pub targets: Group,
@@ -73,7 +78,7 @@ impl Default for ShurikenCfg {
             assist_cone_deg: 10.0,
             assist_strength: 0.95,
             assist_lead: 1.0,
-            assist_range: 80.0,
+            assist_range: 20.0,
             homing_turn: 5.0,
             bounce_retention: 0.9,
             piece_damage: 12.0,
@@ -82,6 +87,9 @@ impl Default for ShurikenCfg {
             energy_regen_s: 0.45,
             energy_resume: 2.0,
             mark_cost: 2.0,
+            range: 14.0, // a close-range tool; the client predictor runs on these defaults, so they ARE the demo numbers
+            full_range: 7.0,
+            far_mult: 0.5,
             star: StarCfg::default(),
             targets: TARGETS,
             mask: projectile_groups(),
@@ -89,13 +97,7 @@ impl Default for ShurikenCfg {
     }
 }
 
-/// Radius of a canister's flight ball: small, so it lands on the surface it was thrown at.
-const STICK_RADIUS: f32 = 0.3;
-/// Radius of a barrel's flight ball.
-const BARREL_RADIUS: f32 = 0.45;
-/// A landed explosive that nobody detonated (client prediction, an unwatched copy) is dropped this long after its fuse.
-pub const FUSE_FAILSAFE_S: f32 = 0.6;
-
+/// Radius of a flash star's flight ball is the star radius; see `step_variant`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Disc {
     pub pos: Point<Real>,
@@ -111,46 +113,24 @@ pub struct Disc {
     pub mark: bool,
     /// Which throwable this is (`Standard` unless thrown with a star variant selected).
     pub kind: StarKind,
-    /// Landed (a barrel at rest, a stuck canister): it no longer flies, `stick_age` counts the fuse from the landing.
-    pub stuck: bool,
-    pub stick_age: f32,
-    /// Surface normal at the landing (glyph orientation).
-    pub normal: Vector<Real>,
-    /// Unique per launcher: lets the replicator keep a stable entity id for a stuck object.
-    pub uid: u16,
-    /// A flying barrel's velocity (m/s); zero for everything else.
-    pub vel: Vector<Real>,
-    /// A canister stuck to a player: that player's hitbox, and where on them it sits (relative to their position, set by
-    /// the server's `star_pass` on the first tick).
-    pub attach: Option<ColliderHandle>,
-    pub attach_off: Option<Vector<Real>>,
+    /// Metres flown so far (bounces included): stars are a close-range tool (`ShurikenCfg::range`).
+    pub travelled: f32,
 }
 
 impl Disc {
-    /// A barrel at rest or a stuck canister: its fuse is burning.
-    pub fn armed(&self, _cfg: &StarCfg) -> bool {
-        self.kind.explosive() && self.stuck
-    }
-
-    /// Has a landed explosive's fuse run out (the server detonates it)?
-    pub fn fuse_done(&self, cfg: &StarCfg) -> bool {
-        self.kind.explosive() && self.stuck && self.stick_age >= cfg.fuse(self.kind)
-    }
-
-    /// Fraction of a landed explosive's fuse left, 1 = just landed (0 for flying discs).
-    pub fn life_left(&self, cfg: &StarCfg) -> f32 {
-        let fuse = cfg.fuse(self.kind);
-        if !self.stuck || fuse <= 0.0 {
-            return 0.0;
+    /// Share of the star's damage it still deals after flying `travelled` metres.
+    pub fn damage_mult(&self, cfg: &ShurikenCfg) -> f32 {
+        if cfg.range <= 0.0 || self.travelled <= cfg.full_range {
+            return 1.0;
         }
-        (1.0 - self.stick_age / fuse).clamp(0.0, 1.0)
+        let t = ((self.travelled - cfg.full_range) / (cfg.range - cfg.full_range).max(1e-3)).clamp(0.0, 1.0);
+        1.0 - (1.0 - cfg.far_mult) * t
     }
 }
 
 pub struct ShurikenLauncher {
     pub cfg: ShurikenCfg,
     discs: Vec<Disc>,
-    next_uid: u16,
     /// Star energy in charges (only meaningful with `cfg.energy_max > 0`) and the empty-pool lockout.
     energy: f32,
     locked: bool,
@@ -164,7 +144,7 @@ impl Default for ShurikenLauncher {
 
 impl ShurikenLauncher {
     pub fn new(cfg: ShurikenCfg) -> Self {
-        Self { cfg, discs: Vec::new(), next_uid: 0, energy: cfg.energy_max, locked: false }
+        Self { cfg, discs: Vec::new(), energy: cfg.energy_max, locked: false }
     }
 
     /// (energy, max, locked) when a pool is in force.
@@ -177,16 +157,9 @@ impl ShurikenLauncher {
         &self.discs
     }
 
-    /// The server's world pass removes the explosives it detonated.
+    /// Mutable view of the flying discs.
     pub fn discs_mut(&mut self) -> &mut Vec<Disc> {
         &mut self.discs
-    }
-
-    /// Client prediction: a landed barrel / canister is the server's to track from here on (it can detonate or be shot);
-    /// the predicted copy is only kept for `grace` seconds so the object does not blink out before the snapshot
-    /// brings the authoritative one.
-    pub fn drop_landed_after(&mut self, grace: f32) {
-        self.discs.retain(|d| !(d.stuck && d.stick_age > grace));
     }
 }
 
@@ -221,15 +194,12 @@ impl Weapon for ShurikenLauncher {
                 self.locked = true; // cannot afford another star: locked until `energy_resume` charges are back
             }
         }
-        // the variants fly where the crosshair is (no aim assist, no homing); a barrel then arcs under gravity
+        // the flash star flies where the crosshair is (no aim assist, no homing)
         let plain = kind != StarKind::Standard;
         let dir = if plain { ctx.aim.forward() } else { assisted_dir(&self.cfg, ctx) };
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
         let homing = ctx.lock.filter(|h| !plain && h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
-        let vel = if kind == StarKind::Barrel { dir * self.cfg.star.barrel_speed } else { Vector::zeros() };
-        let uid = self.next_uid;
-        self.next_uid = self.next_uid.wrapping_add(1);
-        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark, kind, stuck: false, stick_age: 0.0, normal: Vector::y(), uid, vel, attach: None, attach_off: None });
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark, kind, travelled: 0.0 });
         ctx.events.push(CombatEvent::ShurikenThrown { pos, dir, kind });
         ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
         true
@@ -246,8 +216,7 @@ impl Weapon for ShurikenLauncher {
     }
 
     fn projectiles(&self, out: &mut Vec<([f32; 3], [f32; 3])>) {
-        // landed barrels / canisters are world objects (`stars`), not flying discs
-        out.extend(self.discs.iter().filter(|d| !d.stuck).map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
+        out.extend(self.discs.iter().map(|d| ([d.pos.x, d.pos.y, d.pos.z], [d.dir.x, d.dir.y, d.dir.z])));
     }
 
     fn spend_energy(&mut self, amount: f32) -> bool {
@@ -297,7 +266,7 @@ impl Weapon for ShurikenLauncher {
                 if d.mark {
                     ctx.events.push(CombatEvent::MarkHit { target, collider });
                 } else {
-                    ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage, kind: DamageKind::Shuriken, point });
+                    ctx.events.push(CombatEvent::Damage { target, collider, amount: cfg.damage * d.damage_mult(&cfg), kind: DamageKind::Shuriken, point });
                 }
                 ctx.events.push(CombatEvent::ShurikenGone { pos: point });
                 false
@@ -308,11 +277,8 @@ impl Weapon for ShurikenLauncher {
     }
 }
 
-/// One tick of a barrel / flash / canister star. Returns false when it is gone. Flash and canister fly straight on a swept
-/// ball cast: a flash bursts on the first solid or player (`StarFlash`) or when its fuse runs out; a canister sticks to the
-/// first solid or player (`StarStuck`). A barrel arcs under gravity, bounces off solids (restitution, friction) until it
-/// comes to rest (`StarStuck`), and goes off at once when it strikes a player. A landed explosive only ages (the server's
-/// `star_pass` detonates it when the fuse is out).
+/// One tick of a flash star. Returns false when it is gone. It flies straight on a swept ball cast and bursts on the
+/// first solid or player (`StarFlash`), or when its fuse runs out.
 fn step_variant(
     world: &PhysicsWorld,
     d: &mut Disc,
@@ -324,56 +290,31 @@ fn step_variant(
 ) -> bool {
     d.age += dt;
     let sc = &cfg.star;
-    if d.stuck {
-        d.stick_age += dt;
-        if d.stick_age > sc.fuse(d.kind) + FUSE_FAILSAFE_S {
-            events.push(CombatEvent::StarGone { kind: d.kind, pos: d.pos });
-            return false;
-        }
-        return true;
-    }
     if d.age > cfg.max_life {
         return false;
     }
-    if d.kind == StarKind::Flash && d.age >= sc.flash_fuse_s {
+    if d.age >= sc.flash_fuse_s {
         events.push(CombatEvent::StarFlash { pos: d.pos });
         return false;
     }
-    // every variant bursts / lands on a player's hitbox as well as on geometry (allies and the thrower are skipped)
-    let radius = match d.kind {
-        StarKind::Flash => cfg.radius,
-        StarKind::Barrel => BARREL_RADIUS,
-        _ => STICK_RADIUS,
-    };
     let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !skip.contains(&h);
     let mut filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask));
     if let Some(b) = exclude {
         filter = filter.exclude_rigid_body(b);
     }
-    let barrel = d.kind == StarKind::Barrel;
-    if barrel {
-        d.vel.y -= sc.barrel_gravity * dt;
-        let sp = d.vel.norm();
-        if sp > 1e-3 && sp.is_finite() {
-            d.dir = d.vel / sp;
-        }
-    }
-    let dist = if barrel { d.vel.norm() * dt } else { sc.speed(d.kind, cfg.speed) * dt };
+    let dist = cfg.speed * dt;
     let hit = world.queries.cast_shape(
         &world.bodies,
         &world.colliders,
         &Isometry::from(d.pos.coords),
         &d.dir,
-        &Ball::new(radius),
+        &Ball::new(cfg.radius),
         ShapeCastOptions { max_time_of_impact: dist, target_distance: 0.0, stop_at_penetration: true, compute_impact_geometry_on_penetration: true },
         filter,
     );
     let Some((handle, h)) = hit else {
         d.pos += d.dir * dist;
-        if !d.pos.coords.iter().all(|c| c.is_finite()) {
-            return false;
-        }
-        return true;
+        return d.pos.coords.iter().all(|c| c.is_finite());
     };
     d.pos += d.dir * h.time_of_impact;
     let mut n = h.normal1.into_inner();
@@ -388,51 +329,10 @@ fn step_variant(
         return false; // never feed NaN to the query pipeline
     }
     let on_target = world.colliders.get(handle).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets));
-    match d.kind {
-        StarKind::Flash => {
-            // burst just off the surface so nothing about the wall itself matters
-            let at = if on_target { d.pos } else { d.pos + n * 0.1 };
-            events.push(CombatEvent::StarFlash { pos: at });
-            false
-        }
-        StarKind::Barrel if !on_target => {
-            let vn = d.vel.dot(&n); // negative: into the surface
-            let v_t = d.vel - n * vn;
-            // came to rest: nearly no speed into a floor-ish surface
-            if n.y > 0.6 && -vn < 3.0 {
-                d.vel = Vector::zeros();
-                d.stuck = true;
-                d.stick_age = 0.0;
-                d.normal = n;
-                events.push(CombatEvent::StarStuck { kind: d.kind, pos: d.pos, normal: n });
-                return true;
-            }
-            d.vel = v_t * sc.barrel_grip - n * (vn * sc.barrel_bounce);
-            let sp = d.vel.norm();
-            if sp > 1e-3 && sp.is_finite() {
-                d.dir = d.vel / sp;
-            }
-            d.bounces = d.bounces.saturating_add(1);
-            d.pos += n * 1e-3;
-            events.push(CombatEvent::ShurikenBounce { pos: d.pos, normal: n });
-            true
-        }
-        _ => {
-            // a canister meeting a surface rests on it itself (the ball's centre met it a radius off); a canister on a player
-            // or a barrel that struck one stays where it touched, and a barrel's fuse is spent at once (the server bursts it)
-            if !on_target {
-                d.pos += n * (0.02 - radius);
-            } else if d.kind == StarKind::Canister {
-                d.attach = Some(handle);
-            }
-            d.vel = Vector::zeros();
-            d.stuck = true;
-            d.stick_age = if barrel { sc.barrel_fuse_s } else { 0.0 };
-            d.normal = n;
-            events.push(CombatEvent::StarStuck { kind: d.kind, pos: d.pos, normal: n });
-            true
-        }
-    }
+    // burst just off the surface so nothing about the wall itself matters
+    let at = if on_target { d.pos } else { d.pos + n * 0.1 };
+    events.push(CombatEvent::StarFlash { pos: at });
+    false
 }
 
 /// The crosshair direction, bent toward the lock-on target by `assist_strength` scaled with the lock's pull (weak
@@ -505,7 +405,7 @@ pub fn advance_disc_skipping(
         filter = filter.exclude_rigid_body(b);
     }
     d.age += dt;
-    if d.age > cfg.max_life {
+    if d.age > cfg.max_life || (cfg.range > 0.0 && d.travelled >= cfg.range) {
         events.push(CombatEvent::ShurikenGone { pos: d.pos });
         return DiscStep::Gone;
     }
@@ -533,6 +433,9 @@ pub fn advance_disc_skipping(
         }
     }
     let mut remaining = cfg.speed * d.speed_scale * dt;
+    if cfg.range > 0.0 {
+        remaining = remaining.min((cfg.range - d.travelled).max(0.0));
+    }
     // a few reflections per tick cover tight corners without looping forever
     for _ in 0..4 {
         if remaining <= 1e-5 {
@@ -554,9 +457,11 @@ pub fn advance_disc_skipping(
         );
         let Some((handle, h)) = hit else {
             d.pos += d.dir * remaining;
+            d.travelled += remaining;
             break;
         };
         d.pos += d.dir * h.time_of_impact;
+        d.travelled += h.time_of_impact;
         remaining -= h.time_of_impact;
 
         if world.colliders.get(handle).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets)) {

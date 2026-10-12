@@ -18,12 +18,7 @@ use shinobi_sim::tick::Server;
 const A: u16 = 1;
 
 fn run_kind(kind: StarKind) {
-    // an explosive is detonated by the server at its fuse (the client drops its copy by then): compare only up to there
-    let ticks = match kind {
-        StarKind::Barrel => 110,
-        StarKind::Canister => 60,
-        _ => 150,
-    };
+    let ticks = 150;
     let lv = LevelDesc { boxes: vec![LevelBox::new([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]), LevelBox::new([0.0, 5.0, -30.0], [40.0, 5.0, 1.0])], spawns: vec![[0.0, 0.81, 0.0]] };
     let mut s = Server::new(Cfg::default());
     lv.apply_to_server(&mut s);
@@ -57,7 +52,6 @@ fn run_kind(kind: StarKind) {
     // start from the server's pool, as the client syncs to the server's report
     let mut mismatches = Vec::new();
     let pitch = -0.25;
-    let mut ticks_stuck = 0;
     for t in 0..ticks as u32 {
         let fire = t == 3;
         let it = if fire { PlayerIntent { buttons: Buttons(Buttons::FIRE), star: kind as u8, ..idle(pitch) } } else { idle(pitch) };
@@ -86,11 +80,10 @@ fn run_kind(kind: StarKind) {
             continue;
         }
         for (a, b) in sd.iter().zip(pd.iter()) {
-            let same = a.kind == b.kind && a.stuck == b.stuck && (a.pos - b.pos).norm() < 1e-3 && (a.dir - b.dir).norm() < 1e-4;
+            let same = a.kind == b.kind && (a.pos - b.pos).norm() < 1e-3 && (a.dir - b.dir).norm() < 1e-4;
             if !same {
-                mismatches.push(format!("tick {t}: server {:?} {:?} stuck={} vs predicted {:?} {:?} stuck={}", a.kind, a.pos, a.stuck, b.kind, b.pos, b.stuck));
+                mismatches.push(format!("tick {t}: server {:?} {:?} vs predicted {:?} {:?}", a.kind, a.pos, b.kind, b.pos));
             }
-            ticks_stuck += a.stuck as u32;
         }
         let (es, ep) = (me_s.combat.shuriken_energy().unwrap().0, pred.shuriken_energy().unwrap().0);
         if (es - ep).abs() > 1e-3 {
@@ -98,10 +91,6 @@ fn run_kind(kind: StarKind) {
         }
     }
     assert!(mismatches.is_empty(), "{kind:?}: {:?}", &mismatches[..mismatches.len().min(5)]);
-    match kind {
-        StarKind::Barrel | StarKind::Canister => assert!(ticks_stuck > 10, "{kind:?} landed and stayed (both sides agree)"),
-        _ => {}
-    }
 }
 
 #[test]
@@ -110,16 +99,6 @@ fn a_predicted_standard_star_matches_the_server() {
 }
 
 #[test]
-fn a_predicted_barrel_flies_lands_and_pays_like_the_server() {
-    run_kind(StarKind::Barrel);
-}
-
-#[test]
 fn a_predicted_flash_matches_the_server() {
     run_kind(StarKind::Flash);
-}
-
-#[test]
-fn a_predicted_canister_flies_lands_and_pays_like_the_server() {
-    run_kind(StarKind::Canister);
 }

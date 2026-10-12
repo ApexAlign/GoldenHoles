@@ -79,7 +79,7 @@ fn weapon_index(k: shinobi_sim::combat::DamageKind) -> u8 {
         Shuriken => 0,
         Slash => 1,
         GridBeam => 2,
-        Explosive | Arrow | Tag => 0, // blasts, arrows and tags count toward the sharpshooter
+        Arrow | Tag => 0, // tag blasts, arrows and tags count toward the sharpshooter
     }
 }
 

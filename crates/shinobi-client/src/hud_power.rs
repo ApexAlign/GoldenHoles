@@ -102,9 +102,6 @@ impl PowerHudFx {
         }
         let tag_on_me = view.power_world.tag_on(local_id).map(|t| TagOnMe { secs: t.fuse_left * shinobi_sim::power::TagCfg::default().fuse_s, armed: t.armed });
         let glint = if view.death.is_some() { 0.0 } else { glint_at(&view.power_world, local_id, view.eye) };
-        if view.power.is_none() && tag_on_me.is_none() && glint <= 0.0 && self.callouts.is_empty() {
-            return None;
-        }
         Some(PowerHud { view: view.power, tag_on_me, glint, callouts: self.callouts.clone(), time: self.time })
     }
 }
@@ -162,6 +159,10 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
     let col = kind_colour(v.kind, p);
     match v.kind {
         PowerKind::Yumi => {
+            let reloading = v.reload < 1.0;
+            if !(v.up || v.draw > 0.0 || reloading) {
+                return;
+            }
             // the draw ring closes clockwise from 12 o'clock; full = bright gold and a second ring
             let q = std::f32::consts::TAU;
             let top = -std::f32::consts::FRAC_PI_2;
@@ -172,20 +173,11 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
                     out.push(Prim::Ring { c: (0.5, 0.5), r: RING_R + 0.012, color: c.a(0.5 + 0.4 * (h.time * 14.0).sin().abs()), fill: false, glow: 0.006 });
                     out.push(Prim::Text { pos: (0.5, 0.5 + RING_R + 0.045), text: "RELEASE".into(), size: 0.014, color: c.a(0.95), align: Align::Center });
                 }
-            } else {
+            } else if v.up {
                 arc(out, ax, RING_R, top, top + q, SEGS, col.a(0.16), 0.0);
             }
-            // arrows left of the crosshair, mirror of the star pips
-            let n = v.ammo_max.max(1) as usize;
-            for i in 0..n {
-                let a = std::f32::consts::PI + (i as f32 - (n as f32 - 1.0) * 0.5) * 0.28;
-                let c = (0.5 + 0.105 * a.cos() * ax, 0.5 + 0.105 * a.sin());
-                let full = i < v.ammo as usize;
-                out.push(Prim::Line { a: (c.0 - 0.009 * ax, c.1 + 0.006), b: (c.0 + 0.009 * ax, c.1 - 0.006), color: col.a(if full { 0.95 } else { 0.22 }), glow: if full { 0.003 } else { 0.0 } });
-                out.push(Prim::Ring { c: (c.0 + 0.009 * ax, c.1 - 0.006), r: 0.0035, color: col.a(if full { 0.95 } else { 0.22 }), fill: full, glow: 0.0 });
-            }
-            out.push(Prim::Text { pos: (0.5 - 0.125 * ax, 0.5 + 0.03), text: format!("YUMI {}", v.ammo), size: 0.014, color: col.a(0.95), align: Align::Right });
-            carry_bar(out, v, col, ax);
+            out.push(Prim::Text { pos: (0.5 - 0.125 * ax, 0.5 + 0.03), text: if reloading { "YUMI RELOADING".into() } else { "YUMI".into() }, size: 0.014, color: col.a(0.95), align: Align::Right });
+            reload_bar(out, v, col, ax);
         }
         PowerKind::Tag => {
             let n = v.ammo_max.max(1) as usize;
@@ -211,6 +203,16 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
     }
 }
 
+/// The bow's reload bar under the crosshair: a track with a gold fill that grows over the 2.2 s and brightens when ready.
+fn reload_bar(out: &mut Vec<Prim>, v: &PowerView, col: Rgba, ax: f32) {
+    let (cx, y) = (0.5, 0.5 + RING_R + 0.022);
+    let w = 0.06 * ax;
+    let ready = v.reload >= 1.0;
+    out.push(Prim::Line { a: (cx - w, y), b: (cx + w, y), color: col.a(0.22), glow: 0.0 });
+    let fill = v.reload.clamp(0.0, 1.0);
+    out.push(Prim::Line { a: (cx - w, y), b: (cx - w + 2.0 * w * fill, y), color: (if ready { Rgba(1.0, 0.95, 0.55, 1.0) } else { col }).a(if ready { 0.5 } else { 0.95 }), glow: if ready { 0.0 } else { 0.003 } });
+}
+
 /// The thin carry-time bar under the label; it flashes in its last five seconds.
 fn carry_bar(out: &mut Vec<Prim>, v: &PowerView, col: Rgba, ax: f32) {
     let (x1, y) = (0.5 - 0.125 * ax, 0.5 + 0.038);
@@ -231,11 +233,12 @@ mod tests {
         HudState { power: Some(PowerHud { view: Some(view), time: 0.3, ..Default::default() }), ..Default::default() }
     }
 
-    fn yumi_view(draw: f32, ammo: u8) -> PowerView {
+    fn yumi_view(draw: f32, reload: f32) -> PowerView {
         let cfg = PowerCfg::default();
         let mut s = PowerState::default();
-        s.grant(PowerKind::Yumi, ammo, 0.0, &cfg);
+        s.cooldown = cfg.yumi.reload_s * (1.0 - reload);
         let mut v = PowerView::of(&s, &cfg, 0, 0).unwrap();
+        v.up = true;
         v.draw = draw;
         v.full = draw >= 1.0;
         v
@@ -250,7 +253,7 @@ mod tests {
         let p = Palette::TRON;
         let lines = |d: f32| {
             let mut out = Vec::new();
-            draw(&mut out, &state(yumi_view(d, 3)), &p, 1.0);
+            draw(&mut out, &state(yumi_view(d, 1.0)), &p, 1.0);
             (out.iter().filter(|x| matches!(x, Prim::Line { .. })).count(), texts(&out))
         };
         let (idle, t0) = lines(0.0);
@@ -259,20 +262,32 @@ mod tests {
         assert!(half >= idle && full > 0, "{idle} {half} {full}");
         assert!(!t0.iter().any(|t| t == "RELEASE") && !t1.iter().any(|t| t == "RELEASE"));
         assert!(t2.iter().any(|t| t == "RELEASE"));
-        assert!(t0.iter().any(|t| t == "YUMI 3"), "{t0:?}");
+        assert!(t0.iter().any(|t| t == "YUMI"), "{t0:?}");
     }
 
     #[test]
-    fn fewer_arrows_dim_the_pips_and_the_label_follows() {
+    fn the_reload_bar_fills_over_the_reload_and_the_label_says_so() {
         let p = Palette::TRON;
+        let bar = |reload: f32| {
+            let mut out = Vec::new();
+            draw(&mut out, &state(yumi_view(0.0, reload)), &p, 1.0);
+            let lines: Vec<(f32, f32)> = out.iter().filter_map(|x| if let Prim::Line { a, b, color, .. } = x { if (a.1 - (0.5 + RING_R + 0.022)).abs() < 1e-6 && (color.3 > 0.4) { Some((a.0, b.0)) } else { None } } else { None }).collect();
+            (texts(&out), lines)
+        };
+        let (t, l) = bar(0.25);
+        assert!(t.iter().any(|x| x == "YUMI RELOADING"), "{t:?}");
+        let (t2, l2) = bar(0.75);
+        assert!(t2.iter().any(|x| x == "YUMI RELOADING"));
+        let w = |l: &Vec<(f32, f32)>| l.iter().map(|(a, b)| b - a).fold(0.0, f32::max);
+        assert!(w(&l2) > w(&l), "the fill grows: {} -> {}", w(&l), w(&l2));
+        let (t3, _) = bar(1.0);
+        assert!(t3.iter().any(|x| x == "YUMI"), "{t3:?}");
+        // a bow that is neither up, drawn nor reloading draws nothing
+        let mut v = yumi_view(0.0, 1.0);
+        v.up = false;
         let mut out = Vec::new();
-        draw(&mut out, &state(yumi_view(0.0, 1)), &p, 1.0);
-        assert!(texts(&out).iter().any(|t| t == "YUMI 1"));
-        let bright = out.iter().filter(|x| matches!(x, Prim::Line { color, .. } if color.3 > 0.9)).count();
-        let mut out3 = Vec::new();
-        draw(&mut out3, &state(yumi_view(0.0, 3)), &p, 1.0);
-        let bright3 = out3.iter().filter(|x| matches!(x, Prim::Line { color, .. } if color.3 > 0.9)).count();
-        assert!(bright3 > bright);
+        draw(&mut out, &state(v), &p, 1.0);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]

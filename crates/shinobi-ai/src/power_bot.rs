@@ -1,11 +1,12 @@
 //! Bots and the power weapons (docs/powerups.md). Everything here reads only what a client knows: the pedestals it was told
 //! about, its own weapon, the arrows and tags in the snapshot, and the poses of the other players.
 //!
-//! * PICKUPS: a bot with empty hands that has a free moment and a pedestal (or a dropped weapon) within `LOOK_RANGE` walks
-//!   to it, if it can get there on foot. Only some bots fancy a given pedestal (a per-bot, per-pedestal roll), so a map
-//!   does not turn into a queue.
-//! * YUMI: at a visible target 12 to 110 m away it draws (the draw ring, the slowed walk and the faint laser line are all
-//!   there for the target to see), aims with lead and drop, and looses when the draw is full and the aim has settled.
+//! * PICKUPS: a bot with the bow in hand (nothing else to do) that has a free moment and a tag pedestal (or a dropped bag)
+//!   within `LOOK_RANGE` walks to it, if it can get there on foot. Only some bots fancy a given pedestal (a per-bot,
+//!   per-pedestal roll), so a map does not turn into a queue.
+//! * YUMI: the bow every player carries. At a visible target 12 to 40 m away it draws (the draw ring, the slowed walk and
+//!   the faint laser line are all there for the target to see), aims with lead and drop, and looses when the draw is full
+//!   and the aim has settled. After a shot it sits out the 2.2 s reload.
 //! * TAGS: thrown at a target 5 to 18 m away, more eagerly when other enemies stand near it (a cluster); once the hands
 //!   are empty the bot sets them off when a foe is inside the blast, or lets the fuse run.
 //! * DEFENCE: a bot that sees an arrow coming sometimes raises its shield (a fresh one parries it back), and a bot with a tag
@@ -24,11 +25,15 @@ use crate::view::V3;
 pub const LOOK_RANGE: f32 = 30.0;
 const GIVE_UP_TICKS: u32 = 60 * 14;
 const YUMI_MIN: f32 = 12.0;
-const YUMI_MAX: f32 = 110.0;
+const YUMI_MAX: f32 = 40.0;
 const TAG_MIN: f32 = 5.0;
 const TAG_MAX: f32 = 18.0;
 /// Share of bots that go for a given pedestal.
-const FANCY_PERCENT: u64 = 55;
+const FANCY_PERCENT: u64 = 30;
+/// Chance per tick that a loaded bot with a target in bow range starts a draw (about one every 5 s), and the pause after a shot
+/// (on top of the 2.2 s reload).
+const BOW_START_CHANCE: f32 = 0.003;
+const BOW_PAUSE_TICKS: u32 = 180;
 
 /// What the power layer wants this tick.
 #[derive(Clone, Copy, Debug, Default)]
@@ -123,30 +128,37 @@ impl PowerBrain {
         }
 
         match mine.power.kind {
-            PowerKind::Yumi => {
-                self.goal = None;
-                self.yumi(ctx, p, mine.power.ammo, mine.power.drawing, mine.power.full(&pcfg), &pcfg.yumi, committed, skill_err, aim_noise, &mut out);
+            PowerKind::Yumi | PowerKind::None => {
+                let reloading = mine.power.cooldown > 0.0;
+                self.yumi(ctx, p, rng, reloading, mine.power.drawing, mine.power.full(&pcfg), &pcfg.yumi, committed, skill_err, aim_noise, &mut out);
+                if out.draw || mine.power.drawing {
+                    self.goal = None;
+                } else {
+                    // nothing to shoot at: a free moment goes to a tag pedestal, if one is near
+                    self.pickup(ctx, p, rng, seed, committed, &mut out);
+                }
             }
             PowerKind::Tag => {
                 self.goal = None;
                 self.tags(ctx, p, mine.power.ammo, mine.id, rng, committed, tick, &pcfg.tag, aim_noise, &mut out);
             }
-            PowerKind::None => {
-                self.held_full = 0;
-                self.pickup(ctx, p, rng, seed, committed, &mut out);
-            }
         }
         out
     }
 
-    fn yumi(&mut self, ctx: &ThinkCtx, p: &Perception, ammo: u8, drawing: bool, full: bool, yc: &YumiCfg, committed: bool, skill_err: f32, noise: (f32, f32), out: &mut PowerOut) {
+    fn yumi(&mut self, ctx: &ThinkCtx, p: &Perception, rng: &mut Rng, reloading: bool, drawing: bool, full: bool, yc: &YumiCfg, committed: bool, skill_err: f32, noise: (f32, f32), out: &mut PowerOut) {
         let (tick, me) = (ctx.world.tick, ctx.me);
         let Some(t) = p.target.filter(|t| t.los && !t.view.spawn_protected && (YUMI_MIN..=YUMI_MAX).contains(&t.dist)) else {
             self.held_full = 0;
             return;
         };
-        if committed || ammo == 0 || tick < self.fire_ok {
+        if committed || (reloading && !drawing) || tick < self.fire_ok {
             self.held_full = 0;
+            return;
+        }
+        // a bot does not snipe all the time: a draw starts now and then (a deliberate pause follows every shot), so the bow
+        // is a threat on the horizon rather than a constant one
+        if !drawing && !rng.chance(BOW_START_CHANCE) {
             return;
         }
         // lead and drop: the point to look at so the arrow arrives where the target will be
@@ -168,7 +180,7 @@ impl PowerBrain {
             if settled {
                 out.draw = false; // release: the arrow leaves on this tick
                 self.held_full = 0;
-                self.fire_ok = tick + 20;
+                self.fire_ok = tick + BOW_PAUSE_TICKS;
             } else if self.held_full > 75 {
                 out.draw = false; // could not settle: let the draw go
                 self.held_full = 0;
@@ -248,7 +260,7 @@ impl PowerBrain {
                     return;
                 }
                 _ => {
-                    self.skip = Some((id, tick + 600));
+                    self.skip = Some((id, tick + 3600));
                     self.goal = None;
                 }
             }
@@ -256,12 +268,12 @@ impl PowerBrain {
         if tick < self.next_look {
             return;
         }
-        self.next_look = tick + 45 + (rng.unit() * 30.0) as u32;
+        self.next_look = tick + 300 + (rng.unit() * 300.0) as u32;
         let skipped = |id: u32| self.skip.map_or(false, |(s, until)| s == id && tick < until);
         let best = server
             .pickups
             .active_weapons()
-            .filter(|w| w.2 != PowerKind::None && !skipped(w.0))
+            .filter(|w| w.2 == PowerKind::Tag && !skipped(w.0))
             .map(|w| (w, flat_dist(me.pos, vector![w.1[0], w.1[1], w.1[2]]), (w.1[1] - me.pos.y).abs()))
             .filter(|(w, d, dy)| *d < LOOK_RANGE && *dy < 2.5 && fancy(seed, me.id, w.0))
             .min_by(|a, b| a.1.total_cmp(&b.1));
@@ -273,7 +285,7 @@ impl PowerBrain {
             None => world.los(me.eye(), pos + vector![0.0, 0.6, 0.0]) || dist < 6.0,
         };
         if !reachable {
-            self.skip = Some((w.0, tick + 900));
+            self.skip = Some((w.0, tick + 3600));
             return;
         }
         self.goal = Some((w.0, tick + GIVE_UP_TICKS));
@@ -308,9 +320,9 @@ mod tests {
     }
 
     #[test]
-    fn about_half_the_bots_fancy_a_pedestal_and_the_choice_is_stable() {
+    fn about_a_third_of_the_bots_fancy_a_pedestal_and_the_choice_is_stable() {
         let n = (0..400u16).filter(|id| fancy(7, *id, 3)).count();
-        assert!((140..300).contains(&n), "{n} of 400");
+        assert!((90..170).contains(&n), "{n} of 400");
         assert_eq!(fancy(7, 5, 3), fancy(7, 5, 3));
     }
 }

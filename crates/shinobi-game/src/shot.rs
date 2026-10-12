@@ -105,33 +105,13 @@ pub fn run_offline(secs: f32, out: String, o: ShotOpts) {
 #[derive(Resource)]
 struct OfflineSpawn([f32; 3]);
 
-/// Review shots of the reworked weapons: `SHOT_WEAPONS=barrel|canister|flash|hook` (static frames at ~2 s), plus
-/// `barrelburst` / `canisterburst` (blast at frame 112), `dazed` (white-out clearing + the DAZED cue) and `hookaim`
-/// (crosshair on a player: red). Offline only; unset = untouched.
+/// Review shots of the reworked weapons: `SHOT_WEAPONS=flash|hook` (static frames at ~2 s), plus `dazed` (white-out
+/// clearing + the DAZED cue) and `hookaim` (crosshair on a player: red). Offline only; unset = untouched.
 fn weapons_preview(v: &mut shinobi_client::client_game::RenderView, what: &str, frame: u32, base: [f32; 3]) {
-    use shinobi_client::client_game::StarObj;
-    use shinobi_sim::combat::stars::StarKind;
-    use shinobi_sim::events::{NetEvent, STAR_FX_BARREL_BURST, STAR_FX_CANISTER_BURST, STAR_FX_FLASH_BURST};
+    use shinobi_sim::events::{NetEvent, STAR_FX_FLASH_BURST};
     let [bx, by, bz] = base;
-    let fl = by - 0.8; // floor under the spawn
-    let obj = |kind, dx: f32, dz: f32, left: f32| StarObj { kind, pos: [bx + dx, fl + if kind == StarKind::Barrel { 0.4 } else { 0.19 }, bz + dz], normal: [0.0, 1.0, 0.0], owner: 2, armed: true, life_left: left };
     let burst = |what: u8, dz: f32| NetEvent::StarFx { tick: 0, what, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by + 0.2, bz + dz]) };
     match what {
-        "barrel" => {
-            // three resting barrels at fresh / half / nearly-out fuses and one tumbling through the air
-            v.star_objs.extend([obj(StarKind::Barrel, -1.6, -4.5, 0.95), obj(StarKind::Barrel, 1.4, -6.0, 0.5), obj(StarKind::Barrel, -0.2, -8.5, 0.1)]);
-            v.discs.push(([bx + 2.2, by + 0.5, bz - 3.2], [0.3, 0.25, -1.0]));
-            v.disc_owners.push(2);
-            v.disc_kinds.push(StarKind::Barrel);
-        }
-        "canister" => {
-            v.star_objs.extend([obj(StarKind::Canister, -1.2, -4.0, 0.9), obj(StarKind::Canister, 1.0, -5.5, 0.4)]);
-            v.discs.push(([bx + 0.4, by + 0.3, bz - 3.0], [0.1, 0.05, -1.0]));
-            v.disc_owners.push(2);
-            v.disc_kinds.push(StarKind::Canister);
-        }
-        "barrelburst" if frame == 112 => v.events.push(burst(STAR_FX_BARREL_BURST, -8.0)),
-        "canisterburst" if frame == 112 => v.events.push(burst(STAR_FX_CANISTER_BURST, -7.0)),
         "flash" if frame == 112 => v.events.push(burst(STAR_FX_FLASH_BURST, -7.0)),
         // the white-out clearing (45 % strength left) with the DAZED cue and its draining bar
         "dazed" => {
@@ -309,17 +289,28 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
             // (the bright glint, owner 2) and one aiming off to the side (faint, owner 5), two arrows streaking past (one parried back)
             "yumi" => {
                 use shinobi_client::power_view::{ArrowObj, DrawObj, PowerView};
-                use shinobi_sim::power::{PowerCfg, PowerKind, PowerState};
+                use shinobi_sim::power::{PowerCfg, PowerState};
                 let cfg = PowerCfg::default();
-                let mut s = PowerState::default();
-                s.grant(PowerKind::Yumi, 2, 0.0, &cfg);
+                let s = PowerState::default();
                 let mut pv = PowerView::of(&s, &cfg, 0, 0).unwrap();
+                pv.up = true;
                 pv.draw = 0.85;
                 v.power = Some(pv);
                 v.power_world.draws.push(DrawObj { pos: [bx - 0.4, by + 0.7, bz - 16.0], dir: [0.02, -0.03, 1.0], owner: 2, frac: 1.0 });
                 v.power_world.draws.push(DrawObj { pos: [bx + 7.0, by + 0.7, bz - 22.0], dir: [-0.5, 0.0, 0.87], owner: 5, frac: 0.6 });
                 v.power_world.arrows.push(ArrowObj { pos: [bx - 3.0, by + 0.5, bz - 9.0], vel: [0.0, 0.0, -90.0], owner: 2, reflected: false });
                 v.power_world.arrows.push(ArrowObj { pos: [bx + 2.2, by + 0.8, bz - 6.0], vel: [0.0, 0.0, 90.0], owner: 5, reflected: true });
+            }
+            // `reload`: our bow just loosed, 40 % of the 2.2 s reload done (the bar under the crosshair)
+            "reload" => {
+                use shinobi_client::power_view::PowerView;
+                use shinobi_sim::power::{PowerCfg, PowerState};
+                let cfg = PowerCfg::default();
+                let mut s = PowerState::default();
+                s.cooldown = cfg.yumi.reload_s * 0.6;
+                let mut pv = PowerView::of(&s, &cfg, 0, 0).unwrap();
+                pv.up = true;
+                v.power = Some(pv);
             }
             // `arrows`: arrows in flight from three owners at different ranges (streaks)
             "arrows" => {
@@ -345,11 +336,11 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                     v.events.push(shinobi_sim::events::NetEvent::PowerFx { tick: 0, what: shinobi_sim::power_pass::FX_TAG_BLAST, owner: 2, pos: shinobi_proto::quant::q_pos3([bx, by - 0.6, bz - 8.0]) });
                 }
             }
-            // `pedestals`: a yumi and two tag pedestals (and one taken) light up in front of us
+            // `pedestals`: four tag pedestals (and one taken) light up in front of us
             "pedestals" => {
                 if frame == 3 {
                     let q = shinobi_proto::quant::q_pos3;
-                    for (id, dx, dz, kind) in [(101u32, -3.0f32, -7.0f32, 1u8), (102, 0.5, -9.0, 2), (103, 4.0, -7.5, 2), (104, 7.0, -11.0, 2)] {
+                    for (id, dx, dz, kind) in [(101u32, -3.0f32, -7.0f32, 2u8), (102, 0.5, -9.0, 2), (103, 4.0, -7.5, 2), (104, 7.0, -11.0, 2)] {
                         v.events.push(shinobi_sim::events::NetEvent::PickupSpawned { tick: 0, id, pos: q([bx + dx, by + 0.2, bz + dz]), kind });
                     }
                 }
@@ -358,15 +349,12 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 }
             }
             "starkinds" => {
-                v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.discs.push(([bx - 1.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
-                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Barrel);
-                v.discs.push(([bx, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
+                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Standard);
+                v.discs.push(([bx + 1.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
                 v.disc_owners.push(2);
                 v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Flash);
-                v.discs.push(([bx + 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));
-                v.disc_owners.push(2);
-                v.disc_kinds.push(shinobi_sim::combat::stars::StarKind::Canister);
             }
             "discs" => {
                 v.discs.push(([bx - 2.0, by + 1.0, bz - 6.0], [0.0, 0.0, -1.0]));

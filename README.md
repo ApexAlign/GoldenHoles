@@ -291,7 +291,8 @@ Full list in [`QUICKSTART.md`](QUICKSTART.md); online play notes in [`docs/ONLIN
 | C | slide |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
 | Left click | katana dash-slice |
-| Right click | throw shuriken (hold to draw the bow when you have one; see weapons) |
+| Right click | throw the selected star (standard or flash; 14 m close-range tool) |
+| 1 / 2 | katana / yumi bow up (bow up: hold left click to draw, release to loose; 2.2 s reload) |
 | E | wrist grapple: hook the crosshair and reel in; E again releases |
 | Tab (hold) | scoreboard (frees the cursor) |
 | `` ` `` (backquote) | in-game console |
@@ -324,10 +325,10 @@ see `scripts/gen_*_level.py` for generators.
 ## 9. Weapons and power-ups
 
 - **Katana** — dash-slice (left click). Two hits kill.
-- **Shuriken** — thrown stars (right click); they bounce.
+- **Shuriken** — thrown stars (right click); they bounce. A close-range tool: 14 m max, full damage inside 7 m. Standard or flash star only.
 - **Wrist grapple** (E) — swing and reel in; combos with dash and wall-run.
 - **Block / parry shield** — time it right to stop damage and punish attackers.
-- **Yumi (digital bow)** — pick up from a pedestal; hold right click to draw, release to loose. Can be parried back at the shooter.
+- **Yumi (digital bow)** — everyone's primary weapon. Press 2, hold left click to draw, release a full draw to loose; a headshot kills; 2.2 s reload. Can be parried back at the shooter.
 - **Fuda tag (explosive paper tag)** — sticks to surfaces *or players* and detonates with a launching blast.
 
 Details and tuning values: [`docs/powerups.md`](docs/powerups.md), [`docs/melee.md`](docs/melee.md), [`docs/grapple.md`](docs/grapple.md),

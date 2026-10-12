@@ -12,6 +12,7 @@
 //! * v19: character wire grew to 41 bytes (spec v1.1: ears, expression, horns, nose, tail, shoulders).
 //! * v20: destructible level boxes: NetEvent::WorldBreak / WorldRez / WorldCrack (ids 27-29) and `dbox` level lines.
 //! * v21: environmental events: NetEvent::EnvFx (id 31): quakes and lightning (`env_events.rs`).
+//! * v23: barrels and canisters are gone (star kinds 1 and 3 read as a standard star, `StarFx` what is only 3 = flash burst, hit kind 5 is retired, no stuck-star snapshot entities); the yumi is every player's own primary bow (own-state `power_kind` is 1 unless a fuda tag bag is in hand, `power_ammo` 1, `power_left_q` 0; the reload runs client-side from the loose, 2.2 s); stars end at 14 m.
 //! * v22: star kinds 1 and 3 changed meaning (1 mine -> BARREL, 3 smoke -> CANISTER, both explosives; flash stays 2); `NetEvent::StarFx` what 0-5 renamed (`STAR_FX_*`), 6 = canister burst; hit kind 5 = explosive; stuck canisters ride on players.
 //! * v18: custom characters (v17) and power weapons (yumi / fuda tag: snapshot entities, `NetEvent::PowerFx` = event 26) merged; both changed the wire.
 //! * v17: `ClientPacket.look` (custom character, `character.rs`) rides the first packets after WELCOME until the server's
@@ -50,7 +51,7 @@ use super::bits::{DecodeError, DecodeResult};
 
 pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 3: cookie handshake, snapshot datagram with own/board sections, gameplay events. See the module doc.
-pub const VERSION: u8 = 22;
+pub const VERSION: u8 = 23;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;

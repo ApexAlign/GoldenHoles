@@ -13,7 +13,7 @@ the fight reshapes the arena. This is the design contract; the engine pieces are
 2. **Support physics.** A brick with nothing left under it falls `destruct.collapse_ticks` (18 = 0.3 s) after the last support breaks;
    running-bond walls arch over holes, columns fall from the foot up. Falling bricks do not hurt players (v1; a crush
    hazard is a follow-up, see below).
-3. **Damage sources.** Katana swings and thrown stars chip; a tag blast, a barrel or canister blast and an arrow are the real wall breakers
+3. **Damage sources.** Katana swings and thrown stars chip; a tag blast and an arrow are the real wall breakers
    (see the table in docs/destructible.md). Heavy / air / whirl katana moves hit a bigger volume.
 4. **Re-forming is a dial.** `destruct.rez_s` = 40 s brings bricks back (bottom-up, not onto a player); `0` = permanent
    damage for the whole match (the arena erodes: late-match = rubble and long falls).
@@ -24,7 +24,7 @@ the fight reshapes the arena. This is the design contract; the engine pieces are
 | --- | --- | --- | --- |
 | `destruct.hp_mult` | 1.0 | divides every hit: 2.0 = twice as tough | 0.25 (paper) .. 4 (bunker) |
 | `destruct.rez_s` | 40 | seconds a broken brick stays gone | 0 = never; 15 fast-heal; 90 slow |
-| `destruct.blast_mult` | 5.0 | tag / barrel / canister blast vs boxes = player damage x this | 0 = bombs spare walls |
+| `destruct.blast_mult` | 5.0 | tag blast vs boxes = player damage x this | 0 = bombs spare walls |
 | `destruct.chip_mult` | 1.0 | stars / katana / arrow chip x this | 0 = only blasts break things |
 | `destruct.collapse_ticks` | 18 | delay before unsupported bricks fall | 0 instant, 60 slow domino |
 | `destruct.retry_ticks` | 60 | wait when a re-form is blocked | |

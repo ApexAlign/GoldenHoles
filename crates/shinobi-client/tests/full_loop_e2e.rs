@@ -410,7 +410,11 @@ fn star_vs_block(block_from: Option<u32>) -> (f32, Vec<PvpEvent>) {
     use shinobi_proto::intent::{Buttons, PlayerIntent, ViewState, PITCH_LEVEL};
     use shinobi_proto::quant::q_yaw;
     let mut r = Rig::new();
-    r.srv.set_balance(shinobi_sim::balance::Balance::demo()).unwrap(); // the demo numbers: 7 hp stars, the guard
+    // the demo numbers: 7 hp stars, the guard. The shooter stands 15 m off, past the demo's 14 m star range, so lift the range here
+    // (the range and its damage falloff have their own test in shinobi-sim)
+    let mut b = shinobi_sim::balance::Balance::demo();
+    b.combat.shuriken.range = 0.0;
+    r.srv.set_balance(b).unwrap();
     r.idle(120);
     // the shooter faces +Z (toward the client's player), no aim noise, no lock tricks
     r.srv.players.iter_mut().find(|p| p.id == 1).unwrap().vitals.hp = 100.0;
