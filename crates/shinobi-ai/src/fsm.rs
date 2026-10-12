@@ -50,8 +50,8 @@ const HEAVY_CHANCE: f32 = 0.2;
 const HEAVY_HOLD_TICKS: u32 = 50;
 const HEAVY_GAP_TICKS: u32 = 600;
 const COUNTER_CHANCE: f32 = 0.5;
-/// A raised shield is held this long: just past the 8-tick parry window, never a turtle.
-const PARRY_HOLD_TICKS: u32 = 10;
+/// A raised shield is held this long (0.23 s): past the 8-tick parry window, never a turtle.
+const PARRY_HOLD_TICKS: u32 = 14;
 /// A foe this close, facing me with a ready blade, is read as about to cut.
 const PARRY_RANGE: f32 = 5.0;
 /// The per-tick roll is `parry_skill / PARRY_ROLL_DIV`: a threat that stands for a second is parried-at about 2 times in 3 by a

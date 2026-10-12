@@ -88,9 +88,9 @@ fn a_plain_cut_does_20_and_a_held_shield_cuts_it_down() {
     assert!((plain - 20.0).abs() < 0.01, "an unguarded cut does the user's 20 hp, got {plain}");
 
     // B holds the shield from tick 0, long before the cut lands at tick 30 (the parry window is long over): a plain
-    // block, 3 % of 20 (the base cut: no bonus punches through a shield)
+    // block, 15 % of 20 (the base cut: no bonus punches through a shield)
     let (blocked, _) = a_cuts(|_| PlayerIntent { block: true, ..idle(0, B_YAW) });
-    assert!((blocked - 0.6).abs() < 0.01, "a frontal block leaves 3 % ({blocked})");
+    assert!((blocked - 3.0).abs() < 0.01, "a frontal block leaks 15 % ({blocked})");
 }
 
 #[test]

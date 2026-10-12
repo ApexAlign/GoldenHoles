@@ -115,3 +115,14 @@ impl Archetype {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parry_skill_climbs_with_the_tier_and_nobody_is_perfect() {
+        let p = |s: BotSkill| s.params().parry_skill;
+        assert!(0.0 < p(BotSkill::Easy) && p(BotSkill::Easy) < p(BotSkill::Normal) && p(BotSkill::Normal) < p(BotSkill::Hard) && p(BotSkill::Hard) < 1.0);
+    }
+}

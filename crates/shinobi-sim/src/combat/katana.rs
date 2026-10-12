@@ -942,6 +942,26 @@ mod tests {
     }
 
     #[test]
+    fn a_whiffed_cut_commits_you_longer_than_a_connected_one() {
+        let mut hit = Rig::new();
+        hit.cut().unwrap();
+        hit.cut_when_ready().unwrap();
+        hit.cut_when_ready().unwrap();
+        let after_hit = hit.combat.slice_cooldown_left();
+        let mut miss = Rig::new();
+        let tgt = miss.w.colliders.iter().find(|(_, c)| c.user_data == 7).map(|(h, _)| h).unwrap();
+        miss.w.colliders.remove(tgt, &mut miss.w.islands, &mut miss.w.bodies, false);
+        assert!(miss.cut().is_none());
+        let after_miss = miss.combat.slice_cooldown_left();
+        eprintln!("recovery after a connected streak {after_hit:.2} s, after a whiff {after_miss:.2} s");
+        assert!(after_miss >= 0.44, "a whiff locks the blade out ~0.45 s: {after_miss}");
+        assert!(after_hit < after_miss, "a connected streak recovers quicker than a whiff");
+        // a cancel into a dash still frees the blade (it costs energy)
+        miss.tick(false, PlayerInput { dash_pressed: true, ..Default::default() });
+        assert!(miss.combat.slice_cooldown_left() < 0.05, "dash cancels the whiff recovery too");
+    }
+
+    #[test]
     fn three_wall_run_slashes_chain_into_a_wall_kick_finisher() {
         let mut r = Rig::new();
         r.ch.state = wall();

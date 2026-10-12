@@ -257,4 +257,51 @@ mod tests {
         b.update(true, 60, &c, true);
         assert_eq!(b.fx_bits(60), FX_BLOCK);
     }
+
+    #[test]
+    fn a_raise_that_absorbs_nothing_costs_a_lockout_but_a_used_one_does_not() {
+        let c = BlockCfg { lockout_ticks: 60, ..cfg() };
+        // spam-raise: up for a few ticks, nothing hits it, lowered by choice
+        let mut b = BlockState::default();
+        for t in 0..5 {
+            b.update(true, t, &c, true);
+        }
+        b.update(false, 5, &c, true);
+        b.update(true, 6, &c, true);
+        assert!(!b.held, "dropped an unused shield: locked out");
+        b.update(true, 5 + 59, &c, true);
+        assert!(!b.held, "still inside the 1 s lockout");
+        b.update(true, 5 + 60, &c, true);
+        assert!(b.held, "and back after it");
+        // a shield that took a hit is free to lower
+        let mut u = BlockState::default();
+        u.update(true, 0, &c, true);
+        u.mark_used();
+        u.update(false, 3, &c, true);
+        u.update(true, 4, &c, true);
+        assert!(u.held, "a used shield re-raises at once");
+        // being staggered out of a raise is not a choice and is not punished again
+        let mut s = BlockState::default();
+        s.update(true, 0, &c, true);
+        s.stagger_until = 10;
+        s.update(true, 1, &c, true);
+        assert!(!s.held);
+        s.update(true, 10, &c, true);
+        assert!(s.held, "no lockout on top of a stagger");
+    }
+
+    #[test]
+    fn the_demo_parry_window_is_a_tight_timing_check() {
+        let g = crate::balance::Balance::demo().guard;
+        let c = g.cfg();
+        assert!(c.parry_ticks >= 7 && c.parry_ticks <= 9, "~0.13 s at 60 Hz: {}", c.parry_ticks);
+        assert!((g.front_deg * 2.0 - 150.0).abs() < 1e-3 && g.hit_cost >= 0.2 && g.max_hold_s <= 2.5 && g.front_mult >= 0.15);
+        assert!(c.lockout_ticks >= 50 && c.rearm_ticks >= 50, "spam and a spent guard both cost about a second");
+        assert_eq!((c.stagger_ticks, c.counter_open_ticks), (48, 60), "the parry payoffs are unchanged: 0.8 s stagger, 1 s counter");
+        let mut b = BlockState::default();
+        b.update(true, 100, &c, true);
+        let front = [0.0, 0.0, -3.0];
+        assert_eq!(guard_vs(&b, 0.0, [0.0; 3], front, 100 + c.parry_ticks - 1, &c), Guard::Parried);
+        assert_eq!(guard_vs(&b, 0.0, [0.0; 3], front, 100 + c.parry_ticks, &c), Guard::Blocked);
+    }
 }

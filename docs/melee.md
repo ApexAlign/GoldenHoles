@@ -98,3 +98,28 @@ wire-visible effect is the damage number and the swing cooldown that already tra
   wall jump (x`walljump_air_mult`) hits harder (the larger applies). Needs `CharacterSystem::hook_age` / `walljump_age` (not on the wire).
 * **Cancels** (`cancel` = 1): a dash, a hook or a wall jump started while the blade recovers frees it at once so the next cut can follow; it costs
   `cancel_cost` star charges (refused while the pool is locked or short; no pool = free).
+
+## Skill melee: the timed block (no turtling, no mashing)
+
+Parry is a TIMED BLOCK on the existing block button; there is no new key. The demo numbers (`Balance::demo().guard`, `block.rs`):
+
+| Knob | Old | New |
+| --- | --- | --- |
+| Parry window (`guard.parry_s`) | 0.35 s | 0.13 s (8 ticks) |
+| Held guard (`guard.max_hold_s`) | 8 s | 2.5 s |
+| Guard cost of a blocked cut (`guard.hit_cost`) | 6 % | 20 % |
+| Frontal leak while blocking (`guard.front_mult`) | 3 % | 15 % |
+| Guard arc (`guard.front_deg`, half angle) | 200 deg (100) | 150 deg (75) |
+| Spent-guard re-arm (`guard.rearm_s`) | 0.5 s | 1.0 s |
+| Spam lockout (`guard.lockout_s`, new) | none | 1.0 s |
+| Guard refill (`guard.regen_s`) | 2.0 s | 2.5 s |
+| Broken-guard mercy (`guard.mercy_s`) | 1.2 s | 0.8 s (still 35 % damage, 0.3 s stagger) |
+| Whiffed swing recovery (`combat.katana.whiff_recover`, new) | none | 0.45 s |
+| Parry payoffs (stagger 0.8 s, counter window 1 s) | unchanged | unchanged |
+
+- A block that is lowered by choice without ever absorbing a hit (blocked or parried) cannot be raised again for `lockout_s`. A staggered or dead player is not punished for a drop they did not choose. A spent guard re-arms after `rearm_s`.
+- A katana swing that hits nothing recovers for at least `whiff_recover`; a connected streak recovers faster (combo speed), so a hit is rewarded and a whiff is a commitment. Combos still reset on a whiff or a hit taken; cancels into dash / hook / wall jump still free the blade for energy (and free a whiff recovery too).
+- Arrows: a block raised inside the parry window negates the arrow and reflects it back along the line to the shooter (no guard drain). A plain held shield takes `block_drain` and the arrow's damage cut (`front_mult`); a headshot is not stopped any further by a plain shield, only a timed parry negates it.
+- Bots (`SkillParams::parry_skill`: 0.2 / 0.5 / 0.85 for easy / normal / hard): they raise for an arrow about 5 ticks before impact with probability `parry_skill`, and read a foe in cutting range that faces them with a ready blade with a per-tick roll of `parry_skill / 30`. A raise lasts 14 ticks only, so bots never hold a shield up; a wrong guess costs them the 1 s lockout.
+- The client's cooldown prediction (`predict_slice`) does not know about whiffs (the server decides), the same gap as for heavy cuts; a whiffed swing is corrected by reconciliation.
+- Soak note: the Split / Hive / Clock bot soaks are chaotic. Any change to bot choices can expose an existing nav wedge in "flank" (a bot pinned to a wall). On default seeds they pass; on a sweep of seeds 1..10 the baseline wedges on 1 of 20 runs (split seed 4) and this branch on 2 of 16 (split seed 1, hive seed 5).
