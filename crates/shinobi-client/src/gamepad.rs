@@ -19,8 +19,10 @@ pub enum Pad {
     RightBumper,
     DPadRight,
     Start,
+    DPadUp,
+    DPadLeft,
 }
-const NPAD: usize = 8;
+const NPAD: usize = 10;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct PadSnapshot {
@@ -132,7 +134,7 @@ impl PadMapper {
         let now = s.held;
         for (b, held) in now.iter().enumerate() {
             let was = self.prev[b];
-            let pad = [Pad::South, Pad::East, Pad::West, Pad::North, Pad::LeftBumper, Pad::RightBumper, Pad::DPadRight, Pad::Start][b];
+            let pad = [Pad::South, Pad::East, Pad::West, Pad::North, Pad::LeftBumper, Pad::RightBumper, Pad::DPadRight, Pad::Start, Pad::DPadUp, Pad::DPadLeft][b];
             let action = match pad {
                 Pad::South => Some(Action::Jump),
                 Pad::East => Some(Action::Slide),
@@ -141,6 +143,8 @@ impl PadMapper {
                 Pad::LeftBumper => Some(Action::Dash),
                 Pad::RightBumper => Some(Action::Block), // hold the right bumper to guard / parry
                 Pad::DPadRight => Some(Action::BuildFloor),
+                Pad::DPadUp => Some(Action::Katana), // weapon slots: up = 1 katana, left = 2 bow
+                Pad::DPadLeft => Some(Action::Bow),
                 Pad::Start => None,
             };
             if let Some(a) = action {
@@ -243,6 +247,8 @@ mod tests {
             (Pad::LeftBumper, Action::Dash),
             (Pad::RightBumper, Action::Block),
             (Pad::DPadRight, Action::BuildFloor),
+            (Pad::DPadUp, Action::Katana),
+            (Pad::DPadLeft, Action::Bow),
         ];
         for (b, a) in table {
             s.set(b, true);

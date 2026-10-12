@@ -119,10 +119,11 @@ the compact copy (39 bytes) it receives. AI bots wear a few built-in presets.
 | click window | grab the mouse (Esc releases) |
 | W A S D, mouse | move, aim |
 | Space | jump / double-jump |
-| Shift / Q / C | dash / roll / slide |
+| Shift / 4 / C | dash / roll / slide |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
 | Left click | katana dash-slice |
-| Right click | throw shuriken |
+| Q | throw shuriken (auto-locks the enemy nearest the crosshair) |
+| Right click | block (a timed raise parries) |
 | E | wrist grapple: hook the crosshair and reel in, E again releases |
 
 ## What to expect

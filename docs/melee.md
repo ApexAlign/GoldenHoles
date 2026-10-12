@@ -8,8 +8,9 @@ overrides them). Zero turns a heightener off; the default `Balance` has them all
 | Input | Action |
 |---|---|
 | LMB | katana dash-slice (the lock triangle aims it); keep it down after a cut to charge the heavy cut |
-| RMB | shuriken (the poke) |
-| Ctrl / F / V / middle or back mouse (right bumper on a pad) | hold: block + parry, view locked |
+| Q | shuriken (the poke); R / wheel switch the star type |
+| RMB / Ctrl / middle or back mouse (right bumper on a pad) | hold: block; a timed raise is the parry |
+| 1 / 2 / 4 | katana (spawn weapon) / bow / roll |
 
 ## Accuracy
 

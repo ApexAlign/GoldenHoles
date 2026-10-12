@@ -9,7 +9,7 @@ long as the bag lasts. Numbers live in Balance `combat.yumi.*` / `combat.tag.*` 
 |---|---|---|
 | Pickup | none: everyone has it from spawn (`yumi` lines in level files are ignored) | pedestals where routes meet, 45 s respawn |
 | Load / carry | one arrow, never lost | 2 tags, 60 s (`count`, `carry_s`) |
-| Use | press **2** to raise the bow (**1** puts it away), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). After a shot the bow **reloads for 2.2 s** (`reload_s`; the HUD reload bar under the crosshair). | **press** right button: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
+| Use | press **2** to raise the bow (**1** puts it away), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). After a shot the bow **reloads for 2.2 s** (`reload_s`; the HUD reload bar under the crosshair). | **press** Q: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
 | While in use | walk -25 % (`move_mult`), look speed x0.5 (`turn_mult`), no stars while drawing; draw ring + reload bar on the HUD | no stars while tags are in hand or still ticking |
 | Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 90 m/s, 5 m/s^2 drop, 140 m range | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
 | Knock | none | 14 m/s radial launch + hop (`knock`): ring-out credit, wall-splat window like a katana hit |

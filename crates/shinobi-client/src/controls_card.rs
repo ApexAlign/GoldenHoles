@@ -31,8 +31,8 @@ const ROWS: [(Use, &str, &str); 11] = [
     (Use::Grapple, "E", "GRAPPLE"),
     (Use::Build, "N M", "BUILD"),
     (Use::Katana, "LMB", "KATANA (HOLD: HEAVY)"),
-    (Use::Shuriken, "RMB", "THROW + LOCK"),
-    (Use::Block, "CTRL F V", "BLOCK"),
+    (Use::Shuriken, "Q", "THROW STAR"),
+    (Use::Block, "RMB", "BLOCK / PARRY"),
     (Use::Stars, "6 STARS", "RECHARGE"),
     (Use::StarCycle, "R", "STAR TYPE"),
 ];

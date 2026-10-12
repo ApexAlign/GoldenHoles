@@ -352,7 +352,8 @@ fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) 
     for ((p, r), a) in [
         (k(KeyCode::Space), Action::Jump),
         (k(KeyCode::ShiftLeft), Action::Dash),
-        (k(KeyCode::KeyQ), Action::Roll),
+        (k(KeyCode::Digit4), Action::Roll),
+        (k(KeyCode::KeyQ), Action::Fire), // throw the selected star (hold = MARK star); R / wheel switch the type
         (k(KeyCode::KeyC), Action::Slide),
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
@@ -360,12 +361,10 @@ fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) 
         // weapon select: 1 = katana, 2 = yumi (bow up: left click draws it)
         (k(KeyCode::Digit1), Action::Katana),
         (k(KeyCode::Digit2), Action::Bow),
-        (m(MouseButton::Right), Action::Fire),
-        // hold: shield + parry, view locked. Several keys on purpose: Ctrl is eaten by some window managers / layouts
+        // hold: shield; a timed raise is the parry. RMB is the main block; Ctrl is an extra key (some WMs eat it)
+        (m(MouseButton::Right), Action::Block),
         (k(KeyCode::ControlLeft), Action::Block),
         (k(KeyCode::ControlRight), Action::Block),
-        (k(KeyCode::KeyF), Action::Block),
-        (k(KeyCode::KeyV), Action::Block),
         (m(MouseButton::Middle), Action::Block),
         (m(MouseButton::Back), Action::Block),
     ] {
@@ -575,6 +574,8 @@ fn pad_snapshot(g: &Gamepad) -> (shinobi_client::gamepad::PadSnapshot, bool) {
         (GamepadButton::LeftTrigger, Pad::LeftBumper),
         (GamepadButton::RightTrigger, Pad::RightBumper),
         (GamepadButton::DPadRight, Pad::DPadRight),
+        (GamepadButton::DPadUp, Pad::DPadUp),
+        (GamepadButton::DPadLeft, Pad::DPadLeft),
         (GamepadButton::Start, Pad::Start),
     ] {
         s.set(p, g.pressed(b));
@@ -1026,12 +1027,11 @@ mod binding_tests {
 
     /// Every block binding maps to the Block button: a down edge on press, an up edge on release.
     #[test]
-    fn ctrl_f_v_middle_and_back_all_map_to_the_block_button() {
+    fn rmb_ctrl_middle_and_back_all_map_to_the_block_button() {
         for (code, btn) in [
             (Some(KeyCode::ControlLeft), None),
             (Some(KeyCode::ControlRight), None),
-            (Some(KeyCode::KeyF), None),
-            (Some(KeyCode::KeyV), None),
+            (None, Some(MouseButton::Right)),
             (None, Some(MouseButton::Middle)),
             (None, Some(MouseButton::Back)),
         ] {
@@ -1039,6 +1039,12 @@ mod binding_tests {
             assert_eq!(down, vec![ButtonEvent { action: Action::Block, down: true }], "{code:?} {btn:?} press");
             assert_eq!(up, vec![ButtonEvent { action: Action::Block, down: false }], "{code:?} {btn:?} release");
         }
+        // F and V no longer block; Q throws a star, 4 rolls, LMB slices
+        for code in [KeyCode::KeyF, KeyCode::KeyV] {
+            assert!(events_for_press(Some(code), None).0.is_empty(), "{code:?} is unbound");
+        }
+        assert_eq!(events_for_press(Some(KeyCode::KeyQ), None).0, vec![ButtonEvent { action: Action::Fire, down: true }]);
+        assert_eq!(events_for_press(Some(KeyCode::Digit4), None).0, vec![ButtonEvent { action: Action::Roll, down: true }]);
         // and the attack buttons are untouched
         let (d, _) = events_for_press(None, Some(MouseButton::Left));
         assert_eq!(d, vec![ButtonEvent { action: Action::Slice, down: true }]);

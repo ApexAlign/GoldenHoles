@@ -287,11 +287,12 @@ Full list in [`QUICKSTART.md`](QUICKSTART.md); online play notes in [`docs/ONLIN
 | W A S D, mouse | move, aim |
 | Space | jump / double-jump |
 | Shift | dash |
-| Q | roll |
+| 4 | roll |
 | C | slide |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
-| Left click | katana dash-slice |
-| Right click | throw the selected star (standard or flash; 14 m close-range tool) |
+| Left click | katana dash-slice (hold = heavy cut) |
+| Q | throw the selected star (standard or flash; 14 m close-range tool; hold = MARK star; R / wheel switch type) |
+| Right click (or Ctrl) | block; raise it just before a hit to parry |
 | 1 / 2 | katana / yumi bow up (bow up: hold left click to draw, release to loose; 2.2 s reload) |
 | E | wrist grapple: hook the crosshair and reel in; E again releases |
 | Tab (hold) | scoreboard (frees the cursor) |
@@ -325,10 +326,10 @@ see `scripts/gen_*_level.py` for generators.
 ## 9. Weapons and power-ups
 
 - **Katana** — dash-slice (left click). Two hits kill.
-- **Shuriken** — thrown stars (right click); they bounce. A close-range tool: 14 m max, full damage inside 7 m. Standard or flash star only.
+- **Shuriken** — thrown stars (Q); they bounce. A close-range tool: 14 m max, full damage inside 7 m. Standard or flash star only.
 - **Wrist grapple** (E) — swing and reel in; combos with dash and wall-run.
 - **Block / parry shield** — time it right to stop damage and punish attackers.
-- **Yumi (digital bow)** — everyone's primary weapon. Press 2, hold left click to draw, release a full draw to loose; a headshot kills; 2.2 s reload. Can be parried back at the shooter.
+- **Yumi (digital bow)** — everyone's primary weapon. Press 2 (1 = katana, the spawn weapon), hold left click to draw, release a full draw to loose; a headshot kills; 2.2 s reload. Can be parried back at the shooter.
 - **Fuda tag (explosive paper tag)** — sticks to surfaces *or players* and detonates with a launching blast.
 
 Details and tuning values: [`docs/powerups.md`](docs/powerups.md), [`docs/melee.md`](docs/melee.md), [`docs/grapple.md`](docs/grapple.md),
