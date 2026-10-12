@@ -162,6 +162,7 @@ pub fn priority(s: Sound) -> bool {
             | Sound::Clang
             | Sound::GuardBreak
             | Sound::Heartbeat
+            | Sound::BarrelBoom | Sound::CanisterBang | Sound::FlashBang | Sound::WhipCrack
             | Sound::DeathSting | Sound::Respawn | Sound::MatchStart | Sound::Victory | Sound::Defeat | Sound::Parry | Sound::Streak | Sound::Execute
     )
 }

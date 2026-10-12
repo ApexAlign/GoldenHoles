@@ -143,7 +143,12 @@ pub struct Frame {
     pub power_fx: Vec<(u8, [f32; 3], u16)>,
     pub power_own: Vec<shinobi_sim::power::PowerEvent>,
     pub tag_on_me: Option<f32>,
-    pub blinded: bool,
+    /// A flash star dazed us: (strength 0..=1, seconds).
+    pub blind: Option<(f32, f32)>,
+    /// Armed barrels / canisters in the world: (position, fuse left 1 -> 0). Each hisses while it burns.
+    pub fuses: Vec<([f32; 3], f32)>,
+    /// The grapple rope is an enemy hook (it pulls them toward us).
+    pub pulling_enemy: bool,
     pub star_switched: bool,
     /// The match ended: did we win?
     pub match_end: Option<bool>,
@@ -168,6 +173,8 @@ impl Frame {
             slash_miss: f.slash_miss,
             grapple_attached: f.grapple_attached,
             grapple_released: f.grapple_released,
+            pulling_enemy: f.grapple_pulling_enemy,
+            fuses: v.star_objs.iter().filter(|o| o.armed).map(|o| (o.pos, o.life_left)).collect(),
             grapple_missed: f.grapple_missed,
             grappling: f.grappling,
             dashing: f.dashing,
@@ -218,7 +225,9 @@ impl Frame {
                 NetEvent::Respawn { player, .. } if *player as u16 == own_id => fr.respawned = true,
                 NetEvent::MatchStart { .. } => fr.match_start = true,
                 NetEvent::StarFx { what, pos, .. } => fr.star_fx.push((*what, shinobi_proto::quant::dq_pos3(*pos))),
-                NetEvent::StarBlind { victim, .. } if *victim == own_id => fr.blinded = true,
+                NetEvent::StarBlind { victim, strength_q, ticks, .. } if *victim == own_id => {
+                    fr.blind = Some((*strength_q as f32 / 255.0, *ticks as f32 * shinobi_proto::TICK_DT));
+                }
                 NetEvent::PowerFx { what, pos, owner, .. } => fr.power_fx.push((*what, shinobi_proto::quant::dq_pos3(*pos), *owner)),
                 NetEvent::MatchEnd { winner, .. } => fr.match_end = Some(*winner as u16 == own_id && own_id != 0),
                 _ => {}
@@ -233,6 +242,38 @@ impl Frame {
 pub struct Loops {
     pub reel: bool,
     pub wall_run: bool,
+}
+
+/// Within this many metres of a barrel blast (canister: the second) the ears ring and the world goes dull.
+const BARREL_EAR_M: f32 = 8.0;
+const CANISTER_EAR_M: f32 = 5.0;
+/// How far a blast carries (metres).
+const BLAST_RANGE: f32 = 140.0;
+
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// What a blast `dist` metres away does to our ears: the ring's volume, how long the world stays dull and how hard
+/// (`Muffle::hit` intensity 0..=1). `None` beyond `reach`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlastEars {
+    pub ring_vol: f32,
+    pub secs: f32,
+    pub intensity: f32,
+}
+
+pub fn blast_ears(dist: f32, reach: f32) -> Option<BlastEars> {
+    if !(dist < reach) || reach <= 0.0 {
+        return None;
+    }
+    let k = (1.0 - dist.max(0.0) / reach).clamp(0.0, 1.0);
+    Some(BlastEars { ring_vol: 0.35 + 0.5 * k, secs: 0.8 + 1.4 * k, intensity: 0.5 + 0.4 * k })
+}
+
+/// The muffle of a flash daze: lasts the whole daze, harder for a stronger flash. `(secs, intensity)`.
+pub fn dazed_muffle(strength: f32, secs: f32) -> (f32, f32) {
+    (secs.max(0.0), 0.6 + 0.4 * strength.clamp(0.0, 1.0))
 }
 
 /// Damage at or above which a dealt hit uses the sharp "heavy hit" tick instead of the body thud.
@@ -269,6 +310,10 @@ pub struct Cuer {
     guard_broken: bool,
     /// `(seconds, intensity)` of the "ear muffle" this frame's hit asks for; read after `update`.
     pub muffle: Option<(f32, f32)>,
+    /// A muffle a star effect asks for; it starts one frame later so the bang that causes it is not muffled itself.
+    later_muffle: Option<(f32, f32)>,
+    prev_pulling: bool,
+    hiss_t: f32,
     /// How hard this frame's events should push the music down (0..=1); read after `update`.
     pub duck: f32,
 }
@@ -277,7 +322,7 @@ impl Cuer {
     pub fn update(&mut self, f: &Frame) -> (Vec<Cue>, Loops) {
         let mut cues = Vec::new();
         let mut duck = 0.0f32;
-        self.muffle = None;
+        self.muffle = self.later_muffle.take();
 
         if f.ui_click {
             cues.push(Cue::flat(Sound::UiClick, 0.6));
@@ -299,21 +344,53 @@ impl Cuer {
         if f.threw {
             cues.push(Cue::flat(Sound::Throw, 0.8));
         }
-        // star variants: existing synth sounds, placed in the world where they happen
+        // star variants, placed in the world where they happen; a barrel up close also rings in the ears
         for (what, p) in &f.star_fx {
             use shinobi_sim::events::*;
-            let (s, v) = match *what {
-                STAR_FX_BARREL_LANDED => (Sound::Print, 0.5),
-                STAR_FX_CANISTER_STUCK => (Sound::Land, 0.7),
-                STAR_FX_BARREL_BURST => (Sound::AirSlam, 1.0),
-                STAR_FX_FLASH_BURST => (Sound::CounterFlash, 1.0),
-                STAR_FX_BARREL_GONE => (Sound::Whiff, 0.7),
+            let dist = dist3(f.eye, *p);
+            let cue = match *what {
+                STAR_FX_BARREL_LANDED => Cue::at(Sound::BarrelThud, *p, 0.8),
+                STAR_FX_CANISTER_STUCK => Cue::at(Sound::CanisterClunk, *p, 0.8),
+                STAR_FX_BARREL_BURST => {
+                    if let Some(e) = blast_ears(dist, BARREL_EAR_M) {
+                        cues.push(Cue::flat(Sound::EarRing, e.ring_vol));
+                        self.later_muffle = Some((e.secs, e.intensity));
+                    }
+                    duck = duck.max(0.7 * crate::star_fx::blast_proximity(dist, 6.0));
+                    Cue::at(Sound::BarrelBoom, *p, 1.0).ranged(BLAST_RANGE)
+                }
+                STAR_FX_CANISTER_BURST => {
+                    if let Some(e) = blast_ears(dist, CANISTER_EAR_M) {
+                        cues.push(Cue::flat(Sound::EarRing, e.ring_vol * 0.6));
+                        self.later_muffle = Some((e.secs * 0.6, e.intensity));
+                    }
+                    duck = duck.max(0.5 * crate::star_fx::blast_proximity(dist, 4.0));
+                    Cue::at(Sound::CanisterBang, *p, 1.0).ranged(BLAST_RANGE)
+                }
+                STAR_FX_FLASH_BURST => Cue::at(Sound::FlashBang, *p, 1.0),
+                STAR_FX_BARREL_GONE | STAR_FX_CANISTER_GONE => Cue::at(Sound::Whiff, *p, 0.7),
                 _ => continue,
             };
-            cues.push(Cue::at(s, *p, v));
+            cues.push(cue);
         }
-        if f.blinded {
-            cues.push(Cue::flat(Sound::LockBreak, 0.9));
+        // lit fuses hiss (the three nearest; retriggered while they burn, faster as they run down)
+        if f.fuses.is_empty() {
+            self.hiss_t = 0.0;
+        } else {
+            self.hiss_t -= f.dt;
+            if self.hiss_t <= 0.0 {
+                let mut near: Vec<_> = f.fuses.iter().map(|(p, left)| (dist3(f.eye, *p), *p, *left)).collect();
+                near.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for (_, p, left) in near.into_iter().take(3) {
+                    cues.push(Cue::at(Sound::FuseHiss, p, 0.5).pitched(1.0 + 0.5 * (1.0 - left.clamp(0.0, 1.0))).ranged(30.0));
+                }
+                self.hiss_t = 0.26;
+            }
+        }
+        // dazed by a flash: thin whine, and the rest of the world goes dull for as long as the daze lasts
+        if let Some((strength, secs)) = f.blind {
+            cues.push(Cue::flat(Sound::Tinnitus, 0.35 + 0.4 * strength.clamp(0.0, 1.0)));
+            self.later_muffle = Some(dazed_muffle(strength, secs));
         }
         // power weapons (docs/powerups.md): existing synth sounds. Our own draw / loose / throw come from the prediction (no
         // latency), the server copies of them are skipped for us.
@@ -451,6 +528,12 @@ impl Cuer {
         if let Some(p) = f.grapple_attached {
             cues.push(Cue::at(Sound::GrappleAttach, p, 1.0));
         }
+        // the hook caught an enemy: a heavy whip crack on top of the attach
+        if f.pulling_enemy && !self.prev_pulling {
+            cues.push(Cue::flat(Sound::WhipCrack, 1.0));
+            duck = duck.max(0.3);
+        }
+        self.prev_pulling = f.pulling_enemy;
         if f.grapple_released {
             cues.push(Cue::flat(Sound::GrappleRelease, 0.7));
         }
@@ -562,6 +645,9 @@ impl Cuer {
             cues.push(Cue::flat(s, v).pitched(sp));
             let total: u32 = f.taken.iter().map(|a| *a as u32).sum();
             let total = total.min(255) as u8;
+            if self.muffle.is_some() {
+                self.later_muffle = self.muffle.or(self.later_muffle); // a star muffle due now waits behind the hit's
+            }
             self.muffle = Some((hit_audio::muffle_secs(total, MAX_HP), hit_audio::intensity(total, MAX_HP)));
             duck = duck.max(0.4 + 0.4 * hit_audio::intensity(total, MAX_HP));
         }
@@ -1530,8 +1616,91 @@ mod tests {
     fn every_cue_sound_exists_in_the_bank() {
         // a cue can only play if the synth renders it: all Sound variants are in ALL
         let all: HashSet<_> = Sound::ALL.iter().collect();
-        for s in [Sound::Parry, Sound::Block, Sound::Lockout, Sound::Refill, Sound::Streak, Sound::Wind, Sound::Hum, Sound::UiClick] {
+        for s in [
+            Sound::Parry, Sound::Block, Sound::Lockout, Sound::Refill, Sound::Streak, Sound::Wind, Sound::Hum, Sound::UiClick, Sound::BarrelBoom, Sound::CanisterBang,
+            Sound::EarRing, Sound::BarrelThud, Sound::CanisterClunk, Sound::FuseHiss, Sound::FlashBang, Sound::Tinnitus, Sound::WhipCrack,
+        ] {
             assert!(all.contains(&s));
         }
+    }
+
+    #[test]
+    fn blast_ears_ring_only_up_close_and_harder_the_closer() {
+        assert_eq!(blast_ears(BARREL_EAR_M, BARREL_EAR_M), None);
+        assert_eq!(blast_ears(30.0, BARREL_EAR_M), None);
+        let (near, far) = (blast_ears(1.0, BARREL_EAR_M).unwrap(), blast_ears(7.0, BARREL_EAR_M).unwrap());
+        assert!(near.ring_vol > far.ring_vol && near.secs > far.secs && near.intensity > far.intensity);
+        assert!(near.intensity <= 1.0 && near.ring_vol <= 1.0);
+    }
+
+    #[test]
+    fn dazed_muffle_lasts_the_whole_daze() {
+        assert_eq!(dazed_muffle(1.0, 3.5), (3.5, 1.0));
+        assert!(dazed_muffle(0.2, 3.5).1 < dazed_muffle(1.0, 3.5).1);
+    }
+
+    #[test]
+    fn barrel_burst_booms_and_up_close_rings_with_the_muffle_one_frame_later() {
+        use shinobi_sim::events::STAR_FX_BARREL_BURST;
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.eye = [0.0, 1.0, 0.0];
+        f.star_fx = vec![(STAR_FX_BARREL_BURST, [3.0, 1.0, 0.0])];
+        let (cues, _) = c.update(&f);
+        assert!(sounds(&cues).contains(&Sound::BarrelBoom) && sounds(&cues).contains(&Sound::EarRing));
+        assert!(c.muffle.is_none(), "the bang itself is not muffled");
+        f.star_fx.clear();
+        c.update(&f);
+        assert!(c.muffle.is_some(), "the world goes dull right after");
+        c.update(&f);
+        assert!(c.muffle.is_none());
+        // far away: just the boom
+        f.star_fx = vec![(STAR_FX_BARREL_BURST, [60.0, 1.0, 0.0])];
+        let (cues, _) = c.update(&f);
+        assert_eq!(sounds(&cues), vec![Sound::BarrelBoom]);
+        f.star_fx.clear();
+        c.update(&f);
+        assert!(c.muffle.is_none());
+    }
+
+    #[test]
+    fn canister_burst_is_a_sharp_bang() {
+        use shinobi_sim::events::STAR_FX_CANISTER_BURST;
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.star_fx = vec![(STAR_FX_CANISTER_BURST, [30.0, 0.0, 0.0])];
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::CanisterBang]);
+    }
+
+    #[test]
+    fn being_dazed_whines_and_mutes_for_the_daze() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.blind = Some((1.0, 3.5));
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::Tinnitus]);
+        f.blind = None;
+        c.update(&f);
+        assert_eq!(c.muffle, Some((3.5, 1.0)));
+    }
+
+    #[test]
+    fn lit_fuses_hiss_and_the_hook_cracks_once_on_catching_an_enemy() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.fuses = vec![([2.0, 0.0, 0.0], 0.8)];
+        let mut hisses = 0;
+        for _ in 0..60 {
+            hisses += c.update(&f).0.iter().filter(|q| q.sound == Sound::FuseHiss).count();
+        }
+        assert!((3..=5).contains(&hisses), "about every quarter second: {hisses}");
+        f.fuses.clear();
+        assert!(c.update(&f).0.is_empty());
+        f.pulling_enemy = true;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::WhipCrack]);
+        assert!(c.update(&f).0.is_empty(), "once per catch");
+        f.pulling_enemy = false;
+        c.update(&f);
+        f.pulling_enemy = true;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::WhipCrack]);
     }
 }

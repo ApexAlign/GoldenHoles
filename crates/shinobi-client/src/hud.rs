@@ -229,6 +229,8 @@ pub struct GrappleHud {
     pub ready: f32,
     /// The crosshair is on something the hook can grab.
     pub hookable: bool,
+    /// ... and the target is a player (the reticle turns red).
+    pub player: bool,
     /// Currently hanging on the rope.
     pub on_rope: bool,
     /// A fizzle ('no target') just happened: flash the arc.
@@ -454,6 +456,8 @@ pub struct HudState {
     pub power: Option<crate::hud_power::PowerHud>,
     /// Flash-star white-out 0..=1 (screen wash; `RenderView::blind`, already scaled by the settings' effect strength).
     pub blind: f32,
+    /// Fraction of the flash daze left, 1 -> 0 (0 = not dazed): the DAZED cue (`RenderView::dazed`).
+    pub dazed: f32,
     /// Contextual hint on screen: id and age (`hud_energy::HintState`).
     pub hint: Option<(crate::hud_energy::HintId, f32)>,
     /// Seconds since spawn / link-up while the boot-up sequence plays (`None` = finished).
@@ -974,7 +978,8 @@ impl Hud {
         let spread = s.spread.clamp(0.0, 1.0);
         let (cx, cy, gap, len) = (0.5, 0.5, 0.012 + 0.03 * spread, 0.014);
         let hookable = s.grapple.map_or(false, |g| g.hookable);
-        let ret = if hookable { p.gold.a(0.95) } else { p.cyan.a(0.85) };
+        let on_player = s.grapple.map_or(false, |g| g.hookable && g.player);
+        let ret = if on_player { Rgba(1.0, 0.12, 0.1, 0.95) } else if hookable { p.gold.a(0.95) } else { p.cyan.a(0.85) };
         out.push(Prim::Line { a: (cx - gap - len, cy), b: (cx - gap, cy), color: ret, glow: 0.003 });
         out.push(Prim::Line { a: (cx + gap, cy), b: (cx + gap + len, cy), color: ret, glow: 0.003 });
         out.push(Prim::Line { a: (cx, cy + gap), b: (cx, cy + gap + len), color: ret, glow: 0.003 });
@@ -1219,6 +1224,13 @@ impl Hud {
         // flash star: the whole frame, crosshair included, washes to white
         if s.blind > 0.01 {
             out.push(Prim::Rect { r: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgba(1.0, 1.0, 1.0, 0.96 * s.blind.min(1.0)), glow: 0.0 });
+        }
+        // flash star: DAZED cue (flicker + draining bar) drawn over the wash so it reads while the white is still up
+        if s.dazed > 0.0 {
+            let (a, flick) = (0.55 + 0.35 * (s.dazed * 40.0).sin().abs(), s.dazed.clamp(0.0, 1.0));
+            out.push(Prim::Text { pos: (0.5, 0.62), text: "DAZED".into(), size: 0.03, color: p.orange.a(a), align: Align::Center });
+            out.push(Prim::Rect { r: Rect::new(0.45, 0.655, 0.1, 0.004), color: p.orange.a(0.25), glow: 0.0 });
+            out.push(Prim::Rect { r: Rect::new(0.45, 0.655, 0.1 * flick, 0.004), color: p.orange.a(0.9), glow: 0.004 });
         }
         out
     }
@@ -2917,13 +2929,33 @@ mod tests {
         // hookable crosshair tints gold; ghost ring is cyan when valid, magenta when blocked
         let ticks = |s: &HudState, c: Rgba| Hud::build_with(s, &p).iter().filter(|x| matches!(x, Prim::Line { color, .. } if (color.0, color.1, color.2) == (c.0, c.1, c.2))).count();
         let base = HudState { hp: 1.0, ..Default::default() };
-        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false, strike: 0 }), ..base.clone() };
+        let hook = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, player: false, on_rope: false, missed: false, strike: 0 }), ..base.clone() };
         assert!(ticks(&hook, p.gold) > ticks(&base, p.gold));
+        // aim assist on a player: the reticle turns red instead of gold
+        let red = Rgba(1.0, 0.12, 0.1, 0.95);
+        let foe = HudState { grapple: Some(GrappleHud { ready: 1.0, hookable: true, player: true, on_rope: false, missed: false, strike: 0 }), ..base.clone() };
+        assert!(ticks(&foe, red) > 0 && ticks(&foe, p.gold) == ticks(&base, p.gold) && ticks(&hook, red) == 0);
         let ring = |valid| {
             let s = HudState { build: Some(BuildHud { selected: BuildSlot::Floor, ready: 1.0, placed: 0, max: 4, ghost: Some(valid) }), ..base.clone() };
             Hud::build_with(&s, &p).iter().filter(|x| matches!(x, Prim::Ring { r, color, .. } if (*r - 0.065).abs() < 1e-6 && (color.0, color.1, color.2) == if valid { (p.cyan.0, p.cyan.1, p.cyan.2) } else { (p.magenta.0, p.magenta.1, p.magenta.2) })).count()
         };
         assert_eq!((ring(true), ring(false)), (1, 1));
+    }
+
+    #[test]
+    fn dazed_cue_shows_text_and_a_draining_bar_only_while_dazed() {
+        let p = Palette::TRON;
+        let text = |s: &HudState| Hud::build_with(s, &p).iter().any(|x| matches!(x, Prim::Text { text, .. } if text == "DAZED"));
+        assert!(!text(&HudState { hp: 1.0, ..Default::default() }));
+        assert!(text(&HudState { hp: 1.0, dazed: 0.6, ..Default::default() }));
+        let bar = |d: f32| {
+            Hud::build_with(&HudState { hp: 1.0, dazed: d, ..Default::default() }, &p)
+                .iter()
+                .filter_map(|x| if let Prim::Rect { r, color, .. } = x { (r.y == 0.655 && color.3 > 0.8).then_some(r.w) } else { None })
+                .next()
+                .unwrap()
+        };
+        assert!(bar(0.9) > bar(0.3), "the bar drains as the daze runs out");
     }
 
     #[test]

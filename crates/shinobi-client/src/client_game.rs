@@ -153,8 +153,12 @@ struct Predicted {
     prev_pos: [f32; 3],
     /// Crosshair is on a hookable surface (probed every tick against the predicted world).
     hookable: bool,
+    /// The hook would grab a player (aim assist included): the crosshair turns red. Refreshed with `hookable`.
+    hook_player: bool,
     /// The rope is on a player (hook key again = yank). Refreshed with `hookable`.
     rope_on_player: bool,
+    /// The rope is an enemy hook (it pulls them, not us): the shell draws the 'hooked' effect.
+    pulling_enemy: bool,
     /// Client clock (ticks) at the most recent `sim_tick`; interpolation alpha is measured from here.
     sim_local: f64,
     /// Predicted position per recent sim tick, `(client tick clock, pos)`, oldest first: the draw time can sit up to
@@ -312,8 +316,11 @@ impl Predicted {
         refresh_solid(&mut self.solid, &self.world.colliders);
         std::mem::swap(&mut self.world.queries, &mut self.solid);
         let eye = vector![self.pos[0], self.pos[1] + self.ch.eye_above(), self.pos[2]];
-        self.hookable = self.ch.grapple_probe(&self.world, eye, view_dir(aim_yaw, aim_pitch)).is_some();
+        let target = self.ch.grapple_target_kind(&self.world, eye, view_dir(aim_yaw, aim_pitch));
+        self.hookable = target.is_some();
+        self.hook_player = target.map_or(false, |t| t.2);
         self.rope_on_player = self.ch.rope_on_player(&self.world);
+        self.pulling_enemy = self.ch.pulling_enemy();
         std::mem::swap(&mut self.world.queries, &mut self.solid);
     }
 }
@@ -406,6 +413,10 @@ pub struct LocalFx {
     pub grapple_cooldown: f32,
     /// The crosshair is on something the hook can grab right now (client-side ray in the predicted world).
     pub grapple_hookable: bool,
+    /// ... and what it would grab is a player (the crosshair turns red).
+    pub grapple_target_player: bool,
+    /// The rope is on an enemy and pulls THEM toward us (`CharacterSystem::pulling_enemy`): the 'hooked' effect.
+    pub grapple_pulling_enemy: bool,
     /// A katana swing right now is a strike: 0 none, 1 hook-strike (just released), 2 wall slash (wall-run), 3 hook-strike
     /// + rope slash (rope taut), 4 the same with the rope on a player (hook key again = yank).
     pub strike_armed: u8,
@@ -525,8 +536,10 @@ pub struct RenderView {
     /// Landed barrels and canisters (all players'), and the kind of each flying disc in `discs`.
     pub star_objs: Vec<StarObj>,
     pub disc_kinds: Vec<StarKind>,
-    /// Flash white-out right now, 0..=1 (screen flash strength, decays with the server's blind time).
+    /// Flash white-out right now, 0..=1 (screen flash strength, `whiteout_level` over the server's blind time).
     pub blind: f32,
+    /// Fraction of the daze left, 1 -> 0 (0 = not dazed): the HUD's DAZED cue and the ears' whine follow it.
+    pub dazed: f32,
     /// Hidden enemies (currently always empty).
     pub hidden_ids: Vec<EntityId>,
     /// How far the throw button has charged toward a MARK star, 0..=1 (0 when up or after a tap).
@@ -549,6 +562,16 @@ pub struct RenderView {
     pub block_size: f32,
     /// Slab thickness, metres.
     pub block_thickness: f32,
+}
+
+/// Share of a flash daze that is solid white before the screen starts to clear.
+const WHITEOUT_HOLD: f32 = 0.25;
+
+/// White-out strength factor 0..=1 for `frac_left` of the daze remaining (1 = just hit): solid for the first quarter,
+/// then a smooth fade to nothing exactly when the daze ends.
+pub fn whiteout_level(frac_left: f32) -> f32 {
+    let k = (frac_left.clamp(0.0, 1.0) / (1.0 - WHITEOUT_HOLD)).min(1.0);
+    k * k * (3.0 - 2.0 * k)
 }
 
 /// A landed star object (barrel or canister) for the renderer.
@@ -941,7 +964,9 @@ impl ClientGame {
             pos: ack.own.pos,
             prev_pos: ack.own.pos,
             hookable: false,
+            hook_player: false,
             rope_on_player: false,
+            pulling_enemy: false,
             sim_local: 0.0,
             hist: std::collections::VecDeque::new(),
             // the server evicts at its cap and says so (BlockRemoved): never evict locally on our own
@@ -1394,6 +1419,11 @@ impl ClientGame {
         out
     }
 
+    /// Fraction of the current flash daze left (`None` = not dazed).
+    fn blind_frac(&self) -> Option<f32> {
+        (self.blind_left > 0 && self.blind_total > 0).then(|| (self.blind_left as f32 / self.blind_total as f32).min(1.0))
+    }
+
     // ---- render ----
 
     pub fn view(&mut self, local_tick: f64) -> RenderView {
@@ -1449,6 +1479,8 @@ impl ClientGame {
             fx.grapple_ready = !fx.grappling && p.ch.grapple_cooldown() <= 0.0;
             fx.grapple_cooldown = (p.ch.grapple_cooldown() / self.cfg.sim.grapple_cd.max(1e-3)).clamp(0.0, 1.0);
             fx.grapple_hookable = p.hookable;
+            fx.grapple_target_player = p.hookable && p.hook_player;
+            fx.grapple_pulling_enemy = p.pulling_enemy;
             fx.strike_armed = match p.ch.strike_kind() {
                 // 3 = the rope is taut (a swing is also a rope slash), 4 = and it is on a player (hook key again = yank)
                 Some(shinobi_sim::character::StrikeKind::Hook) if p.ch.grapple.is_some() => 3 + p.rope_on_player as u8,
@@ -1575,7 +1607,8 @@ impl ClientGame {
             star_throws: self.star_throws,
             star_objs: Self::star_objects_of(&self.net, self.pred.as_ref(), own_id),
             disc_kinds,
-            blind: if self.blind_left == 0 || self.blind_total == 0 { 0.0 } else { self.blind_strength * ((self.blind_left as f32 / self.blind_total as f32) / 0.35).min(1.0) },
+            blind: self.blind_frac().map_or(0.0, |f| self.blind_strength * whiteout_level(f)),
+            dazed: self.blind_frac().unwrap_or(0.0),
             hidden_ids: self.hidden_ids.clone(),
             charging: self.fire_hold.map_or(0.0, |h| (h as f32 / MARK_CHARGE_TICKS as f32).min(1.0)),
             star_refused: self.star_refused,
@@ -1628,5 +1661,27 @@ impl ClientGame {
 
     pub fn predicting(&self) -> bool {
         self.pred.is_some()
+    }
+}
+
+#[cfg(test)]
+mod whiteout_tests {
+    use super::whiteout_level;
+
+    #[test]
+    fn whiteout_is_solid_at_first_then_fades_to_nothing_with_the_daze() {
+        assert_eq!(whiteout_level(1.0), 1.0);
+        assert_eq!(whiteout_level(0.75), 1.0, "solid for the first quarter");
+        assert_eq!(whiteout_level(0.0), 0.0, "clear exactly when the daze ends");
+        let mut last = 1.0;
+        for i in 0..=100 {
+            let v = whiteout_level(1.0 - i as f32 / 100.0);
+            assert!(v <= last + 1e-6, "never brightens again: {v} after {last}");
+            assert!((0.0..=1.0).contains(&v));
+            last = v;
+        }
+        assert!(whiteout_level(0.4) > 0.3 && whiteout_level(0.4) < 0.9, "mid-fade is visible but see-through");
+        assert_eq!(whiteout_level(2.0), 1.0);
+        assert_eq!(whiteout_level(-1.0), 0.0);
     }
 }

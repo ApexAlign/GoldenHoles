@@ -629,6 +629,7 @@ impl HudBridge {
         }
         // a flash white-out washes the whole screen (the settings' effect strength scales it; reduced motion caps it)
         hs.blind = (view.blind * self.blind_mult.unwrap_or(1.0)).clamp(0.0, 1.0);
+        hs.dazed = view.dazed;
         if view.star_refused {
             self.hints.trigger(crate::hud_energy::HintId::OutOfStars);
         }
@@ -669,6 +670,7 @@ impl HudBridge {
         hs.grapple = self.grapple.or(Some(GrappleHud {
             ready: if gf.grappling { 0.0 } else { 1.0 - gf.grapple_cooldown.clamp(0.0, 1.0) },
             hookable: gf.grapple_hookable,
+            player: gf.grapple_target_player,
             on_rope: gf.grappling,
             missed: self.grapple_flash > 0.0,
             strike: gf.strike_armed,
@@ -984,7 +986,7 @@ mod tests {
         let mut b = HudBridge::default();
         b.kill_limit = Some(25);
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
-        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, on_rope: false, missed: false, strike: 0 });
+        b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, player: false, on_rope: false, missed: false, strike: 0 });
         let mut v = RenderView::default();
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
         let s = b.update(0.016, &v, &net(), false);

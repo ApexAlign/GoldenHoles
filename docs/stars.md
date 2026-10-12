@@ -41,8 +41,21 @@ Blast rules (barrel and canister, `star_pass.rs`):
 Now and then (per-kind gaps): a flash at a target looking at them 7-16 m away, a lobbed barrel at a target 9-20 m away (outside its own blast;
 the bot raises its aim by the low-arc angle first). Only with energy to spare. Bots no longer use smoke.
 
-## Sounds (existing synth sounds, `audio.rs`)
-Barrel / canister landed Print, burst AirSlam, flash CounterFlash, own white-out LockBreak, cycling UiClick.
+## Visuals and sounds (`star_fx.rs`, `audio.rs`, `synth.rs`)
+* Barrel: a steel drum with hazard stripes and a glowing band; tumbles in flight, rests upright, fuse sparks and a blinking glow that
+  blinks faster as the fuse runs down (`fuse_blink_hz`, 2.5 -> 20 Hz), a fuse hiss. Burst: layered fireball (`fireball_scale`), shock
+  rings, sparks, tumbling debris, smoke, a light flash, camera shake and a screen flash scaled by distance (`blast_proximity`, gone at
+  three radii; off with reduced motion). Within 8 m: a tinny ear ring and the world goes dull for ~1-2 s (starts a frame after the
+  bang). Sounds `BarrelBoom`, `EarRing`, landed `BarrelThud`, `FuseHiss`.
+* Canister: small yellow-green bottle with a valve and a blinking LED, rides its host. Burst is shorter and sharper with a
+  yellow-green gas puff; `CanisterBang`, landed `CanisterClunk`; ear ring within 5 m.
+* Flash: white shell + ring out to the 14 m reach + light flash, `FlashBang`. Dazed (`StarBlind`): the screen white-out holds for the
+  first quarter of the daze then fades to nothing exactly as it ends (`whiteout_level`), a `Tinnitus` whine, the world muffled for the
+  whole daze, and a DAZED label with a draining bar on the HUD (`RenderView::dazed`).
+* Grapple on an enemy (`LocalFx::grapple_pulling_enemy`): the rope goes white-hot with a tension pulse that snaps on at the catch
+  (`rope::hook_tension`), a `WhipCrack`. The crosshair lights from `grapple_target_kind` (aim assist counts) and is RED when the target
+  is a player (`LocalFx::grapple_target_player`). No shield-block clang: the client cannot tell a block from the pull ending.
 
 ## Frames
-`docs/screens/star_world_*.png`, `hud_cpu_star_sel_*.png` (see the README there; the mine / smoke frames predate the rework).
+`docs/screens/weapons_*.png` (`SHOT_WEAPONS=barrel|barrelburst|canister|canisterburst|flash|dazed|hook|hookaim`, see the README there),
+`hud_cpu_star_sel_*.png` (the HUD selector frames predate the BARREL / CANISTER rename).
