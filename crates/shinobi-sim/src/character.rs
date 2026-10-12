@@ -446,6 +446,10 @@ pub struct CharacterSystem {
     rope_player: Option<bool>,
     /// Edge: what the grapple did in the last `update`.
     pub grapple_event: GrappleEvent,
+    /// Seconds since the rope last let go / since the last wall jump (large = long ago). Katana air-cut bonuses read them
+    /// (`combat::katana`). Not on the wire: the server runs them continuously, a client restore leaves them as they are.
+    pub hook_age: f32,
+    pub walljump_age: f32,
 }
 
 /// Parented colliders only follow their body during `PhysicsPipeline::step`, which this sim never runs, so any
@@ -511,6 +515,8 @@ impl CharacterSystem {
             grapple_cd: 0.0,
             rope_player: None,
             grapple_event: GrappleEvent::None,
+            hook_age: 99.0,
+            walljump_age: 99.0,
         }
     }
 
@@ -737,6 +743,8 @@ impl CharacterSystem {
         self.wall_cd = (self.wall_cd - dt).max(0.0);
         self.slide_cd = (self.slide_cd - dt).max(0.0);
         self.grapple_cd = (self.grapple_cd - dt).max(0.0);
+        self.hook_age = (self.hook_age + dt).min(99.0);
+        self.walljump_age = (self.walljump_age + dt).min(99.0);
         let dir_in = flat_norm(input.move_dir);
         if dir_in.norm_squared() > 0.0 {
             self.facing = dir_in;
@@ -798,6 +806,7 @@ impl CharacterSystem {
                     + up * (cfg.jump_speed + b.max(0.0) * 0.5);
                 self.jump_buf = 0.0;
                 self.wall_cd = 0.3;
+                self.walljump_age = 0.0;
                 self.double_used = false;
                 self.state = MoveState::Airborne;
                 jumped = true;
@@ -1414,6 +1423,7 @@ impl CharacterSystem {
         self.rope_player = None;
         self.grapple_cd = if player_rope { self.cfg.grapple_player_cd } else { self.cfg.grapple_cd };
         self.grapple_event = GrappleEvent::Released;
+        self.hook_age = 0.0;
     }
 
     /// Detach conditions, evaluated at the start of the tick (velocity is kept on release).

@@ -79,6 +79,20 @@ pub trait Weapon: Send + Sync {
     fn discs_mut(&mut self) -> Option<&mut Vec<super::shuriken::Disc>> {
         None
     }
+    /// Skill combo counter (connected cuts in a row) for the HUD; 0 for weapons without one.
+    fn combo_count(&self) -> u32 {
+        0
+    }
+    /// The owner took damage: break any streak.
+    fn on_hurt(&mut self) {}
+    /// Star energy a cancel out of this weapon's recovery costs (negative = cancels off).
+    fn cancel_cost(&self) -> f32 {
+        -1.0
+    }
+    /// Spend `amount` of energy if this weapon has a pool and can afford it; true when it was paid (or there is no pool).
+    fn spend_energy(&mut self, _amount: f32) -> bool {
+        true
+    }
     /// Advance in-flight state (projectiles). Runs every tick.
     fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx) {}
 }
@@ -113,6 +127,37 @@ impl Loadout {
     /// Remaining cooldown (seconds) of the first weapon on `t`; 0 = ready.
     pub fn cooldown_left(&self, t: Trigger) -> f32 {
         self.slots.iter().find(|s| s.weapon.trigger() == t).map_or(0.0, |s| s.cooldown_left)
+    }
+
+    /// Combo counter of the secondary (katana) weapon.
+    pub fn combo_count(&self) -> u32 {
+        self.slots.iter().find(|s| s.weapon.trigger() == Trigger::Secondary).map_or(0, |s| s.weapon.combo_count())
+    }
+
+    /// The owner was hit: every weapon drops its streak.
+    pub fn on_hurt(&mut self) {
+        for s in &mut self.slots {
+            s.weapon.on_hurt();
+        }
+    }
+
+    /// Cancel: free the secondary weapon's recovery now, for its `cancel_cost` in energy from the first weapon with a pool
+    /// (no pool = free). False (nothing changes) when there is no recovery to cut, cancels are off or it cannot be paid.
+    pub fn cancel_slice(&mut self) -> bool {
+        let Some(ki) = self.slots.iter().position(|s| s.weapon.trigger() == Trigger::Secondary && s.cooldown_left > 0.0) else { return false };
+        let cost = self.slots[ki].weapon.cancel_cost();
+        if cost < 0.0 {
+            return false;
+        }
+        if cost > 0.0 {
+            if let Some(s) = self.slots.iter_mut().find(|s| s.weapon.energy().is_some()) {
+                if !s.weapon.spend_energy(cost) {
+                    return false;
+                }
+            }
+        }
+        self.slots[ki].cooldown_left = 0.0;
+        true
     }
 
     /// Charge (0..1) of the first weapon on `t`.

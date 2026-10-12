@@ -379,6 +379,8 @@ pub struct LocalFx {
     pub slice_cooldown: f32,
     /// Heavy-cut charge 0..1 (the katana button held after a cut).
     pub slice_charge: f32,
+    /// Skill combo counter: connected katana cuts in a row (0 = none).
+    pub combo: u32,
     pub throw_cooldown: f32,
     // -- edges since the previous `view()`; a tick that falls between two views is never lost --
     pub jumped: bool,
@@ -682,6 +684,8 @@ pub struct ClientGame {
     /// Edge FX accumulated across sim ticks since the last `view()` (replays never add to it).
     fx_edges: LocalFx,
     throw_cd_left: f32,
+    /// Own hp at the previous predicted tick: a drop breaks the predicted combo counter, like the server's.
+    prev_combo_hp: Option<f32>,
     prev_flags: MoveFlags,
     /// The power weapon in hand: the predicted copy of the server's `Player::power` (same code, `power.rs`), the last
     /// (kind, ammo) report it was synced to, the sim ticks of tags thrown that the snapshot may not show yet, and the
@@ -756,6 +760,7 @@ impl ClientGame {
             pose_t: f64::NEG_INFINITY,
             fx_edges: LocalFx::default(),
             throw_cd_left: 0.0,
+            prev_combo_hp: None,
             prev_flags: MoveFlags::default(),
             power: PowerState::default(),
             power_seen: None,
@@ -1286,6 +1291,11 @@ impl ClientGame {
                     yaw: dq_yaw(intent.aim_yaw),
                     pitch: dq_pitch(intent.aim_pitch),
                 };
+                let hp_now = self.net.hp();
+                if matches!((self.prev_combo_hp, hp_now), (Some(a), Some(b)) if b < a - 1e-4) {
+                    p.combat.on_hurt();
+                }
+                self.prev_combo_hp = hp_now;
                 p.combat.update(
                     TICK_DT,
                     p.now,
@@ -1492,6 +1502,7 @@ impl ClientGame {
         if let Some(p) = &self.pred {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);
             fx.slice_charge = p.combat.slice_charge();
+            fx.combo = p.combat.combo_count();
         }
         fx.throw_cooldown = (self.throw_cd_left / ShurikenCfg::default().cooldown.max(1e-3)).clamp(0.0, 1.0);
         let (build_ghost, blocks) = match (self.pred.as_mut(), own_id) {

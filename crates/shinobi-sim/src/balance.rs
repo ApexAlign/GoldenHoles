@@ -106,6 +106,24 @@ pub struct KatanaBalance {
     pub whirl_recover: f32,
     pub counter_range: f32,
     pub counter_scale: f32,
+    /// Skill combo counter (connected cuts in a row, reset by a whiff, a hit taken or `combo_window` of idling): damage bonus per stack past the third cut (0.05 = +5 %), swing-recovery cut per stack (0.04 = 4 % quicker), and the stack cap (0 = counter off).
+    pub combo_dmg: f32,
+    pub combo_speed: f32,
+    pub combo_max: f32,
+    /// Wall-run slashes that chain (connected, within `wall_chain_window` of each other) before the next one is the wall-kick finisher: damage multiplier and extra blade reach. 0 = no wall chain.
+    pub wall_chain_max: f32,
+    pub wall_chain_window: f32,
+    pub wallkick_mult: f32,
+    pub wallkick_reach: f32,
+    /// Air cut within `hook_air_window` s of the rope letting go (hook -> air-slash), or within `walljump_air_window` s of a wall jump (wall-jump -> air-slash): damage multipliers (the larger applies). Window 0 = off.
+    pub hook_air_mult: f32,
+    pub hook_air_window: f32,
+    pub walljump_air_mult: f32,
+    pub walljump_air_window: f32,
+    /// Cancel: a dash, hook or wall jump started while the katana recovers frees the blade at once, for this much star energy (a charge; no pool = free). 0 = free. Only with `cancel` = 1.
+    pub cancel_cost: f32,
+    /// 1 = cancels on, 0 = off.
+    pub cancel: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -552,7 +570,7 @@ impl Default for Balance {
                 },
                 star: s.star,
                 power: crate::power::PowerCfg::default(),
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -717,6 +735,21 @@ impl Balance {
         b.combat.katana.finisher_mult = 1.5; // the third connected swing of a combo cuts for 30
         b.combat.katana.finisher_reach = 0.6; // and reaches 0.6 m further
         b.combat.katana.combo_window = 1.0;
+        // skill combat: a streak of connected cuts cuts 3 % off the recovery per cut and, once it carries past the finisher adds 5 % damage per cut (5 stacks); three
+        // chained wall-run slashes make the next one a wall-kick; hook / wall-jump into an air cut hits harder; a dash, hook
+        // or wall jump out of a cut frees the blade for 0.4 star charges
+        b.combat.katana.combo_dmg = 0.05;
+        b.combat.katana.combo_speed = 0.03;
+        b.combat.katana.combo_max = 5.0;
+        b.combat.katana.wall_chain_max = 3.0;
+        b.combat.katana.wallkick_mult = 1.6;
+        b.combat.katana.wallkick_reach = 0.8;
+        b.combat.katana.hook_air_mult = 1.3;
+        b.combat.katana.hook_air_window = 1.2;
+        b.combat.katana.walljump_air_mult = 1.25;
+        b.combat.katana.walljump_air_window = 0.9;
+        b.combat.katana.cancel = 1.0;
+        b.combat.katana.cancel_cost = 0.4;
         // forgiving blade: any enemy within 38 degrees of the swing and 1.0 m past the blade's reach is hit (target-centred)
         b.combat.katana.cone_deg = 38.0;
         b.combat.katana.cone_extra = 1.0;
@@ -866,6 +899,19 @@ impl Balance {
         k.whirl_recover = b.whirl_recover;
         k.counter_range = b.counter_range;
         k.counter_scale = b.counter_scale;
+        k.combo_dmg = b.combo_dmg;
+        k.combo_speed = b.combo_speed;
+        k.combo_max = b.combo_max;
+        k.wall_chain_max = b.wall_chain_max;
+        k.wall_chain_window = b.wall_chain_window;
+        k.wallkick_mult = b.wallkick_mult;
+        k.wallkick_reach = b.wallkick_reach;
+        k.hook_air_mult = b.hook_air_mult;
+        k.hook_air_window = b.hook_air_window;
+        k.walljump_air_mult = b.walljump_air_mult;
+        k.walljump_air_window = b.walljump_air_window;
+        k.cancel_cost = b.cancel_cost;
+        k.cancel = b.cancel;
     }
 
     pub fn match_cfg(&self) -> MatchCfg {
@@ -995,6 +1041,19 @@ impl Balance {
         s!("combat.katana.whirl_recover", F, self.combat.katana.whirl_recover);
         s!("combat.katana.counter_range", F, self.combat.katana.counter_range);
         s!("combat.katana.counter_scale", F, self.combat.katana.counter_scale);
+        s!("combat.katana.combo_dmg", F, self.combat.katana.combo_dmg);
+        s!("combat.katana.combo_speed", F, self.combat.katana.combo_speed);
+        s!("combat.katana.combo_max", F, self.combat.katana.combo_max);
+        s!("combat.katana.wall_chain_max", F, self.combat.katana.wall_chain_max);
+        s!("combat.katana.wall_chain_window", F, self.combat.katana.wall_chain_window);
+        s!("combat.katana.wallkick_mult", F, self.combat.katana.wallkick_mult);
+        s!("combat.katana.wallkick_reach", F, self.combat.katana.wallkick_reach);
+        s!("combat.katana.hook_air_mult", F, self.combat.katana.hook_air_mult);
+        s!("combat.katana.hook_air_window", F, self.combat.katana.hook_air_window);
+        s!("combat.katana.walljump_air_mult", F, self.combat.katana.walljump_air_mult);
+        s!("combat.katana.walljump_air_window", F, self.combat.katana.walljump_air_window);
+        s!("combat.katana.cancel_cost", F, self.combat.katana.cancel_cost);
+        s!("combat.katana.cancel", F, self.combat.katana.cancel);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.shuriken.energy_max", F, self.combat.shuriken.energy_max);
         s!("combat.shuriken.energy_cost", F, self.combat.shuriken.energy_cost);

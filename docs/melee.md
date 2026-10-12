@@ -83,3 +83,18 @@ result and the HUD flash still arrive with the hit confirm.
 
 `melee_duel.rs` (each heightener through the real `Server`), `katana_moves_duel.rs` (heavy, air + slam, counter, whirl, execute), `katana_fx.rs` unit tests, bot heavy-cut test in `shinobi-ai/tests/behaviour.rs`, `melee_feel.rs` (accuracy), `guard_duel.rs` (block / parry /
 strike window), `full_loop_e2e.rs` (homing and block through `ClientGame <-> Server`).
+
+## Skill combat (combo counter, wall chain, cancels)
+
+All tunables are `combat.katana.*` (on in `Balance::demo`, off in the plain default). Everything lives in the sim (`combat/katana.rs`); the only
+wire-visible effect is the damage number and the swing cooldown that already travel.
+
+* **Combo counter**: every cut that connects raises it; a whiff, a hit taken (`CombatSystem::on_hurt`, called from `pvp::apply_hits`) or
+  `combo_window` of idling drops it to 0. Each stack cuts `combo_speed` (3 %) off the recovery; once the combo carries past the finisher each further cut
+  adds `combo_dmg` (5 %), up to `combo_max` stacks. The HUD shows `xN COMBO` from 2 (`HudState::combo`, read from the predicted `CombatSystem::combo_count`).
+* **Wall chain**: up to `wall_chain_max` (3) connected wall-run slashes within `wall_chain_window` of each other, then the next wall-run cut is the
+  wall-kick finisher (`wallkick_mult` damage, `wallkick_reach` m more blade). A non-wall cut or a whiff breaks the chain.
+* **Hook / wall-jump into an air cut**: an air cut within `hook_air_window` s of the rope letting go (x`hook_air_mult`) or `walljump_air_window` s of a
+  wall jump (x`walljump_air_mult`) hits harder (the larger applies). Needs `CharacterSystem::hook_age` / `walljump_age` (not on the wire).
+* **Cancels** (`cancel` = 1): a dash, a hook or a wall jump started while the blade recovers frees it at once so the next cut can follow; it costs
+  `cancel_cost` star charges (refused while the pool is locked or short; no pool = free).

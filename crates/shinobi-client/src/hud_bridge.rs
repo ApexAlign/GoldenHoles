@@ -630,6 +630,7 @@ impl HudBridge {
         // a flash white-out washes the whole screen (the settings' effect strength scales it; reduced motion caps it)
         hs.blind = (view.blind * self.blind_mult.unwrap_or(1.0)).clamp(0.0, 1.0);
         hs.dazed = view.dazed;
+        hs.combo = f.combo;
         if view.star_refused {
             self.hints.trigger(crate::hud_energy::HintId::OutOfStars);
         }
