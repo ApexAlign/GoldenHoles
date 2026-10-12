@@ -107,6 +107,11 @@ pub struct BotHost {
     human_joined: Option<u32>,
     /// Wedge watch per bot: `(bot, position, tick it was taken, unstick count then)`; see `rescue_wedged`.
     wedge: Vec<(u16, [f32; 3], u32, u32)>,
+    /// Pacing watch per bot: `(bot, window_start_tick, min_xz, max_xz)`; catches a bot bouncing back and forth in a small
+    /// box (stuck at a wall corner) rather than standing dead still. See `rescue_wedged`.
+    pace: Vec<(u16, u32, [f32; 2], [f32; 2])>,
+    /// Last tick each bot dealt or took a hit: a bot that stands still with no fight for a while is stalled, not duelling.
+    combat: Vec<(u16, u32)>,
 }
 
 /// Three consecutive tick durations summing to exactly 3/60 s.
@@ -127,6 +132,8 @@ impl BotHost {
             summoned: Vec::new(),
             human_joined: None,
             wedge: Vec::new(),
+            pace: Vec::new(),
+            combat: Vec::new(),
             sticky: Vec::new(),
         }
     }
@@ -311,6 +318,11 @@ impl BotHost {
                 for id in [attacker, victim] {
                     if !self.is_bot(id) {
                         self.note_action(id, tick);
+                    } else {
+                        match self.combat.iter_mut().find(|c| c.0 == id) {
+                            Some(c) => c.1 = tick,
+                            None => self.combat.push((id, tick)),
+                        }
                     }
                 }
             }
@@ -332,8 +344,17 @@ impl BotHost {
     /// A bot jammed in level geometry the controller cannot slide out of (a V-gap under a ramp, a slab grazing its head) keeps
     /// asking to move, backs out and dashes, and never goes anywhere. If it has tried to unstick at least twice and has not
     /// moved half a metre in 8 seconds it is put back on a spawn, like a respawn without the death.
+    ///
+    /// A second case looks different but is the same bug from the outside: a bot pacing back and forth at a wall corner (it
+    /// cannot find the way round) covers real distance leg to leg, so the point-to-point check above never trips, but its
+    /// whole path stays inside a small box for a long stretch with nothing to show for it. `pace` tracks the bounding box
+    /// of each bot's position over a rolling window and rescues it once that box stays small for long enough with no fight.
     fn rescue_wedged(&mut self, server: &mut Server) {
         const WATCH_TICKS: u32 = 8 * TICK_HZ;
+        // a bounding box under PACE_SPAN for this long, with no hit dealt or taken, is a pen (a bot pinned at a wall corner
+        // while it "strikes" or "advances", even though it keeps moving leg to leg)
+        const STALL_TICKS: u32 = 9 * TICK_HZ;
+        const PACE_SPAN: f32 = 6.0;
         let tick = server.tick;
         let mut rescue: Vec<u16> = Vec::new();
         for b in &self.bots {
@@ -341,6 +362,7 @@ impl BotHost {
             let pos = p.pos(&server.world);
             if !p.vitals.alive() {
                 self.wedge.retain(|w| w.0 != b.id);
+                self.pace.retain(|w| w.0 != b.id);
                 continue;
             }
             match self.wedge.iter_mut().find(|w| w.0 == b.id) {
@@ -357,6 +379,22 @@ impl BotHost {
                 }
                 None => self.wedge.push((b.id, pos, tick, b.stats.unsticks)),
             }
+            let xz = [pos[0], pos[2]];
+            match self.pace.iter_mut().find(|w| w.0 == b.id) {
+                Some(w) => {
+                    w.2 = [w.2[0].min(xz[0]), w.2[1].min(xz[1])];
+                    w.3 = [w.3[0].max(xz[0]), w.3[1].max(xz[1])];
+                    if tick.wrapping_sub(w.1) >= STALL_TICKS {
+                        let boxed = (w.3[0] - w.2[0]).max(w.3[1] - w.2[1]) <= PACE_SPAN;
+                        let fought = self.combat.iter().any(|c| c.0 == b.id && tick.wrapping_sub(c.1) < STALL_TICKS);
+                        if boxed && !fought && !rescue.contains(&b.id) {
+                            rescue.push(b.id);
+                        }
+                        *w = (b.id, tick, xz, xz);
+                    }
+                }
+                None => self.pace.push((b.id, tick, xz, xz)),
+            }
         }
         for id in rescue {
             let at = server.pick_spawn(Some(id));
@@ -366,6 +404,7 @@ impl BotHost {
                 shinobi_sim::character::sync_body_colliders(&mut server.world, body);
             }
             self.wedge.retain(|w| w.0 != id);
+            self.pace.retain(|w| w.0 != id);
         }
     }
 
