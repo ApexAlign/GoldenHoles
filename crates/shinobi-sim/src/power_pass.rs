@@ -391,6 +391,7 @@ impl Server {
                 let vid = q.id;
                 match guard {
                     crate::block::Guard::Parried => {
+                        self.players[j].blk.mark_used();
                         // the arrow turns around and goes for whoever loosed it
                         let shooter = Some(oi).map(|k| {
                             let c = self.players[k].pos(&self.world);
@@ -414,6 +415,7 @@ impl Server {
                     }
                     crate::block::Guard::Blocked => {
                         let v = &mut self.players[j];
+                        v.blk.mark_used();
                         v.blk.energy -= yc.block_drain;
                         if v.blk.energy <= 0.0 {
                             v.blk.break_guard(tick, &bcfg);

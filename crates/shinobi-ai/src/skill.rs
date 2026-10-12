@@ -32,6 +32,7 @@ impl BotSkill {
                 use_walls: false,
                 move_scale: 1.0,
                 slice_miss: 0.4,
+                parry_skill: 0.2,
             },
             Self::Normal => SkillParams {
                 reaction_ticks: 16,
@@ -43,6 +44,7 @@ impl BotSkill {
                 use_walls: true,
                 move_scale: 1.0,
                 slice_miss: 0.25,
+                parry_skill: 0.5,
             },
             Self::Hard => SkillParams {
                 reaction_ticks: 5,
@@ -54,6 +56,7 @@ impl BotSkill {
                 use_walls: true,
                 move_scale: 1.0,
                 slice_miss: 0.12,
+                parry_skill: 0.85,
             },
         }
     }
@@ -79,6 +82,9 @@ pub struct SkillParams {
     pub move_scale: f32,
     /// Chance a katana dash is thrown on a bad read (aimed ~1.2 rad off, so the swing whiffs).
     pub slice_miss: f32,
+    /// Skill at the timed block (0..1): the chance a bot raises its shield inside the parry window of an arrow it sees
+    /// coming, and how readily it parries a katana cut it reads. A miss costs the 1 s block lockout, so bots do not spam.
+    pub parry_skill: f32,
 }
 
 /// Behaviour profile. Light = cyber-ninja (flank, wall, perch, shurikens from odd angles).
@@ -107,5 +113,16 @@ impl Archetype {
             Self::Heavy => sign * (0.12 + 0.30 * ring),
             Self::Light => sign * (PI * 0.42 + 0.30 * ring).min(PI),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parry_skill_climbs_with_the_tier_and_nobody_is_perfect() {
+        let p = |s: BotSkill| s.params().parry_skill;
+        assert!(0.0 < p(BotSkill::Easy) && p(BotSkill::Easy) < p(BotSkill::Normal) && p(BotSkill::Normal) < p(BotSkill::Hard) && p(BotSkill::Hard) < 1.0);
     }
 }

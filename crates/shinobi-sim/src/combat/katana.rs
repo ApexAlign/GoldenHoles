@@ -77,6 +77,8 @@ pub struct KatanaCfg {
     pub cancel_cost: f32,
     /// 1 = cancels on, 0 = off.
     pub cancel: f32,
+    /// A swing that hits nothing locks the blade out for at least this many seconds (a whiff is punished; 0 = off).
+    pub whiff_recover: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -142,6 +144,7 @@ impl KatanaCfg {
             walljump_air_window: 0.0,
             cancel_cost: 0.0,
             cancel: 0.0,
+            whiff_recover: 0.0,
         }
     }
 }
@@ -645,6 +648,10 @@ impl Weapon for Katana {
         // skill counters: a cut that found nothing (or only the rope) breaks the streak and the wall chain
         let connected = !hits.is_empty();
         self.streak = if connected { self.streak + 1 } else { 0 };
+        // commit: a whiffed cut cannot be followed up at once (a cancel into dash / hook / wall jump still frees it)
+        if !connected {
+            self.recover = self.recover.max(c.whiff_recover);
+        }
         if wall_slash && connected && !wallkick {
             self.wall_chain += 1;
             self.last_wall = ctx.now;
@@ -932,6 +939,26 @@ mod tests {
         r.w.colliders.remove(tgt, &mut r.w.islands, &mut r.w.bodies, false);
         assert!(r.cut_when_ready().is_none(), "nothing to hit");
         assert_eq!(r.combat.combo_count(), 0);
+    }
+
+    #[test]
+    fn a_whiffed_cut_commits_you_longer_than_a_connected_one() {
+        let mut hit = Rig::new();
+        hit.cut().unwrap();
+        hit.cut_when_ready().unwrap();
+        hit.cut_when_ready().unwrap();
+        let after_hit = hit.combat.slice_cooldown_left();
+        let mut miss = Rig::new();
+        let tgt = miss.w.colliders.iter().find(|(_, c)| c.user_data == 7).map(|(h, _)| h).unwrap();
+        miss.w.colliders.remove(tgt, &mut miss.w.islands, &mut miss.w.bodies, false);
+        assert!(miss.cut().is_none());
+        let after_miss = miss.combat.slice_cooldown_left();
+        eprintln!("recovery after a connected streak {after_hit:.2} s, after a whiff {after_miss:.2} s");
+        assert!(after_miss >= 0.44, "a whiff locks the blade out ~0.45 s: {after_miss}");
+        assert!(after_hit < after_miss, "a connected streak recovers quicker than a whiff");
+        // a cancel into a dash still frees the blade (it costs energy)
+        miss.tick(false, PlayerInput { dash_pressed: true, ..Default::default() });
+        assert!(miss.combat.slice_cooldown_left() < 0.05, "dash cancels the whiff recovery too");
     }
 
     #[test]

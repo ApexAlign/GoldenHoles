@@ -129,6 +129,8 @@ pub struct KatanaBalance {
     pub cancel_cost: f32,
     /// 1 = cancels on, 0 = off.
     pub cancel: f32,
+    /// A katana swing that hits nothing locks the blade out at least this long (seconds; 0 = off).
+    pub whiff_recover: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,6 +315,8 @@ pub struct GuardBalance {
     pub hit_cost: f32,
     /// After the guard is spent: seconds before it can be raised again.
     pub rearm_s: f32,
+    /// A block lowered without ever absorbing a hit (spam-raise) cannot be re-raised for this long (0 = off).
+    pub lockout_s: f32,
     /// Seconds a parried melee attacker cannot act.
     pub stagger_s: f32,
     /// Strike window (seconds) after one's own swing.
@@ -338,6 +342,7 @@ impl Default for GuardBalance {
             regen_s: 3.0,
             hit_cost: 0.2,
             rearm_s: 1.0,
+            lockout_s: 0.0,
             stagger_s: 0.8,
             swing_open_s: 0.0,
             counter_open_s: 0.0,
@@ -360,6 +365,7 @@ impl GuardBalance {
             regen_ticks: t(self.regen_s).max(1),
             hit_cost: self.hit_cost,
             rearm_ticks: t(self.rearm_s),
+            lockout_ticks: t(self.lockout_s),
             stagger_ticks: t(self.stagger_s),
             swing_open_ticks: t(self.swing_open_s),
             counter_open_ticks: t(self.counter_open_s),
@@ -578,7 +584,7 @@ impl Default for Balance {
                 },
                 star: s.star,
                 power: crate::power::PowerCfg::default(),
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0, whiff_recover: 0.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -758,6 +764,7 @@ impl Balance {
         b.combat.katana.walljump_air_window = 0.9;
         b.combat.katana.cancel = 1.0;
         b.combat.katana.cancel_cost = 0.4;
+        b.combat.katana.whiff_recover = 0.45; // commit: a missed cut leaves you open ~0.45 s (cancel into dash / hook / wall jump still frees it)
         // forgiving blade: any enemy within 38 degrees of the swing and 1.0 m past the blade's reach is hit (target-centred)
         b.combat.katana.cone_deg = 38.0;
         b.combat.katana.cone_extra = 1.0;
@@ -795,19 +802,20 @@ impl Balance {
         b.guard.swing_open_s = 0.25;
         b.guard.counter_open_s = 1.0;
         b.guard.bonus_mult = 1.5;
-        // a held shield must feel SAFE (it used to break in 1.5 s and leave you dead 1.5 s later): an 8 s guard, a blocked
-        // cut costs 6 % of it, a wide 200 degree arc, 3 % leak from the base cut (momentum / lunge bonuses never punch
-        // through), a forgiving 0.35 s parry, quick re-arm, and a broken guard staggers 0.3 s then takes only 35 % damage
-        // for 1.2 s so it never hands over a combo
-        b.guard.front_deg = 100.0;
-        b.guard.front_mult = 0.03;
-        b.guard.parry_s = 0.35;
-        b.guard.max_hold_s = 8.0;
-        b.guard.regen_s = 2.0;
-        b.guard.hit_cost = 0.06;
-        b.guard.rearm_s = 0.5;
+        // skill melee, no turtling: the shield is a TIMED block. A block raised in the 0.13 s parry window negates the hit,
+        // staggers the attacker 0.8 s and opens a 1 s counter; a plain held guard lasts 2.5 s, a blocked cut costs 20 % of it,
+        // 15 % of the cut leaks through, the arc is 150 degrees, and a shield raised then dropped without absorbing anything
+        // (or a spent one) cannot come back for 1 s. A broken guard staggers 0.3 s then takes 35 % damage for 0.8 s.
+        b.guard.front_deg = 75.0;
+        b.guard.front_mult = 0.15;
+        b.guard.parry_s = 0.13;
+        b.guard.max_hold_s = 2.5;
+        b.guard.regen_s = 2.5;
+        b.guard.hit_cost = 0.20;
+        b.guard.rearm_s = 1.0;
+        b.guard.lockout_s = 1.0;
         b.guard.break_stagger_s = 0.3;
-        b.guard.mercy_s = 1.2;
+        b.guard.mercy_s = 0.8;
         b.guard.mercy_mult = 0.35;
         b.player.respawn_ticks = 150; // 2.5 s: the death animation fills ~1.6 s of it, then the countdown
         b.player.first_spawn_invuln_ticks = 3 * crate::match_state::TICK_HZ; // joining mid-fight must not be a death sentence
@@ -926,6 +934,7 @@ impl Balance {
         k.walljump_air_mult = b.walljump_air_mult;
         k.walljump_air_window = b.walljump_air_window;
         k.cancel_cost = b.cancel_cost;
+        k.whiff_recover = b.whiff_recover;
         k.cancel = b.cancel;
     }
 
@@ -1068,6 +1077,7 @@ impl Balance {
         s!("combat.katana.walljump_air_mult", F, self.combat.katana.walljump_air_mult);
         s!("combat.katana.walljump_air_window", F, self.combat.katana.walljump_air_window);
         s!("combat.katana.cancel_cost", F, self.combat.katana.cancel_cost);
+        s!("combat.katana.whiff_recover", F, self.combat.katana.whiff_recover);
         s!("combat.katana.cancel", F, self.combat.katana.cancel);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.shuriken.energy_max", F, self.combat.shuriken.energy_max);
@@ -1123,6 +1133,7 @@ impl Balance {
         s!("guard.regen_s", F, self.guard.regen_s);
         s!("guard.hit_cost", F, self.guard.hit_cost);
         s!("guard.rearm_s", F, self.guard.rearm_s);
+        s!("guard.lockout_s", F, self.guard.lockout_s);
         s!("guard.stagger_s", F, self.guard.stagger_s);
         s!("guard.swing_open_s", F, self.guard.swing_open_s);
         s!("guard.counter_open_s", F, self.guard.counter_open_s);
@@ -1364,7 +1375,7 @@ impl Balance {
         if !(0.0..=1.0).contains(&g.mercy_mult) || g.break_stagger_s < 0.0 || g.mercy_s < 0.0 {
             e.push("guard.mercy_mult must be 0..1, guard.break_stagger_s and guard.mercy_s >= 0".into());
         }
-        if g.max_hold_s <= 0.0 || g.regen_s <= 0.0 || [g.parry_s, g.rearm_s, g.stagger_s, g.swing_open_s, g.counter_open_s].iter().any(|v| *v < 0.0) || g.bonus_mult < 1.0 {
+        if g.max_hold_s <= 0.0 || g.regen_s <= 0.0 || [g.parry_s, g.rearm_s, g.lockout_s, g.stagger_s, g.swing_open_s, g.counter_open_s].iter().any(|v| *v < 0.0) || g.bonus_mult < 1.0 {
             e.push("guard times must be >= 0 (max_hold_s and regen_s > 0) and guard.bonus_mult >= 1".into());
         }
         if self.player.regen_delay_s < 0.0 || self.player.regen_per_s < 0.0 {

@@ -339,6 +339,7 @@ pub fn apply_hits(
             }
             match guard {
                 crate::block::Guard::Parried => {
+                    players[h.victim].blk.mark_used();
                     let parried = amount;
                     amount = 0.0;
                     // a parried melee attacker is staggered and wide open to the counter
@@ -357,6 +358,7 @@ pub fn apply_hits(
                     // base cut: no momentum, streak or window bonus; a deflected star does no damage at all
                     amount = if kind == DamageKind::Shuriken { 0.0 } else { h.amount * block.front_mult };
                     let v = &mut players[h.victim];
+                    v.blk.mark_used();
                     // a blocked hit costs guard in proportion to its raw damage (a 20 hp cut = `hit_cost`, a 7 hp star a third)
                     v.blk.energy -= block.hit_cost * (h.amount / 20.0).min(2.5);
                     if v.blk.energy <= 0.0 {

@@ -24,6 +24,7 @@ fn old_guard() -> GuardBalance {
         regen_s: 3.0,
         hit_cost: 0.2,
         rearm_s: 1.0,
+        lockout_s: 0.0,
         stagger_s: 0.8,
         swing_open_s: 0.25,
         counter_open_s: 1.0,
@@ -122,8 +123,8 @@ fn report_how_long_a_held_shield_survives_one_and_two_attackers() {
         let (nb, nd) = endure(Balance::demo().guard, n);
         let f = |v: Option<f32>| v.map_or("never (30 s+)".to_string(), |s| format!("{s:.1} s"));
         eprintln!("SHIELD {n} attacker(s): OLD guard breaks at {}, B dies at {} | NEW guard breaks at {}, B dies at {}", f(ob), f(od), f(nb), f(nd));
-        // the first demo build: 1 attacker broke the guard at 1.5 s and killed at 3.0 s; 2 attackers 1.5 s / 2.1 s
-        assert!(nb.map_or(true, |t| t >= 3.0), "the guard holds at least 3 s against {n} continuous attacker(s): {nb:?}");
+        // skill melee: the guard is short on purpose (2.5 s held, 20 % per blocked cut), but it must not fold instantly or hand over a kill
+        assert!(nb.map_or(true, |t| t >= 1.0), "the guard holds at least 1 s against {n} continuous attacker(s): {nb:?}");
         assert!(nd.map_or(true, |t| t >= 5.0), "and you survive at least 5 s behind it: {nd:?}");
     }
 }
