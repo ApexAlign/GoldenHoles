@@ -41,10 +41,10 @@ No window? `LAG=50:40:5 scripts/demo_headless.sh` runs the scripted clients thro
 
 ## Controls
 
-WASD move, mouse aim, Space jump (again = double jump), Shift dash, Q roll, C slide, W into a wall = wall-run,
+WASD move, mouse aim, Space jump (again = double jump), Shift dash, 4 roll, C slide, W into a wall = wall-run,
 **E** wrist grapple (hook the crosshair, E again releases), **N** floor/ramp and **M** wall (grid pieces: anyone can shoot
-or slice them apart), left click katana dash-slice, right click throw a shuriken (keep an enemy inside your view cone
-and a three-dot triangle locks on to them). Esc releases the mouse; click the window to grab it again (focus loss releases it too).
+or slice them apart), left click katana dash-slice, Q throw a shuriken, right click block (keep an enemy near the crosshair
+and a three-dot triangle locks on to them automatically). Esc releases the mouse; click the window to grab it again (focus loss releases it too).
 No bash (Windows PowerShell / macOS / Linux): plain cargo commands are in QUICKSTART.md, "Windows / macOS / Linux without bash".
 
 ## First 5 minutes: try each of these at least once

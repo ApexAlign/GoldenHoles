@@ -90,7 +90,7 @@ impl PowerHudFx {
                 };
                 let mine = *owner == local_id;
                 let line = if mine {
-                    if kind == 0 { "YUMI: HOLD RIGHT CLICK TO DRAW, RELEASE TO LOOSE".to_string() } else { "FUDA TAGS: RIGHT CLICK THROWS, AGAIN DETONATES".to_string() }
+                    if kind == 0 { "YUMI: HOLD LEFT CLICK TO DRAW, RELEASE TO LOOSE".to_string() } else { "FUDA TAGS: Q THROWS, AGAIN DETONATES".to_string() }
                 } else {
                     format!("{} TOOK {}", name(*owner), text)
                 };
@@ -328,7 +328,7 @@ mod tests {
         let p = Palette::TRON;
         let s = HudState {
             power: Some(PowerHud {
-                callouts: vec![Callout { text: "ECHO FOX TOOK THE YUMI".into(), age: 0.5, kind: 0, mine: false }, Callout { text: "FUDA TAGS: RIGHT CLICK THROWS".into(), age: CALLOUT_SECS - 0.1, kind: 1, mine: true }],
+                callouts: vec![Callout { text: "ECHO FOX TOOK THE YUMI".into(), age: 0.5, kind: 0, mine: false }, Callout { text: "FUDA TAGS: Q THROWS".into(), age: CALLOUT_SECS - 0.1, kind: 1, mine: true }],
                 ..Default::default()
             }),
             ..Default::default()

@@ -1,7 +1,7 @@
 # Stars: the standard star and the flash star
 
-Stars are a **close-range tool** (the bow is the long gun). Right click throws the **selected** star; **mouse wheel** or **R** switches
-between the two (Q is the roll). Holding right click is still the MARK star. Both draw on the same star energy pool (6 charges, lockout
+Stars are a **close-range tool** (the bow is the long gun). **Q** throws the **selected** star; **mouse wheel** or **R** switches
+between the two (4 is the roll, right click is block). Holding Q is still the MARK star. Both draw on the same star energy pool (6 charges, lockout
 when it cannot afford a plain star). Numbers live in Balance `combat.shuriken.*` and `combat.star.*`. The HUD selector under the pips
 shows the type, its cost, rings on the pips a throw spends, and a one-line blurb after a switch.
 
