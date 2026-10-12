@@ -21,6 +21,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 from lvl_lib import Level  # noqa: E402
 
 L = Level("SHINOBI FFA HIVE - a 56 x 56 m honeycomb shaft, 190 m tall, no ground (kill plane y=-20)")
@@ -258,6 +259,10 @@ for (k, x, z) in [(1, -24, 0), (2, -24, 13), (3, 22, -20), (4, 22, -20)]:
     L.weapon("tag", x, D[k] + 1.0, z)
 L.weapon("yumi", 0.0, CROWN_TOP + 1.0, 0.0)
 L.weapon("yumi", 0.0, BR7 + 0.3 + 1.0, 0.0)
+
+L.section("run walls: 6 m tall wall-run panels of 6 m concrete bricks (2 m thick), hook anchors beside them (destructible)")
+for _kind, _cx, _cy, _cz, _hx, _hy, _hz in runwalls.bricks("hive"):
+    L.block(_cx - _hx, _cx + _hx, _cy - _hy, _cy + _hy, _cz - _hz, _cz + _hz, "concrete" if _kind == "panel" else "steel")
 
 out = sys.argv[1] if len(sys.argv) > 1 else "levels/ffa_hive.lvl"
 L.write(out, header=[

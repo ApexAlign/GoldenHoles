@@ -6,7 +6,9 @@ Everything is authored for the Cyan half (z <= 0) and mirrored; boxes centred on
 Cfg limits used: single jump apex 1.6 m, jump + double jump ~2.8 m, autostep 0.35 m, wall-run 11 m/s for 1.5 s,
 ramps 20 deg (0.35 rad), grapple range 40 m, wall lane gap 5.6 m (proven in arena.lvl).
 """
-import math, os
+import math, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 
 HALF = 56.0      # playable half extent
 CEIL = 22.0
@@ -106,6 +108,11 @@ section("grapple anchors: hanging slabs at y=13 over the flank gap, 14 m pylons;
     box((22, 12, -22), (2.5, 0.4, 1.2)),
     box((30, 11, -24), (2.5, 0.4, 1.2)),   # over each lane mouth: swing out of the lane along its centre line
 ], mirror_z=True, mirror_x=True)
+
+# --- run walls: long tall wall-run panels with a hook anchor hung past one end of each (scripts/runwalls.py; both halves listed) ---
+section("run walls: 20 m x 7 m panels to wall-run, each with a hook anchor 8 m past its end and 2 m above its top", [
+    box((cx, cy, cz), (hx, hy, hz)) for _k, cx, cy, cz, hx, hy, hz in runwalls.boxes("8v8")
+], mirror_z=False)
 
 # --- spawns: 2 rows of 4 behind the front wall, mirrored for Orange ---
 CY = [(-15, -53), (-5, -53), (5, -53), (15, -53), (-18, -48), (-6, -48), (6, -48), (18, -48)]

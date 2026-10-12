@@ -21,7 +21,11 @@ Cfg limits used: step 0.35 m, ramps 24 degrees (slope limit 45), double jump ~2.
 Tests: crates/shinobi-sim/tests/arena_sky.rs, walkable.rs, crates/shinobi-ai/tests/sky.rs, sky_nav.rs
 """
 import math
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runwalls  # noqa: E402
 
 H = [24.0, 55.0, 86.0, 117.0]  # deck heights per tier
 ZC = [-75.0, -25.0, 25.0, 75.0]  # band centre z
@@ -367,6 +371,12 @@ for t in range(4):
     if t in by_tier:
         x, y, z = by_tier[t][len(by_tier[t]) // 2]
         pickups.append((x, y + 1.0, z, 25))
+
+# --------------------------------------------------------------------------------------------- run walls
+# long tall wall-run panels, each with a hook anchor 8 m past its end and 2 m above its top (scripts/runwalls.py); permanent
+section("run walls: 20 m x 7 m wall-run panels with a hook anchor beside each")
+for _kind, _cx, _cy, _cz, _hx, _hy, _hz in runwalls.boxes("sky"):
+    add(_cx, _cy, _cz, _hx, _hy, _hz)
 
 # --------------------------------------------------------------------------------------------- power-weapon pedestals
 # docs/powerups.md: two YUMI (digital bow) on the highest towers (the central spire and the east crown tower: grapple or wall-run
