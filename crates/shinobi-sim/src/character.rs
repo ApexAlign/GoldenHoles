@@ -332,6 +332,8 @@ pub struct PlayerInput {
     pub strike: bool,
     /// Fraction of the run speed taken away (0 = none): a drawn yumi walks at `1 - walk_slow` (`power.rs`).
     pub walk_slow: f32,
+    /// Fraction of the run speed added on top (0 = none): the flow streak's move-speed tier (`combat::flow`).
+    pub speed_boost: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -450,6 +452,12 @@ pub struct CharacterSystem {
     /// (`combat::katana`). Not on the wire: the server runs them continuously, a client restore leaves them as they are.
     pub hook_age: f32,
     pub walljump_age: f32,
+    /// Seconds since the last dash (not a ground roll) started (large = long ago). The flow streak (`combat::flow`)
+    /// reads this the same way the air-cut bonuses read `hook_age` / `walljump_age`. Not on the wire.
+    pub dash_age: f32,
+    /// Seconds since the last fresh wall-run entry (large = long ago; continuing an existing wall-run does not reset
+    /// it). Same purpose as `dash_age`. Not on the wire.
+    pub wallrun_age: f32,
 }
 
 /// Parented colliders only follow their body during `PhysicsPipeline::step`, which this sim never runs, so any
@@ -517,6 +525,8 @@ impl CharacterSystem {
             grapple_event: GrappleEvent::None,
             hook_age: 99.0,
             walljump_age: 99.0,
+            dash_age: 99.0,
+            wallrun_age: 99.0,
         }
     }
 
@@ -745,6 +755,8 @@ impl CharacterSystem {
         self.grapple_cd = (self.grapple_cd - dt).max(0.0);
         self.hook_age = (self.hook_age + dt).min(99.0);
         self.walljump_age = (self.walljump_age + dt).min(99.0);
+        self.dash_age = (self.dash_age + dt).min(99.0);
+        self.wallrun_age = (self.wallrun_age + dt).min(99.0);
         let dir_in = flat_norm(input.move_dir);
         if dir_in.norm_squared() > 0.0 {
             self.facing = dir_in;
@@ -782,6 +794,7 @@ impl CharacterSystem {
                     dir: d,
                 });
                 self.dash_cd = cfg.dash_cd;
+                self.dash_age = 0.0; // a dash (not a ground roll) is a flow move (`combat::flow`)
                 if let MoveState::WallRun { .. } = self.state {
                     self.state = MoveState::Airborne;
                 }
@@ -890,7 +903,9 @@ impl CharacterSystem {
                 self.vel.z = sl.dir.z * sl.speed;
             } else {
                 // horizontal accel: weighty on the ground (ramp up, hard brake on release / reversal), steering-only in the air
-                let target = dir_in * cfg.run_speed * (1.0 - input.walk_slow.clamp(0.0, 0.9));
+                // flow (`combat::flow`) adds a small fraction back on top of a drawn yumi's walk-slow, never below the plain run
+                let run_speed = cfg.run_speed * (1.0 - input.walk_slow.clamp(0.0, 0.9)) * (1.0 + input.speed_boost.max(0.0));
+                let target = dir_in * run_speed;
                 let h = flat(self.vel);
                 let delta = target - h;
                 let max = if grounded_state {
@@ -989,6 +1004,7 @@ impl CharacterSystem {
                         // snap to the run along the wall; a rising entry keeps (most of) its climb, a fall is eased
                         self.vel = t * cfg.wall_speed + up * (self.vel.y.max(-2.0) * 0.6) - n * cfg.wall_stick;
                         entered = true;
+                        self.wallrun_age = 0.0; // a fresh wall-run entry is a flow move (`combat::flow`)
                     }
                 }
                 if !entered {
@@ -1001,6 +1017,7 @@ impl CharacterSystem {
                             let t = if side < 0.0 { -t } else { t };
                             self.state = MoveState::WallRun { normal: n, tangent: t, time_left: cfg.wall_max_time };
                             self.vel = t * side.abs() + up * self.vel.y.max(cfg.wall_up_enter) - n * cfg.wall_stick;
+                            self.wallrun_age = 0.0; // a fresh wall-run entry is a flow move (`combat::flow`)
                         }
                     }
                 }

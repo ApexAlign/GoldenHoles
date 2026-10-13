@@ -631,6 +631,7 @@ impl HudBridge {
         hs.blind = (view.blind * self.blind_mult.unwrap_or(1.0)).clamp(0.0, 1.0);
         hs.dazed = view.dazed;
         hs.combo = f.combo;
+        hs.flow = f.flow;
         if view.star_refused {
             self.hints.trigger(crate::hud_energy::HintId::OutOfStars);
         }

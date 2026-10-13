@@ -130,6 +130,12 @@ box 0 20.35 42  3 0.35 1.5
 box 60 10 42  1.5 10 1.5
 box 60 20.35 42  3 0.35 1.5
 
+# --- flow chain: two small floating anchor plates between the central hook towers on each side row, so a hook -> hook -> hook run crosses a whole row (-60 -> -30 -> 0 -> 30 -> 60) without ever touching the ground ---
+box -30 25 -14  1.6 0.35 1.6
+box 30 25 -14  1.6 0.35 1.6
+box -30 25 14  1.6 0.35 1.6
+box 30 25 14  1.6 0.35 1.6
+
 # --- 17 spawns ---
 spawn -52 10.41 -56
 spawn 0 10.41 -56

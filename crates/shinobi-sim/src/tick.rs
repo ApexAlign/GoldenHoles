@@ -1103,6 +1103,7 @@ pub fn to_player_input_scaled(it: &PlayerIntent, draw_mult: f32) -> PlayerInput 
         grapple_aim: if it.zip { Some(view_dir(it.aim_yaw, it.aim_pitch)) } else { None },
         strike: false, // set by the katana (server) / predict_slice (client) when a swing launches
         walk_slow: if it.draw { 1.0 - draw_mult } else { 0.0 },
+        speed_boost: 0.0, // set by CombatSystem::update from the flow streak (combat::flow)
     }
 }
 
