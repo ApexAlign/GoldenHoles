@@ -694,6 +694,50 @@ mod tests {
         assert_eq!(player(&mut s, B).vitals.kill_streak, 0, "dying resets the streak");
     }
 
+    #[test]
+    fn a_ring_out_on_the_bounty_pays_the_bonus_too_but_a_self_inflicted_death_pays_nobody() {
+        // the bonus loop scans every kind of kill a bounty might die to, not just a weapon `PvpEvent::Kill`:
+        // a `PvpEvent::HazardKill` (ring-out, wall-splat, lightning...) credits a killer the same way.
+        let mut s = server(2);
+        // ring-out credit is a melee heightener (docs/melee.md), zero (off) in the plain test `Balance` so
+        // other tests keep their timing; turn it on here, the only thing this test is about.
+        s.balance.melee.ring_window_s = 3.0;
+        live(&mut s);
+        player(&mut s, B).vitals.kill_streak = cfg().bounty_streak;
+        let mut ev = Vec::new();
+        let grace = s.match_state.cfg.bounty_grace_ticks;
+        step(&mut s, 1 + grace, &mut ev);
+        assert!(s.match_state.bounty().map_or(false, |b| b.id == B && b.live));
+        let a_kills_before = player(&mut s, A).vitals.kills;
+
+        // A "just hit" B (the ring-out credit window, `melee.ring_ticks`) and B falls below the kill plane
+        let t = s.tick;
+        let bi = s.players.iter().position(|p| p.id == B).unwrap();
+        pvp::revive(&mut s.players[bi], &mut s.world, [0.0, pvp::KILL_PLANE_Y - 1.0, 0.0], t, 0);
+        s.players[bi].melee.last_hit = Some((A, t));
+        ev.clear();
+        step(&mut s, 2, &mut ev);
+
+        assert!(!player(&mut s, B).vitals.alive(), "the bounty fell");
+        let bonus = s.match_state.cfg.bounty_bonus_kills;
+        assert_eq!(player(&mut s, A).vitals.kills, a_kills_before + 1 + bonus, "ring-out pays the bounty bonus too");
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyKilled { killer: A, bounty: B, .. })));
+
+        // a fresh bounty, this time with nobody to credit: no bonus, no BountyKilled, just the clear
+        player(&mut s, A).vitals.kill_streak = cfg().bounty_streak;
+        ev.clear();
+        step(&mut s, 1 + grace, &mut ev);
+        assert!(s.match_state.bounty().map_or(false, |b| b.id == A && b.live));
+        let ai = s.players.iter().position(|p| p.id == A).unwrap();
+        pvp::revive(&mut s.players[ai], &mut s.world, [0.0, pvp::KILL_PLANE_Y - 1.0, 0.0], s.tick, 0);
+        s.players[ai].melee.last_hit = None; // nobody pushed them: a plain fall
+        ev.clear();
+        step(&mut s, 2, &mut ev);
+        assert!(!player(&mut s, A).vitals.alive());
+        assert!(!ev.iter().any(|e| matches!(e, MatchEvent::BountyKilled { .. })), "nobody to credit, no bonus");
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyCleared { id: A, .. })));
+    }
+
     fn tie_run(a_deaths: u16) -> Vec<MatchEvent> {
         let mut s = server(2);
         live(&mut s);

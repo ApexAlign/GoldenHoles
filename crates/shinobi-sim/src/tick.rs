@@ -874,19 +874,10 @@ impl Server {
                 }
             }
         }
-        // the bounty hits a touch harder while marked (docs/bounty.md): tense, not unkillable, and never
-        // changes anyone else's numbers.
+        // the bounty hits a touch harder while marked (docs/bounty.md): tense, not unkillable. Applied inside
+        // `apply_hits` itself, alongside momentum/streak, so it never punches through a raised shield either.
         let bounty_before = self.match_state.bounty();
-        if let Some(b) = bounty_before {
-            let mult = self.match_state.cfg.bounty_dmg_mult;
-            if mult > 1.0 {
-                for h in hits.iter_mut() {
-                    if matches!(h.cause, crate::pvp::Cause::Weapon(_)) && h.attacker == b.id {
-                        h.amount *= mult;
-                    }
-                }
-            }
-        }
+        let bounty_dmg = bounty_before.map(|b| (b.id, self.match_state.cfg.bounty_dmg_mult));
         // taking any damage breaks a cloak at once (cloak.rs): a stealth kill is a free first hit, not a free fight
         let cloak_cfg = self.balance.combat.cloak;
         for h in &hits {
@@ -897,7 +888,7 @@ impl Server {
             }
         }
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &self.balance.combat.cloak, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &self.balance.combat.cloak, bounty_dmg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {
@@ -915,9 +906,17 @@ impl Server {
                 if ricochet || wall_run {
                     self.kill_tags.push(KillTag { tick, killer, victim, ricochet, wall_run });
                 }
-                // the bounty just died: whoever landed the kill gets the bonus frags and the callout
-                // (`bounty_before` is the state as of the start of this tick, so a trade still pays out).
-                if bounty_before.map_or(false, |b| b.id == victim) && killer != victim {
+            }
+            // the bounty just died: whoever landed the kill gets the bonus frags and the callout, whether it
+            // was a weapon kill or a hazard one (ring-out, wall-splat, lightning...) a knockback credits the
+            // same way (`bounty_before` is the state as of the START of this tick, so a trade still pays out).
+            let killed = match *e {
+                PvpEvent::Kill { tick, killer, victim, .. } => Some((tick, killer, victim)),
+                PvpEvent::HazardKill { tick, killer: Some(killer), victim, .. } => Some((tick, killer, victim)),
+                _ => None,
+            };
+            if let Some((tick, killer, victim)) = killed {
+                if killer != victim && bounty_before.map_or(false, |b| b.id == victim) {
                     let bonus = self.match_state.cfg.bounty_bonus_kills;
                     if let Some(k) = self.players.iter_mut().find(|p| p.id == killer) {
                         k.vitals.kills = k.vitals.kills.saturating_add(bonus);

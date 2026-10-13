@@ -21,12 +21,17 @@ like kills and deaths do.
    for — becoming the bounty is not an instant ambush. After the window elapses the marker goes **live**
    map-wide (`MatchEvent::BountyLive`).
 4. **The buff.** While marked (grace or live), the bounty's own outgoing weapon damage is multiplied by
-   `match.bounty_dmg_mult` (default **1.1**, i.e. +10%). Deliberately modest: tense, not a free pass. It never
-   touches anyone else's numbers and never changes the base combat constants (parry, guard, combo, cloak, bow).
+   `match.bounty_dmg_mult` (default **1.1**, i.e. +10%), applied in `pvp::apply_hits` in the same place and
+   under the same condition as the existing momentum/kill-streak bonus: only against an open target. A raised
+   shield (block or parry) is judged on the base cut, same as it already is against momentum — the bounty buff
+   never punches through it either. Deliberately modest: tense, not a free pass. It never touches anyone else's
+   numbers and never changes the base combat constants (parry, guard, combo, cloak, bow).
 5. **Cashing in.** Killing the bounty grants the killer `match.bounty_bonus_kills` (default **1**) extra frags on
-   top of the normal +1 for any kill, plus a `MatchEvent::BountyKilled { killer, bounty }` for the announcer log
-   / kill feed. The bounty's own death (by anyone, including themself falling off the map) clears the title the
-   same tick via the normal streak reset.
+   top of the normal +1, plus a `MatchEvent::BountyKilled { killer, bounty }` for the announcer log / kill feed.
+   This fires for a hazard kill too (ring-out, wall-splat, lightning...) — anything that already credits a
+   killer the normal way. A kill with nobody credited (self-inflicted, environmental) clears the title the same
+   way any death does, but pays no bonus to anyone, matching the server's own normal-kill crediting rule. The
+   bounty's own death (by anyone) clears the title the same tick via the normal streak reset.
 6. **Clearing.** The title clears when the bounty dies, disconnects, the match leaves Live (warmup/intermission),
    or `match.bounty_streak` is set to 0 (off). As soon as it clears, whoever next reaches the streak threshold
    becomes the new bounty — there is always at most one at a time.
@@ -59,8 +64,8 @@ the exact byte layout.
 
 ## Bots
 
-`shinobi-ai` bots get a tiered, per-tick chance to break off their normal nearest/weakest-enemy target and go
-hunt the current bounty instead (`SkillParams::bounty_hunt_skill`, mirroring `parry_skill` / `cloak_skill`):
+`shinobi-ai` bots get a tiered chance to break off their normal nearest/weakest-enemy target and go hunt the
+current bounty instead (`SkillParams::bounty_hunt_skill`, mirroring `parry_skill` / `cloak_skill`):
 
 | Tier | `bounty_hunt_skill` |
 |---|---|
@@ -68,18 +73,25 @@ hunt the current bounty instead (`SkillParams::bounty_hunt_skill`, mirroring `pa
 | Normal | 0.5 |
 | Hard | 0.85 |
 
-The roll (`host::think_all`) only fires while the bounty is alive and inside the bot's normal reachable target
-pool (so it respects the usual team / warmup-engager-cap filtering), and is a pure function of
-`(seed, bot id, tick)` — a replay reproduces the same decisions.
+The roll (`host::think_all`) only fires once the bounty is **live** (never during the grace window — bots know
+no more than any other player does) and the bounty is inside the bot's normal reachable target pool (so it
+respects the usual team / warmup-engager-cap filtering). It is rolled **once per bounty instance**, not once
+per tick: the seed is `(bot's seed, bot id, the tick the bounty went live)`, so every bot commits or doesn't for
+that bounty's whole run, deterministically and reproducibly from a replay. A per-tick roll would have made the
+tiers meaningless — even an Easy bot's 0.2 chance fails for a full second with probability 0.8^60 ~ 1e-6, so
+everyone would converge on the bounty within about a second regardless of skill.
 
 ## HUD
 
 * The bounty's own screen gets `"MARKED AS BOUNTY"` during the grace window, then `"YOU ARE THE BOUNTY"` once
-  live (pulsing gold).
-* Everyone else sees `"BOUNTY: <callsign>"` once live, plus a small beacon chevron riding the compass strip at
-  the bounty's bearing (or a `<<`/`>>` edge chevron when they're outside the visible 120-degree window) — the
-  same "always know roughly where" treatment the compass already gives cardinal directions.
-* The kill feed tags the row **BOUNTY DOWN** when the bounty falls, independent of who got the kill.
+  live (pulsing gold). Nobody else sees anything until the grace window elapses — that is the whole point of the
+  window.
+* Everyone else sees `"BOUNTY: <callsign>"` once live, plus a small two-line beacon caret riding the compass
+  strip at the bounty's bearing (or a `<<`/`>>` edge chevron, both in the HUD's own bitmap font, when they're
+  outside the visible 120-degree window) — the same "always know roughly where" treatment the compass already
+  gives cardinal directions.
+* The kill feed tags the row **BOUNTY DOWN** when the bounty falls to an actual killer (a self-inflicted or
+  environmental death still clears the title but draws a plain void row, matching that it pays no bonus).
 
 All derived client-side from the `Board` fields above plus whatever position the client already has for that
 player id this frame (no extra wire cost for the beacon itself).
@@ -87,7 +99,8 @@ player id this frame (no extra wire cost for the beacon itself).
 ## Tests
 
 * `crates/shinobi-sim/src/match_state.rs` (`#[cfg(test)] mod tests`): streak -> marked -> grace -> live,
-  bonus-on-kill, clear-on-death, and the "off when `bounty_streak == 0`" case.
+  bonus-on-kill (a real katana kill through the full `Server`), bonus-on-ring-out (a hazard kill, same bonus,
+  plus the no-killer case that pays nobody), clear-on-death, and the "off when `bounty_streak == 0`" case.
 * `crates/shinobi-proto/src/gameplay.rs`: `Board` round-trips `bounty` / `bounty_live` (including the
   marked-but-not-live case).
 * `crates/shinobi-ai/src/skill.rs`: `bounty_hunt_skill` climbs with the tier like every other skill number.

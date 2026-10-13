@@ -296,6 +296,10 @@ pub fn apply_hits(
     block: &crate::block::BlockCfg,
     melee: &crate::melee::MeleeCfg,
     cloak: &crate::cloak::CloakCfg,
+    // `(bounty's player id, damage multiplier)` while a BOUNTY is marked (docs/bounty.md); `None` or a
+    // multiplier of 1 is a no-op. Applied the same place momentum/streak are: only against an open target,
+    // same as the comment above says of those -- a shield is judged on the base cut, never on a bonus.
+    bounty: Option<(u16, f32)>,
     out: &mut Vec<PvpEvent>,
 ) {
     let mut died: Vec<usize> = Vec::new();
@@ -377,6 +381,11 @@ pub fn apply_hits(
                 }
                 crate::block::Guard::None => {
                     amount *= mom;
+                    if let Some((id, mult)) = bounty {
+                        if h.attacker == id && mult > 1.0 {
+                            amount *= mult;
+                        }
+                    }
                     let (mercy, open, stunned, vhp, vmax) = {
                         let v = &players[h.victim];
                         (v.blk.mercy(tick), v.blk.open(tick), v.blk.staggered(tick), v.vitals.hp, v.vitals.max_hp)

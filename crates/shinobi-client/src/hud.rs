@@ -1518,18 +1518,25 @@ fn bounty_banner(out: &mut Vec<Prim>, b: &Option<BountyHud>, time: f32, p: &Pale
         out.push(Prim::Text { pos: (0.5, 0.11), text: text.into(), size: 0.026, color: p.gold.a(pulse), align: Align::Center });
         return;
     }
-    out.push(Prim::Text { pos: (0.5, 0.11), text: format!("BOUNTY: {}", b.name), size: 0.02, color: p.magenta.a(0.85), align: Align::Center });
+    // nobody but the bounty themselves (handled above) sees anything until the grace window elapses: that's
+    // the point of the grace window (docs/bounty.md) — becoming the bounty is not an instant, visible ambush.
     if !b.live {
         return;
     }
+    out.push(Prim::Text { pos: (0.5, 0.11), text: format!("BOUNTY: {}", b.name), size: 0.02, color: p.magenta.a(0.85), align: Align::Center });
     let Some(bearing) = b.bearing else { return };
     let (x0, x1, span_deg) = (0.36f32, 0.64f32, 120.0f32);
     let deg = bearing.to_degrees();
     if deg.abs() <= span_deg * 0.5 {
+        // a small downward caret, same two-line construction as the compass's own heading caret (no glyph:
+        // the HUD font is a 5x7 bitmap set of ASCII, and an unmapped char would just draw "?").
         let x = 0.5 + deg * (x1 - x0) / span_deg;
-        out.push(Prim::Text { pos: (x, 0.034), text: "\u{25BC}".into(), size: 0.018, color: p.magenta.a(0.95), align: Align::Center });
+        let col = p.magenta.a(0.95);
+        out.push(Prim::Line { a: (x - 0.006 * ax(), 0.028), b: (x, 0.036), color: col, glow: 0.003 });
+        out.push(Prim::Line { a: (x + 0.006 * ax(), 0.028), b: (x, 0.036), color: col, glow: 0.003 });
     } else {
-        // off the visible compass window: a chevron at the near edge says which way to turn
+        // off the visible compass window: a chevron at the near edge says which way to turn ('<' / '>' are
+        // in the bitmap font)
         let (x, glyph) = if deg > 0.0 { (x1, ">>") } else { (x0, "<<") };
         out.push(Prim::Text { pos: (x, 0.034), text: glyph.into(), size: 0.016, color: p.magenta.a(0.8), align: Align::Center });
     }

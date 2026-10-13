@@ -541,14 +541,19 @@ impl BotHost {
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let prev = self.sticky.iter().find(|s| s.0 == b.id).map(|s| s.1);
             let prev_cost = prev.and_then(|id| pool.iter().find(|p| p.id == id).map(|p| (cost(p), id)));
-            // BOUNTY awareness (docs/bounty.md): a bot in reach of the bounty has a skill-tiered, per-tick
-            // chance to break off its normal (sticky, nearest/weakest) pick and go hunt them instead. Rolled
-            // deterministically from (seed, bot, tick) so a replay reproduces the same decisions.
-            let bounty = server
-                .match_state
-                .bounty_id()
-                .filter(|id| pool.iter().any(|p| p.id == *id))
-                .filter(|_| crate::rng::Rng::new(b.seed, b.id, tick, 42).chance(b.skill.bounty_hunt_skill));
+            // BOUNTY awareness (docs/bounty.md): once the marker is live (never during the grace window —
+            // nobody but the bounty themselves knows yet), a bot in reach has a skill-tiered chance to break
+            // off its normal (sticky, nearest/weakest) pick and go hunt them instead. One roll per bounty
+            // *instance*, seeded by (seed, bot, the tick they went live), not per tick: a per-tick roll would
+            // all but guarantee every bot commits within a second regardless of tier (0.8^60 ~ 1e-6), making
+            // the skill tiers meaningless and the bounty a death sentence rather than a tense target.
+            let bounty = server.match_state.bounty().filter(|bt| bt.live).and_then(|bt| {
+                pool.iter()
+                    .any(|p| p.id == bt.id)
+                    .then(|| crate::rng::Rng::new(b.seed, b.id, bt.since, 42).chance(b.skill.bounty_hunt_skill))
+                    .filter(|hunt| *hunt)
+                    .map(|_| bt.id)
+            });
             let pick = match (bounty, prev_cost, best) {
                 (Some(bid), _, _) => Some(bid),
                 (None, Some((dp, ip)), Some((db, _))) if db >= dp * self.cfg.target_stickiness => Some(ip),

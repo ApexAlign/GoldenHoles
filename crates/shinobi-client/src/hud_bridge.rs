@@ -271,8 +271,10 @@ impl HudBridge {
             if let Some(mut k) = KillEntry::from_net(e, local_id, name) {
                 // the bounty as of the START of this frame (before `view.board`'s fresher value below): a
                 // kill that drops the bounty still gets tagged even though the board already cleared it.
-                if let shinobi_sim::events::NetEvent::Kill { victim, .. } = e {
-                    k.bounty = self.bounty_seen.is_some_and(|(id, _)| id == *victim);
+                if let shinobi_sim::events::NetEvent::Kill { killer, victim, .. } = e {
+                    // a self-inflicted / environmental death (no killer) pays no bonus server-side either;
+                    // keep the row a plain void kill rather than implying a takedown nobody gets credit for.
+                    k.bounty = *killer != 0 && *killer != *victim && self.bounty_seen.is_some_and(|(id, _)| id == *victim);
                 }
                 if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&teams, e) {
                     k.killer_team = (!k.void).then(|| t.team_of.get(killer).copied()).flatten();
