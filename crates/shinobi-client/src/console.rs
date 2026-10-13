@@ -299,7 +299,7 @@ mod tests {
         assert!(c.log().any(|l| l.starts_with("your colour #") && l.len() == "your colour #RRGGBB".len()));
         run(&mut c, &mut s, "/nope");
         assert!(c.log().any(|l| l.contains("unknown command")));
-        let k = KillEntry { killer: "A".into(), victim: "B".into(), weapon: shinobi_sim::combat::DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
+        let k = KillEntry { killer: "A".into(), victim: "B".into(), weapon: shinobi_sim::combat::DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false };
         let (_, out) = exec("log", &mut s, &[k], 0);
         assert_eq!(out, vec!["A > B".to_string()]);
         c.clear();

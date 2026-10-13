@@ -184,6 +184,11 @@ pub struct Board {
     /// 0 = none / draw.
     pub winner: u16,
     pub rows: Vec<BoardRow>,
+    /// Current BOUNTY (docs/bounty.md), 0 = none. Visible to everyone, not just nearby players, so the HUD
+    /// can draw a persistent marker / compass beacon map-wide.
+    pub bounty: u16,
+    /// The bounty's grace window has elapsed: the marker is live (meaningless while `bounty == 0`).
+    pub bounty_live: bool,
 }
 
 impl Board {
@@ -203,6 +208,10 @@ impl Board {
             w.write_varint(row.kills as u32);
             w.write_varint(row.deaths as u32);
             w.write_bool(row.alive);
+        }
+        w.write_bits(self.bounty as u32, 16);
+        if self.bounty != 0 {
+            w.write_bool(self.bounty_live);
         }
         w.finish()
     }
@@ -229,7 +238,9 @@ impl Board {
                 alive: r.read_bool()?,
             });
         }
-        Ok(Self { phase, map, ticks_left, winner, rows })
+        let bounty = r.read_bits(16)? as u16;
+        let bounty_live = if bounty != 0 { r.read_bool()? } else { false };
+        Ok(Self { phase, map, ticks_left, winner, rows, bounty, bounty_live })
     }
 }
 
@@ -283,6 +294,8 @@ mod tests {
             ticks_left: Some(5400),
             winner: 0,
             rows: (1..=16u8).map(|id| BoardRow { id, kills: id as u16 * 3, deaths: id as u16, alive: id % 2 == 0 }).collect(),
+            bounty: 7,
+            bounty_live: true,
         };
         let bytes = b.encode();
         assert!(bytes.len() < 200, "16-player board fits the u8 length: {}", bytes.len());
@@ -290,5 +303,8 @@ mod tests {
         let none = Board { phase: PHASE_WARMUP, ..Default::default() };
         assert_eq!(Board::decode(&none.encode()).unwrap(), none);
         assert!(Board::decode(&[0xff]).is_err());
+        // marked but not live yet: the live bit still rides the wire (false) so the reader never desyncs
+        let marked = Board { bounty: 4, bounty_live: false, ..Default::default() };
+        assert_eq!(Board::decode(&marked.encode()).unwrap(), marked);
     }
 }

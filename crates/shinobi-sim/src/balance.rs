@@ -437,6 +437,14 @@ pub struct MatchBalance {
     pub min_players: u32,
     /// 0 = deathmatch, 1 = co-op waves, 2 = training dummies.
     pub mode: u32,
+    /// Consecutive kills that marks a player as the BOUNTY (docs/bounty.md). 0 = off.
+    pub bounty_streak: u32,
+    /// Grace ticks between being marked and the marker going live map-wide.
+    pub bounty_grace_ticks: u32,
+    /// Extra frags for killing the bounty, on top of the usual +1.
+    pub bounty_bonus_kills: u32,
+    /// Damage multiplier on the bounty's own hits while marked.
+    pub bounty_dmg_mult: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -636,6 +644,10 @@ impl Default for Balance {
                 frag_limit: m.frag_limit as u32,
                 min_players: m.min_players as u32,
                 mode: 0,
+                bounty_streak: m.bounty_streak as u32,
+                bounty_grace_ticks: m.bounty_grace_ticks,
+                bounty_bonus_kills: m.bounty_bonus_kills as u32,
+                bounty_dmg_mult: m.bounty_dmg_mult,
             },
             enemy: EnemyBalance {
                 grunt: EnemyStats {
@@ -1004,6 +1016,10 @@ impl Balance {
                 2 => GameMode::Training,
                 _ => GameMode::Deathmatch,
             },
+            bounty_streak: m.bounty_streak.min(u16::MAX as u32) as u16,
+            bounty_grace_ticks: m.bounty_grace_ticks,
+            bounty_bonus_kills: m.bounty_bonus_kills.min(u16::MAX as u32) as u16,
+            bounty_dmg_mult: m.bounty_dmg_mult,
         }
     }
 }
@@ -1273,6 +1289,10 @@ impl Balance {
         s!("match.frag_limit", U, self.matches.frag_limit);
         s!("match.min_players", U, self.matches.min_players);
         s!("match.mode", U, self.matches.mode);
+        s!("match.bounty_streak", U, self.matches.bounty_streak);
+        s!("match.bounty_grace_ticks", U, self.matches.bounty_grace_ticks);
+        s!("match.bounty_bonus_kills", U, self.matches.bounty_bonus_kills);
+        s!("match.bounty_dmg_mult", F, self.matches.bounty_dmg_mult);
 
         s!("enemy.patrol_radius", F, self.enemy.patrol_radius);
         s!("enemy.idle_min_ticks", U, self.enemy.idle_min_ticks);
@@ -1456,6 +1476,9 @@ impl Balance {
         }
         if self.matches.mode > 2 {
             e.push("match.mode must be 0 (deathmatch), 1 (waves) or 2 (training)".into());
+        }
+        if self.matches.bounty_dmg_mult < 1.0 {
+            e.push("match.bounty_dmg_mult must be >= 1 (it is a bonus, not a penalty)".into());
         }
         if self.enemy.max_alive == 0 {
             e.push("enemy.max_alive must be >= 1".into());

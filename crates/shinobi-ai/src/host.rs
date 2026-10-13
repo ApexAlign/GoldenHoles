@@ -533,8 +533,28 @@ impl BotHost {
                 // everybody is unreachable: fall back to the nearest anyway (the bot still faces and shoots them)
                 pool = world.players.iter().filter(|p| p.alive && p.id != b.id && !allied(me.team, p.team)).collect();
             }
-            // wounded targets look closer: cost = distance scaled from 0.6x (nearly dead) to 1.0x (full health)
-            let cost = |p: &PlayerView| (p.pos - me.pos).norm() * (0.6 + 0.4 * p.hp_frac);
+            // BOUNTY awareness (docs/bounty.md): once the marker is live (never during the grace window --
+            // nobody but the bounty themselves knows yet), a bot in reach has a skill-tiered chance to commit
+            // to hunting them for the rest of this bounty's run. One roll per bounty *instance*, seeded by
+            // (seed, bot, the tick they were marked), not per tick: a per-tick roll would all but guarantee
+            // every bot commits within a second regardless of tier (0.8^60 ~ 1e-6), making the skill tiers
+            // meaningless and the bounty a death sentence rather than a tense target.
+            let hunted_id = server.match_state.bounty().filter(|bt| bt.live).and_then(|bt| {
+                pool.iter()
+                    .any(|p| p.id == bt.id)
+                    .then(|| crate::rng::Rng::new(b.seed, b.id, bt.since, 42).chance(b.skill.bounty_hunt_skill))
+                    .filter(|hunt| *hunt)
+                    .map(|_| bt.id)
+            });
+            // wounded targets look closer: cost = distance scaled from 0.6x (nearly dead) to 1.0x (full health).
+            // A committed hunter sees the bounty as half as far: a strong pull, not a hard override, so a bot
+            // does not take a suicidal detour across a chasm for a bounty standing right next to a normal,
+            // reachable target -- the nav grid / `pool` reachability filter above still decides what is safe to
+            // walk to at all.
+            let cost = |p: &PlayerView| {
+                let base = (p.pos - me.pos).norm() * (0.6 + 0.4 * p.hp_frac);
+                if hunted_id == Some(p.id) { base * 0.5 } else { base }
+            };
             let best = pool
                 .iter()
                 .map(|p| (cost(p), p.id))

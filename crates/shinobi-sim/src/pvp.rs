@@ -36,6 +36,9 @@ pub struct Vitals {
     pub max_hp: f32,
     pub kills: u16,
     pub deaths: u16,
+    /// Consecutive kills without dying since the last respawn; reset to 0 on death. Drives the BOUNTY system
+    /// (docs/bounty.md, `MatchState::update_bounty`); not a network field by itself (the bounty id is).
+    pub kill_streak: u16,
     /// `Some(t)`: dead, respawns at tick `t`.
     pub dead_until_tick: Option<u32>,
     /// Damage-immune while `tick < invuln_until_tick`.
@@ -133,6 +136,7 @@ pub fn new_vitals(world: &mut PhysicsWorld, cfg: &Cfg, id: u16, spawn: [f32; 3],
         max_hp,
         kills: 0,
         deaths: 0,
+        kill_streak: 0,
         dead_until_tick: None,
         invuln_until_tick: 0,
         last_damage_tick: 0,
@@ -292,6 +296,10 @@ pub fn apply_hits(
     block: &crate::block::BlockCfg,
     melee: &crate::melee::MeleeCfg,
     cloak: &crate::cloak::CloakCfg,
+    // `(bounty's player id, damage multiplier)` while a BOUNTY is marked (docs/bounty.md); `None` or a
+    // multiplier of 1 is a no-op. Applied the same place momentum/streak are: only against an open target,
+    // same as the comment above says of those -- a shield is judged on the base cut, never on a bonus.
+    bounty: Option<(u16, f32)>,
     out: &mut Vec<PvpEvent>,
 ) {
     let mut died: Vec<usize> = Vec::new();
@@ -373,6 +381,11 @@ pub fn apply_hits(
                 }
                 crate::block::Guard::None => {
                     amount *= mom;
+                    if let Some((id, mult)) = bounty {
+                        if h.attacker == id && mult > 1.0 {
+                            amount *= mult;
+                        }
+                    }
                     let (mercy, open, stunned, vhp, vmax) = {
                         let v = &players[h.victim];
                         (v.blk.mercy(tick), v.blk.open(tick), v.blk.staggered(tick), v.vitals.hp, v.vitals.max_hp)
@@ -477,6 +490,7 @@ pub fn apply_hits(
         if dead {
             if let Some(k) = killer {
                 players[k].vitals.kills = players[k].vitals.kills.saturating_add(1);
+                players[k].vitals.kill_streak = players[k].vitals.kill_streak.saturating_add(1);
                 // a killer who died this same frame (trade, or killed earlier in the hit list) gets no heal: it would
                 // raise the hp of a corpse
                 if matches!(h.cause, Cause::Weapon(DamageKind::Slash)) && !died.contains(&k) && players[k].vitals.alive() {
@@ -490,6 +504,7 @@ pub fn apply_hits(
     for v in died {
         let p = &mut players[v];
         p.vitals.deaths = p.vitals.deaths.saturating_add(1);
+        p.vitals.kill_streak = 0;
         p.vitals.dead_until_tick = Some(tick + respawn_ticks);
         p.ch.vel = Vector::zeros();
         p.ch.clear_grapple();
@@ -1022,7 +1037,7 @@ mod regen_tests {
     use super::*;
 
     fn hurt(hp: f32, last: u32) -> Vitals {
-        Vitals { hp, max_hp: 100.0, kills: 0, deaths: 0, dead_until_tick: None, invuln_until_tick: 0, last_damage_tick: last, spawn: [0.0; 3], hitbox: ColliderHandle::invalid() }
+        Vitals { hp, max_hp: 100.0, kills: 0, deaths: 0, kill_streak: 0, dead_until_tick: None, invuln_until_tick: 0, last_damage_tick: last, spawn: [0.0; 3], hitbox: ColliderHandle::invalid() }
     }
 
     #[test]
