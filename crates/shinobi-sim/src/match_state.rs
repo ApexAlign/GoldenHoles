@@ -610,6 +610,90 @@ mod tests {
         assert!(matches!(s.match_state.phase, Phase::Warmup { .. }));
     }
 
+    #[test]
+    fn bounty_marks_at_the_streak_threshold_goes_live_after_grace_and_clears_off_live() {
+        let mut s = server(2);
+        // below the threshold: no bounty yet, even once Live
+        player(&mut s, A).vitals.kill_streak = cfg().bounty_streak - 1;
+        let mut ev = Vec::new();
+        live(&mut s);
+        step(&mut s, 1, &mut ev);
+        assert!(s.match_state.bounty().is_none(), "below the streak threshold");
+
+        player(&mut s, A).vitals.kill_streak = cfg().bounty_streak;
+        ev.clear();
+        step(&mut s, 1, &mut ev);
+        let b = s.match_state.bounty().expect("crossed the threshold");
+        assert_eq!(b.id, A);
+        assert!(!b.live, "grace window hasn't elapsed yet");
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyMarked { id: A, .. })));
+        assert!(s.match_state.bounty_id() == Some(A));
+
+        // grace elapses: the marker goes live
+        let grace = s.match_state.cfg.bounty_grace_ticks;
+        step(&mut s, grace, &mut ev);
+        assert!(s.match_state.bounty().unwrap().live);
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyLive { id: A, .. })));
+
+        // leaving Live (frag-limit end -> Intermission) clears it even without a death
+        player(&mut s, A).vitals.kills = cfg().frag_limit; // ends the match this tick
+        ev.clear();
+        step(&mut s, 2, &mut ev);
+        assert!(s.match_state.frozen());
+        assert!(s.match_state.bounty().is_none());
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyCleared { id: A, .. })));
+    }
+
+    #[test]
+    fn bounty_streak_zero_disables_the_whole_system() {
+        let mut s = server(2);
+        s.match_state.cfg.bounty_streak = 0;
+        live(&mut s);
+        player(&mut s, A).vitals.kill_streak = 99;
+        let mut ev = Vec::new();
+        step(&mut s, 5, &mut ev);
+        assert!(s.match_state.bounty().is_none());
+        assert!(!ev.iter().any(|e| matches!(e, MatchEvent::BountyMarked { .. })));
+    }
+
+    #[test]
+    fn killing_the_live_bounty_grants_the_bonus_frag_and_clears_the_title() {
+        // A faces -Z by default; B sits at the edge of slice reach (lunge + blade), the same 4.8 m pvp.rs's
+        // own `slice_kills_then_victim_respawns...` test lands a cut from.
+        let mut s = Server::new(Cfg::default());
+        s.add_static_box([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]);
+        s.set_spawns(vec![[-20.0, 0.81, 0.0], [20.0, 0.81, 0.0]]);
+        s.match_state = MatchState::new(cfg());
+        s.add_player(A, [0.0, 0.81, 0.0]);
+        s.add_player(B, [0.0, 0.81, -4.8]);
+        live(&mut s); // spawn selection scatters everyone onto the two spawn points above; bring them back
+        let tick = s.tick;
+        let ai = s.players.iter().position(|p| p.id == A).unwrap();
+        pvp::revive(&mut s.players[ai], &mut s.world, [0.0, 0.81, 0.0], tick, 0);
+        let bi = s.players.iter().position(|p| p.id == B).unwrap();
+        pvp::revive(&mut s.players[bi], &mut s.world, [0.0, 0.81, -4.8], tick, 0);
+        player(&mut s, B).vitals.kill_streak = cfg().bounty_streak; // B is the bounty, in A's line of sight
+        let mut ev = Vec::new();
+        let grace = s.match_state.cfg.bounty_grace_ticks;
+        step(&mut s, 1 + grace, &mut ev);
+        assert!(s.match_state.bounty().map_or(false, |b| b.id == B && b.live), "B is the live bounty");
+        let a_kills_before = player(&mut s, A).vitals.kills;
+
+        let t = s.tick;
+        let it = PlayerIntent { tick: t, buttons: Buttons(Buttons::SLICE), aim_pitch: PITCH_LEVEL, ..Default::default() };
+        s.ingest(A, &ClientPacket { ack_snapshot_tick: t, intents: vec![it], ..Default::default() }.encode().unwrap());
+        ev.clear();
+        step(&mut s, 5, &mut ev);
+
+        assert!(!player(&mut s, B).vitals.alive(), "the bounty died");
+        let bonus = s.match_state.cfg.bounty_bonus_kills;
+        assert_eq!(player(&mut s, A).vitals.kills, a_kills_before + 1 + bonus, "the normal +1 plus the bounty bonus");
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyKilled { killer: A, bounty: B, .. })));
+        assert!(ev.iter().any(|e| matches!(e, MatchEvent::BountyCleared { id: B, .. })));
+        assert!(s.match_state.bounty().is_none());
+        assert_eq!(player(&mut s, B).vitals.kill_streak, 0, "dying resets the streak");
+    }
+
     fn tie_run(a_deaths: u16) -> Vec<MatchEvent> {
         let mut s = server(2);
         live(&mut s);
