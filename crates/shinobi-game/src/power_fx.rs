@@ -47,11 +47,21 @@ struct ArrowSlot {
 }
 
 struct DrawSlot {
+    /// Dim limb body (the taper from riser to tips), additive so it never occludes the edge strip in front of it.
     bow: [Entity; BOW_SEGS],
+    /// Bright neon strip along the outer (forward-facing) curve of each limb segment.
+    edge: [Entity; BOW_SEGS],
+    /// Dark matte grip/riser block at the centre.
+    riser: Entity,
+    /// Small bright caps at the two limb tips.
+    tips: [Entity; 2],
     string: [Entity; 2],
     arrow: Entity,
     laser: Entity,
+    /// Bright material: edge strip, tips, string, arrow.
     mat: Handle<StandardMaterial>,
+    /// Dim material: the limb body panels.
+    body_mat: Handle<StandardMaterial>,
     laser_mat: Handle<StandardMaterial>,
 }
 
@@ -112,6 +122,11 @@ impl Plugin for PowerFxPlugin {
 
 fn glow(mats: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
     mats.add(StandardMaterial { base_color: Color::BLACK, unlit: true, alpha_mode: AlphaMode::Add, double_sided: true, cull_mode: None, ..default() })
+}
+
+/// A dark, non-glowing, opaque material: the bow's riser/grip block (never tinted per-frame).
+fn matte(mats: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
+    mats.add(StandardMaterial { base_color: Color::linear_rgb(0.035, 0.035, 0.045), unlit: true, alpha_mode: AlphaMode::Opaque, double_sided: true, cull_mode: None, ..default() })
 }
 
 fn hidden(commands: &mut Commands, mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>) -> Entity {
@@ -206,13 +221,19 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let draws = (0..DRAWS)
         .map(|_| {
             let mat = glow(&mut mats);
+            let body_mat = glow(&mut mats);
+            let riser_mat = matte(&mut mats);
             let laser_mat = glow(&mut mats);
             DrawSlot {
-                bow: std::array::from_fn(|_| hidden(&mut commands, &unit, &mat)),
+                bow: std::array::from_fn(|_| hidden(&mut commands, &unit, &body_mat)),
+                edge: std::array::from_fn(|_| hidden(&mut commands, &unit, &mat)),
+                riser: hidden(&mut commands, &unit, &riser_mat),
+                tips: std::array::from_fn(|_| hidden(&mut commands, &sphere, &mat)),
                 string: std::array::from_fn(|_| hidden(&mut commands, &unit, &mat)),
                 arrow: hidden(&mut commands, &unit, &mat),
                 laser: hidden(&mut commands, &unit, &laser_mat),
                 mat,
+                body_mat,
                 laser_mat,
             }
         })
@@ -342,10 +363,30 @@ fn update_arrows(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut
 
 /// The bow of a drawer: 9 limb points in the plane of `up` and `dir`, bulging toward the target.
 pub fn bow_points(centre: Vec3, up: Vec3, dir: Vec3) -> [Vec3; BOW_SEGS + 1] {
+    bow_points_flexed(centre, up, dir, 1.0)
+}
+
+/// Same shape as `bow_points`, with the forward bulge scaled by `bend` (>1 flexes the recurve limbs further
+/// forward): used so the bow visibly flexes more the further it's drawn back. On top of the broad mid-limb belly,
+/// a small extra forward flick kicks in past `|t| > 0.78` (the "ears" curling toward the target at the tips),
+/// so the silhouette reads as a recurve rather than a plain arc. The flick is identical at both tips, so it cancels
+/// out of the tip-to-tip distance and doesn't disturb `the_bow_bulges_toward_the_target_and_its_tips_are_a_metre_apart`.
+pub fn bow_points_flexed(centre: Vec3, up: Vec3, dir: Vec3, bend: f32) -> [Vec3; BOW_SEGS + 1] {
     std::array::from_fn(|k| {
         let t = -1.0 + 2.0 * k as f32 / BOW_SEGS as f32;
-        centre + up * (t * 0.5) + dir * (0.14 * (1.0 - t * t))
+        let belly = 1.0 - t * t;
+        let flick = (0.35 * ((t.abs() - 0.78) / 0.22).clamp(0.0, 1.0)).powi(2);
+        centre + up * (t * 0.5) + dir * (bend * (0.14 * belly + 0.085 * flick))
     })
+}
+
+/// Limb thickness profile 0..1 at the midpoint of segment `si` of `BOW_SEGS`: thick at the riser, tapering to a
+/// sharp point at the tips.
+fn limb_profile(si: usize) -> f32 {
+    let t0 = -1.0 + 2.0 * si as f32 / BOW_SEGS as f32;
+    let t1 = -1.0 + 2.0 * (si + 1) as f32 / BOW_SEGS as f32;
+    let tm = (t0 + t1) * 0.5;
+    0.22 + 0.78 * (1.0 - tm * tm)
 }
 
 /// Everything shown for one drawn bow.
@@ -370,7 +411,8 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
     }
     let t = time.elapsed_secs();
     for (i, slot) in look.draws.iter().enumerate() {
-        let all: Vec<Entity> = slot.bow.iter().chain(slot.string.iter()).copied().chain([slot.arrow, slot.laser]).collect();
+        let all: Vec<Entity> =
+            slot.bow.iter().chain(slot.edge.iter()).chain(slot.string.iter()).copied().chain(slot.tips).chain([slot.riser, slot.arrow, slot.laser]).collect();
         let Some(d) = list.get(i) else {
             for e in all {
                 if let Ok((_, mut vis)) = q.get_mut(e) {
@@ -386,18 +428,46 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
         let centre = if d.local { d.eye + d.dir * 0.78 - (right * 0.42 + up * 0.3) * k } else { d.eye + d.dir * 0.8 - up * 0.28 };
         let th = if d.local { 0.6 * k } else { 1.0 };
         let col = if d.local { GOLD } else { colour_of(&net, d.owner) };
-        tint(&mut mats, &slot.mat, col, if d.local { 1.1 + 0.6 * d.frac } else { 2.0 + 1.0 * d.frac });
-        let pts = bow_points(centre, up, d.dir).map(|q| centre + (q - centre) * k);
-        for (k, e) in slot.bow.iter().enumerate() {
-            if let Ok((mut tr, mut vis)) = q.get_mut(*e) {
-                *tr = seg(pts[k], pts[k + 1], 0.035 * th);
+        let bright = if d.local { 1.1 + 0.6 * d.frac } else { 2.0 + 1.0 * d.frac };
+        tint(&mut mats, &slot.mat, col, bright);
+        tint(&mut mats, &slot.body_mat, col, bright * 0.48);
+        // the recurve limbs flex further forward the more the bow is drawn
+        let bend = 1.0 + 0.6 * d.frac;
+        // first person looks straight down `d.dir`, the same axis the belly bulges along: left as-is, the recurve
+        // silhouette would be seen dead-on edge and read as a flat line. Tilting the shape's own forward axis off
+        // the view by ~35 degrees (toward `right`) turns the bow broadside enough to actually show the curve,
+        // without changing where the bow sits or which way the arrow points (those stay on the true `d.dir`).
+        let shape_dir = if d.local { (d.dir * 0.82 + right * 0.57).normalize_or(d.dir) } else { d.dir };
+        let pts = bow_points_flexed(centre, up, shape_dir, bend).map(|q| centre + (q - centre) * k);
+        // the glowing edge traces the outer (forward-facing) curve, offset just in front of the dim limb body so
+        // it never gets occluded by it; both are additive so there's no z-fighting either way
+        let edge_off = shape_dir * (0.03 * th);
+        for si in 0..BOW_SEGS {
+            let profile = limb_profile(si);
+            if let Ok((mut tr, mut vis)) = q.get_mut(slot.bow[si]) {
+                *tr = seg(pts[si], pts[si + 1], 0.052 * th * profile);
+                *vis = Visibility::Visible;
+            }
+            if let Ok((mut tr, mut vis)) = q.get_mut(slot.edge[si]) {
+                *tr = seg(pts[si] + edge_off, pts[si + 1] + edge_off, 0.03 * th * profile.max(0.5));
                 *vis = Visibility::Visible;
             }
         }
+        // riser/grip: a dark, non-glowing block at the centre, set slightly behind the limbs' forward bulge
+        let riser_c = centre - shape_dir * (0.012 * th);
+        if let Ok((mut tr, mut vis)) = q.get_mut(slot.riser) {
+            *tr = Transform { translation: riser_c, rotation: Quat::from_rotation_arc(Vec3::Z, up), scale: Vec3::new(0.062 * th, 0.042 * th, 0.20 * th) };
+            *vis = Visibility::Visible;
+        }
+        // small bright caps at the limb tips, alongside the string run (tip -> nock)
         let nock = centre - d.dir * (0.32 * d.frac * k);
-        for (k, tip) in [pts[0], pts[BOW_SEGS]].into_iter().enumerate() {
-            if let Ok((mut tr, mut vis)) = q.get_mut(slot.string[k]) {
-                *tr = seg(tip, nock, 0.012 * th);
+        for (si, tip) in [pts[0], pts[BOW_SEGS]].into_iter().enumerate() {
+            if let Ok((mut tr, mut vis)) = q.get_mut(slot.tips[si]) {
+                *tr = Transform::from_translation(tip + edge_off).with_scale(Vec3::splat(0.028 * th));
+                *vis = Visibility::Visible;
+            }
+            if let Ok((mut tr, mut vis)) = q.get_mut(slot.string[si]) {
+                *tr = seg(tip, nock, 0.009 * th);
                 *vis = Visibility::Visible;
             }
         }
