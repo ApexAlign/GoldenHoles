@@ -35,6 +35,7 @@ impl BotSkill {
                 parry_skill: 0.2,
                 cloak_skill: 0.05,
                 cloak_notice: 0.2,
+                bounty_hunt_skill: 0.2,
             },
             Self::Normal => SkillParams {
                 reaction_ticks: 16,
@@ -49,6 +50,7 @@ impl BotSkill {
                 parry_skill: 0.5,
                 cloak_skill: 0.15,
                 cloak_notice: 0.5,
+                bounty_hunt_skill: 0.5,
             },
             Self::Hard => SkillParams {
                 reaction_ticks: 5,
@@ -63,6 +65,7 @@ impl BotSkill {
                 parry_skill: 0.85,
                 cloak_skill: 0.3,
                 cloak_notice: 0.85,
+                bounty_hunt_skill: 0.85,
             },
         }
     }
@@ -97,6 +100,10 @@ pub struct SkillParams {
     /// Chance per decision window to notice a nearby cloaked foe despite the visual stealth (0 at long range, scaled
     /// up close; `fsm::notices_cloak`). A foe sprinting, dashing or roped is always noticed regardless.
     pub cloak_notice: f32,
+    /// Chance per tick (while a BOUNTY is up and reachable, docs/bounty.md) that a bot breaks off its normal
+    /// nearest-enemy target to go hunt the bounty instead. Rolled fresh each tick (`host::think_all`), so a
+    /// miss just means "not yet", not "never this match".
+    pub bounty_hunt_skill: f32,
 }
 
 /// Behaviour profile. Light = cyber-ninja (flank, wall, perch, shurikens from odd angles).
@@ -135,6 +142,12 @@ mod tests {
     #[test]
     fn parry_skill_climbs_with_the_tier_and_nobody_is_perfect() {
         let p = |s: BotSkill| s.params().parry_skill;
+        assert!(0.0 < p(BotSkill::Easy) && p(BotSkill::Easy) < p(BotSkill::Normal) && p(BotSkill::Normal) < p(BotSkill::Hard) && p(BotSkill::Hard) < 1.0);
+    }
+
+    #[test]
+    fn bounty_hunt_skill_climbs_with_the_tier_and_nobody_is_perfect() {
+        let p = |s: BotSkill| s.params().bounty_hunt_skill;
         assert!(0.0 < p(BotSkill::Easy) && p(BotSkill::Easy) < p(BotSkill::Normal) && p(BotSkill::Normal) < p(BotSkill::Hard) && p(BotSkill::Hard) < 1.0);
     }
 }

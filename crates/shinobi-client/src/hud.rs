@@ -141,6 +141,8 @@ pub struct KillEntry {
     /// Free-for-all: each player's own neon colour (wins over nothing, loses to team colour).
     pub killer_colour: Option<Rgba>,
     pub victim_colour: Option<Rgba>,
+    /// The victim was the BOUNTY (docs/bounty.md): styled "BOUNTY DOWN" instead of a plain row.
+    pub bounty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -279,6 +281,19 @@ pub struct TargetHud {
     /// Melee cue on the triangle: 0 none, 1 in cutting range (strike ready), 2 the target's strike window is open
     /// (it just swung or was parried: a hit now deals bonus damage).
     pub strike: u8,
+}
+
+/// Current BOUNTY banner + beacon (docs/bounty.md). `None` when nobody is marked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BountyHud {
+    /// Callsign of whoever is marked.
+    pub name: String,
+    /// The local player is the one marked.
+    pub is_me: bool,
+    /// The grace window has elapsed: the marker is live, draw the beacon.
+    pub live: bool,
+    /// View-relative bearing to the bounty, radians (0 = ahead), when their position is known this frame.
+    pub bearing: Option<f32>,
 }
 
 /// Stable two-word callsign for a player id ("NEON FOX"): 144 distinct names, so the HUD has something readable
@@ -443,6 +458,8 @@ pub struct HudState {
     pub radar_edge: Vec<((f32, f32), (f32, f32))>,
     /// View yaw (radians, 0 = facing -Z): drives the compass strip. `None` hides it.
     pub heading: Option<f32>,
+    /// Current BOUNTY (docs/bounty.md); `None` while nobody holds the title.
+    pub bounty: Option<BountyHud>,
     pub target: Option<TargetHud>,
     /// The shield is up: draw the guard ring around the crosshair.
     pub guarding: bool,
@@ -635,6 +652,12 @@ impl HudFx {
                 self.match_over(winner, why, local_id, |id| format!("PLAYER {id}"));
             }
             MatchEvent::NextMap { map, .. } => self.show(format!("MAP {}", map + 1), Some("LOADING"), BannerColor::Cyan, 2.0),
+            // BOUNTY callouts ride the Board's bounty fields on the wire (docs/bounty.md); the HUD bridge
+            // derives them there. Local-sim demo callers of this function get nothing extra for now.
+            MatchEvent::BountyMarked { .. }
+            | MatchEvent::BountyLive { .. }
+            | MatchEvent::BountyCleared { .. }
+            | MatchEvent::BountyKilled { .. } => {}
         }
     }
 
@@ -810,6 +833,7 @@ impl KillEntry {
             victim_team: None,
             killer_colour: None,
             victim_colour: None,
+            bounty: false,
         })
     }
 
@@ -827,6 +851,7 @@ impl KillEntry {
                 victim_team: None,
                 killer_colour: None,
                 victim_colour: None,
+                bounty: false,
             }),
             // Hazards are environmental: void glyph, no killer, even if an old sim names a wall owner.
             PvpEvent::HazardKill { victim, .. } => Some(Self {
@@ -840,6 +865,7 @@ impl KillEntry {
                 victim_team: None,
                 killer_colour: None,
                 victim_colour: None,
+                bounty: false,
             }),
             _ => None,
         }
@@ -1164,6 +1190,7 @@ impl Hud {
         if let Some(yaw) = s.heading {
             compass(&mut out, yaw, p);
         }
+        bounty_banner(&mut out, &s.bounty, s.time, p);
         if let Some(t) = &s.telemetry {
             telemetry_panel(&mut out, t, s.wall_run, s.audio, p);
             if let Some((name, tint)) = &s.zone {
@@ -1324,6 +1351,9 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         let col = if k.void { p.magenta } else { tag };
         weapon_icon(out, (0.5, y - 0.009), 0.011, glyph, col.a(fade));
         out.push(Prim::Text { pos: (0.515, y), text: k.victim.clone(), size: 0.024, color: vc.a(0.9 * fade), align: Align::Left });
+        if k.bounty {
+            out.push(Prim::Text { pos: (0.5, y - 0.017), text: "BOUNTY DOWN".into(), size: 0.014, color: p.gold.a(0.9 * fade), align: Align::Center });
+        }
     }
 }
 
@@ -1475,6 +1505,34 @@ fn compass(out: &mut Vec<Prim>, yaw: f32, p: &Palette) {
     }
     out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 - 0.006 * ax(), 0.066), color: p.gold.a(0.9), glow: 0.003 });
     out.push(Prim::Line { a: (0.5, 0.058), b: (0.5 + 0.006 * ax(), 0.066), color: p.gold.a(0.9), glow: 0.003 });
+}
+
+/// BOUNTY callout (docs/bounty.md): a pulsing "YOU ARE THE BOUNTY" when the local player is marked, else
+/// "BOUNTY: <name>" plus a small beacon riding the compass strip once the marker is live (bearing known).
+/// During the grace window (not yet `live`) only the text shows: hunting can't start until everyone else sees it.
+fn bounty_banner(out: &mut Vec<Prim>, b: &Option<BountyHud>, time: f32, p: &Palette) {
+    let Some(b) = b else { return };
+    let pulse = 0.6 + 0.4 * (time * 5.0).sin().abs();
+    if b.is_me {
+        let text = if b.live { "YOU ARE THE BOUNTY" } else { "MARKED AS BOUNTY" };
+        out.push(Prim::Text { pos: (0.5, 0.11), text: text.into(), size: 0.026, color: p.gold.a(pulse), align: Align::Center });
+        return;
+    }
+    out.push(Prim::Text { pos: (0.5, 0.11), text: format!("BOUNTY: {}", b.name), size: 0.02, color: p.magenta.a(0.85), align: Align::Center });
+    if !b.live {
+        return;
+    }
+    let Some(bearing) = b.bearing else { return };
+    let (x0, x1, span_deg) = (0.36f32, 0.64f32, 120.0f32);
+    let deg = bearing.to_degrees();
+    if deg.abs() <= span_deg * 0.5 {
+        let x = 0.5 + deg * (x1 - x0) / span_deg;
+        out.push(Prim::Text { pos: (x, 0.034), text: "\u{25BC}".into(), size: 0.018, color: p.magenta.a(0.95), align: Align::Center });
+    } else {
+        // off the visible compass window: a chevron at the near edge says which way to turn
+        let (x, glyph) = if deg > 0.0 { (x1, ">>") } else { (x0, "<<") };
+        out.push(Prim::Text { pos: (x, 0.034), text: glyph.into(), size: 0.016, color: p.magenta.a(0.8), align: Align::Center });
+    }
 }
 
 /// Left slim panel (lower half, clear of the centre): speed, altitude, rope length, wall-run state.
@@ -2290,8 +2348,8 @@ mod tests {
             since_damage: Some((0.1, 1.2)),
             ping_ms: Some(42),
             killfeed: vec![
-                KillEntry { killer: "Ronin".into(), victim: "Ghost".into(), weapon: DamageKind::Shuriken, age: 0.5, involves_local: true, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None },
-                KillEntry { killer: "Ghost".into(), victim: "Kage".into(), weapon: DamageKind::Slash, age: 9.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None },
+                KillEntry { killer: "Ronin".into(), victim: "Ghost".into(), weapon: DamageKind::Shuriken, age: 0.5, involves_local: true, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false },
+                KillEntry { killer: "Ghost".into(), victim: "Kage".into(), weapon: DamageKind::Slash, age: 9.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false },
             ],
             time: 3.0,
             telemetry: Some(Telemetry { speed: 14.2, altitude: 3.1, rope: Some(8.0) }),
@@ -2373,7 +2431,7 @@ mod tests {
 
     #[test]
     fn killfeed_caps_expires_and_stays_off_the_sides() {
-        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
+        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false };
         let fresh: Vec<_> = (1..=KILLFEED_MAX + 1).map(|i| mk(i as f32 * 0.1)).collect();
         let s = HudState { killfeed: [fresh, vec![mk(KILLFEED_TIME + 1.0)]].concat(), ..Default::default() };
         let texts = Hud::build(&s).iter().filter(|p| matches!(p, Prim::Text { text, .. } if text == "A")).count();
@@ -2478,6 +2536,7 @@ mod tests {
             max_hp: 100.0,
             kills,
             deaths: 2,
+            kill_streak: 0,
             dead_until_tick: dead_until,
             invuln_until_tick: invuln_until,
             last_damage_tick: 0,
@@ -2537,7 +2596,7 @@ mod tests {
 
     #[test]
     fn killfeed_ages_and_expires_and_scoreboard_rows_come_from_vitals() {
-        let mut feed = vec![KillEntry { killer: "a".into(), victim: "b".into(), weapon: DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None }];
+        let mut feed = vec![KillEntry { killer: "a".into(), victim: "b".into(), weapon: DamageKind::Slash, age: 0.0, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false }];
         killfeed_tick(&mut feed, 2.0);
         assert_eq!(feed[0].age, 2.0);
         killfeed_tick(&mut feed, KILLFEED_TIME);
@@ -2742,7 +2801,7 @@ mod tests {
 
     #[test]
     fn killfeed_keeps_five_rows() {
-        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
+        let mk = |age| KillEntry { killer: "A".into(), victim: "B".into(), weapon: DamageKind::Slash, age, involves_local: false, void: false, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false };
         let s = HudState { killfeed: (0..8).map(|i| mk(i as f32 * 0.1)).collect(), ..Default::default() };
         assert_eq!(Hud::build(&s).iter().filter(|p| matches!(p, Prim::Text { text, .. } if text == "A")).count(), 5);
     }
@@ -2765,7 +2824,7 @@ mod tests {
     #[test]
     fn killfeed_draws_a_distinct_weapon_glyph_per_cause_and_no_killer_name_for_void() {
         let p = Palette::TRON;
-        let row = |weapon, void| KillEntry { killer: "KKK".into(), victim: "VVV".into(), weapon, age: 0.0, involves_local: false, void, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None };
+        let row = |weapon, void| KillEntry { killer: "KKK".into(), victim: "VVV".into(), weapon, age: 0.0, involves_local: false, void, killer_team: None, victim_team: None, killer_colour: None, victim_colour: None, bounty: false };
         let draw = |k: KillEntry| Hud::build(&HudState { killfeed: vec![k], ..Default::default() });
         let base = lines(&Hud::build(&HudState::default()));
         let counts: Vec<_> = [

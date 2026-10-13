@@ -59,8 +59,8 @@ pub struct Replicator {
     obstacles: ObstacleStore,
     spawner: ObstacleSpawner,
     last_sent: Option<u32>,
-    /// (tick, phase) of the last scoreboard that went out.
-    last_board: Option<(u32, u8)>,
+    /// (tick, phase, bounty id, bounty live) of the last scoreboard that went out.
+    last_board: Option<(u32, u8, u16, bool)>,
     seed: u64,
     features: Features,
     /// One line per gameplay event for the server console (kill feed), drained by `take_log`.
@@ -587,6 +587,14 @@ impl Replicator {
                     })
                 }
                 MatchEvent::NextMap { tick, map } => self.map_change(server, tick, map),
+                // BOUNTY (docs/bounty.md): the id/live state itself rides the periodic `board` (forced due
+                // the same tick by the bounty change in `build_round`); these are just the announcer log.
+                MatchEvent::BountyMarked { tick, id } => self.log_line(tick, format!("BOUNTY  p{id} is being marked ...")),
+                MatchEvent::BountyLive { tick, id } => self.log_line(tick, format!("BOUNTY  p{id} IS THE BOUNTY")),
+                MatchEvent::BountyCleared { tick, id } => self.log_line(tick, format!("BOUNTY  p{id} cleared")),
+                MatchEvent::BountyKilled { tick, killer, bounty } => {
+                    self.log_line(tick, format!("BOUNTY  p{killer} took down the bounty p{bounty}"))
+                }
             }
         }
         for ev in pickups {
@@ -662,9 +670,12 @@ impl Replicator {
         self.disc_cap = if worst < SNAPSHOT_BUDGET * 7 / 10 { (cap + 8).min(PROJECTILE_ID_MAX) } else { cap };
         self.last_sent = Some(tick);
         let phase = phase_code(server.match_state.kind());
-        let board_due = self.last_board.map_or(true, |(t, ph)| tick.wrapping_sub(t) >= BOARD_EVERY_TICKS || ph != phase);
+        let (bounty_id, bounty_live) = server.match_state.bounty().map_or((0, false), |b| (b.id, b.live));
+        let board_due = self.last_board.map_or(true, |(t, ph, bid, blive)| {
+            tick.wrapping_sub(t) >= BOARD_EVERY_TICKS || ph != phase || bid != bounty_id || blive != bounty_live
+        });
         let board = if board_due {
-            self.last_board = Some((tick, phase));
+            self.last_board = Some((tick, phase, bounty_id, bounty_live));
             board_bytes(server, tick)
         } else {
             Vec::new()
@@ -780,12 +791,15 @@ fn board_bytes(server: &Server, tick: u32) -> Vec<u8> {
         .take(gameplay::MAX_BOARD_ROWS)
         .map(|e| BoardRow { id: e.id as u8, kills: e.kills, deaths: e.deaths, alive: e.alive })
         .collect();
+    let (bounty, bounty_live) = ms.bounty().map_or((0, false), |b| (b.id, b.live));
     Board {
         phase: phase_code(ms.kind()),
         map: ms.map_index,
         ticks_left: ms.ticks_left(tick),
         winner: ms.last_winner.unwrap_or(0),
         rows,
+        bounty,
+        bounty_live,
     }
     .encode()
 }

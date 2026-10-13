@@ -541,9 +541,18 @@ impl BotHost {
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let prev = self.sticky.iter().find(|s| s.0 == b.id).map(|s| s.1);
             let prev_cost = prev.and_then(|id| pool.iter().find(|p| p.id == id).map(|p| (cost(p), id)));
-            let pick = match (prev_cost, best) {
-                (Some((dp, ip)), Some((db, _))) if db >= dp * self.cfg.target_stickiness => Some(ip),
-                (_, Some((_, ib))) => Some(ib),
+            // BOUNTY awareness (docs/bounty.md): a bot in reach of the bounty has a skill-tiered, per-tick
+            // chance to break off its normal (sticky, nearest/weakest) pick and go hunt them instead. Rolled
+            // deterministically from (seed, bot, tick) so a replay reproduces the same decisions.
+            let bounty = server
+                .match_state
+                .bounty_id()
+                .filter(|id| pool.iter().any(|p| p.id == *id))
+                .filter(|_| crate::rng::Rng::new(b.seed, b.id, tick, 42).chance(b.skill.bounty_hunt_skill));
+            let pick = match (bounty, prev_cost, best) {
+                (Some(bid), _, _) => Some(bid),
+                (None, Some((dp, ip)), Some((db, _))) if db >= dp * self.cfg.target_stickiness => Some(ip),
+                (None, _, Some((_, ib))) => Some(ib),
                 _ => None,
             };
             if let Some(t) = pick.filter(|t| ids.binary_search(t).is_err()) {

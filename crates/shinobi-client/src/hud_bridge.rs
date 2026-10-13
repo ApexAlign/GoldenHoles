@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::hud::{
     BuildHud, BuildSlot, GrappleHud, KilledBy, Winner, SPAWN_SHIELD_SECS,
-    bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
+    bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, BountyHud, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
 };
@@ -200,6 +200,10 @@ pub struct HudBridge {
     guard_low_prev: bool,
     killfeed: Vec<KillEntry>,
     time: f32,
+    /// `(id, live)` of the bounty as of the END of the previous frame (docs/bounty.md): read at the top of
+    /// this frame, before `view.board`'s fresher value overwrites it, so a `Kill` event landing the same
+    /// frame the bounty falls can still be tagged "that was the bounty".
+    bounty_seen: Option<(u16, bool)>,
 }
 
 impl HudBridge {
@@ -265,6 +269,11 @@ impl HudBridge {
         for e in &view.events {
             self.fx.on_net_event(e, local_id, name);
             if let Some(mut k) = KillEntry::from_net(e, local_id, name) {
+                // the bounty as of the START of this frame (before `view.board`'s fresher value below): a
+                // kill that drops the bounty still gets tagged even though the board already cleared it.
+                if let shinobi_sim::events::NetEvent::Kill { victim, .. } = e {
+                    k.bounty = self.bounty_seen.is_some_and(|(id, _)| id == *victim);
+                }
                 if let (Some(t), shinobi_sim::events::NetEvent::Kill { killer, victim, .. }) = (&teams, e) {
                     k.killer_team = (!k.void).then(|| t.team_of.get(killer).copied()).flatten();
                     k.victim_team = t.team_of.get(victim).copied();
@@ -430,6 +439,18 @@ impl HudBridge {
         // --- cyber layer: telemetry, radar, compass, lock brackets, boot-up ---
         let (yaw, pitch) = view.look_angles();
         hs.heading = Some(yaw);
+        // BOUNTY (docs/bounty.md): the id/live bit ride the periodic `board`; the bearing comes from whatever
+        // position we already track for that player this frame (no extra wire cost).
+        let bounty_now = view.board.as_ref().and_then(|b| (b.bounty != 0).then_some((b.bounty, b.bounty_live)));
+        hs.bounty = bounty_now.map(|(id, live)| {
+            let is_me = id == local_id;
+            let bearing = (!is_me)
+                .then(|| view.remotes.iter().find(|(r, _)| *r == id).map(|(_, s)| s.pos))
+                .flatten()
+                .map(|p| bearing_to(me, yaw, p));
+            crate::hud::BountyHud { name: callsign(id), is_me, live, bearing }
+        });
+        self.bounty_seen = bounty_now;
         hs.zone = view.district.map(|d| (d.name.to_string(), d.tint));
         hs.telemetry = Some(Telemetry {
             speed: view.fx.speed,
@@ -873,7 +894,7 @@ mod tests {
         use shinobi_sim::events::NetEvent;
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        let board = |phase, ticks| Board { phase, map: 1, ticks_left: ticks, winner: 0, rows: vec![BoardRow { id: 1, kills: 20, deaths: 2, alive: true }] };
+        let board = |phase, ticks| Board { phase, map: 1, ticks_left: ticks, winner: 0, rows: vec![BoardRow { id: 1, kills: 20, deaths: 2, alive: true }] , bounty: 0, bounty_live: false };
         v.board = Some(board(PHASE_LIVE, Some(125 * 60 - 30)));
         let s = b.update(0.016, &v, &net(), false);
         assert!(!s.show_scoreboard, "live: Tab only");
@@ -959,7 +980,7 @@ mod tests {
         v.camera.fov = 90.0;
         let smp = |x: f32, z: f32| shinobi_client_sample([x, 0.5, z]);
         v.remotes = vec![(2, smp(0.0, -12.0)), (3, smp(3.0, -12.0)), (4, smp(0.0, 12.0))];
-        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 3, kills: 2, deaths: 1, alive: true }] });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 3, kills: 2, deaths: 1, alive: true }] , bounty: 0, bounty_live: false });
         b.teams = Some(TeamInfo { my_team: 0, scores: [4, 9], score_limit: 50, result: 0, team_of: [(2, 0), (3, 1), (4, 0)].into_iter().collect() });
         let s = b.update(0.016, &v, &net(), false);
         assert_eq!(s.team_scores, Some(TeamScores { mine: 0, scores: [4, 9], limit: 50, result: 0 }));
@@ -989,7 +1010,7 @@ mod tests {
         b.build = Some(BuildHud { selected: BuildSlot::Wall, ready: 0.5, placed: 2, max: 6, ghost: Some(false) });
         b.grapple = Some(GrappleHud { ready: 1.0, hookable: true, player: false, on_rope: false, missed: false, strike: 0 });
         let mut v = RenderView::default();
-        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![BoardRow { id: 2, kills: 1, deaths: 0, alive: true }, BoardRow { id: 5, kills: 0, deaths: 1, alive: true }] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.ffa && s.kill_limit == Some(25) && s.team_scores.is_none());
         assert_eq!(s.scoreboard[0].colour, Some(ffa_colour(2)));
@@ -1110,13 +1131,13 @@ mod tests {
         b.last_death.as_ref().map(|k| assert_eq!(k.name, callsign(7))).expect("death recorded");
         // intermission: the winner comes from the board; the local player won when ids match
         v.events.clear();
-        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         let w = s.winner.expect("winner");
         assert_eq!((w.name.as_str(), w.local, w.draw), (callsign(7).as_str(), false, false));
-        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 0, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         assert!(b.update(0.016, &v, &net(), false).winner.unwrap().draw);
-        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         assert!(b.update(0.016, &v, &net(), false).winner.is_none(), "no result outside intermission");
         // audio passes through
         b.audio = Some((0.5, true));
@@ -1218,14 +1239,14 @@ mod tests {
             NetEvent::Kill { killer: 8, victim: 7, kind: KIND_SLASH, tick: 3 },
         ];
         v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false });
-        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         assert_eq!(s.radar_pickups.len(), 1, "only the pickup inside radar range");
         assert!(s.awards.is_empty(), "awards appear only at intermission");
         // intermission: awards from the events
         v.events.clear();
         v.hits.clear();
-        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 0, winner: 7, rows: vec![] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         let by = |t: &str| s.awards.iter().find(|a| a.title == t).cloned();
         assert_eq!(by("SHARPSHOOTER").map(|a| (a.name, a.value)), Some((callsign(7), "2".to_string())));
@@ -1233,9 +1254,9 @@ mod tests {
         assert_eq!(by("LONGEST KILL").map(|a| a.name), Some(callsign(7)), "7 shot 8 from ~51 m");
         assert_eq!(s.my_headshots, 1);
         // next match: stats reset
-        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 1, winner: 0, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 1, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         b.update(0.016, &v, &net(), false);
-        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 1, winner: 0, rows: vec![] });
+        v.board = Some(Board { phase: PHASE_INTERMISSION, ticks_left: Some(480), map: 1, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.awards.is_empty() && s.my_headshots == 0, "a fresh match starts from zero");
     }

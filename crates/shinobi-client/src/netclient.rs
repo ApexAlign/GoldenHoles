@@ -1357,6 +1357,8 @@ mod tests {
             ticks_left: Some(900),
             winner: 0,
             rows: vec![BoardRow { id: 1, kills: 3, deaths: 1, alive: true }],
+            bounty: 0,
+            bounty_live: false,
         };
         let d = frame_snapshot_v3(&no_events(), &[], &b.encode(), &encode_delta(None, &snap(10, 0)));
         c.on_datagram(&d, 1.0).unwrap();

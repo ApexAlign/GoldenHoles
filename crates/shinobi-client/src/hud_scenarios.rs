@@ -44,7 +44,7 @@ fn base() -> HudState {
 }
 
 fn kill(k: u16, v: u16, w: DamageKind, age: f32) -> KillEntry {
-    KillEntry { killer: callsign(k), victim: callsign(v), weapon: w, age, involves_local: k == 2 || v == 2, void: false, killer_team: None, victim_team: None, killer_colour: Some(player_rgba(k)), victim_colour: Some(player_rgba(v)) }
+    KillEntry { killer: callsign(k), victim: callsign(v), weapon: w, age, involves_local: k == 2 || v == 2, void: false, killer_team: None, victim_team: None, killer_colour: Some(player_rgba(k)), victim_colour: Some(player_rgba(v)), bounty: false }
 }
 
 /// `(name, draw list)` for each scenario.
