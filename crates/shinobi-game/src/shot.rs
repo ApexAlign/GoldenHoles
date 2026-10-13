@@ -155,6 +155,29 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
     if let Ok(w) = std::env::var("SHOT_WEAPONS") {
         weapons_preview(v, &w, frame, base.0);
     }
+    // SHOT_BOW=<frac> (0..1): puts a drawn Yumi in our own hands at that draw fraction (our bow only renders at
+    // all while draw > 0, so 0 is nudged up a hair) and a second drawn bow on player 4, placed relative to our own
+    // camera (not the level spawn) a few metres ahead and to the right, held broadside-on (its `dir` perpendicular
+    // to our view) so the recurve silhouette actually reads instead of being seen edge-on. For reviewing both the
+    // first-person and third-person bow visuals offline.
+    if let Ok(raw) = std::env::var("SHOT_BOW") {
+        let frac = raw.parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0);
+        v.power = Some(shinobi_client::power_view::PowerView {
+            kind: shinobi_sim::power::PowerKind::Yumi,
+            draw: frac.max(0.001),
+            up: true,
+            ..Default::default()
+        });
+        let fwd = Vec3::from(shinobi_sim::combat::stars::view_dir(v.aim.yaw, v.aim.pitch));
+        let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+        let eye = Vec3::from(v.eye);
+        let pos = eye + fwd * 3.2 + right * 1.4 + Vec3::Y * 0.2;
+        // guard against re-pushing every frame (ViewRes/power_world is rebuilt each frame in the normal client, but
+        // this keeps the offline shot correct even if that ever changes)
+        if !v.power_world.draws.iter().any(|d| d.owner == 4) {
+            v.power_world.draws.push(shinobi_client::power_view::DrawObj { pos: pos.to_array(), dir: right.to_array(), owner: 4, frac });
+        }
+    }
     let Ok(spec) = std::env::var("SHOT_FX") else { return };
     for item in spec.split(',') {
         let (name, arg) = item.split_once(':').unwrap_or((item, ""));
