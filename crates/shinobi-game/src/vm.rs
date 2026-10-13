@@ -627,6 +627,10 @@ pub fn update(
         *v = if s.scale <= 0.001 { Visibility::Hidden } else { Visibility::Visible };
     }
 
+    // the bow is the weapon in hand (key 2): no katana to hold alongside it, so the blade (and anything that only shows
+    // on a swing) stays away the whole time the bow is out, not only while actually zoomed in
+    let bow_out = view.0.power.is_some_and(|p| p.kind == shinobi_sim::power::PowerKind::Yumi && p.up);
+
     // the bow's zoom: the hands sink out of frame (the overlay camera keeps its own 90 deg FOV, so they would not match the
     // narrowed world anyway), and the swing arc and speed lines go with them
     let k = shinobi_client::viewmodel::zoom_fade(view.0.zoom.frac);
@@ -640,7 +644,11 @@ pub fn update(
     }
     for e in [ents.blade, ents.left_hand, ents.launcher, ents.ribbons] {
         if let Ok(mut v) = vis.get_mut(e) {
-            v.set_if_neq(if hidden || (e == ents.ribbons && view.0.zoom.frac > 0.05) { Visibility::Hidden } else { Visibility::Inherited });
+            v.set_if_neq(if hidden || (e == ents.blade && bow_out) || (e == ents.ribbons && (view.0.zoom.frac > 0.05 || bow_out)) {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            });
         }
     }
     if hidden || view.0.zoom.frac > 0.05 {

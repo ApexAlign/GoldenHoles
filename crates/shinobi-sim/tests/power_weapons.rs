@@ -160,7 +160,7 @@ fn a_full_draw_looses_an_arrow_for_80_body_or_120_head() {
         give(&mut s, A, PowerKind::Yumi, 0);
         let hits = arrow_hits(&shoot(&mut s, 40, pitch, 40));
         assert!(hits.len() <= 1, "one arrow, at most one hit");
-        assert!(player(&mut s, A).power.cooldown > 1.0, "the bow is reloading");
+        assert!(player(&mut s, A).power.cooldown > 0.0, "the bow is reloading");
         for (amount, head) in hits {
             assert_eq!(amount, if head { 120.0 } else { 80.0 }, "80 body / x1.5 head");
             hit_kinds.push(head);
@@ -193,7 +193,9 @@ fn a_full_draw_headshot_kills_an_unhurt_player_outright_on_the_demo_numbers() {
 
 #[test]
 fn an_arrow_drops_a_little_over_distance_and_has_a_range() {
-    let mut s = server(-30.0);
+    // B stands far enough back that the faster arrow (180 m/s) cannot reach and consume it mid-measurement, but still
+    // inside the level box
+    let mut s = server(-80.0);
     give(&mut s, A, PowerKind::Yumi, 0);
     for _ in 0..37 {
         feed(&mut s, drawing(0.0, 0.0), idle(B_YAW));

@@ -82,7 +82,7 @@ impl Default for YumiCfg {
             zoom_start: 0.25,
             focus_move_mult: 0.6,
             zoom_hurt_s: 0.35,
-            speed: 110.0,
+            speed: 180.0,
             gravity: 4.0,
             range: 250.0,
             radius: 0.35,
@@ -90,7 +90,7 @@ impl Default for YumiCfg {
             head_mult: 1.5,
             block_drain: 0.7,
             cut_pad: 0.35,
-            reload_s: 2.2,
+            reload_s: 1.1,
         }
     }
 }
@@ -499,13 +499,13 @@ mod tests {
         // flight time and drop to 200 m (the arrow lives while speed * age <= range)
         let t = 200.0 / c.speed;
         let drop = 0.5 * c.gravity * t * t;
-        assert!(t < 2.0 && (5.0..9.0).contains(&drop), "200 m: {t:.2} s in the air, {drop:.1} m of drop");
-        // a runner (~9 m/s) crosses 16 m meanwhile: the lead is a few body widths, not a different postcode
-        assert!(9.0 * t < 20.0);
+        assert!(t < 1.5 && (1.5..4.0).contains(&drop), "200 m: {t:.2} s in the air, {drop:.1} m of drop");
+        // a runner (~9 m/s) crosses ~10 m meanwhile: the lead is a few body widths, not a different postcode
+        assert!(9.0 * t < 15.0);
         assert!(250.0 / c.speed * c.speed <= c.range + 1e-3 && c.range >= 250.0);
-        // the HUD tick: the drop angle grows with range and is ~1.9 deg at 200 m
+        // the HUD tick: the drop angle grows with range and is ~0.7 deg at 200 m (flatter now the arrow is faster)
         let (a50, a200) = (arrow_drop_angle(50.0, &c), arrow_drop_angle(200.0, &c));
-        assert!(a50 < a200 && (a200.to_degrees() - 1.9).abs() < 0.1, "{}", a200.to_degrees());
+        assert!(a50 < a200 && (a200.to_degrees() - 0.7).abs() < 0.15, "{}", a200.to_degrees());
     }
 
     const DT: f32 = 1.0 / 60.0;
@@ -537,7 +537,7 @@ mod tests {
         let ev = run(&mut s, &cfg, 1, IDLE);
         assert_eq!(ev, vec![PowerEvent::Loose]);
         assert!(s.used_fire && !s.drawing && s.held() == false && s.kind == PowerKind::Yumi, "the bow is never used up");
-        assert!((s.cooldown - 2.2).abs() < 1e-4, "2.2 s reload");
+        assert!((s.cooldown - 1.1).abs() < 1e-4, "1.1 s reload");
         // a half draw cancels and costs nothing; inside the tap time it is a tap
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 20, HOLD);
@@ -550,15 +550,15 @@ mod tests {
     }
 
     #[test]
-    fn the_bow_reloads_for_2_2_seconds_and_is_never_lost() {
+    fn the_bow_reloads_for_1_1_seconds_and_is_never_lost() {
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 37, HOLD);
         run(&mut s, &cfg, 1, IDLE);
         assert!(s.reload_frac(&cfg) < 0.01);
-        run(&mut s, &cfg, 60, HOLD);
+        run(&mut s, &cfg, 33, HOLD);
         assert!(!s.drawing, "reloading: no new draw yet");
         assert!(s.reload_frac(&cfg) > 0.4 && s.reload_frac(&cfg) < 0.6, "half way: {}", s.reload_frac(&cfg));
-        run(&mut s, &cfg, 80, IDLE);
+        run(&mut s, &cfg, 40, IDLE);
         assert_eq!(s.reload_frac(&cfg), 1.0);
         run(&mut s, &cfg, 1, HOLD);
         assert!(s.drawing, "reloaded: the next draw starts");
