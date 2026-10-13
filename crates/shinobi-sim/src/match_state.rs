@@ -38,6 +38,15 @@ pub struct MatchCfg {
     pub frag_limit: u16,
     pub min_players: usize,
     pub mode: GameMode,
+    /// Consecutive kills (without dying) that marks a player as the BOUNTY (docs/bounty.md). 0 = off.
+    pub bounty_streak: u16,
+    /// Ticks between a player crossing `bounty_streak` and the marker going live map-wide: a short
+    /// grace/ramp-up so becoming the bounty is not an instant ambush.
+    pub bounty_grace_ticks: u32,
+    /// Extra frags credited to whoever kills the current bounty (on top of the normal +1).
+    pub bounty_bonus_kills: u16,
+    /// Damage multiplier on the bounty's own outgoing weapon hits while marked (modest: tense, not unkillable).
+    pub bounty_dmg_mult: f32,
 }
 
 impl Default for MatchCfg {
@@ -49,8 +58,20 @@ impl Default for MatchCfg {
             frag_limit: 20,
             min_players: 2,
             mode: GameMode::Deathmatch,
+            bounty_streak: 3,
+            bounty_grace_ticks: (2.5 * TICK_HZ as f32) as u32,
+            bounty_bonus_kills: 1,
+            bounty_dmg_mult: 1.1,
         }
     }
+}
+
+/// Current bounty: who, since when, and whether the grace window has elapsed (marker live map-wide).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BountyState {
+    pub id: u16,
+    pub since: u32,
+    pub live: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +103,14 @@ pub enum MatchEvent {
     MatchEnd { tick: u32, winner: Option<u16>, reason: EndReason },
     /// Intermission over: host should load map `map`.
     NextMap { tick: u32, map: u32 },
+    /// `id` just crossed `bounty_streak`: the grace window starts (marker not live yet).
+    BountyMarked { tick: u32, id: u16 },
+    /// Grace window elapsed: `id`'s marker is now visible map-wide.
+    BountyLive { tick: u32, id: u16 },
+    /// The bounty died or left: no longer marked.
+    BountyCleared { tick: u32, id: u16 },
+    /// `killer` killed the bounty `bounty`: bonus frags credited.
+    BountyKilled { tick: u32, killer: u16, bounty: u16 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +140,8 @@ pub struct MatchState {
     /// `Some((deadline tick, scores when it began))` while sudden death runs.
     sudden: Option<(u32, [u16; 2])>,
     last_count: Option<(PhaseKind, u32)>,
+    /// The current bounty (docs/bounty.md), `None` outside Live or when nobody holds a long enough streak.
+    bounty: Option<BountyState>,
 }
 
 impl Default for MatchState {
@@ -137,6 +168,7 @@ impl MatchState {
             sudden_death_ticks: 60 * TICK_HZ,
             sudden: None,
             last_count: None,
+            bounty: None,
         }
     }
 
@@ -179,6 +211,55 @@ impl MatchState {
     /// True while a tied team match is in sudden death (for HUDs / the console).
     pub fn in_sudden_death(&self) -> bool {
         self.sudden.is_some()
+    }
+
+    /// The current bounty, if any (docs/bounty.md). `live` is false during the grace window.
+    pub fn bounty(&self) -> Option<BountyState> {
+        self.bounty
+    }
+
+    /// Just the id, for callers (bots) that only care who to hunt, grace or not.
+    pub fn bounty_id(&self) -> Option<u16> {
+        self.bounty.map(|b| b.id)
+    }
+
+    /// Called once per Live tick, after kills/deaths of the tick are resolved (`Player::vitals.kill_streak`
+    /// already up to date): clears a dead/departed bounty, flips the marker live after the grace window, and
+    /// crowns a new bounty when nobody currently holds the title but someone has reached `bounty_streak`.
+    pub fn update_bounty(&mut self, tick: u32, players: &[Player], out: &mut Vec<MatchEvent>) {
+        if self.cfg.bounty_streak == 0 || !matches!(self.phase, Phase::Live { .. }) {
+            if let Some(b) = self.bounty.take() {
+                out.push(MatchEvent::BountyCleared { tick, id: b.id });
+            }
+            return;
+        }
+        if let Some(b) = self.bounty {
+            let cleared = match players.iter().find(|p| p.id == b.id) {
+                None => true,
+                Some(p) => p.vitals.kill_streak == 0,
+            };
+            if cleared {
+                self.bounty = None;
+                out.push(MatchEvent::BountyCleared { tick, id: b.id });
+            }
+        }
+        if let Some(b) = &mut self.bounty {
+            if !b.live && since(tick, b.since) >= self.cfg.bounty_grace_ticks {
+                b.live = true;
+                out.push(MatchEvent::BountyLive { tick, id: b.id });
+            }
+        }
+        if self.bounty.is_none() {
+            // highest streak first, lowest id breaks a tie: deterministic regardless of player order
+            let top = players
+                .iter()
+                .filter(|p| p.vitals.kill_streak >= self.cfg.bounty_streak)
+                .min_by_key(|p| (std::cmp::Reverse(p.vitals.kill_streak), p.id));
+            if let Some(p) = top {
+                self.bounty = Some(BountyState { id: p.id, since: tick, live: false });
+                out.push(MatchEvent::BountyMarked { tick, id: p.id });
+            }
+        }
     }
 
     /// Team kills: current players' frags plus those of players who left.
@@ -335,11 +416,13 @@ impl MatchState {
         self.team_banked = [0; 2];
         self.last_winner_team = None;
         self.sudden = None;
+        self.bounty = None;
         // everyone is "dead" for the selection pass so players are placed one after another, each avoiding
         // those already placed (order = player order: deterministic)
         for p in players.iter_mut() {
             p.vitals.kills = 0;
             p.vitals.deaths = 0;
+            p.vitals.kill_streak = 0;
             p.vitals.dead_until_tick = Some(tick);
             p.combat.powerups.clear();
         }
@@ -366,7 +449,15 @@ mod tests {
     const B: u16 = 2;
 
     fn cfg() -> MatchCfg {
-        MatchCfg { warmup_ticks: 30, time_limit_ticks: 600, intermission_ticks: 20, frag_limit: 3, min_players: 2, mode: GameMode::Deathmatch }
+        MatchCfg {
+            warmup_ticks: 30,
+            time_limit_ticks: 600,
+            intermission_ticks: 20,
+            frag_limit: 3,
+            min_players: 2,
+            mode: GameMode::Deathmatch,
+            ..MatchCfg::default()
+        }
     }
 
     fn server(n: u16) -> Server {

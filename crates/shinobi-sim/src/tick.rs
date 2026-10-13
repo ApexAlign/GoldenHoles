@@ -874,6 +874,19 @@ impl Server {
                 }
             }
         }
+        // the bounty hits a touch harder while marked (docs/bounty.md): tense, not unkillable, and never
+        // changes anyone else's numbers.
+        let bounty_before = self.match_state.bounty();
+        if let Some(b) = bounty_before {
+            let mult = self.match_state.cfg.bounty_dmg_mult;
+            if mult > 1.0 {
+                for h in hits.iter_mut() {
+                    if matches!(h.cause, crate::pvp::Cause::Weapon(_)) && h.attacker == b.id {
+                        h.amount *= mult;
+                    }
+                }
+            }
+        }
         // taking any damage breaks a cloak at once (cloak.rs): a stealth kill is a free first hit, not a free fight
         let cloak_cfg = self.balance.combat.cloak;
         for h in &hits {
@@ -902,8 +915,18 @@ impl Server {
                 if ricochet || wall_run {
                     self.kill_tags.push(KillTag { tick, killer, victim, ricochet, wall_run });
                 }
+                // the bounty just died: whoever landed the kill gets the bonus frags and the callout
+                // (`bounty_before` is the state as of the start of this tick, so a trade still pays out).
+                if bounty_before.map_or(false, |b| b.id == victim) && killer != victim {
+                    let bonus = self.match_state.cfg.bounty_bonus_kills;
+                    if let Some(k) = self.players.iter_mut().find(|p| p.id == killer) {
+                        k.vitals.kills = k.vitals.kills.saturating_add(bonus);
+                    }
+                    self.match_events.push(MatchEvent::BountyKilled { tick, killer, bounty: victim });
+                }
             }
         }
+        self.match_state.update_bounty(tick, &self.players, &mut self.match_events);
         // a dead player's power weapon lies where they fell
         for k in 0..self.players.len() {
             if !self.players[k].vitals.alive() && self.players[k].power.held() {
