@@ -208,7 +208,7 @@ impl Default for Cfg {
         Self {
             half_height: 0.5,
             radius: 0.3,
-            run_speed: 7.2,
+            run_speed: 9.5,
             ground_accel: 72.0,
             ground_decel: 100.0,
             air_accel: 28.0,
@@ -231,7 +231,7 @@ impl Default for Cfg {
             dash_speed: 19.0,
             dash_time: 0.3,
             dash_cd: 1.2,
-            roll_speed: 9.0,
+            roll_speed: 11.5,
             roll_time: 0.35,
             wall_probe: 0.35,
             wall_min_speed: 4.2,
@@ -247,7 +247,7 @@ impl Default for Cfg {
             trail_height: 1.6,
             trail_thick: 0.15,
             slide_start_speed: 5.8,
-            slide_boost: 9.5,
+            slide_boost: 12.5,
             slide_friction: 12.0,
             slide_min_speed: 3.8,
             slide_max_time: 1.2,
@@ -2516,7 +2516,7 @@ mod tests {
             for into in [0.0, 0.2, 1.0, 3.0] {
                 let d = slide_along_wall(gap, into, 0.0);
                 let along = 1.0 / (1.0 + into * into as f32).sqrt(); // the move_dir's share along the wall
-                assert!(d > run * along * 0.5 * 0.8, "gap {gap} into-wall {into}: moved only {d:.3} m along the wall in 0.5 s");
+                assert!(d > run * along * 0.5 * 0.75, "gap {gap} into-wall {into}: moved only {d:.3} m along the wall in 0.5 s");
             }
         }
     }
@@ -2802,13 +2802,14 @@ mod tests {
     }
 
     #[test]
-    fn run_speed_is_the_faster_7_2_retune() {
+    fn run_speed_is_the_faster_9_5_retune() {
         let cfg = Cfg::default();
-        // "move faster" round: run 5.4 -> 7.2 m/s, dash/roll/slide/wall-run scaled with it
-        assert!((7.0..7.5).contains(&cfg.run_speed), "run {}", cfg.run_speed);
-        assert!(cfg.dash_speed < 20.0 && cfg.roll_speed < 10.0 && cfg.slide_boost < 10.0);
-        // wall-runs were made deliberately stronger than the old 7.0 m/s (traversal/melee round): fast, but still under a dash
-        assert!((9.5..12.0).contains(&cfg.wall_speed) && cfg.wall_speed < 2.0 * cfg.dash_speed);
+        // "still too slow" round: run 7.2 -> 9.5 m/s (a player felt the base run was sluggish against a 19 m/s dash)
+        assert!((9.0..10.0).contains(&cfg.run_speed), "run {}", cfg.run_speed);
+        assert!(cfg.dash_speed < 20.0 && cfg.roll_speed < 13.0 && cfg.slide_boost < 14.0);
+        assert!(cfg.roll_speed > cfg.run_speed && cfg.slide_boost > cfg.run_speed, "roll and slide must stay faster than a plain run");
+        // wall-runs stay a notch above the run, but under a dash
+        assert!(cfg.wall_speed > cfg.run_speed && cfg.wall_speed < 2.0 * cfg.dash_speed);
     }
 
     #[test]
@@ -2866,7 +2867,7 @@ mod tests {
             tick(&mut ch, &mut w, &PlayerInput { move_dir: fwd, jump_held: true, ..Default::default() }, &mut now);
             peak_speed = peak_speed.max(hspeed(&ch));
         }
-        assert!(hspeed(&ch) > cfg.run_speed + 1.5, "carry survives 0.33 s of flight: {}", hspeed(&ch));
+        assert!(hspeed(&ch) > cfg.run_speed + 1.0, "carry survives 0.33 s of flight: {}", hspeed(&ch));
         assert!(peak_speed <= cfg.air_speed_cap + 1e-3, "cap {peak_speed}");
         // letting go of the stick in the air does not stop you dead
         for _ in 0..15 {

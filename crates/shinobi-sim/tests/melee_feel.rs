@@ -132,6 +132,8 @@ fn the_cone_and_homing_make_the_katana_connect_far_more_often() {
     eprintln!("MELEE overall: before {:.0}% -> after {:.0}%", rb * 100.0, ra * 100.0);
     // 3 m is already easy (the blade box covers it), 10 m is beyond any swing (blade + lunge + cone = ~7.5 m): the gain is in
     // the mid range, where only the lunge reaches and the box used to slip off a moving target
-    assert!(mid.1 > mid.0 + 0.25, "at 6 m the connect rate must rise clearly ({:.2} -> {:.2})", mid.0, mid.1);
+    // margin re-baselined for the 7.2 -> 9.5 m/s run-speed round: the target's circle-strafe is also faster now, so the
+    // cone's advantage over a plain swing is a bit smaller in absolute terms (still clearly there)
+    assert!(mid.1 > mid.0 + 0.14, "at 6 m the connect rate must rise clearly ({:.2} -> {:.2})", mid.0, mid.1);
     assert!(ra > rb + 0.08, "and overall ({rb:.2} -> {ra:.2})");
 }

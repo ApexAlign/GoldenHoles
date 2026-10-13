@@ -19,7 +19,7 @@ use shinobi_proto::snapshot::{encode_delta, EntityState, MoveKind, Snapshot};
 use shinobi_proto::TICK_DT;
 
 /// Run speed the scripted players move at (the sim default).
-const RUN: f64 = 7.2;
+const RUN: f64 = 9.5;
 
 #[test]
 fn run_constant_matches_the_sim_default() {
@@ -282,7 +282,8 @@ fn drawing_between_ticks_is_smooth_and_stepping_at_60_hz_is_not() {
         let t = run(kind, Draw::Interpolated);
         let (own, rem) = report(&format!("{kind} interpolated (after steps)"), &t, RUN, 0);
         // `hitches` has 40 ms frames (2-3 ticks in one frame): the catch-up burst is real motion, so only p99 is held tight
-        let bound = if kind == "hitches" { 0.5 } else { 0.25 };
+        // bounds scale with run speed (jitter in m grows with it): re-baselined for the 7.2 -> 9.5 m/s run-speed round
+        let bound = if kind == "hitches" { 0.66 } else { 0.33 };
         assert!(own.1 < bound, "{kind}: own camera p99 jitter {} (bound {bound})", own.1);
         assert!(rem.1 < bound.max(0.35), "{kind}: remote player p99 jitter {} (bound {})", rem.1, bound.max(0.35));
     }
@@ -314,8 +315,8 @@ fn display_clock_removes_frame_delta_noise_from_the_motion_without_adding_much_l
         if kind == "60jitter" {
             assert!(s_own.1 < r_own.1 * 0.75 && s_rem.1 < r_rem.1 * 0.75, "smoothing must clearly cut the wobble: {s_own:?} vs {r_own:?}");
         }
-        // Re-baselined with the run speed 5.4 -> 7.2 m/s (jitter in m scales with speed): 0.2 -> 0.27, cut ratio 0.7 -> 0.75.
-        assert!(s_own.1 < 0.27 && s_rem.1 < 0.27, "{kind}: smoothed p99 {s_own:?} {s_rem:?}");
+        // Re-baselined with the run speed 7.2 -> 9.5 m/s (jitter in m scales with speed): 0.27 -> 0.36.
+        assert!(s_own.1 < 0.36 && s_rem.1 < 0.36, "{kind}: smoothed p99 {s_own:?} {s_rem:?}");
     }
 }
 
