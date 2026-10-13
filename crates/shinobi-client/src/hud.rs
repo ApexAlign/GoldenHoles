@@ -1350,10 +1350,10 @@ fn killfeed(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         let glyph = if k.void { Glyph::Void } else { Glyph::of(k.weapon) };
         let col = if k.void { p.magenta } else { tag };
         weapon_icon(out, (0.5, y - 0.009), 0.011, glyph, col.a(fade));
-        out.push(Prim::Text { pos: (0.515, y), text: k.victim.clone(), size: 0.024, color: vc.a(0.9 * fade), align: Align::Left });
-        if k.bounty {
-            out.push(Prim::Text { pos: (0.5, y - 0.017), text: "BOUNTY DOWN".into(), size: 0.014, color: p.gold.a(0.9 * fade), align: Align::Center });
-        }
+        // inline, not a second line: a row this cramped (five of them fit under the brow) has no clear room
+        // above or below for a separate "BOUNTY DOWN" label without colliding with its neighbours.
+        let victim = if k.bounty { format!("{} (BOUNTY)", k.victim) } else { k.victim.clone() };
+        out.push(Prim::Text { pos: (0.515, y), text: victim, size: 0.024, color: vc.a(0.9 * fade), align: Align::Left });
     }
 }
 

@@ -33,10 +33,6 @@ fn run(bots: u16, secs: u32, seed: u64) -> Option<Report> {
     s.set_balance(Balance::demo()).unwrap();
     s.match_state.cfg.frag_limit = u16::MAX;
     s.match_state.cfg.time_limit_ticks = u32::MAX / 2;
-    // bounty hunting (docs/bounty.md) has bots beeline for a single target across the drum's islands and
-    // ramps instead of pathing normally; this test is about safe movement on this level, not the bounty
-    // system, so keep it off.
-    s.match_state.cfg.bounty_streak = 0;
     let mut h = host(seed);
     h.rebuild_perches(&s);
     for i in 0..bots {

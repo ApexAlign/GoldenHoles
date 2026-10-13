@@ -100,9 +100,10 @@ pub struct SkillParams {
     /// Chance per decision window to notice a nearby cloaked foe despite the visual stealth (0 at long range, scaled
     /// up close; `fsm::notices_cloak`). A foe sprinting, dashing or roped is always noticed regardless.
     pub cloak_notice: f32,
-    /// Chance per tick (while a BOUNTY is up and reachable, docs/bounty.md) that a bot breaks off its normal
-    /// nearest-enemy target to go hunt the bounty instead. Rolled fresh each tick (`host::think_all`), so a
-    /// miss just means "not yet", not "never this match".
+    /// Chance, rolled once when a BOUNTY goes live and reachable (docs/bounty.md), that a bot commits to
+    /// hunting them for that bounty's whole run: the bounty looks half as far away in target selection
+    /// (`host::think_all`), a strong pull rather than a hard override, so a committed bot still will not take
+    /// a suicidal detour for a bounty standing right next to a normal, reachable target.
     pub bounty_hunt_skill: f32,
 }
 

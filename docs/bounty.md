@@ -20,12 +20,15 @@ like kills and deaths do.
    bounty themselves gets a heads-up (`"MARKED AS BOUNTY"` on their own HUD). This is the ramp-up the brief asks
    for — becoming the bounty is not an instant ambush. After the window elapses the marker goes **live**
    map-wide (`MatchEvent::BountyLive`).
-4. **The buff.** While marked (grace or live), the bounty's own outgoing weapon damage is multiplied by
+4. **The buff.** While marked (grace or live), the bounty's own outgoing katana / star damage is multiplied by
    `match.bounty_dmg_mult` (default **1.1**, i.e. +10%), applied in `pvp::apply_hits` in the same place and
    under the same condition as the existing momentum/kill-streak bonus: only against an open target. A raised
    shield (block or parry) is judged on the base cut, same as it already is against momentum — the bounty buff
-   never punches through it either. Deliberately modest: tense, not a free pass. It never touches anyone else's
-   numbers and never changes the base combat constants (parry, guard, combo, cloak, bow).
+   never punches through it either. Arrows and fuda tags are resolved against shields earlier (`power_pass.rs`
+   / `star_pass.rs`) and never reach this code, so they are not boosted — a +10% nudge on the katana and stars
+   is enough to feel it without re-opening those weapons' own guard handling. Deliberately modest: tense, not a
+   free pass. It never touches anyone else's numbers and never changes the base combat constants (parry, guard,
+   combo, cloak, bow).
 5. **Cashing in.** Killing the bounty grants the killer `match.bounty_bonus_kills` (default **1**) extra frags on
    top of the normal +1, plus a `MatchEvent::BountyKilled { killer, bounty }` for the announcer log / kill feed.
    This fires for a hazard kill too (ring-out, wall-splat, lightning...) — anything that already credits a
@@ -64,8 +67,8 @@ the exact byte layout.
 
 ## Bots
 
-`shinobi-ai` bots get a tiered chance to break off their normal nearest/weakest-enemy target and go hunt the
-current bounty instead (`SkillParams::bounty_hunt_skill`, mirroring `parry_skill` / `cloak_skill`):
+`shinobi-ai` bots get a tiered chance to commit to hunting the current bounty (`SkillParams::bounty_hunt_skill`,
+mirroring `parry_skill` / `cloak_skill`):
 
 | Tier | `bounty_hunt_skill` |
 |---|---|
@@ -76,10 +79,19 @@ current bounty instead (`SkillParams::bounty_hunt_skill`, mirroring `parry_skill
 The roll (`host::think_all`) only fires once the bounty is **live** (never during the grace window — bots know
 no more than any other player does) and the bounty is inside the bot's normal reachable target pool (so it
 respects the usual team / warmup-engager-cap filtering). It is rolled **once per bounty instance**, not once
-per tick: the seed is `(bot's seed, bot id, the tick the bounty went live)`, so every bot commits or doesn't for
+per tick: the seed is `(bot's seed, bot id, the tick the bounty was marked)`, so every bot commits or doesn't for
 that bounty's whole run, deterministically and reproducibly from a replay. A per-tick roll would have made the
 tiers meaningless — even an Easy bot's 0.2 chance fails for a full second with probability 0.8^60 ~ 1e-6, so
 everyone would converge on the bounty within about a second regardless of skill.
+
+A bot that commits does not blindly beeline for the bounty regardless of what is in the way: the bounty's
+*cost* in the normal nearest/weakest-enemy target scoring is halved (the same "wounded targets look closer"
+scaling the selector already does for low-health enemies), a strong pull rather than a hard override. A bounty
+standing right next to a normal, safely-reachable target still wins out over a bounty the bot would otherwise
+have to path across a hazardous route to reach — the nav grid and the existing reachability filtering never get
+bypassed. An earlier version of this *was* a hard override and reliably walked bots off `levels/ffa_clock.lvl`'s
+islands chasing a bounty across the drum; the cost-discount version was checked clean (zero void deaths) against
+that level and every other movement-safety level test (`isles`, `sky`, `hive`, `split`) with the system fully on.
 
 ## HUD
 
@@ -90,8 +102,9 @@ everyone would converge on the bounty within about a second regardless of skill.
   strip at the bounty's bearing (or a `<<`/`>>` edge chevron, both in the HUD's own bitmap font, when they're
   outside the visible 120-degree window) — the same "always know roughly where" treatment the compass already
   gives cardinal directions.
-* The kill feed tags the row **BOUNTY DOWN** when the bounty falls to an actual killer (a self-inflicted or
-  environmental death still clears the title but draws a plain void row, matching that it pays no bonus).
+* The kill feed appends **(BOUNTY)** to the victim's name when the bounty falls to an actual killer (inline,
+  not a second line — the rows are packed too tightly under the brow for one). A self-inflicted or environmental
+  death still clears the title but draws a plain, untagged void row, matching that it pays no bonus.
 
 All derived client-side from the `Board` fields above plus whatever position the client already has for that
 player id this frame (no extra wire cost for the beacon itself).
