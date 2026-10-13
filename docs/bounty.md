@@ -7,6 +7,10 @@ and either cash in the bonus for killing the hunted player or survive long enoug
 No persistent progression, no account-level stats — it resets with every match (`MatchState::reset_all`) exactly
 like kills and deaths do.
 
+**FFA only.** `MatchState::update_bounty` is a no-op whenever `team_mode` is on: a team match already has its
+own race (team frag count), and this system is built around a target everyone, friend or foe, can see and hunt
+— not a note on a teammate's own HUD. Turning `team_mode` on always clears an existing bounty the same tick.
+
 ## How it works
 
 1. **Streak tracking.** Every player has a server-side `kill_streak` (`pvp::Vitals::kill_streak`): consecutive

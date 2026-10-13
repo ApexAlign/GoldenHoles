@@ -3116,6 +3116,41 @@ mod tests {
     }
 
     #[test]
+    fn bounty_banner_is_silent_during_grace_shows_live_and_always_tells_the_bounty_themselves() {
+        let p = Palette::TRON;
+        let build = |b: BountyHud| Hud::build_with(&HudState { hp: 1.0, bounty: Some(b), ..Default::default() }, &p);
+        let has_text = |prims: &[Prim], needle: &str| prims.iter().any(|x| matches!(x, Prim::Text { text, .. } if text.contains(needle)));
+        // the beacon caret's two lines both sit in y 0.028..=0.036 (`bounty_banner`); nothing else on the HUD
+        // (corner brackets, the compass ticks when `heading` is set, radar...) draws there, so this is a safe,
+        // targeted count rather than every `Prim::Line` the whole build happens to emit.
+        let beacon_lines = |prims: &[Prim]| prims.iter().filter(|x| matches!(x, Prim::Line { a, b, .. } if (0.027..=0.037).contains(&a.1) && (0.027..=0.037).contains(&b.1))).count();
+
+        // grace window, not the bounty: nothing at all (the whole point of the window)
+        let marked_other = build(BountyHud { name: "NEON FOX".into(), is_me: false, live: false, bearing: Some(0.0) });
+        assert!(!has_text(&marked_other, "NEON FOX") && !has_text(&marked_other, "BOUNTY"), "grace window is invisible to others");
+
+        // grace window, the bounty's own screen: a heads-up, but no map-wide marker yet
+        let marked_me = build(BountyHud { name: "NEON FOX".into(), is_me: true, live: false, bearing: None });
+        assert!(has_text(&marked_me, "MARKED AS BOUNTY"));
+        assert!(!has_text(&marked_me, "YOU ARE THE BOUNTY"));
+
+        // live, the bounty's own screen: the big callout, no beacon (you don't need a bearing to yourself)
+        let live_me = build(BountyHud { name: "NEON FOX".into(), is_me: true, live: true, bearing: None });
+        assert!(has_text(&live_me, "YOU ARE THE BOUNTY"));
+        assert_eq!(beacon_lines(&live_me), 0);
+
+        // live, someone else's screen, bearing known and inside the compass window: name + a two-line caret
+        let live_other = build(BountyHud { name: "NEON FOX".into(), is_me: false, live: true, bearing: Some(0.1) });
+        assert!(has_text(&live_other, "BOUNTY: NEON FOX"));
+        assert_eq!(beacon_lines(&live_other), 2, "the beacon is two lines, same construction as the compass caret");
+
+        // live, bearing well outside the visible window: an edge chevron, not the in-window caret
+        let edge = build(BountyHud { name: "NEON FOX".into(), is_me: false, live: true, bearing: Some(std::f32::consts::PI) });
+        assert!(has_text(&edge, ">>") || has_text(&edge, "<<"));
+        assert_eq!(beacon_lines(&edge), 0);
+    }
+
+    #[test]
     fn callsigns_are_stable_and_distinct_and_the_rain_stays_in_its_corner() {
         let names: std::collections::HashSet<String> = (0..144u16).map(callsign).collect();
         assert_eq!(names.len(), 144, "144 ids, 144 distinct callsigns");

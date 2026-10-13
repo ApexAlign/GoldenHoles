@@ -227,7 +227,11 @@ impl MatchState {
     /// already up to date): clears a dead/departed bounty, flips the marker live after the grace window, and
     /// crowns a new bounty when nobody currently holds the title but someone has reached `bounty_streak`.
     pub fn update_bounty(&mut self, tick: u32, players: &[Player], out: &mut Vec<MatchEvent>) {
-        if self.cfg.bounty_streak == 0 || !matches!(self.phase, Phase::Live { .. }) {
+        // FFA only (docs/bounty.md): a team match already has a race (team frag count) and a bonus here would
+        // just shift it; a teammate's own streak marking them on their own team's HUD would be a strange note
+        // to add to an already-cooperative mode, not the "visible to everyone, friend or foe" FFA stakes this
+        // system is for.
+        if self.cfg.bounty_streak == 0 || self.team_mode || !matches!(self.phase, Phase::Live { .. }) {
             if let Some(b) = self.bounty.take() {
                 out.push(MatchEvent::BountyCleared { tick, id: b.id });
             }
@@ -648,6 +652,20 @@ mod tests {
     fn bounty_streak_zero_disables_the_whole_system() {
         let mut s = server(2);
         s.match_state.cfg.bounty_streak = 0;
+        live(&mut s);
+        player(&mut s, A).vitals.kill_streak = 99;
+        let mut ev = Vec::new();
+        step(&mut s, 5, &mut ev);
+        assert!(s.match_state.bounty().is_none());
+        assert!(!ev.iter().any(|e| matches!(e, MatchEvent::BountyMarked { .. })));
+    }
+
+    #[test]
+    fn team_mode_disables_the_bounty_too() {
+        // FFA only (docs/bounty.md): a team match already has its own race (team frag count), and this system
+        // is built around a bounty everyone, friend or foe, can see and hunt -- not a note on a teammate's HUD.
+        let mut s = server(4); // 1,3 Cyan; 2,4 Orange (auto-balance alternates)
+        s.enable_teams(50);
         live(&mut s);
         player(&mut s, A).vitals.kill_streak = 99;
         let mut ev = Vec::new();
