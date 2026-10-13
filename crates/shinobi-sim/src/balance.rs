@@ -133,6 +133,25 @@ pub struct KatanaBalance {
     pub whiff_recover: f32,
 }
 
+/// Flow: a streak of chained traversal moves (wall-run, hook, dash, wall-jump) without a ground reset
+/// (`combat/flow.rs`, docs/traversal_melee.md "Flow"). Three escalating tiers: moves needed, move-speed multiplier,
+/// katana damage bonus on a landed hit. A tier's move count 0 turns it (and every tier after it) off.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowBalance {
+    pub tier1_moves: u32,
+    pub tier2_moves: u32,
+    pub tier3_moves: u32,
+    pub tier1_speed: f32,
+    pub tier2_speed: f32,
+    pub tier3_speed: f32,
+    pub tier1_dmg: f32,
+    pub tier2_dmg: f32,
+    pub tier3_dmg: f32,
+    /// Flat horizontal speed (m/s) at or below which landing on the ground is a full stop (resets the streak); a
+    /// landing roll / slide above it keeps going.
+    pub stop_speed: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatBalance {
     pub shuriken: ShurikenBalance,
@@ -141,6 +160,7 @@ pub struct CombatBalance {
     /// Power weapons: the yumi (every player's primary bow) and the explosive tag (pickup) (`power.rs`, docs/powerups.md).
     pub power: crate::power::PowerCfg,
     pub katana: KatanaBalance,
+    pub flow: FlowBalance,
     /// Stealth cloak (`cloak.rs`, docs/melee.md "Cloak").
     pub cloak: crate::cloak::CloakCfg,
     /// Horizontal speed (m/s) a hit gives an enemy, before its own `knockback_scale`.
@@ -588,6 +608,7 @@ impl Default for Balance {
                 power: crate::power::PowerCfg::default(),
                 cloak: crate::cloak::CloakCfg::default(),
                 katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0, whiff_recover: 0.0 },
+                flow: FlowBalance { tier1_moves: 0, tier2_moves: 0, tier3_moves: 0, tier1_speed: 1.0, tier2_speed: 1.0, tier3_speed: 1.0, tier1_dmg: 0.0, tier2_dmg: 0.0, tier3_dmg: 0.0, stop_speed: 1.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
                 knockback_ultimate: 12.0,
@@ -768,6 +789,19 @@ impl Balance {
         b.combat.katana.cancel = 1.0;
         b.combat.katana.cancel_cost = 0.4;
         b.combat.katana.whiff_recover = 0.45; // commit: a missed cut leaves you open ~0.45 s (cancel into dash / hook / wall jump still frees it)
+        // flow (docs/traversal_melee.md "Flow"): chain 2 / 4 / 6 traversal moves (wall-run, hook, dash, wall-jump) with no
+        // ground reset for a modest +3 / +6 / +10 % move speed and +5 / +10 / +15 % on your next katana hits; a hit taken
+        // or a full ground stop (not a landing roll into the next move) resets it
+        b.combat.flow.tier1_moves = 2;
+        b.combat.flow.tier2_moves = 4;
+        b.combat.flow.tier3_moves = 6;
+        b.combat.flow.tier1_speed = 1.03;
+        b.combat.flow.tier2_speed = 1.06;
+        b.combat.flow.tier3_speed = 1.10;
+        b.combat.flow.tier1_dmg = 0.05;
+        b.combat.flow.tier2_dmg = 0.10;
+        b.combat.flow.tier3_dmg = 0.15;
+        b.combat.flow.stop_speed = 1.0;
         // forgiving blade: any enemy within 38 degrees of the swing and 1.0 m past the blade's reach is hit (target-centred)
         b.combat.katana.cone_deg = 38.0;
         b.combat.katana.cone_extra = 1.0;
@@ -946,6 +980,17 @@ impl Balance {
         k.cancel = b.cancel;
     }
 
+    /// Flow streak config (`combat/flow.rs`) from the `combat.flow.*` tunables.
+    pub fn flow_cfg(&self) -> crate::combat::flow::FlowCfg {
+        let b = &self.combat.flow;
+        crate::combat::flow::FlowCfg {
+            tier_moves: [b.tier1_moves, b.tier2_moves, b.tier3_moves],
+            tier_speed: [b.tier1_speed, b.tier2_speed, b.tier3_speed],
+            tier_dmg: [b.tier1_dmg, b.tier2_dmg, b.tier3_dmg],
+            stop_speed: b.stop_speed,
+        }
+    }
+
     pub fn match_cfg(&self) -> MatchCfg {
         let m = &self.matches;
         MatchCfg {
@@ -1087,6 +1132,16 @@ impl Balance {
         s!("combat.katana.cancel_cost", F, self.combat.katana.cancel_cost);
         s!("combat.katana.whiff_recover", F, self.combat.katana.whiff_recover);
         s!("combat.katana.cancel", F, self.combat.katana.cancel);
+        s!("combat.flow.tier1_moves", U, self.combat.flow.tier1_moves);
+        s!("combat.flow.tier2_moves", U, self.combat.flow.tier2_moves);
+        s!("combat.flow.tier3_moves", U, self.combat.flow.tier3_moves);
+        s!("combat.flow.tier1_speed", F, self.combat.flow.tier1_speed);
+        s!("combat.flow.tier2_speed", F, self.combat.flow.tier2_speed);
+        s!("combat.flow.tier3_speed", F, self.combat.flow.tier3_speed);
+        s!("combat.flow.tier1_dmg", F, self.combat.flow.tier1_dmg);
+        s!("combat.flow.tier2_dmg", F, self.combat.flow.tier2_dmg);
+        s!("combat.flow.tier3_dmg", F, self.combat.flow.tier3_dmg);
+        s!("combat.flow.stop_speed", F, self.combat.flow.stop_speed);
         s!("combat.shuriken.piece_damage", F, self.combat.shuriken.piece_damage);
         s!("combat.shuriken.energy_max", F, self.combat.shuriken.energy_max);
         s!("combat.shuriken.energy_cost", F, self.combat.shuriken.energy_cost);

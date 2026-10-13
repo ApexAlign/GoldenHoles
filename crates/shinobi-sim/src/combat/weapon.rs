@@ -29,6 +29,9 @@ pub struct FireCtx<'a> {
     pub mark: bool,
     /// Which throwable a plain press sends (`StarKind::Standard` unless the player cycled to a variant).
     pub star: super::stars::StarKind,
+    /// Flow streak damage multiplier (1 = no bonus; `combat::flow`, docs/traversal_melee.md "Flow"). The katana
+    /// stacks it on top of its own combo / strike bonuses.
+    pub flow_dmg_mult: f32,
 }
 
 pub struct TickCtx<'a> {
@@ -218,6 +221,7 @@ impl Loadout {
         events: &mut Vec<CombatEvent>,
         allies: &[ColliderHandle],
         lock: Option<super::aim_assist::LockHint>,
+        flow_dmg_mult: f32,
     ) {
         for s in &mut self.slots {
             s.cooldown_left = (s.cooldown_left - dt).max(0.0);
@@ -228,7 +232,7 @@ impl Loadout {
                 Trigger::Secondary => input.slice,
             };
             if s.weapon.gate(pressed, dt, s.cooldown_left <= 0.0) {
-                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, moves: self.moves, mark: input.mark && s.weapon.trigger() == Trigger::Primary, star: input.star };
+                let mut ctx = FireCtx { world, ch, aim, now, input: player_input, events, allies, lock, moves: self.moves, mark: input.mark && s.weapon.trigger() == Trigger::Primary, star: input.star, flow_dmg_mult };
                 if s.weapon.fire(&mut ctx) {
                     s.cooldown_left = s.weapon.cooldown_after();
                 }

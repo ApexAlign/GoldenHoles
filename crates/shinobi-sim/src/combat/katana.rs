@@ -453,6 +453,8 @@ impl Weapon for Katana {
         let stacks = self.streak.min(c.combo_max.max(0.0) as u32) as f32;
         move_mult *= 1.0 + c.combo_dmg * (stacks - 2.0).max(0.0);
         self.recover = (self.recover * (1.0 - c.combo_speed * stacks)).max(0.12);
+        // flow streak (docs/traversal_melee.md "Flow"): a traversal-move bonus stacking on top of the combat ones above
+        move_mult *= ctx.flow_dmg_mult;
         let mut dir = ctx.aim.flat_forward();
 
         // Walls stop both lunge and blade: truncate the longest possible reach at the first solid.

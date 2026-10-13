@@ -21,6 +21,7 @@ use rapier3d::prelude::*;
 use crate::character::{CharacterSystem, PhysicsWorld, PlayerInput, GROUP_ENEMY, GROUP_TRAIL};
 
 pub mod aim_assist;
+pub mod flow;
 pub mod katana;
 pub mod powerup;
 pub mod shuriken;
@@ -211,6 +212,9 @@ pub struct CombatSystem {
     pub suppress_lock: bool,
     /// Hitboxes never acquired as a lock-on target (they still take hits); unused, kept for hiding effects.
     pub hidden: Vec<ColliderHandle>,
+    /// Flow streak: chained traversal moves (wall-run, hook, dash, wall-jump) without a ground reset
+    /// (docs/traversal_melee.md, "Flow"). Feeds a move-speed multiplier and a katana damage bonus.
+    pub flow: flow::Flow,
 }
 
 impl CombatSystem {
@@ -234,6 +238,7 @@ impl CombatSystem {
             lock_edge: None,
             suppress_lock: false,
             hidden: Vec::new(),
+            flow: flow::Flow::new(flow::FlowCfg::default()),
         }
     }
 
@@ -257,6 +262,7 @@ impl CombatSystem {
             max_radius: b.combat.ultimate_max_radius,
             damage: b.combat.ultimate_damage,
         };
+        self.flow.apply_balance(b.flow_cfg());
     }
 
     /// Server-side move context for this tick (see `MoveCtx`); call before `update`.
@@ -274,9 +280,20 @@ impl CombatSystem {
         self.loadout.combo_count()
     }
 
-    /// The owner took damage: the combo counter and wall chain reset.
+    /// The owner took damage: the combo counter, wall chain and flow streak reset.
     pub fn on_hurt(&mut self) {
         self.loadout.on_hurt();
+        self.flow.on_hurt();
+    }
+
+    /// Flow streak (chained traversal moves) for the HUD.
+    pub fn flow_streak(&self) -> u32 {
+        self.flow.streak()
+    }
+
+    /// Flow tier (0..3) for the HUD / VFX.
+    pub fn flow_tier(&self) -> u32 {
+        self.flow.tier()
     }
 
     /// Star energy as (charges, pool size, locked out); `None` when the balance has no pool.
@@ -331,7 +348,21 @@ impl CombatSystem {
         if (player_input.dash_pressed && ch.dash_ready()) || hook || (player_input.jump_pressed && ch.wall_normal().is_some()) {
             self.loadout.cancel_slice();
         }
-        self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint);
+        // Flow (docs/traversal_melee.md "Flow"): a streak of chained traversal moves. `ch` is one tick old here
+        // (this runs before `CharacterSystem::update`), same lag the hook / wall-jump air-cut bonuses already live
+        // with, so the edges below read as "just happened" for exactly one tick.
+        let grounded = ch.state == crate::character::MoveState::Grounded;
+        let flat_speed = (ch.vel.x * ch.vel.x + ch.vel.z * ch.vel.z).sqrt();
+        self.flow.ground_check(grounded, flat_speed);
+        let moved = ch.dash_age <= 1e-6
+            || ch.wallrun_age <= 1e-6
+            || ch.walljump_age <= 1e-6
+            || matches!(ch.grapple_event, crate::character::GrappleEvent::Attached { .. });
+        if moved {
+            self.flow.add_move();
+        }
+        player_input.speed_boost = (self.flow.speed_mult() - 1.0).max(0.0);
+        self.loadout.update(dt, now, input, aim, world, ch, player_input, events, &self.allies, hint, self.flow.dmg_mult());
         self.powerups.update(dt, input, aim, world, ch.body, events);
     }
 }
