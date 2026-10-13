@@ -1262,6 +1262,9 @@ mod tests {
         s.match_state.cfg.intermission_ticks = 90;
         s.match_state.cfg.frag_limit = 4;
         s.match_state.cfg.time_limit_ticks = 5400;
+        // bounty hunting (docs/bounty.md) would have Hard bots gang up on whoever gets ahead, changing this
+        // scripted brawl's pacing; this test is about match flow / telemetry wiring, not the bounty system.
+        s.match_state.cfg.bounty_streak = 0;
         assert!(!s.match_state.team_mode, "FFA is the default");
         for id in 1..=8u16 {
             let at = s.pick_spawn(None);
