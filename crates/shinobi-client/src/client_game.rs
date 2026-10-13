@@ -388,6 +388,10 @@ pub struct LocalFx {
     pub slice_charge: f32,
     /// Skill combo counter: connected katana cuts in a row (0 = none).
     pub combo: u32,
+    /// Flow streak: chained traversal moves (wall-run, hook, dash, wall-jump) without a ground reset (0 = none).
+    pub flow: u32,
+    /// Flow tier (0..3) driving the speed-line VFX floor (`vm::streak_target`).
+    pub flow_tier: u32,
     pub throw_cooldown: f32,
     // -- edges since the previous `view()`; a tick that falls between two views is never lost --
     pub jumped: bool,
@@ -1512,6 +1516,8 @@ impl ClientGame {
             fx.slice_cooldown = (p.ch.slice_cooldown() / p.katana.cooldown.max(1e-3)).clamp(0.0, 1.0);
             fx.slice_charge = p.combat.slice_charge();
             fx.combo = p.combat.combo_count();
+            fx.flow = p.combat.flow_streak();
+            fx.flow_tier = p.combat.flow_tier();
         }
         fx.throw_cooldown = (self.throw_cd_left / ShurikenCfg::default().cooldown.max(1e-3)).clamp(0.0, 1.0);
         let (build_ghost, blocks) = match (self.pred.as_mut(), own_id) {

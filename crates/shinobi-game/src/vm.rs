@@ -33,7 +33,9 @@ pub fn recoil_kick(left: f32) -> (f32, f32) {
 }
 
 /// Target speed-line intensity 0..1: dash is full, a grapple pull strong, plain running fades in above ~14 m/s.
-pub fn streak_target(dashing: bool, grappling: bool, speed: f32) -> f32 {
+/// A flow streak (`combat::flow`, docs/traversal_melee.md "Flow") raises the floor by tier (0..3), so the lines
+/// read as "building toward something" through a long chain of wall-runs / hooks / dashes, not just the latest move.
+pub fn streak_target(dashing: bool, grappling: bool, speed: f32, flow_tier: u32) -> f32 {
     let run = ((speed - 14.0) / 18.0).clamp(0.0, 0.45);
     let mut t = run;
     if grappling {
@@ -41,6 +43,9 @@ pub fn streak_target(dashing: bool, grappling: bool, speed: f32) -> f32 {
     }
     if dashing {
         t = 1.0;
+    }
+    if flow_tier > 0 {
+        t = t.max(0.25 + 0.18 * flow_tier.min(3) as f32);
     }
     t
 }
@@ -521,7 +526,7 @@ pub fn update(
 
     // speed lines (dash / grapple / fast running), smoothed so they ease in and out
     {
-        let target = streak_target(l.dashing, l.grappling, l.speed);
+        let target = streak_target(l.dashing, l.grappling, l.speed, l.flow_tier);
         vm.streak += (target - vm.streak) * (1.0 - (-9.0 * dt).exp());
         let (pos, col, idx) = streak_quads(time.elapsed_secs(), vm.streak, 16.0 / 9.0, 0.8, local.0);
         if let Some(mut m) = meshes.get_mut(&ents.streaks_mesh) {
@@ -681,9 +686,14 @@ mod tests {
         let (pos, col, _) = streak_quads(2.0, 1.0, 1.78, 0.8, [1.0; 3]);
         assert!(pos.iter().all(|p| p[0].abs() < 1.45 && p[1].abs() < 0.82 && p[2] == -0.8), "inside the screen");
         assert!(col.iter().all(|c| (0.0..=1.0).contains(&c[3])));
-        assert!(streak_target(true, false, 0.0) == 1.0 && streak_target(false, true, 0.0) > 0.5);
-        assert!(streak_target(false, false, 30.0) > streak_target(false, false, 16.0));
-        assert_eq!(streak_target(false, false, 5.0), 0.0);
+        assert!(streak_target(true, false, 0.0, 0) == 1.0 && streak_target(false, true, 0.0, 0) > 0.5);
+        assert!(streak_target(false, false, 30.0, 0) > streak_target(false, false, 16.0, 0));
+        assert_eq!(streak_target(false, false, 5.0, 0), 0.0);
+        // flow raises the floor by tier, growing as the streak builds, even standing still
+        assert!(streak_target(false, false, 0.0, 1) > 0.0);
+        assert!(streak_target(false, false, 0.0, 2) > streak_target(false, false, 0.0, 1));
+        assert!(streak_target(false, false, 0.0, 3) > streak_target(false, false, 0.0, 2));
+        assert!(streak_target(true, false, 0.0, 3) == 1.0, "dash still wins outright");
     }
 
     #[test]

@@ -392,6 +392,8 @@ pub struct HudState {
     pub slice_ready: f32,    // 0..=1 katana
     /// Skill combo counter (connected cuts in a row); shown from 2.
     pub combo: u32,
+    /// Flow streak (chained traversal moves with no ground reset); shown from 2 (docs/traversal_melee.md "Flow").
+    pub flow: u32,
     /// Crosshair spread 0..=1 (moving / airborne / just threw): widens the reticle gap.
     pub spread: f32,
     pub ult: f32,           // 0..=1 (1 = ready)
@@ -1234,6 +1236,17 @@ impl Hud {
                 text: format!("x{} COMBO", s.combo),
                 size: 0.022 + 0.002 * s.combo.min(6) as f32,
                 color: if hot { p.gold.a(0.95) } else { p.cyan.a(0.85) },
+                align: Align::Center,
+            });
+        }
+        // flow streak: same visual language as the combo counter, just under it; grows and turns gold at the top tier
+        if s.flow >= 2 {
+            let hot = s.flow >= 6;
+            out.push(Prim::Text {
+                pos: (0.5, 0.60),
+                text: format!("x{} FLOW", s.flow),
+                size: 0.018 + 0.0015 * s.flow.min(8) as f32,
+                color: if hot { p.gold.a(0.9) } else { p.cyan.a(0.75) },
                 align: Align::Center,
             });
         }

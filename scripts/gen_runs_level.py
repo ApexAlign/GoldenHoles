@@ -9,7 +9,9 @@ by a RUN WALL: a 7 m tall panel standing at the deck edge, 4 m past the platform
 face, wall-run (11 m/s for 1.5 s = 16.5 m) over the gap, and hook the ANCHOR slab hung 11 m over the middle of each gap to carry on
 (the long gaps of legs 3 and 4 outlast a single wall-run: hook, or dash / double jump at the end). Falling short drops you on the
 ground floor, where twelve HOOK TOWERS (20 m; the central pair is 30 m and carries the bows) and six 22 degree ramps at the turn pads
-bring you back up. Spawns sit on the decks, so a fight starts in the air.
+bring you back up. Two small FLOW CHAIN anchor plates sit between the towers on each of the z=-14 / z=14 rows, at 25 m
+(between the 20 m and 30 m tower tops), so a hook -> hook -> hook run can cross a whole row of towers without a ground
+stop (docs/traversal_melee.md "Flow"). Spawns sit on the decks, so a fight starts in the air.
 
 Cfg limits used: single jump 1.6 m, jump + double ~2.8 m, wall-run 11 m/s for 1.5 s, ramps <= 24 degrees, grapple 1000 m.
 Tests: crates/shinobi-sim/tests/arena_runs.rs
@@ -111,6 +113,13 @@ for z in (-42.0, -14.0, 14.0, 42.0):
         L.perm(x, top / 2, z, 1.5, top / 2, 1.5)
         L.perm(x, top + 0.35, z, 4.0 if top == 30.0 else 3.0, 0.35, 4.0 if top == 30.0 else 1.5)
         TOWERS.append((x, z, top + 0.7))
+
+# ---------------------------------------------------------------------------------------------- flow chain
+L.section("flow chain: two small floating anchor plates between the central hook towers on each side row, so a "
+          "hook -> hook -> hook run crosses a whole row (-60 -> -30 -> 0 -> 30 -> 60) without ever touching the ground")
+for z in (-14.0, 14.0):
+    for x in (-30.0, 30.0):
+        L.perm(x, 25.0, z, 1.6, 0.35, 1.6)
 
 # ---------------------------------------------------------------------------------------------- spawns / pickups
 for k, zc in enumerate(LEG_Z):

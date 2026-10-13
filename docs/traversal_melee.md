@@ -123,6 +123,33 @@ plus wall slashes. The stuck-bot tests stay green on ffa, ffa_xl and ffa_small.
 - Review frames (offscreen): `docs/screens/traversal_long_hook_strike_ring.png`, `docs/screens/traversal_wall_slash_cue.png`
   (`SHOT_FX=longrope`, `SHOT_FX=wallslash`).
 
+## Flow
+
+A streak of chained traversal moves (wall-run, hook, dash, wall-jump) run back-to-back with no ground reset in
+between. Same shape as the katana combo counter (`combat/katana.rs`'s `streak`), applied to movement instead of
+combat, and it feeds straight back into the fight: traversal and combat reward each other instead of being two
+separate games. Lives in `combat/flow.rs`, tuned by `combat.flow.*` Balance keys.
+
+- **Builds**: a dash (not a ground roll), a fresh wall-run entry, a hook attach, or a wall-jump each add one to the
+  streak, however they chain. No new wire field: the streak is derived every tick from `CharacterSystem`'s own age
+  counters (`dash_age`, `wallrun_age`, the existing `hook_age`-adjacent `GrappleEvent::Attached`, `walljump_age`),
+  the same way the hook / wall-jump air-cut bonuses already read them.
+- **Resets** on a hit taken (same moment the katana combo resets), or landing on the ground and coming to a full
+  stop (`stop_speed`, flat m/s). A landing roll or a slide straight into the next move does **not** reset it: only
+  a dead stop does.
+- **Tiers** (demo balance): 2 / 4 / 6 chained moves give +3 % / +6 % / +10 % move speed (`tier*_speed`, stacks with
+  the plain run, it is additive-only on top: the base run/dash numbers are untouched) and +5 % / +10 % / +15 %
+  katana damage on hits landed while that tier is active (`tier*_dmg`, multiplies in alongside `combo_dmg`,
+  `hook_air_mult`, `walljump_air_mult` rather than replacing any of them). All three tiers off (0 move counts) by
+  default; `Balance::demo()` turns them on.
+- **HUD / VFX**: an `xN FLOW` counter under the crosshair (mirrors the `xN COMBO` counter, `hud.rs`), and the
+  existing dash/grapple speed-lines (`shinobi-game/src/vm.rs`'s `streak_target`) get a higher floor by tier, so the
+  streaks keep building visually through a long chain instead of just flashing once per move.
+
+Tests: `combat/flow.rs`'s unit tests (tier unlocks, ground-stop vs. landing-roll reset, hit-taken reset, tiers off
+by default) and `crates/shinobi-sim/tests/flow.rs` (end-to-end: chaining wall-run -> hook -> dash raises the
+streak and the run speed; a full stop or a hit drops it back to the base).
+
 ## Tuning cheatsheet
 
 - Hook too fast / slow: `grapple_far_speed` (top speed), `grapple_speed_per_m` (how soon it eases down: top speed / this = metres out).
@@ -130,3 +157,5 @@ plus wall slashes. The stuck-bot tests stay green on ffa, ffa_xl and ffa_small.
 - Wall-run too sticky / long: `wall_max_time`, `wall_coast_burn`, `wall_steer`.
 - Climbing too easy: `wall_climb_speed`, `wall_front_min_speed`.
 - Clash too punishing: `clash_mult`, `clash_knock`, `clash_window`.
+- Flow too strong / weak: `combat.flow.tier*_speed`, `tier*_dmg`; too easy / hard to build: `combat.flow.tier*_moves`,
+  `stop_speed`; off entirely: set all three `tier*_moves` to 0.
