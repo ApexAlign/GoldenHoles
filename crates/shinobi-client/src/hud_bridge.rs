@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::hud::{
     BuildHud, BuildSlot, GrappleHud, KilledBy, Winner, SPAWN_SHIELD_SECS,
-    bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, BountyHud, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
+    bearing_to, callsign, damage_kind, killfeed_tick, project, score_rows_from_entries, AllyTag, HudFx, HudState, KillEntry, LocalStats, RadarPing, TargetHud,
     Telemetry, TeamScores,
     BROW_H, CHIN_TOP, KILLFEED_MAX, SIDE_CLEAR,
 };
@@ -553,7 +553,35 @@ impl HudBridge {
                 let (since, breaking) = view.lock.map_or((1.0, false), |lk| (lk.t_since_phase, lk.phase == shinobi_sim::combat::aim_assist::LockPhase::Break));
                 // melee cue: the target is inside cutting reach (blade + lunge) and the lock holds, or its strike window is open
                 let strike = if breaking { 0 } else if target_open && dist <= MELEE_CUE_RANGE * 1.6 { 2 } else if l.locked && dist <= MELEE_CUE_RANGE { 1 } else { 0 };
-                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp, dist, progress: l.progress, locked: l.locked, since, breaking, lead, strike });
+                // fire assist: whichever weapon is in hand is primed to connect THIS instant -- katana off its
+                // swing cooldown, a star charged and off its throw cooldown, or the bow at full draw -- and the
+                // lock holds. Reuses the same cooldown/draw fractions the energy and power HUDs already read.
+                let katana_ready = f.slice_cooldown <= 0.02 && dist <= MELEE_CUE_RANGE;
+                let star_ready = f.throw_cooldown <= 0.02 && view.star.map_or(true, |(charges, _, locked)| !locked && charges >= 1.0);
+                // the bow is not instant: a full draw only earns fire assist when the target's current drift,
+                // carried for the arrow's own flight time (dist / speed -- the same travel-time math the zoom
+                // HUD's drop tick already does in `zoom.rs` / `power::arrow_drop_angle`), still lands inside the
+                // lock's own cone by the time the arrow gets there. Otherwise "LOCKED" promises a shot the target
+                // can simply walk out of, which is worse than no cue at all. Lateral drift only: the vertical
+                // drop is a separate, already-visible aid (the drop-tick HUD mark), not something the bracket
+                // needs to re-judge. Katana (instant) and the star (fast, and already carries its own lead
+                // marker) keep the simpler cooldown-only rule.
+                let bow_ready = view.power.as_ref().is_some_and(|pw| pw.kind == shinobi_sim::power::PowerKind::Yumi && pw.full) && {
+                    let yumi_speed = shinobi_sim::power::PowerCfg::default().yumi.speed.max(1.0);
+                    let flight_t = dist / yumi_speed;
+                    let lateral_speed = (vel[0] * vel[0] + vel[2] * vel[2]).sqrt();
+                    // absolute drift (metres), not an angle: at constant arrow speed the ANGULAR miss from a
+                    // steady target velocity is range-independent (flight time grows with range, cancelling it
+                    // out of the ratio), but the arrow's effective hit window is a fixed body-ish width, so what
+                    // actually turns a "locked" shot into a miss is the drift in metres outgrowing that width as
+                    // range (and so flight time) goes up. Reuses `CONE_MIN_WIDTH`, the same body-at-the-target
+                    // width `aim_assist` already leans on for its own close-range cone widening -- no new tuning
+                    // constant invented for this.
+                    let drift_m = lateral_speed * flight_t;
+                    drift_m <= shinobi_sim::combat::aim_assist::CONE_MIN_WIDTH
+                };
+                let fire_ready = !breaking && l.locked && (katana_ready || star_ready || bow_ready);
+                hs.target = Some(TargetHud { pos, name: callsign(l.target), colour, hp: target_hp, dist, progress: l.progress, locked: l.locked, since, breaking, lead, strike, fire_ready });
             }
         }
         if lock.is_none() {
@@ -1119,6 +1147,56 @@ mod tests {
         let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
         assert!(t.locked && t.name == callsign(5) && (t.dist - 20.0).abs() < 0.1);
         assert!((t.pos.0 - 0.5).abs() < 0.02, "dead ahead sits at the centre column");
+    }
+
+    #[test]
+    fn fire_ready_tracks_weapon_cooldowns_while_locked() {
+        use crate::client_game::LockOn;
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -20.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0; 3], blend: 1.0 });
+        // both weapons fresh (default cooldowns): primed to connect the instant the lock lands
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(t.fire_ready, "nothing on cooldown: fire assist should be up");
+        // both weapons mid-recovery: locked but not primed
+        v.fx.slice_cooldown = 1.0;
+        v.fx.throw_cooldown = 1.0;
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(!t.fire_ready, "mid-recovery on both weapons: no fire assist");
+    }
+
+    #[test]
+    fn fire_ready_for_the_bow_respects_the_arrows_travel_time() {
+        use crate::client_game::LockOn;
+        use crate::power_view::PowerView;
+        use shinobi_sim::combat::aim_assist::LockPhase;
+        use shinobi_sim::power::PowerKind;
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.eye = [0.0, 1.5, 0.0];
+        v.camera.fov = 90.0;
+        // put the player off the katana's and the star's own cooldown windows so only the bow's own readiness
+        // (and its travel-time check) decides `fire_ready` here
+        v.fx.slice_cooldown = 1.0;
+        v.fx.throw_cooldown = 1.0;
+        let bow_full = || PowerView { kind: PowerKind::Yumi, ammo: 1, ammo_max: 1, left: 1.0, left_secs: 1.0, draw: 1.0, full: true, cooldown: 0.0, reload: 1.0, up: true, live_tags: 0, armed_tags: 0 };
+        // far enough that the arrow's flight time is long, target holding still: the shot lands, fire assist is up
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -80.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0, 0.0, 0.0], blend: 1.0 });
+        v.power = Some(bow_full());
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(t.fire_ready, "a still target at range: the arrow has time to arrive, still a sure hit");
+        // same range, but the target is sprinting across the lock: by the time the arrow gets there it has
+        // drifted out of the lock cone -- the bracket must not promise a landed shot
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -80.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [8.0, 0.0, 0.0], blend: 1.0 });
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(!t.fire_ready, "fast lateral drift over a long flight time: not a sure hit, no fire assist");
+        // up close the same drift barely moves the target before the arrow arrives: fire assist holds
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -6.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [8.0, 0.0, 0.0], blend: 1.0 });
+        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
+        assert!(t.fire_ready, "close range: short flight time, the same drift barely matters");
     }
 
     #[test]
