@@ -16,6 +16,7 @@ use shinobi_client::client_game::RenderView;
 use shinobi_sim::combat::aim_assist::LockEdge;
 use shinobi_sim::combat::SlashKind;
 use shinobi_sim::events::NetEvent;
+use shinobi_proto::gameplay::KIND_SLASH;
 
 use crate::hit_audio;
 use crate::mixer::step_interval;
@@ -105,6 +106,10 @@ pub struct Frame {
     pub slide_started: bool,
     /// Heavy-cut charge 0..1.
     pub slice_charge: f32,
+    /// Flow tier (0..3, `combat::flow`): a tier-up gets its own stinger, distinct from the kill streak note.
+    pub flow_tier: u32,
+    /// Current BOUNTY (docs/bounty.md) as of this frame's board: `(id, live)`, `None` while nobody holds it.
+    pub bounty_now: Option<(u16, bool)>,
     /// Star energy (charges, pool, locked out).
     pub star: Option<(f32, f32, bool)>,
     pub star_refused: bool,
@@ -137,6 +142,11 @@ pub struct Frame {
     pub remote_deaths: Vec<[f32; 3]>,
     // -- reliable events, own --
     pub my_kills: u32,
+    /// Victims we killed this frame (almost always 0 or 1 entries): used to tell a bounty kill from a plain one.
+    pub my_kill_victims: Vec<u16>,
+    /// One of this frame's dealt hits was a kill, a bonus hit, with a katana, while the cloak button was held:
+    /// a stealth kill (`cloak.rs`).
+    pub stealth_kill: bool,
     /// We died (the killer id, 0 = the void / an obstacle).
     pub my_death: Option<u16>,
     pub respawned: bool,
@@ -190,6 +200,9 @@ impl Frame {
             landing_speed: f.landing_speed,
             slide_started: f.slide_started,
             slice_charge: f.slice_charge,
+            flow_tier: f.flow_tier,
+            bounty_now: v.board.as_ref().and_then(|b| (b.bounty != 0).then_some((b.bounty, b.bounty_live))),
+            stealth_kill: f.cloak_held && v.hits.iter().any(|h| !h.taken && h.kill && h.bonus && h.kind == KIND_SLASH),
             star: v.star,
             star_refused: v.star_refused,
             blocking: v.blocking,
@@ -222,6 +235,7 @@ impl Frame {
                         fr.my_death = Some(*killer as u16);
                     } else if *killer as u16 == own_id {
                         fr.my_kills += 1;
+                        fr.my_kill_victims.push(*victim as u16);
                     }
                 }
                 NetEvent::Respawn { player, .. } if *player as u16 == own_id => fr.respawned = true,
@@ -290,6 +304,13 @@ pub struct Cuer {
     prev_pulling: bool,
     /// How hard this frame's events should push the music down (0..=1); read after `update`.
     pub duck: f32,
+    /// Flow tier (`combat::flow`) as of the previous frame: a rise triggers the tier-up stinger.
+    flow_tier_prev: u32,
+    /// The BOUNTY `(id, live)` as of the START of the previous frame (docs/bounty.md), read before a kill this
+    /// frame can drop it: mirrors `HudBridge::bounty_seen` so a kill on the just-cleared bounty still gets the beat.
+    bounty_seen: Option<(u16, bool)>,
+    /// Was the local player the LIVE bounty as of last frame: an edge into `true` is "you just became the bounty".
+    was_bounty_live_me: bool,
 }
 
 impl Cuer {
@@ -544,6 +565,31 @@ impl Cuer {
                 cues.push(Cue::flat(Sound::Streak, 0.8).pitched(1.0 + 0.12 * (self.streak - 2).min(8) as f32));
             }
         }
+        // a stealth kill (cloak.rs) gets its own harsher sting layered on top of the plain Kill chime already
+        // pushed above, so it reads as "that was different" rather than replacing the normal kill confirmation
+        if f.stealth_kill {
+            cues.push(Cue::flat(Sound::StealthKill, 1.0));
+            duck = duck.max(0.6);
+        }
+        // flow tier-up (combat::flow): a rise gets a bright ascending sparkle, distinct from the kill streak note
+        if f.flow_tier > self.flow_tier_prev {
+            cues.push(Cue::flat(Sound::FlowTierUp, 0.75).pitched(1.0 + 0.1 * (f.flow_tier - 1).min(2) as f32));
+        }
+        self.flow_tier_prev = f.flow_tier;
+        // landed the kill on the marked BOUNTY (docs/bounty.md): the bounty as of the START of this frame (before
+        // `f.bounty_now`, this frame's fresher board value, below) is what the kill is judged against, so a kill
+        // that drops the bounty still gets the beat even though the board already cleared it this same frame.
+        if f.my_kill_victims.iter().any(|v| self.bounty_seen.is_some_and(|(id, live)| id == *v && live)) {
+            cues.push(Cue::flat(Sound::BountyKill, 1.0));
+            duck = duck.max(0.6);
+        }
+        // becoming the BOUNTY: an edge into "live and it's me" (the HUD banner had no sound of its own before this)
+        let now_live_me = f.bounty_now.is_some_and(|(id, live)| live && id == f.own_id && f.own_id != 0);
+        if now_live_me && !self.was_bounty_live_me {
+            cues.push(Cue::flat(Sound::BecomeBounty, 0.85));
+        }
+        self.was_bounty_live_me = now_live_me;
+        self.bounty_seen = f.bounty_now;
 
         // the shield: a clang for every absorbed hit, a bright bell for a parry, a beep when it runs low
         for _ in 0..f.absorbed {
@@ -1508,6 +1554,53 @@ mod tests {
         d.my_death = Some(3);
         c.update(&d);
         assert!(c.update(&f).0.is_empty(), "streak reset by dying");
+    }
+
+    #[test]
+    fn flow_tier_up_stings_once_per_rise_not_on_fall_or_hold() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.flow_tier = 1;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::FlowTierUp], "0 -> 1 is a rise");
+        assert!(c.update(&f).0.is_empty(), "holding the same tier stings nothing more");
+        f.flow_tier = 3;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::FlowTierUp], "1 -> 3 is still one rise");
+        f.flow_tier = 1;
+        assert!(c.update(&f).0.is_empty(), "falling back down is silent");
+        f.flow_tier = 2;
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::FlowTierUp], "climbing again rises");
+    }
+
+    #[test]
+    fn stealth_kill_gets_its_own_sting_on_top_of_the_plain_kill_chime() {
+        let mut c = Cuer::default();
+        let mut f = frame();
+        f.dealt = vec![(90, true, false)];
+        f.stealth_kill = true;
+        let s = sounds(&c.update(&f).0);
+        assert_eq!(s, vec![Sound::Kill, Sound::StealthKill]);
+    }
+
+    #[test]
+    fn bounty_kill_stings_when_the_victim_was_the_live_bounty_as_of_last_frame_and_becoming_the_bounty_stings_once() {
+        let mut c = Cuer::default();
+        let own = frame().own_id; // 1
+        // the local player becomes the LIVE bounty: a rising stinger, once
+        let mut f = frame();
+        f.bounty_now = Some((own, true));
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::BecomeBounty]);
+        assert!(c.update(&f).0.is_empty(), "holding the title stings nothing more");
+        // somebody else (id 7) is marked live; we kill them this frame -> bounty kill sting
+        let mut g = frame();
+        g.bounty_now = Some((7, true));
+        c.update(&g); // records bounty_seen = (7, true) for next frame's judgement
+        let mut k = frame();
+        k.my_kill_victims = vec![7];
+        assert_eq!(sounds(&c.update(&k).0), vec![Sound::BountyKill]);
+        // killing someone who was NOT the live bounty is silent on this front
+        let mut k2 = frame();
+        k2.my_kill_victims = vec![42];
+        assert!(sounds(&c.update(&k2).0).iter().all(|s| *s != Sound::BountyKill));
     }
 
     #[test]

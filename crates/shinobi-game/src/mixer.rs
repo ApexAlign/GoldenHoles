@@ -168,6 +168,7 @@ pub fn priority(s: Sound) -> bool {
             | Sound::Heartbeat
             | Sound::FlashBang | Sound::WhipCrack
             | Sound::DeathSting | Sound::Respawn | Sound::MatchStart | Sound::Victory | Sound::Defeat | Sound::Thunder | Sound::ThunderFar | Sound::Parry | Sound::Streak | Sound::Execute
+            | Sound::FlowTierUp | Sound::BountyKill | Sound::BecomeBounty | Sound::StealthKill
     )
 }
 

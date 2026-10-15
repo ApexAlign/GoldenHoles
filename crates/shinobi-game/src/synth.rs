@@ -82,6 +82,17 @@ pub enum Sound {
     GuardLow,
     /// Kill streak note (played at a rising speed).
     Streak,
+    /// A flow tier just stepped up (2 -> 4 -> 6 chained moves, `combat::flow`): a bright ascending sparkle,
+    /// distinct from the kill streak note so the two "building toward something" cues never read as the same beat.
+    FlowTierUp,
+    /// Landed the kill on the marked BOUNTY (docs/bounty.md): the normal kill chime plus an extra triumphant layer.
+    BountyKill,
+    /// The local player just went live as the map-wide BOUNTY (docs/bounty.md): a rising, ominous stinger (the
+    /// "you're being hunted now" beat; the HUD banner alone had no sound before this).
+    BecomeBounty,
+    /// A one-shot kill landed while still cloaked (`cloak.rs`, docs/melee.md "Cloak"): rare and high-skill, so it
+    /// gets its own harsher, metallic sting instead of reusing the plain `Kill` chime.
+    StealthKill,
     /// Falling whoosh into the void.
     VoidFall,
     DeathSting,
@@ -132,7 +143,7 @@ pub enum Sound {
 }
 
 impl Sound {
-    pub const ALL: [Sound; 75] = [
+    pub const ALL: [Sound; 79] = [
         Sound::QuakeRumble,
         Sound::QuakeRattle,
         Sound::QuakeThud,
@@ -176,6 +187,10 @@ impl Sound {
         Sound::WallSlash,
         Sound::GuardLow,
         Sound::Streak,
+        Sound::FlowTierUp,
+        Sound::BountyKill,
+        Sound::BecomeBounty,
+        Sound::StealthKill,
         Sound::VoidFall,
         Sound::DeathSting,
         Sound::Respawn,
@@ -601,6 +616,32 @@ pub fn render(s: Sound) -> Vec<f32> {
             place(&[(0.0, b()), (0.11, b())])
         }
         Sound::Streak => place(&[(0.0, tone(988.0, 0.12, 1.5, 0.3)), (0.06, tone(1319.0, 0.22, 2.0, 0.3))]),
+        Sound::FlowTierUp => place(&[
+            (0.0, tone(784.0, 0.1, 1.6, 0.25)),
+            (0.05, tone(1047.0, 0.12, 1.6, 0.28)),
+            (0.1, chord(&[1319.0, 1760.0], 0.3, 1.8, 0.22)),
+        ]),
+        Sound::BountyKill => place(&[
+            (0.0, {
+                let note = |f: f32| sweep(0.22, f, f, 0, |t| env(t, 0.22, 0.003, 1.6) * 0.4);
+                place(&[(0.0, note(880.0)), (0.07, note(1175.0)), (0.14, note(1568.0))])
+            }),
+            (0.1, chord(&[1568.0, 1976.0, 2349.0], 0.4, 1.6, 0.22)),
+            (0.0, scaled(noise_burst(0.03, 97, |t| env(t, 0.03, 0.0, 1.5)), 0.4)),
+        ]),
+        Sound::BecomeBounty => {
+            let d = 0.5;
+            mix(&[
+                (sweep(d, 160.0, 420.0, 1, |t| env(t, d, 0.03, 0.9) * 0.3), 1.0),
+                (sweep(d, 320.0, 840.0, 0, |t| env(t, d, 0.03, 0.9) * 0.14), 1.0),
+                (highpass(&noise_burst(0.08, 103, |t| env(t, 0.08, 0.0, 1.5)), 0.2), 0.8),
+            ])
+        }
+        Sound::StealthKill => place(&[
+            (0.0, scaled(highpass(&noise_burst(0.05, 109, |t| env(t, 0.05, 0.0, 1.8)), 0.15), 1.5)),
+            (0.0, sweep(0.3, 70.0, 30.0, 0, |t| env(t, 0.3, 0.001, 1.8) * 0.9)),
+            (0.03, chord(&[1200.0, 1800.0, 2400.0], 0.35, 2.4, 0.2)),
+        ]),
         Sound::VoidFall => {
             let d = 1.0;
             mix(&[

@@ -20,14 +20,17 @@ const MERGE_WINDOW: f32 = 0.45;
 const HEAVY: u8 = 27;
 const MAX_HP: f32 = shinobi_sim::pvp::MAX_HP;
 
-/// Per-class unlit HDR colours: white body, gold head/bonus/kill, red taken, star (cyan-white), bar fill, bar back.
-const COLS: [[f32; 3]; 6] = [[3.2, 3.2, 3.2], [5.0, 3.6, 0.5], [5.0, 0.35, 0.45], [1.0, 2.6, 3.2], [0.5, 2.4, 0.8], [0.02, 0.02, 0.04]];
+/// Per-class unlit HDR colours: white body, gold head/bonus/kill, red taken, star (cyan-white), bar fill, bar back,
+/// stealth kill (hot magenta: rare and high-skill, so it gets a colour nothing else dealt uses).
+const COLS: [[f32; 3]; 7] =
+    [[3.2, 3.2, 3.2], [5.0, 3.6, 0.5], [5.0, 0.35, 0.45], [1.0, 2.6, 3.2], [0.5, 2.4, 0.8], [0.02, 0.02, 0.04], [5.0, 0.4, 4.2]];
 const WHITE: usize = 0;
 const GOLD: usize = 1;
 const RED: usize = 2;
 const STAR: usize = 3;
 const BAR_FILL: usize = 4;
 const BAR_BACK: usize = 5;
+const STEALTH: usize = 6;
 
 /// 7-segment masks, bit order a b c d e f g (a = top, then clockwise, g = middle).
 const SEG: [u8; 10] = [0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110, 0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111];
@@ -120,7 +123,7 @@ struct Bar {
 struct Pool {
     labels: Vec<Label>,
     bars: Vec<Bar>,
-    mats: [Handle<StandardMaterial>; 6],
+    mats: [Handle<StandardMaterial>; 7],
 }
 
 pub struct HitFeedbackPlugin;
@@ -136,7 +139,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let mk = |mats: &mut Assets<StandardMaterial>, c: [f32; 3]| {
         mats.add(StandardMaterial { base_color: Color::linear_rgb(c[0], c[1], c[2]), unlit: true, ..default() })
     };
-    let handles: [Handle<StandardMaterial>; 6] = std::array::from_fn(|i| mk(&mut mats, COLS[i]));
+    let handles: [Handle<StandardMaterial>; 7] = std::array::from_fn(|i| mk(&mut mats, COLS[i]));
     fx.white = mk(&mut mats, [7.0, 7.0, 7.0]);
     let hidden = || (Transform::default(), Visibility::Hidden);
     let mut labels = Vec::new();
@@ -170,9 +173,12 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     commands.insert_resource(Pool { labels, bars, mats: handles });
 }
 
-/// (colour class, size multiplier) for a dealt hit.
-pub fn classify(h: &HitMsg) -> (usize, f32) {
-    if h.kill {
+/// (colour class, size multiplier) for a dealt hit. `stealth`: a kill landed while still cloaked (`cloak.rs`) --
+/// rare and high-skill, so it gets its own colour and a bigger pop instead of blending into the plain gold kill.
+pub fn classify(h: &HitMsg, stealth: bool) -> (usize, f32) {
+    if h.kill && stealth {
+        (STEALTH, if h.kind == KIND_SLASH { 2.6 } else { 2.2 })
+    } else if h.kill {
         (GOLD, if h.kind == KIND_SLASH { 2.2 } else { 1.9 })
     } else if h.head || h.bonus {
         (GOLD, 1.45)
@@ -245,7 +251,8 @@ fn intake(
             Vec3::new(d.x, 0.0, d.z).normalize_or_zero()
         };
         fx.hit(h.other, dir);
-        let (class, size) = classify(h);
+        let stealth = h.kill && h.bonus && v.fx.cloak_held;
+        let (class, size) = classify(h, stealth);
         let head_up = if h.head { 0.85 } else { 0.55 };
         spawn_label(p, h.amount as u32, h.other, class, size, body + Vec3::Y * (head_up + 0.4), false, now, &mut vis, &mut tf, &mut commands);
         // health bar flash: the pool slot already showing this victim is reused
@@ -390,15 +397,26 @@ mod tests {
 
     #[test]
     fn classes_follow_type_and_amount() {
-        assert_eq!(classify(&hit(KIND_SHURIKEN, 12, false, false, false)).0, STAR);
-        assert_eq!(classify(&hit(KIND_SHURIKEN, 18, false, true, false)).0, GOLD);
-        assert_eq!(classify(&hit(KIND_SLASH, 20, false, false, true)).0, GOLD);
-        assert_eq!(classify(&hit(KIND_SLASH, 30, false, false, false)).0, WHITE);
-        assert!(classify(&hit(KIND_SLASH, 30, false, false, false)).1 > classify(&hit(KIND_SLASH, 20, false, false, false)).1);
-        let (c, s) = classify(&hit(KIND_SLASH, 60, true, false, false));
+        assert_eq!(classify(&hit(KIND_SHURIKEN, 12, false, false, false), false).0, STAR);
+        assert_eq!(classify(&hit(KIND_SHURIKEN, 18, false, true, false), false).0, GOLD);
+        assert_eq!(classify(&hit(KIND_SLASH, 20, false, false, true), false).0, GOLD);
+        assert_eq!(classify(&hit(KIND_SLASH, 30, false, false, false), false).0, WHITE);
+        assert!(classify(&hit(KIND_SLASH, 30, false, false, false), false).1 > classify(&hit(KIND_SLASH, 20, false, false, false), false).1);
+        let (c, s) = classify(&hit(KIND_SLASH, 60, true, false, false), false);
         assert_eq!(c, GOLD);
-        assert!(s > classify(&hit(KIND_SLASH, 20, false, false, true)).1);
-        assert!(classify(&hit(KIND_SHURIKEN, 5, false, false, false)).1 < 1.0);
+        assert!(s > classify(&hit(KIND_SLASH, 20, false, false, true), false).1);
+        assert!(classify(&hit(KIND_SHURIKEN, 5, false, false, false), false).1 < 1.0);
+    }
+
+    #[test]
+    fn stealth_kill_gets_its_own_colour_and_a_bigger_pop() {
+        let (c, s) = classify(&hit(KIND_SLASH, 90, true, false, true), true);
+        assert_eq!(c, STEALTH);
+        let (gc, gs) = classify(&hit(KIND_SLASH, 90, true, false, true), false);
+        assert_eq!(gc, GOLD);
+        assert!(s > gs, "stealth kill pops bigger than a plain kill");
+        // a non-kill bonus hit (strike-window, mark) is never classified stealth, even while cloaked
+        assert_ne!(classify(&hit(KIND_SLASH, 30, false, false, true), true).0, STEALTH);
     }
 
     #[test]

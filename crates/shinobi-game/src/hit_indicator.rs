@@ -25,6 +25,9 @@ const DECAY_S: f32 = 0.6;
 const ARC_LIFE: f32 = 1.0;
 const TAG_LIFE: f32 = 0.9;
 const RING_LIFE: f32 = 0.5;
+/// Kill-confirm flash on the KILLER's own screen: short and punchy so it reads as a distinct "you got them"
+/// beat rather than a bigger version of the plain hit marker (which already lives at the crosshair).
+const KILL_FLASH_S: f32 = 0.4;
 const ARCS: usize = 8;
 const BIG_FRAC: f32 = 0.30;
 const LOW_HP: f32 = 0.30;
@@ -134,11 +137,32 @@ pub struct HitHud {
     phase: f32,
     frame: u32,
     drawn: bool,
+    /// Seconds since our own kill (killer's screen), `KILL_FLASH_S` or more = not showing.
+    kill_age: f32,
+    /// This kill was a bounty / stealth kill: a bigger, gold-and-white snap instead of the plain cyan one.
+    kill_big: bool,
+    /// The BOUNTY `(id, live)` as of the start of the previous frame (docs/bounty.md), mirrors
+    /// `HudBridge::bounty_seen` / `Cuer::bounty_seen`: lets a kill on the just-cleared bounty still get the beat.
+    bounty_seen: Option<(u16, bool)>,
 }
 
 impl Default for HitHud {
     fn default() -> Self {
-        Self { amp: 0.0, t: 10.0, arcs: [Arc::default(); ARCS], tag_age: TAG_LIFE, tag_head: false, ring_age: RING_LIFE, low: 0.0, phase: 0.0, frame: 0, drawn: false }
+        Self {
+            amp: 0.0,
+            t: 10.0,
+            arcs: [Arc::default(); ARCS],
+            tag_age: TAG_LIFE,
+            tag_head: false,
+            ring_age: RING_LIFE,
+            low: 0.0,
+            phase: 0.0,
+            frame: 0,
+            drawn: false,
+            kill_age: KILL_FLASH_S,
+            kill_big: false,
+            bounty_seen: None,
+        }
     }
 }
 
@@ -170,13 +194,30 @@ impl HitHud {
     fn slam(&self) -> f32 {
         self.amp * envelope(self.t)
     }
+    /// Own-kill confirm (killer's screen): a quick radial snap, distinct from the hit-taken slam. `big` = this was
+    /// a bounty or stealth kill (`cloak.rs`, docs/bounty.md): the system the whole beat exists to punctuate, so it
+    /// snaps to gold-white instead of the plain kill's cyan-white and holds a touch longer.
+    fn trigger_kill(&mut self, big: bool) {
+        self.kill_age = 0.0;
+        self.kill_big = big;
+    }
+    /// 0..=1 own-kill flash envelope: instant punch, fast fall.
+    fn kill_flash(&self) -> f32 {
+        let d = if self.kill_big { KILL_FLASH_S * 1.4 } else { KILL_FLASH_S };
+        if self.kill_age >= d {
+            0.0
+        } else {
+            (1.0 - self.kill_age / d).powi(2)
+        }
+    }
     fn active(&self) -> bool {
-        self.slam() > 0.002 || self.arcs.iter().any(|a| a.on) || self.tag_age < TAG_LIFE || self.ring_age < RING_LIFE || self.low > 0.0
+        self.slam() > 0.002 || self.arcs.iter().any(|a| a.on) || self.tag_age < TAG_LIFE || self.ring_age < RING_LIFE || self.low > 0.0 || self.kill_flash() > 0.002
     }
     fn tick(&mut self, dt: f32) {
         self.t += dt;
         self.tag_age += dt;
         self.ring_age += dt;
+        self.kill_age += dt;
         for a in self.arcs.iter_mut().filter(|a| a.on) {
             a.age += dt;
             a.on = a.age < ARC_LIFE;
@@ -189,6 +230,7 @@ impl HitHud {
         self.tag_age = TAG_LIFE;
         self.ring_age = RING_LIFE;
         self.low = 0.0;
+        self.kill_age = KILL_FLASH_S;
         for a in self.arcs.iter_mut() {
             a.on = false;
         }
@@ -340,6 +382,17 @@ fn build(h: &HitHud, g: &mut Geo, reduced: bool) {
             g.seg((sx * r0 * k, sy * r0 * k), (sx * r1 * k, sy * r1 * k), 0.008, [1.0, 0.9, 0.9], ev);
         }
     }
+    // kill confirm (killer's own screen): a quick outward ring + brief edge wash, colour-coded so a bounty /
+    // stealth kill reads as a bigger deal than a plain one, and all of it reads as a different beat from the
+    // red "I got hit" slam above and the small crosshair X (confirmed per-hit, not per-kill).
+    let kf = h.kill_flash();
+    if kf > 0.002 {
+        let rgb = if h.kill_big { [1.0, 0.82, 0.15] } else { [0.55, 1.0, 0.85] };
+        g.vignette(rgb, 0.5 * kf * if h.kill_big { 1.3 } else { 1.0 }, 0.42, 0.0);
+        let u = 1.0 - kf.sqrt();
+        let r = 0.06 + 0.5 * u;
+        g.ring(r, r + (0.02 + 0.015 * h.kill_big as u32 as f32), rgb, kf * 0.85);
+    }
     // directional arcs
     for a in h.arcs.iter().filter(|a| a.on) {
         let alpha = ((1.0 - a.age / ARC_LIFE).sqrt() * a.amp).min(1.0);
@@ -463,11 +516,18 @@ fn update(
                 });
                 h.trigger(Ev { dmg: m.amount as f32, head: m.head, kind: m.kind, shield: m.amount == 0, angle });
             }
+            // our own kill confirm: "big" (gold) for the marked BOUNTY (`h.bounty_seen` as of the START of this
+            // frame, before the refresh below) or a stealth kill from cloak (`cloak.rs`); plain (cyan) otherwise.
+            for m in v.hits.iter().filter(|m| !m.taken && m.kill) {
+                let big = h.bounty_seen.is_some_and(|(id, live)| id == m.other && live) || (v.fx.cloak_held && m.bonus);
+                h.trigger_kill(big);
+            }
         }
         if let Some(hp) = v.hp {
             h.low = low_factor(hp / MAX_HP);
         }
     }
+    h.bounty_seen = v.board.as_ref().and_then(|b| (b.bounty != 0).then_some((b.bounty, b.bounty_live)));
     if let Some(p) = pin.as_deref() {
         h.trigger(p.0);
         h.t = ATTACK_S; // hold at the peak
@@ -550,6 +610,24 @@ mod tests {
         assert!(envelope(0.025) > 0.45 && envelope(0.025) < 0.55);
         assert!(envelope(0.2) < envelope(0.1));
         assert_eq!(envelope(ATTACK_S + DECAY_S + 0.01), 0.0);
+    }
+
+    #[test]
+    fn own_kill_flash_pops_then_decays_and_bounty_stealth_kills_hold_bigger_and_longer() {
+        let mut h = HitHud::default();
+        assert_eq!(h.kill_flash(), 0.0, "nothing to show before a kill");
+        h.trigger_kill(false);
+        assert!(h.active());
+        let plain0 = h.kill_flash();
+        assert!(plain0 > 0.9, "instant punch on trigger");
+        h.kill_age = KILL_FLASH_S - 0.01;
+        assert!(h.kill_flash() > 0.0);
+        h.kill_age = KILL_FLASH_S;
+        assert_eq!(h.kill_flash(), 0.0, "a plain kill flash is over by KILL_FLASH_S");
+        // a bounty / stealth kill ("big") holds past the plain kill's lifetime
+        h.trigger_kill(true);
+        h.kill_age = KILL_FLASH_S;
+        assert!(h.kill_flash() > 0.0, "a big kill flash outlasts a plain one");
     }
 
     #[test]
