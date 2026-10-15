@@ -392,6 +392,9 @@ pub struct LocalFx {
     pub flow: u32,
     /// Flow tier (0..3) driving the speed-line VFX floor (`vm::streak_target`).
     pub flow_tier: u32,
+    /// The cloak button is held (raw input, not server-confirmed active): a cheap client-only heuristic for
+    /// "this kill was probably a stealth kill" (`cloak.rs`) without a new wire bit.
+    pub cloak_held: bool,
     pub throw_cooldown: f32,
     // -- edges since the previous `view()`; a tick that falls between two views is never lost --
     pub jumped: bool,
@@ -1490,6 +1493,7 @@ impl ClientGame {
                 .map(|s| s.pos),
         };
         let mut fx = std::mem::take(&mut self.fx_edges);
+        fx.cloak_held = self.cloak_held;
         if let Some(p) = &self.pred {
             fx.grounded = p.ch.state == MoveState::Grounded;
             fx.wall_running = matches!(p.ch.state, MoveState::WallRun { .. });

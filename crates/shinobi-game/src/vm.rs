@@ -23,6 +23,8 @@ const LAYER: usize = 1;
 const FLARE_S: f32 = 0.2;
 const WHIFF_S: f32 = 0.3;
 const RECOIL_S: f32 = 0.18;
+/// Flow tier-up speed-line kick duration (vm.rs's own beat, distinct from the kill streak / bounty audio stingers).
+const TIER_KICK_S: f32 = 0.3;
 
 /// Shoulder recoil of the held weapons after a throw: (kick back in metres, kick up in radians), snapping in and
 /// easing out over `RECOIL_S`.
@@ -113,6 +115,11 @@ pub struct Vm {
     recoil: f32,
     /// Smoothed speed-line intensity 0..1 (dash / grapple / fast running).
     streak: f32,
+    /// Flow tier (`combat::flow`) as of last frame: a rise triggers `tier_kick`.
+    prev_flow_tier: u32,
+    /// Seconds left of the flow tier-up kick: briefly snaps the speed lines to white-hot and a touch brighter,
+    /// distinct from their steady climb, so crossing a tier reads as a beat and not just "a bit more VFX".
+    tier_kick: f32,
     /// Block pose blend 0..1 (blade raised across the screen, shield up) and the shield flash (absorbed hit / parry).
     guard: f32,
     guard_flash: f32,
@@ -146,7 +153,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, guard: 0.0, guard_flash: 0.0 })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, prev_flow_tier: 0, tier_kick: 0.0, guard: 0.0, guard_flash: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup))
             .add_systems(Update, apply_look.before(update));
     }
@@ -526,9 +533,20 @@ pub fn update(
 
     // speed lines (dash / grapple / fast running), smoothed so they ease in and out
     {
+        // flow tier-up kick (combat::flow): a rise snaps the lines white-hot and a touch brighter for a moment,
+        // so 2 -> 4 -> 6 reads as a punchy beat distinct from the steady climb the streak intensity already is
+        if l.flow_tier > vm.prev_flow_tier {
+            vm.tier_kick = TIER_KICK_S;
+        }
+        vm.prev_flow_tier = l.flow_tier;
+        let kick = (vm.tier_kick / TIER_KICK_S).clamp(0.0, 1.0);
+        vm.tier_kick = (vm.tier_kick - dt).max(0.0);
+
         let target = streak_target(l.dashing, l.grappling, l.speed, l.flow_tier);
         vm.streak += (target - vm.streak) * (1.0 - (-9.0 * dt).exp());
-        let (pos, col, idx) = streak_quads(time.elapsed_secs(), vm.streak, 16.0 / 9.0, 0.8, local.0);
+        let boosted = (vm.streak + 0.35 * kick).min(1.0);
+        let rgb = [local.0[0] + (1.0 - local.0[0]) * kick, local.0[1] + (1.0 - local.0[1]) * kick, local.0[2] + (1.0 - local.0[2]) * kick];
+        let (pos, col, idx) = streak_quads(time.elapsed_secs(), boosted, 16.0 / 9.0, 0.8, rgb);
         if let Some(mut m) = meshes.get_mut(&ents.streaks_mesh) {
             *m = if idx.is_empty() {
                 degenerate()
