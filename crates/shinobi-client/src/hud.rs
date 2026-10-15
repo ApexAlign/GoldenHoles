@@ -281,6 +281,11 @@ pub struct TargetHud {
     /// Melee cue on the triangle: 0 none, 1 in cutting range (strike ready), 2 the target's strike window is open
     /// (it just swung or was parried: a hit now deals bonus damage).
     pub strike: u8,
+    /// Fire assist: the weapon in hand is primed right now (katana off cooldown, a star charged and off cooldown,
+    /// or the bow at full draw) AND the lock holds -- a shot/cut taken this instant would land. Distinct from
+    /// `strike` (a melee-only range/window cue): this covers every weapon, ranged included, so the brackets give
+    /// the same "take the shot" read no matter what is in hand.
+    pub fire_ready: bool,
 }
 
 /// Current BOUNTY banner + beacon (docs/bounty.md). `None` when nobody is marked.
@@ -1413,25 +1418,36 @@ fn enemy_tag(out: &mut Vec<Prim>, t: &EnemyTag, p: &Palette) {
     let heat = t.heat.clamp(0.0, 1.0);
     let heat = heat * heat * (3.0 - 2.0 * heat); // smoothstep: eases in, no popping at the cone edge
     let (x, y) = t.pos;
-    // candidate chevron: a small downward triangle over the head. Far from the crosshair it is a dim speck; as the
-    // enemy nears the crosshair it grows, brightens and gets a glow, the pre-lock cue (the 3D lock triangle follows).
     let range_fade = (1.0 - (t.dist - 20.0) / (MARKER_RANGE - 20.0)).clamp(0.35, 1.0);
-    let r = (0.007 + 0.011 * heat) * (0.75 + 0.25 * range_fade);
-    let ca = (0.28 + 0.72 * heat) * range_fade;
     let cy = y - 0.02 - 0.012 * heat;
-    let pts = [(x - r * ax() * 1.15, cy - r), (x + r * ax() * 1.15, cy - r), (x, cy + r)];
-    let glow = if heat > 0.3 { 0.004 + 0.004 * heat } else { 0.0 };
-    for k in 0..3 {
-        out.push(Prim::Line { a: pts[k], b: pts[(k + 1) % 3], color: col.a(ca), glow });
+    // bounty-hunter reticle: `heat` is already 0 outside the candidate cone (`crosshair_heat`), so a bare dim
+    // speck means "tracked, but not inside the lock cone" and four corner brackets mean "lockable" -- they close
+    // in and brighten toward the lock as heat climbs toward the crosshair, the pre-lock cue the 3D lock triangle
+    // follows. Keeping the out-of-cone case a single faint dot (not a full box) is what keeps a screen full of
+    // enemies readable instead of cluttered.
+    if heat < 0.02 {
+        let r = 0.0032 * range_fade;
+        out.push(Prim::Ring { c: (x, cy), r, color: col.a(0.22 * range_fade), fill: false, glow: 0.0 });
+    } else {
+        let half = (0.02 - 0.009 * heat) * (0.75 + 0.25 * range_fade);
+        let l = 0.005 + 0.006 * heat;
+        let ca = (0.35 + 0.65 * heat) * range_fade;
+        let glow = if heat > 0.5 { 0.003 + 0.005 * (heat - 0.5) * 2.0 } else { 0.0 };
+        for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let (cx, ccy) = (x + sx * half * ax(), cy + sy * half);
+            out.push(Prim::Line { a: (cx, ccy), b: (cx - sx * l * ax(), ccy), color: col.a(ca), glow });
+            out.push(Prim::Line { a: (cx, ccy), b: (cx, ccy - sy * l), color: col.a(ca), glow });
+        }
     }
     // name and health only for the enemies near the crosshair and close enough to read: no clutter
     if heat < 0.2 || t.dist > ENEMY_TAG_RANGE {
         return;
     }
+    let half = (0.02 - 0.009 * heat) * (0.75 + 0.25 * range_fade);
     let near = (1.0 - t.dist / ENEMY_TAG_RANGE).clamp(0.0, 1.0);
     let a = (0.45 + 0.5 * near) * heat.min(1.0).max(0.4);
     let size = 0.016 + 0.006 * near;
-    out.push(Prim::Text { pos: (x, cy - r - 0.008), text: t.name.clone(), size, color: col.a(a), align: Align::Center });
+    out.push(Prim::Text { pos: (x, cy - half - 0.008), text: t.name.clone(), size, color: col.a(a), align: Align::Center });
     if let Some(hp) = t.hp {
         const N: usize = 8;
         let (w, gap) = (0.0045 * 0.9, 0.0045);
@@ -1832,6 +1848,16 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
     }
 }
 
+/// Linear blend from `a` toward `b` by `t` (0 = `a`, 1 = `b`), alpha included.
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0);
+    Rgba(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t, a.3 + (b.3 - a.3) * t)
+}
+
+/// Seconds the "LOCKED" flash reads at full brightness right after a fresh lock (`lock_edges`' `Locked` edge,
+/// which is exactly what resets `TargetHud::since` to 0 while `locked` is true).
+const LOCK_FLASH_TIME: f32 = 0.35;
+
 fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette, time: f32) {
     let (x, y) = t.pos;
     let prog = t.progress.clamp(0.0, 1.0);
@@ -1854,9 +1880,26 @@ fn target_brackets(out: &mut Vec<Prim>, t: &TargetHud, p: &Palette, time: f32) {
     // strike cue: in cutting range the corners reach in and the tag reads SLASH; while the target's strike window is open
     // the whole triangle goes gold and pulses fast with STRIKE (a hit now is worth 1.5x)
     let pulse = if t.strike >= 2 { 0.5 + 0.5 * (time * 22.0).sin() } else { 0.0 };
-    let col = if t.strike >= 2 { p.gold } else if t.locked { t.colour } else { t.colour.a(0.55 + 0.35 * prog) };
-    let half = if t.strike >= 2 { half - 0.008 * pulse } else if t.strike == 1 && t.locked { half - 0.004 } else { half };
-    let l = 0.012 + 0.006 * snap + if t.strike >= 1 { 0.004 } else { 0.0 };
+    // fire assist: the weapon in hand is primed to connect right now. Same "take the shot" read as the melee
+    // strike cue but for any weapon, so it shifts the brackets toward gold and tightens them a touch further,
+    // layering under (never fighting) the stronger strike-window gold pulse.
+    let col = if t.strike >= 2 {
+        p.gold
+    } else if t.fire_ready {
+        mix(t.colour, p.gold, 0.6).a(1.0)
+    } else if t.locked {
+        t.colour
+    } else {
+        t.colour.a(0.55 + 0.35 * prog)
+    };
+    let half = if t.strike >= 2 { half - 0.008 * pulse } else if t.fire_ready { half - 0.006 } else if t.strike == 1 && t.locked { half - 0.004 } else { half };
+    let l = 0.012 + 0.006 * snap + if t.strike >= 1 || t.fire_ready { 0.004 } else { 0.0 };
+    // LOCKED flash: a brief, bright callout the instant the lock lands (the same edge that resets `since`),
+    // distinct from the ongoing SLASH / STRIKE melee tags below.
+    if t.locked && t.since < LOCK_FLASH_TIME {
+        let u = 1.0 - t.since / LOCK_FLASH_TIME;
+        out.push(Prim::Text { pos: (x, y - half - 0.034), text: "LOCKED".into(), size: 0.022 + 0.01 * u, color: mix(t.colour, p.gold, 0.5).a(u), align: Align::Center });
+    }
     // lead marker: where a star thrown now arrives, with a faint line from the target to it
     if let (Some((lx, ly)), true) = (t.lead, prog > 0.4) {
         let r = 0.007;
@@ -2294,6 +2337,64 @@ mod tests {
     }
 
     #[test]
+    fn enemy_markers_show_a_dim_speck_outside_the_cone_and_corner_brackets_inside_it() {
+        let pal = Palette::TRON;
+        let tag = |heat| EnemyTag { pos: (0.5, 0.4), name: "VOID WOLF".into(), dist: 10.0, team: None, colour: None, hp: None, heat };
+        let lines = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Line { .. })).count();
+        let rings = |s: &HudState| Hud::build_with(s, &pal).iter().filter(|p| matches!(p, Prim::Ring { .. })).count();
+        let base = HudState::default();
+        let far = HudState { enemy_tags: vec![tag(0.0)], ..Default::default() };
+        let near = HudState { enemy_tags: vec![tag(0.6)], ..Default::default() };
+        let (base_l, base_r) = (lines(&base), rings(&base));
+        assert_eq!(lines(&far) - base_l, 0, "merely visible, out of the lock cone: a speck, not a bracket box");
+        assert_eq!(rings(&far) - base_r, 1, "the speck is a faint ring");
+        assert_eq!(lines(&near) - base_l, 8, "inside the cone: four corner brackets, lighting up toward a lock");
+        assert_eq!(rings(&near) - base_r, 0, "no speck once the brackets take over");
+    }
+
+    #[test]
+    fn fire_ready_shifts_the_lock_brackets_toward_gold() {
+        let pal = Palette::TRON;
+        // an off-centre, otherwise-unused screen spot so the corner-bracket lines are unambiguous among
+        // everything else the default HUD chrome draws.
+        let pos = (0.37, 0.63);
+        let base = TargetHud {
+            pos, name: "X".into(), colour: Rgba::CYAN, hp: None, dist: 10.0, progress: 1.0, locked: true,
+            since: 10.0, breaking: false, lead: None, strike: 0, fire_ready: false,
+        };
+        let ready = TargetHud { fire_ready: true, ..base.clone() };
+        let first_bracket_colour = |t: &TargetHud| {
+            let s = HudState { target: Some(t.clone()), ..Default::default() };
+            Hud::build_with(&s, &pal).into_iter().find_map(|p| match p {
+                Prim::Line { a, b, color, .. } => {
+                    let near = |q: (f32, f32)| (q.0 - pos.0).abs() < 0.05 && (q.1 - pos.1).abs() < 0.05;
+                    (near(a) || near(b)).then_some(color)
+                }
+                _ => None,
+            })
+        };
+        let (c0, c1) = (first_bracket_colour(&base).unwrap(), first_bracket_colour(&ready).unwrap());
+        assert_eq!(c0, Rgba::CYAN, "no fire assist: the brackets stay the target's own colour");
+        assert!(c1.0 > c0.0 && c1.2 < c0.2, "fire assist: the brackets shift toward gold (more red, less blue): {c1:?}");
+    }
+
+    #[test]
+    fn locked_flash_shows_briefly_after_a_fresh_lock_then_fades() {
+        let pal = Palette::TRON;
+        let fresh = TargetHud {
+            pos: (0.5, 0.5), name: "X".into(), colour: Rgba::CYAN, hp: None, dist: 10.0, progress: 1.0, locked: true,
+            since: 0.05, breaking: false, lead: None, strike: 0, fire_ready: false,
+        };
+        let settled = TargetHud { since: 1.0, ..fresh.clone() };
+        let shows_locked = |t: &TargetHud| {
+            let s = HudState { target: Some(t.clone()), ..Default::default() };
+            Hud::build_with(&s, &pal).iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "LOCKED"))
+        };
+        assert!(shows_locked(&fresh), "flashes LOCKED the instant the lock lands");
+        assert!(!shows_locked(&settled), "and is gone once the lock has settled");
+    }
+
+    #[test]
     fn edge_point_lands_on_the_screen_edge_in_the_right_direction() {
         let (x, y) = edge_point(0.0, 16.0 / 9.0, 0.02);
         assert!((x - 0.5).abs() < 1e-4 && (y - 0.02).abs() < 1e-4, "ahead = top centre: {x},{y}");
@@ -2375,7 +2476,7 @@ mod tests {
             telemetry: Some(Telemetry { speed: 14.2, altitude: 3.1, rope: Some(8.0) }),
             radar: vec![RadarPing { pos: (0.4, 0.5), colour: Rgba::MAGENTA, ally: false }, RadarPing { pos: (-1.4, 0.2), colour: Rgba::CYAN, ally: true }],
             heading: Some(0.7),
-            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false, since: 0.1, breaking: false, lead: None, strike: 0 }),
+            target: Some(TargetHud { pos: (0.3, 0.4), name: "GHOST".into(), colour: Rgba::MAGENTA, hp: Some(0.6), dist: 18.0, progress: 0.5, locked: false, since: 0.1, breaking: false, lead: None, strike: 0, fire_ready: false }),
             boot: Some(1.0),
             ..Default::default()
         }

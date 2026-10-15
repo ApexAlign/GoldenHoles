@@ -74,7 +74,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
         hit_amount: 34,
         since_damage: Some((0.25, 1.1)),
         damage_frac: 0.35,
-        target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: Some((0.62, 0.41)), strike: 0 }),
+        target: Some(TargetHud { pos: (0.58, 0.42), name: callsign(1), colour: player_rgba(1), hp: Some(0.6), dist: 18.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: Some((0.62, 0.41)), strike: 0, fire_ready: true }),
         radar_pickups: vec![(-0.35, 0.3), (0.45, -0.2)],
         radar_pieces: vec![(0.1, 0.25), (0.15, 0.3), (-0.2, 0.1)],
         radar_edge: (0..14).map(|i| ((0.9 - i as f32 * 0.02, -0.4 - i as f32 * 0.03), (0.88 - i as f32 * 0.02, -0.43 - i as f32 * 0.03))).collect(),
@@ -232,7 +232,7 @@ fn scenarios_raw() -> Vec<(&'static str, Vec<Prim>)> {
     // katana moves: each cue on a quiet HUD with a locked target (docs/melee.md)
     {
         use crate::katana_fx::{KatanaCue, KatanaFx};
-        let target = TargetHud { pos: (0.55, 0.45), name: callsign(1), colour: player_rgba(1), hp: Some(0.2), dist: 3.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: None, strike: 1 };
+        let target = TargetHud { pos: (0.55, 0.45), name: callsign(1), colour: player_rgba(1), hp: Some(0.2), dist: 3.0, progress: 1.0, locked: true, since: 1.0, breaking: false, lead: None, strike: 1, fire_ready: false };
         let asp = if ASPECT.with(|a| a.get()) > 0.1 { ASPECT.with(|a| a.get()) } else { 16.0 / 9.0 };
         let cues = [
             ("katana_charge", KatanaFx { charge: 0.65, ..Default::default() }),
