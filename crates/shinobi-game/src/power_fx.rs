@@ -406,7 +406,9 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
     // zoomed in, our own bow is out of frame (gone by `LOCAL_BOW_HIDE_ZOOM`); on the way there it is scaled with the FOV so it keeps
     // its hip-fire size on screen instead of ballooning in the narrowed view
     let fov_k = if v.camera.fov > 1.0 { ((v.camera.fov.to_radians() * 0.5).tan() / (45f32).to_radians().tan()).clamp(0.1, 1.5) } else { 1.0 };
-    if let Some(p) = v.power.filter(|p| p.kind == PowerKind::Yumi && p.draw > 0.0 && v.zoom.frac < LOCAL_BOW_HIDE_ZOOM) {
+    // shown whenever the bow is the raised weapon (`p.up`, key 2), not only while drawing: with the katana hidden the
+    // instant the bow comes up (vm.rs's `bow_out`), the bow must show at rest too or neither weapon reads on screen
+    if let Some(p) = v.power.filter(|p| p.kind == PowerKind::Yumi && p.up && v.zoom.frac < LOCAL_BOW_HIDE_ZOOM) {
         list.insert(0, BowDraw { eye: Vec3::from(v.eye), dir: Vec3::from(view_dir(v.aim.yaw, v.aim.pitch)), owner: me, frac: p.draw, local: true });
     }
     let t = time.elapsed_secs();
@@ -423,9 +425,10 @@ fn update_draws(view: Res<ViewRes>, net: Res<Net>, look: Option<Res<Look>>, mut 
         };
         let right = d.dir.cross(Vec3::Y).normalize_or(Vec3::X);
         let up = right.cross(d.dir).normalize_or(Vec3::Y);
-        // our own bow sits low and to the left of the view; another player's out in front of their chest
+        // our own bow sits low and to the RIGHT of the view (the hand that put the katana away); another player's
+        // out in front of their chest
         let k = if d.local { fov_k } else { 1.0 };
-        let centre = if d.local { d.eye + d.dir * 0.78 - (right * 0.42 + up * 0.3) * k } else { d.eye + d.dir * 0.8 - up * 0.28 };
+        let centre = if d.local { d.eye + d.dir * 0.78 + (right * 0.42 - up * 0.3) * k } else { d.eye + d.dir * 0.8 - up * 0.28 };
         let th = if d.local { 0.6 * k } else { 1.0 };
         let col = if d.local { GOLD } else { colour_of(&net, d.owner) };
         let bright = if d.local { 1.1 + 0.6 * d.frac } else { 2.0 + 1.0 * d.frac };
