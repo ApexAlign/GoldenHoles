@@ -69,6 +69,13 @@ pub struct YumiCfg {
     pub cut_pad: f32,
     /// Seconds between loosing an arrow and the next draw (the reload bar).
     pub reload_s: f32,
+    /// SPLASH (near-miss forgiveness, not a second explosive weapon): an arrow that passes within `splash_radius` of a
+    /// foe's body (beyond the direct-hit band) or embeds in a surface within `splash_radius` of one still deals a little
+    /// damage, falling off to nothing at the edge like the fuda tag's blast (`blast_damage`'s shape, `splash_frac` in
+    /// place of `edge_frac`: full splash strength at the inner edge, 0 at the outer one). Body-only: never a head hit.
+    pub splash_radius: f32,
+    /// Fraction of a direct body hit (`damage`) dealt at the inner edge of the splash band.
+    pub splash_frac: f32,
 }
 
 impl Default for YumiCfg {
@@ -91,6 +98,8 @@ impl Default for YumiCfg {
             block_drain: 0.7,
             cut_pad: 0.35,
             reload_s: 1.1,
+            splash_radius: 1.2,
+            splash_frac: 0.4,
         }
     }
 }
@@ -471,6 +480,17 @@ pub fn blast_push(cfg: &TagCfg, centre: V3, from: V3, pos: V3) -> V3 {
     [nx * k, 4.0, nz * k]
 }
 
+/// Arrow splash damage at `d` metres beyond the direct-hit band (0 = the inner edge of the splash band, right where a
+/// direct hit would otherwise have landed; `splash_radius` = the outer edge): the same linear falloff-to-edge shape as
+/// `blast_damage`, with `splash_frac` taking the place of `edge_frac` and the full strength sitting at the inner edge
+/// instead of the centre (there is no "centre": this is a near-miss forgiveness band, not a blast with a heart).
+pub fn arrow_splash_damage(cfg: &YumiCfg, d: f32) -> f32 {
+    if d < 0.0 || d > cfg.splash_radius {
+        return 0.0;
+    }
+    cfg.damage * cfg.splash_frac * (1.0 - (d / cfg.splash_radius.max(1e-3)).clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +643,16 @@ mod tests {
         assert!(v[0] > 8.0 && v[2].abs() < 1e-4 && v[1] > 0.0, "pushed away from the blast: {v:?}");
         let on_me = blast_push(&c, [0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 0.1]);
         assert!(on_me[2] < 0.0, "a tag on the body pushes away from the thrower: {on_me:?}");
+    }
+
+    #[test]
+    fn arrow_splash_falls_off_from_a_modest_fraction_to_nothing() {
+        let c = YumiCfg::default();
+        assert_eq!(arrow_splash_damage(&c, 0.0), c.damage * c.splash_frac, "full splash strength right at the direct-hit edge");
+        assert!((arrow_splash_damage(&c, c.splash_radius * 0.5) - c.damage * c.splash_frac * 0.5).abs() < 1e-4, "linear falloff");
+        assert_eq!(arrow_splash_damage(&c, c.splash_radius), 0.0, "nothing left at the outer edge");
+        assert_eq!(arrow_splash_damage(&c, c.splash_radius + 0.01), 0.0, "and past it");
+        assert_eq!(arrow_splash_damage(&c, -0.1), 0.0, "never negative distance");
+        assert!(c.splash_frac < 1.0, "forgiveness, not a free direct hit");
     }
 }
