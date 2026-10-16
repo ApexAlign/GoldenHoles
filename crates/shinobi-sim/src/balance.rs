@@ -884,7 +884,10 @@ impl Balance {
         b.combat.shuriken.range = 14.0; // a close-range tool: the bow is the long gun
         b.combat.shuriken.full_range = 7.0;
         b.combat.shuriken.far_mult = 0.5;
-        b.combat.shuriken.assist_range = 20.0;
+        // the lock-on's only range cap: 20 m was tuned for the star's own reach, but this same lock feeds the katana,
+        // the HUD bracket and the bow's fire-assist. Matched to the bow's own max range (250 m) so the triangle locks
+        // across the whole map for sniping, not just at melee distance.
+        b.combat.shuriken.assist_range = 250.0;
         b.combat.shuriken.radius = 0.6; // a star that grazes the body counts: hit reach = hitbox 0.3 + 0.6
         b.combat.headshot_mult = 1.5;
         // katana: a longer, wider blade (the lunge reach itself is derived from the dash) so a rough swing still connects
