@@ -11,8 +11,8 @@ use shinobi_sim::character::Cfg;
 use shinobi_sim::combat::{CombatEvent, DamageKind};
 use shinobi_sim::level::{LevelBox, LevelDesc};
 use shinobi_sim::pickups::PickupEvent;
-use shinobi_sim::power::PowerKind;
-use shinobi_sim::power_pass::{Tag, FX_TAG_BLAST};
+use shinobi_sim::power::{arrow_splash_damage, PowerKind};
+use shinobi_sim::power_pass::{Tag, FX_ARROW_WALL, FX_TAG_BLAST};
 use shinobi_sim::pvp::PvpEvent;
 use shinobi_sim::rapier3d::prelude::Isometry;
 use shinobi_sim::tick::Server;
@@ -23,7 +23,11 @@ const B: u16 = 2;
 const B_YAW: f32 = std::f32::consts::PI;
 
 fn server_with(b_z: f32, floor: LevelBox, tweak: impl FnOnce(&mut Balance)) -> Server {
-    let lv = LevelDesc { boxes: vec![floor], spawns: vec![[0.0, 0.81, 0.0], [0.0, 0.81, b_z]] };
+    server_with_boxes(b_z, vec![floor], tweak)
+}
+
+fn server_with_boxes(b_z: f32, boxes: Vec<LevelBox>, tweak: impl FnOnce(&mut Balance)) -> Server {
+    let lv = LevelDesc { boxes, spawns: vec![[0.0, 0.81, 0.0], [0.0, 0.81, b_z]] };
     let mut s = Server::new(Cfg::default());
     lv.apply_to_server(&mut s);
     s.set_spawns(lv.spawns.clone());
@@ -144,6 +148,17 @@ fn arrow_hits(ev: &[PvpEvent]) -> Vec<(f32, bool)> {
 
 fn blasts(s: &Server) -> usize {
     s.events.iter().filter(|(_, e)| matches!(e, CombatEvent::PowerFx { what, .. } if *what == FX_TAG_BLAST)).count()
+}
+
+/// Nudges B sideways by `dx` (same height and depth), so an arrow aimed straight down the original line now passes
+/// `dx` metres off instead of through the body: the near-miss splash band without touching A's aim at all.
+fn offset_b(s: &mut Server, dx: f32) {
+    let c = { let p = s.players.iter().find(|p| p.id == B).unwrap(); p.pos(&s.world) };
+    tp(s, B, [c[0] + dx, c[1], c[2]]);
+}
+
+fn fx_count(s: &Server, what: u8) -> usize {
+    s.events.iter().filter(|(_, e)| matches!(e, CombatEvent::PowerFx { what: w, .. } if *w == what)).count()
 }
 
 fn world_tag(s: &mut Server, owner: u16, at: [f32; 3]) {
@@ -352,6 +367,89 @@ fn a_drawn_bow_throws_no_stars_but_a_tap_still_does() {
     feed(&mut s, press(0.0, 0.0), idle(B_YAW));
     assert!(s.projectiles().iter().any(|(o, _)| *o == A), "a tap is a star");
     assert_eq!(player(&mut s, A).power.cooldown, 0.0);
+}
+
+// ---- yumi splash (near-miss forgiveness) ----
+
+#[test]
+fn a_near_miss_within_the_splash_band_does_reduced_body_damage_with_no_head_bonus() {
+    let mut s = server(-30.0);
+    give(&mut s, A, PowerKind::Yumi, 0);
+    offset_b(&mut s, 1.0); // 1 m off the flight line: inside the splash band (0.65..1.85 m), outside the direct one
+    let yc = s.balance.combat.power.yumi;
+    let want = arrow_splash_damage(&yc, 1.0 - (0.3 + yc.radius));
+    let hits = arrow_hits(&shoot(&mut s, 40, 0.0, 40));
+    assert_eq!(hits.len(), 1, "a splash hit, not a miss: {hits:?}");
+    let (amount, head) = hits[0];
+    assert!(!head, "a near-miss shockwave is never a headshot");
+    assert!((amount - want).abs() < 0.5, "amount {amount} vs the pure falloff fn {want}");
+    assert!(amount > 0.0 && amount < yc.damage * 0.5, "clearly weaker than a direct hit (80): {amount}");
+}
+
+#[test]
+fn a_clean_miss_outside_the_splash_band_does_nothing() {
+    let mut s = server(-30.0);
+    give(&mut s, A, PowerKind::Yumi, 0);
+    offset_b(&mut s, 2.5); // past the outer edge (1.85 m): no direct hit, no splash either
+    let ev = shoot(&mut s, 40, 0.0, 60);
+    assert!(arrow_hits(&ev).is_empty(), "nothing lands: {:?}", arrow_hits(&ev));
+    assert_eq!(hp(&s, B), 100.0);
+    assert!(s.arrows.is_empty(), "the arrow ran its course (range / kill plane), never hit anything");
+}
+
+#[test]
+fn a_wall_impact_near_a_bystander_still_shakes_them() {
+    let wall = LevelBox::new([0.0, 1.0, -5.0], [10.0, 2.0, 0.3]);
+    let mut s = server_with_boxes(-40.0, vec![LevelBox::new([0.0, -0.5, 0.0], [100.0, 0.5, 100.0]), wall], |_| {});
+    give(&mut s, A, PowerKind::Yumi, 0);
+    // B stands just past the far side of the wall, close enough to the face the arrow embeds in to still feel it
+    tp(&mut s, B, [0.8, 0.81, -5.6]);
+    let mut saw_wall = false;
+    let mut hit = None;
+    for t in 0..200 {
+        let a = if t < 40 { drawing(0.0, 0.0) } else { idle(0.0) };
+        for e in feed(&mut s, a, idle(B_YAW)) {
+            if let PvpEvent::Hit { attacker: A, victim: B, amount, kind: DamageKind::Arrow, head, .. } = e {
+                hit = Some((amount, head));
+            }
+        }
+        saw_wall |= fx_count(&s, FX_ARROW_WALL) > 0;
+        if saw_wall {
+            break;
+        }
+    }
+    assert!(saw_wall, "the arrow embedded in the wall");
+    let (amount, head) = hit.expect("the wall thud still reached B through the splash AOE");
+    assert!(!head && amount > 0.0 && amount < s.balance.combat.power.yumi.damage * 0.5, "weak and body-only: {amount}");
+}
+
+#[test]
+fn a_raised_shield_dampens_a_splash_hit_proportionally_to_its_weaker_damage() {
+    let mut s = server(-30.0);
+    give(&mut s, A, PowerKind::Yumi, 0);
+    offset_b(&mut s, 1.0);
+    let mut dmg = 0.0;
+    let mut guard_before = 1.0f32;
+    let mut guard_after = 1.0f32;
+    for t in 0..120 {
+        let b = if t >= 10 { guard(B_YAW) } else { idle(B_YAW) };
+        let a = if t < 40 { drawing(0.0, 0.0) } else { idle(0.0) };
+        let g0 = s.players.iter().find(|p| p.id == B).unwrap().blk.energy;
+        for e in feed(&mut s, a, b) {
+            if let PvpEvent::Hit { victim: B, amount, kind: DamageKind::Arrow, head, .. } = e {
+                assert!(!head);
+                dmg += amount;
+                guard_before = g0;
+                guard_after = s.players.iter().find(|p| p.id == B).unwrap().blk.energy;
+            }
+        }
+    }
+    let yc = s.balance.combat.power.yumi;
+    let base = arrow_splash_damage(&yc, 1.0 - (0.3 + yc.radius));
+    let want = base * s.balance.guard.front_mult;
+    assert!(dmg > 0.0 && (dmg - want).abs() < 0.5, "a blocked splash hit still does base x front_mult: {dmg} vs {want}");
+    assert!(guard_before - guard_after > 0.0 && guard_before - guard_after < 0.6, "guard drains, but far less than a direct hit's ~70%: {guard_before} -> {guard_after}");
+    assert!(s.arrows.is_empty());
 }
 
 // ---- tags ----
