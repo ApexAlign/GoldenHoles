@@ -11,9 +11,9 @@ long as the bag lasts. Numbers live in Balance `combat.yumi.*` / `combat.tag.*` 
 | Load / carry | one arrow, never lost | 2 tags, 60 s (`count`, `carry_s`) |
 | Use | press **2** to raise the bow (**1** puts it away; the katana puts itself away with it — no blade shows while the bow is out), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). After a shot the bow **reloads for 1.1 s** (`reload_s`; the HUD reload bar under the crosshair). | **press** Q: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
 | While in use | walk -25 % (`move_mult`), -40 % at full draw (`focus_move_mult` 0.6), look speed x0.5 (`turn_mult`) and scaled with the zoom FOV, no stars while drawing; draw ring + reload bar on the HUD | no stars while tags are in hand or still ticking |
-| Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 280 m/s, 4 m/s^2 drop, 250 m range, no damage falloff | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
-| Knock | none | 14 m/s radial launch + hop (`knock`): ring-out credit, wall-splat window like a katana hit |
-| Counters | **block**: damage x guard `front_mult`, guard loses 70 % (`block_drain`). **Parry** (shield raised within the parry window): no damage, the arrow turns around toward the shooter and flies back at full speed (it can hurt them, and be parried again). **Katana** crossing the arrow cuts it out of the air. | **Katana** swing (anyone but the owner) crossing the tag cuts it off, no blast. Not blockable or parryable (it is an area effect). |
+| Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 280 m/s, 4 m/s^2 drop, 250 m range, no damage falloff. **Splash** (near-miss forgiveness, not a second blast weapon): within `splash_radius` **1.2 m** beyond the direct-hit band -- a flight graze, or embedded in a wall right next to someone -- still does a little: body-only (no head bonus), falling off linearly from `splash_frac` **40 %** of a direct hit at the inner edge to 0 at the outer edge (`arrow_splash_damage`, the same falloff shape as the tag's blast with `splash_frac` standing in for `edge_frac`) | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
+| Knock | none, including on a splash hit (it is a forgiveness band, not the tag's launch) | 14 m/s radial launch + hop (`knock`): ring-out credit, wall-splat window like a katana hit |
+| Counters | **block**: damage x guard `front_mult`, guard loses 70 % (`block_drain`); a splash hit is blocked the same way but for proportionally less (`block_drain * splash_frac`). **Parry** (shield raised within the parry window): no damage, the arrow turns around toward the shooter and flies back at full speed (it can hurt them, and be parried again) -- a splash hit still in flight parries the same way (it is the same live arrow); a splash hit from a wall thud has no arrow left to turn around, so a parry there just absorbs it. **Katana** crossing the arrow cuts it out of the air (no splash triggers). | **Katana** swing (anyone but the owner) crossing the tag cuts it off, no blast. Not blockable or parryable (it is an area effect). |
 | Telegraph | a drawn bow shows to everyone as a bow with its string back and a faint laser line along the aim; the line glints bright (and the screen frame pulses, "BOW DRAWN ON YOU") when it points at your head | a paper tag with a countdown ring of 12 pips; one stuck on **you** shows "TAG ON YOU 1.3" on the HUD and beeps faster; armed tags blink red |
 
 Dying drops a tag bag where you fell (25 s, whatever was left) for anyone not holding one; the bow does not drop. A taken pedestal
@@ -51,6 +51,11 @@ in `power.rs`); the only sim part is the walk speed.
 * Arrows are server-authoritative flying objects (swept against solids and capsules each tick; no lag compensation), parried or
   blocked **at the victim's shield** using the same arc test as every other hit (`block::guard_vs`). Spawn-protected and rolling players
   are passed through.
+* Splash is checked two ways each tick, both using `splash_radius`/`splash_frac`: the flight sweep that already finds a direct hit is
+  widened into a second, outer band (a near-miss resolves only once the true closest approach of the whole flight has already
+  happened, so a shot about to land a direct hit keeps flying instead of being downgraded one tick early); and an arrow that embeds in
+  a wall runs a small point-centred AOE against anyone else within the band of the impact point (mirrors the tag's blast loop, but on
+  a point, not a flying tag, and with no line-of-sight check -- the band is small enough that it is always effectively adjacent).
 * Match start / respawn gives you a loaded bow (and drops nothing but a tag bag). Intermission clears every arrow and tag.
 
 ## Netcode (protocol v23)
@@ -63,8 +68,9 @@ in `power.rs`); the only sim part is the walk speed.
 * World pieces ride in the snapshot as entities from `POWER_ID_BASE` (0x6000): arrows (velocity, owner, reflected), tags (flying /
   stuck / on player, armed, fuse left in 1/15) and drawn bows (eye, aim, draw progress). See `shinobi-proto/src/snapshot.rs`.
 * `NetEvent::PowerFx { what, owner, pos }` (`power_pass::FX_*`): pickup call-outs, draw, loose, hit / head / blocked / parried / cut /
-  wall, tag thrown / stuck / armed / blast / cut, drop. `PickupSpawned.kind` is 0 cube, 2 tag (1 was the yumi pedestal). Hit markers: `KIND_ARROW`,
-  `KIND_TAG`.
+  wall / splash, tag thrown / stuck / armed / blast / cut, drop. `PickupSpawned.kind` is 0 cube, 2 tag (1 was the yumi pedestal). Hit
+  markers: `KIND_ARROW`, `KIND_TAG`. No wire change was needed for splash: it resolves server-side into the same `PvpHit` /
+  `CombatEvent::Hit` stream a direct hit already uses, just with a smaller `amount` and a dedicated `FX_ARROW_SPLASH` cue.
 * The client uses `PowerCfg::default()` for its predicted draw time and walk (like `StarCfg::default()`): a server tuned differently
   makes the prediction a little off until the next report.
 

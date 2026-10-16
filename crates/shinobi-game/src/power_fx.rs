@@ -573,6 +573,10 @@ fn spawn_shells(mut commands: Commands, look: Option<Res<Look>>, view: Res<ViewR
                 impacts.0.push(Impact { pos: p, color: [1.0, 0.45, 0.08], kind: ImpactKind::Hit { kill: true } });
             }
             FX_ARROW_HIT | FX_ARROW_HEAD => impacts.0.push(Impact { pos: p, color: oc, kind: ImpactKind::Hit { kill: *what == FX_ARROW_HEAD } }),
+            // a near miss (flight graze or a wall thud close to someone): a small, modest flash -- a shell far
+            // smaller and shorter-lived than the tag's blast shell, and no bright "Hit" impact at all, so it reads
+            // as "that was close" rather than "that hit hard".
+            FX_ARROW_SPLASH => shell(&mut commands, &mut mats, p, [1.0, 0.6, 0.2], 2.0, 0.35, 0.12, false),
             FX_ARROW_BLOCKED => {
                 shell(&mut commands, &mut mats, p, [0.3, 0.9, 1.0], 3.0, 0.9, 0.18, false);
                 impacts.0.push(Impact { pos: p, color: [0.3, 0.9, 1.0], kind: ImpactKind::Gone });
