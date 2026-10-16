@@ -96,6 +96,9 @@ pub const FX_TAG_CUT: u8 = 14;
 pub const FX_DROP: u8 = 15;
 pub const FX_ARROW_HEAD: u8 = 16;
 pub const FX_EXPIRED: u8 = 17;
+/// An arrow's near-miss SPLASH band landed: a near-flight graze or a wall thud close to someone (`YumiCfg::splash_*`).
+/// A small, modest flash -- distinct from `FX_ARROW_HIT`/`FX_ARROW_HEAD`, nowhere near `FX_TAG_BLAST`.
+pub const FX_ARROW_SPLASH: u8 = 18;
 
 pub(crate) fn pt(v: V3) -> Point<Real> {
     Point::new(v[0], v[1], v[2])
@@ -356,22 +359,38 @@ impl Server {
                 continue;
             }
             let wall = solid_hit(self, from, to);
+            // direct hit (unchanged band) and, beyond it, a near-miss SPLASH band: a forgiving but much weaker body-only
+            // hit, same linear falloff shape as the fuda tag's blast (`arrow_splash_damage`). Mutually exclusive per
+            // player; the nearest of each along the step is kept.
+            let inner = body_r + yc.radius;
+            let outer = inner + yc.splash_radius;
             let mut victim: Option<(f32, usize, V3)> = None; // (distance along the step, index, hit point)
+            let mut splash: Option<(f32, usize, V3, f32)> = None; // (dist along the step, index, hit point, dist beyond `inner`)
             for (j, q) in self.players.iter().enumerate() {
                 if q.id == a.owner || allied(oteam, q.team) || !hittable(q, tick) {
                     continue;
                 }
                 let c = q.pos(&self.world);
                 let (dist, s) = seg_seg(from, to, [c[0], c[1] - hh, c[2]], [c[0], c[1] + hh, c[2]]);
-                if dist <= body_r + yc.radius && victim.map_or(true, |(vd, _, _)| s * seglen < vd) {
-                    victim = Some((s * seglen, j, add(from, scale(sub(to, from), s))));
+                let along = s * seglen;
+                if dist <= inner {
+                    if victim.map_or(true, |(vd, _, _)| along < vd) {
+                        victim = Some((along, j, add(from, scale(sub(to, from), s))));
+                    }
+                // `s < 1` (not clamped to this tick's far end): the true closest approach of the whole flight falls
+                // within or before this tick's step, so this tick really is as near as the arrow ever gets to this
+                // player. At `s == 1` the arrow is still closing (the true nearest point lies further ahead, in a
+                // later tick) -- skipping it here is what lets a shot that is about to land a direct hit keep flying
+                // instead of being downgraded to a near miss one tick early.
+                } else if dist <= outer && s < 1.0 - 1e-5 && splash.map_or(true, |(sd, _, _, _)| along < sd) {
+                    splash = Some((along, j, add(from, scale(sub(to, from), s)), dist - inner));
                 }
             }
-            let wall_first = match (wall, victim) {
-                (Some((wd, _)), Some((vd, _, _))) => wd < vd,
-                (Some(_), None) => true,
-                _ => false,
-            };
+            let (wall_d, victim_d, splash_d) = (wall.map(|(wd, _)| wd), victim.map(|(vd, _, _)| vd), splash.map(|(sd, _, _, _)| sd));
+            // a direct hit always wins a tie (unchanged from before splash existed); of what is left, whichever the
+            // arrow reaches first (the wall or the near-miss point) goes next.
+            let direct_first = victim_d.map_or(false, |vd| vd <= wall_d.unwrap_or(f32::MAX) && vd <= splash_d.unwrap_or(f32::MAX));
+            let wall_first = !direct_first && wall_d.map_or(false, |wd| wd <= splash_d.unwrap_or(f32::MAX));
             if wall_first {
                 let (wd, _) = wall.unwrap();
                 let p = add(from, scale(norm(sub(to, from)), wd));
@@ -381,10 +400,13 @@ impl Server {
                     let chip = yc.damage * 0.12 * self.breaks.cfg.chip_mult;
                     self.breaks.blast(&mut self.world, p, 0.8, |_| chip, tick, &mut self.break_events);
                 }
+                // the thud lands close enough to someone else to still shake them: a small AOE at the impact point
+                self.arrow_wall_splash(p, a.owner, a.origin, oteam, tick, &yc, &bcfg, hits, &mut fx);
                 self.arrows.remove(i);
                 continue;
             }
-            if let Some((_, j, hitp)) = victim {
+            if direct_first {
+                let (_, j, hitp) = victim.unwrap();
                 let q = &self.players[j];
                 let vpos = q.pos(&self.world);
                 let guard = crate::block::guard_vs(&q.blk, dq_yaw(q.yaw), vpos, a.origin, tick, &bcfg);
@@ -429,6 +451,56 @@ impl Server {
                         let amount = yc.damage * if head { yc.head_mult } else { 1.0 };
                         hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head, stealth: false });
                         fx.push((a.owner, CombatEvent::PowerFx { what: if head { FX_ARROW_HEAD } else { FX_ARROW_HIT }, pos: pt(hitp) }));
+                    }
+                }
+                self.arrows.remove(i);
+                continue;
+            }
+            if let Some((_, j, hitp, beyond)) = splash {
+                // the arrow's own flight path grazed someone close enough to feel it: a weaker, body-only hit through
+                // the same guard check a direct hit uses (a fresh shield still parries the real, live arrow).
+                let q = &self.players[j];
+                let vpos = q.pos(&self.world);
+                let guard = crate::block::guard_vs(&q.blk, dq_yaw(q.yaw), vpos, a.origin, tick, &bcfg);
+                let vid = q.id;
+                let amount_base = arrow_splash_damage(&yc, beyond);
+                match guard {
+                    crate::block::Guard::Parried => {
+                        self.players[j].blk.mark_used();
+                        let shooter = Some(oi).map(|k| {
+                            let c = self.players[k].pos(&self.world);
+                            [c[0], c[1] + 0.4, c[2]]
+                        });
+                        let dir = match shooter {
+                            Some(s) => norm(sub(s, hitp)),
+                            None => norm(scale(a.vel, -1.0)),
+                        };
+                        let speed = len(a.vel);
+                        a.owner = vid;
+                        a.vel = scale(dir, speed);
+                        a.pos = add(hitp, scale(dir, 0.7));
+                        a.origin = hitp;
+                        a.age = 0.0;
+                        a.reflected = true;
+                        fx.push((vid, CombatEvent::PowerFx { what: FX_ARROW_PARRIED, pos: pt(hitp) }));
+                        self.arrows[i] = a;
+                        i += 1;
+                        continue;
+                    }
+                    crate::block::Guard::Blocked => {
+                        let v = &mut self.players[j];
+                        v.blk.mark_used();
+                        v.blk.energy -= yc.block_drain * yc.splash_frac;
+                        if v.blk.energy <= 0.0 {
+                            v.blk.break_guard(tick, &bcfg);
+                            v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
+                        }
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                        fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(hitp) }));
+                    }
+                    crate::block::Guard::None => {
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                        fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_SPLASH, pos: pt(hitp) }));
                     }
                 }
                 self.arrows.remove(i);
@@ -502,6 +574,58 @@ impl Server {
             v.melee.knock_until = tick + mcfg.splat_ticks;
             v.melee.knock_speed = tc.knock * k;
             v.melee.knock_by = t.owner;
+        }
+    }
+
+    /// An arrow embedded in a surface at `p`: anyone else (not the owner, not an ally, not the direct victim -- there
+    /// is none here, the direct band is handled before this is ever called) within the SPLASH band of the impact
+    /// point takes a little, falling off to nothing at the edge (`YumiCfg::splash_*`, mirroring the fuda tag's
+    /// `blast` loop but on a point, not a flying tag, and routed through the same guard check a direct hit uses:
+    /// body-only, no reflect on a parry (the arrow that caused it is already spent).
+    #[allow(clippy::too_many_arguments)]
+    fn arrow_wall_splash(&mut self, p: V3, owner: u16, origin: V3, oteam: u8, tick: u32, yc: &YumiCfg, bcfg: &crate::block::BlockCfg, hits: &mut Vec<PvpHit>, fx: &mut Vec<(u16, CombatEvent)>) {
+        let hh = self.cfg().half_height;
+        let inner = self.cfg().radius + yc.radius;
+        for j in 0..self.players.len() {
+            let (qid, qteam, qpos) = {
+                let q = &self.players[j];
+                (q.id, q.team, q.pos(&self.world))
+            };
+            if qid == owner || allied(oteam, qteam) || !hittable(&self.players[j], tick) {
+                continue;
+            }
+            let d = point_seg([qpos[0], qpos[1] - hh, qpos[2]], [qpos[0], qpos[1] + hh, qpos[2]], p);
+            if d <= inner || d > inner + yc.splash_radius {
+                continue; // inside the direct band (handled elsewhere) or past the splash band: nothing here
+            }
+            let amount_base = arrow_splash_damage(yc, d - inner);
+            if amount_base <= 0.0 {
+                continue;
+            }
+            let q = &self.players[j];
+            let guard = crate::block::guard_vs(&q.blk, dq_yaw(q.yaw), qpos, origin, tick, bcfg);
+            match guard {
+                crate::block::Guard::Parried => {
+                    // the shockwave is absorbed outright; there is no live arrow left to turn around
+                    self.players[j].blk.mark_used();
+                    fx.push((qid, CombatEvent::PowerFx { what: FX_ARROW_PARRIED, pos: pt(p) }));
+                }
+                crate::block::Guard::Blocked => {
+                    let v = &mut self.players[j];
+                    v.blk.mark_used();
+                    v.blk.energy -= yc.block_drain * yc.splash_frac;
+                    if v.blk.energy <= 0.0 {
+                        v.blk.break_guard(tick, bcfg);
+                        v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
+                    }
+                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                    fx.push((owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(p) }));
+                }
+                crate::block::Guard::None => {
+                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                    fx.push((owner, CombatEvent::PowerFx { what: FX_ARROW_SPLASH, pos: pt(p) }));
+                }
+            }
         }
     }
 }
