@@ -1183,20 +1183,27 @@ mod tests {
         v.fx.slice_cooldown = 1.0;
         v.fx.throw_cooldown = 1.0;
         let bow_full = || PowerView { kind: PowerKind::Yumi, ammo: 1, ammo_max: 1, left: 1.0, left_secs: 1.0, draw: 1.0, full: true, cooldown: 0.0, reload: 1.0, up: true, live_tags: 0, armed_tags: 0 };
-        // far enough that the arrow's flight time is long, target holding still: the shot lands, fire assist is up
-        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -80.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0, 0.0, 0.0], blend: 1.0 });
         v.power = Some(bow_full());
-        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
-        assert!(t.fire_ready, "a still target at range: the arrow has time to arrive, still a sure hit");
+        // the HUD's lock position smooths toward the real one (exp smoothing, same as the 3D lock dots): settle it
+        // after every position change rather than reading the very next frame, same as it would in real play where
+        // the target never teleports either
+        let mut settle = |v: &RenderView| {
+            let mut t = None;
+            for _ in 0..60 {
+                t = b.update(0.016, v, &net(), false).target;
+            }
+            t.expect("brackets")
+        };
+        // far enough that the arrow's flight time is long, target holding still: the shot lands, fire assist is up
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -150.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [0.0, 0.0, 0.0], blend: 1.0 });
+        assert!(settle(&v).fire_ready, "a still target at range: the arrow has time to arrive, still a sure hit");
         // same range, but the target is sprinting across the lock: by the time the arrow gets there it has
         // drifted out of the lock cone -- the bracket must not promise a landed shot
-        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -80.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [8.0, 0.0, 0.0], blend: 1.0 });
-        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
-        assert!(!t.fire_ready, "fast lateral drift over a long flight time: not a sure hit, no fire assist");
+        v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -150.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [8.0, 0.0, 0.0], blend: 1.0 });
+        assert!(!settle(&v).fire_ready, "fast lateral drift over a long flight time: not a sure hit, no fire assist");
         // up close the same drift barely moves the target before the arrow arrives: fire assist holds
         v.lock = Some(LockOn { target: 5, pos: [0.0, 1.5, -6.0], progress: 1.0, locked: true, phase: LockPhase::Locked, eased: 1.0, t_since_phase: 1.0, target_vel: [8.0, 0.0, 0.0], blend: 1.0 });
-        let t = b.update(0.016, &v, &net(), false).target.expect("brackets");
-        assert!(t.fire_ready, "close range: short flight time, the same drift barely matters");
+        assert!(settle(&v).fire_ready, "close range: short flight time, the same drift barely matters");
     }
 
     #[test]

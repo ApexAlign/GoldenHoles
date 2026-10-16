@@ -193,7 +193,7 @@ fn a_full_draw_headshot_kills_an_unhurt_player_outright_on_the_demo_numbers() {
 
 #[test]
 fn an_arrow_drops_a_little_over_distance_and_has_a_range() {
-    // B stands far enough back that the faster arrow (180 m/s) cannot reach and consume it mid-measurement, but still
+    // B stands far enough back that the faster arrow (280 m/s) cannot reach and consume it mid-measurement, but still
     // inside the level box
     let mut s = server(-80.0);
     give(&mut s, A, PowerKind::Yumi, 0);

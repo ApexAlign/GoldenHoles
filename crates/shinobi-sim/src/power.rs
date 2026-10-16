@@ -82,7 +82,7 @@ impl Default for YumiCfg {
             zoom_start: 0.25,
             focus_move_mult: 0.6,
             zoom_hurt_s: 0.35,
-            speed: 180.0,
+            speed: 280.0,
             gravity: 4.0,
             range: 250.0,
             radius: 0.35,
@@ -499,13 +499,13 @@ mod tests {
         // flight time and drop to 200 m (the arrow lives while speed * age <= range)
         let t = 200.0 / c.speed;
         let drop = 0.5 * c.gravity * t * t;
-        assert!(t < 1.5 && (1.5..4.0).contains(&drop), "200 m: {t:.2} s in the air, {drop:.1} m of drop");
-        // a runner (~9 m/s) crosses ~10 m meanwhile: the lead is a few body widths, not a different postcode
-        assert!(9.0 * t < 15.0);
+        assert!(t < 1.0 && (0.5..2.0).contains(&drop), "200 m: {t:.2} s in the air, {drop:.1} m of drop");
+        // a runner (~9.5 m/s, the current run speed) crosses a few metres meanwhile: barely a lead at all now
+        assert!(9.5 * t < 8.0);
         assert!(250.0 / c.speed * c.speed <= c.range + 1e-3 && c.range >= 250.0);
-        // the HUD tick: the drop angle grows with range and is ~0.7 deg at 200 m (flatter now the arrow is faster)
+        // the HUD tick: the drop angle grows with range and is ~0.3 deg at 200 m (near-flat at 280 m/s)
         let (a50, a200) = (arrow_drop_angle(50.0, &c), arrow_drop_angle(200.0, &c));
-        assert!(a50 < a200 && (a200.to_degrees() - 0.7).abs() < 0.15, "{}", a200.to_degrees());
+        assert!(a50 < a200 && (a200.to_degrees() - 0.3).abs() < 0.1, "{}", a200.to_degrees());
     }
 
     const DT: f32 = 1.0 / 60.0;

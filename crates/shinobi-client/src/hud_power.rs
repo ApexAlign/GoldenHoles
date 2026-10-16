@@ -350,8 +350,8 @@ mod tests {
         let near = drop_tick_offset(&zv(1.0, Some(50.0)));
         let far = drop_tick_offset(&zv(1.0, Some(200.0)));
         assert!(near > 0.0 && far > near && far < 0.45, "{near} {far}");
-        // 200 m at 30 deg FOV: 4 m/s^2 over 1.11 s (180 m/s) = 2.5 m = 0.7 deg = about 0.023 of the screen height
-        assert!((far - 0.023).abs() < 0.005, "{far}");
+        // 200 m at 30 deg FOV: 4 m/s^2 over 0.71 s (280 m/s) = 1.0 m = 0.3 deg = about 0.0095 of the screen height
+        assert!((far - 0.0095).abs() < 0.002, "{far}");
         // the same drop reads bigger on screen the tighter the FOV
         let wide = drop_tick_offset(&crate::zoom::ZoomView { fov_deg: 90.0, ..zv(1.0, Some(200.0)) });
         assert!(far > wide * 2.0);

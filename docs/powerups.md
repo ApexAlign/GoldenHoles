@@ -11,7 +11,7 @@ long as the bag lasts. Numbers live in Balance `combat.yumi.*` / `combat.tag.*` 
 | Load / carry | one arrow, never lost | 2 tags, 60 s (`count`, `carry_s`) |
 | Use | press **2** to raise the bow (**1** puts it away; the katana puts itself away with it — no blade shows while the bow is out), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). After a shot the bow **reloads for 1.1 s** (`reload_s`; the HUD reload bar under the crosshair). | **press** Q: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
 | While in use | walk -25 % (`move_mult`), -40 % at full draw (`focus_move_mult` 0.6), look speed x0.5 (`turn_mult`) and scaled with the zoom FOV, no stars while drawing; draw ring + reload bar on the HUD | no stars while tags are in hand or still ticking |
-| Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 180 m/s, 4 m/s^2 drop, 250 m range, no damage falloff | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
+| Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 280 m/s, 4 m/s^2 drop, 250 m range, no damage falloff | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
 | Knock | none | 14 m/s radial launch + hop (`knock`): ring-out credit, wall-splat window like a katana hit |
 | Counters | **block**: damage x guard `front_mult`, guard loses 70 % (`block_drain`). **Parry** (shield raised within the parry window): no damage, the arrow turns around toward the shooter and flies back at full speed (it can hurt them, and be parried again). **Katana** crossing the arrow cuts it out of the air. | **Katana** swing (anyone but the owner) crossing the tag cuts it off, no blast. Not blockable or parryable (it is an area effect). |
 | Telegraph | a drawn bow shows to everyone as a bow with its string back and a faint laser line along the aim; the line glints bright (and the screen frame pulses, "BOW DRAWN ON YOU") when it points at your head | a paper tag with a countdown ring of 12 pips; one stuck on **you** shows "TAG ON YOU 1.3" on the HUD and beeps faster; armed tags blink red |
@@ -30,13 +30,15 @@ in `power.rs`); the only sim part is the walk speed.
   `focus_move_mult` 0.6 at full draw (0.75 before; the server steps `PowerState` and the client predicts with the same `draw_walk_mult`, replays use the
   state at replay time). **A hit on you** (own health drops) cancels the zoom for `zoom_hurt_s` 0.35 s, then it eases back in while you still hold the draw.
 * **Look.** Thin neon ring (radius 0.075 -> 0.018 of the screen height), range readout (`118 M`, `--- M` at open sky) to the aimed point (level raycast or a
-  player within 0.7 m of the aim), a drop tick below the centre where the arrow lands at that range (`arrow_drop_angle`: ~1.9 deg at 200 m,
-  ~0.062 of the screen height at 30 deg FOV), a faint vignette (<= 0.2). No scope mask. The first-person katana, shield, star and wrist launcher sink out of frame
+  player within 0.7 m of the aim), a drop tick below the centre where the arrow lands at that range (`arrow_drop_angle`: ~0.3 deg at 200 m,
+  ~0.0095 of the screen height at 30 deg FOV), a faint vignette (<= 0.2). No scope mask. The first-person katana, shield, star and wrist launcher sink out of frame
   (`viewmodel::zoom_fade`: gone at zoom 0.5; the overlay camera keeps its own 90 deg FOV); our own bow is pinned to its hip-fire screen size and leaves at zoom 0.35. The dash FOV kick fades out with the zoom.
 * **Sniping numbers.** Range 250 m (the FFA maps are 224 x 224 / 336 x 336 m, the isles / sky maps ~230 m: diagonals are 300 to 475 m, so 250 m covers
-  most sightlines without making the whole map a shooting range). 180 m/s and 4 m/s^2 (speed raised from 110, flatter and faster so a lined-up shot is
-  less of a guess): at 200 m the arrow is in the air 1.11 s and falls 2.5 m (the drop tick shows it), a runner (9 m/s) moves 10 m meanwhile, so long shots
-  still need lead. Damage does not fall off: a full-draw headshot still kills at any range.
+  most sightlines without making the whole map a shooting range). 280 m/s and 4 m/s^2 (speed raised again from 180: a sniping weapon has to be
+  near-flat to be worth lining up): at 200 m the arrow is in the air 0.71 s and falls 1.0 m (the drop tick shows it), a runner (9.5 m/s) moves 7 m
+  meanwhile, barely a lead at all. Damage does not fall off: a full-draw headshot still kills at any range. The lock-on bracket's gold "fire ready"
+  state is range-independent for this reason: it checks a fixed metre-drift window against the target's lateral speed and the arrow's actual flight
+  time, so a correctly read lock stays trustworthy at long range, not just up close.
 * Review frames: `docs/screens/bow_zoom_{hip,half,full}.png` (`SHOT_FX=bowzoom:D,lineup` with `SHOT_LINE=80 SHOT_LINE_PICK=1`, D = draw 0 / 0.65 / 1).
 
 ## Rules worth knowing
