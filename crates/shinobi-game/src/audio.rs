@@ -380,7 +380,7 @@ impl Cuer {
             if on_me
                 && ((matches!(*what, FX_ARROW_BLOCKED) && f.absorbed > 0)
                     || (matches!(*what, FX_ARROW_PARRIED) && f.parried > 0)
-                    || (matches!(*what, FX_ARROW_HIT | FX_ARROW_HEAD) && !f.taken.is_empty()))
+                    || (matches!(*what, FX_ARROW_HIT | FX_ARROW_HEAD | FX_ARROW_SPLASH) && !f.taken.is_empty()))
             {
                 continue;
             }
@@ -394,6 +394,9 @@ impl Cuer {
                 FX_TAG_THROW if !mine => (Sound::Throw, 0.5, 1.4),
                 FX_ARROW_HIT => (Sound::HitBody, 1.0, 1.0),
                 FX_ARROW_HEAD => (Sound::HitHard, 1.0, 1.0),
+                // a near miss: the same body-hit cue as FX_ARROW_HIT, but quieter and a touch lower so it reads as
+                // weaker than a real connect, not a second kind of impact.
+                FX_ARROW_SPLASH => (Sound::HitBody, 0.55, 0.85),
                 FX_ARROW_BLOCKED => (Sound::Block, 0.9, 1.0),
                 FX_ARROW_PARRIED => (Sound::Parry, 1.0, 1.0),
                 FX_ARROW_CUT | FX_TAG_CUT => (Sound::Clash, 0.8, 1.2),
