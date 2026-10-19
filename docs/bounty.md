@@ -97,6 +97,13 @@ bypassed. An earlier version of this *was* a hard override and reliably walked b
 islands chasing a bounty across the drum; the cost-discount version was checked clean (zero void deaths) against
 that level and every other movement-safety level test (`isles`, `sky`, `hive`, `split`) with the system fully on.
 
+A committed hunter also reaches for the rope harder (`fsm::Assignment::hunting`, `fsm::hook_decision`): its hook
+window stretches from `HOOK_MAX` (90 m) out to `HOOK_HUNT_MAX` (140 m), and the per-tick chance to take the hook
+roughly doubles at both the near and far bands (`HOOK_HUNT_NEAR_CHANCE` / `HOOK_HUNT_CHANCE` vs. the ordinary
+`HOOK_NEAR_CHANCE` / `HOOK_CHANCE`). This only applies while that bot's assigned target *is* the live bounty it
+committed to hunt — an ordinary target never gets the wider window. The wanted player gets actively run down
+with traversal, not just flagged on everyone's HUD.
+
 ## HUD
 
 * The bounty's own screen gets `"MARKED AS BOUNTY"` during the grace window, then `"YOU ARE THE BOUNTY"` once

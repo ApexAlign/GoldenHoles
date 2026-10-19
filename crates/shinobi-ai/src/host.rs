@@ -502,15 +502,18 @@ impl BotHost {
         };
         let warming = engager_cap != usize::MAX;
         let mut on_human: Vec<(u16, usize)> = Vec::new(); // (human, bots already assigned this tick)
+        let mut huntings: Vec<bool> = Vec::new(); // parallels `targets`: this bot's target is the live bounty it committed to hunt
         for b in &self.bots {
             let Some(me) = world.player(b.id).filter(|p| p.alive) else {
                 targets.push(None);
+                huntings.push(false);
                 continue;
             };
             // sent to a quiet human: go to them first, fight normally once there
             if let Some(&(_, human, _)) = self.summoned.iter().find(|s| s.0 == b.id) {
                 if world.player(human).map_or(false, |h| h.alive) {
                     targets.push(Some(human));
+                    huntings.push(false);
                     continue;
                 }
             }
@@ -572,6 +575,7 @@ impl BotHost {
                     None => on_human.push((t, 1)),
                 }
             }
+            huntings.push(hunted_id.is_some() && pick == hunted_id);
             targets.push(pick);
         }
         self.sticky = self.bots.iter().zip(&targets).filter_map(|(b, t)| t.map(|t| (b.id, t))).collect();
@@ -587,7 +591,7 @@ impl BotHost {
         let assigns: Vec<Assignment> = (0..self.bots.len())
             .map(|i| {
                 let rank = rank_of(i);
-                Assignment { target: targets[i], slot_angle: self.bots[i].archetype.slot_angle(rank), rank }
+                Assignment { target: targets[i], slot_angle: self.bots[i].archetype.slot_angle(rank), rank, hunting: huntings[i] }
             })
             .collect();
 

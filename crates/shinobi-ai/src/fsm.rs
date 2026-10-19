@@ -45,6 +45,12 @@ const HOOK_NEAR_CHANCE: f32 = 0.006;
 const HOOK_MAX: f32 = 90.0;
 const HOOK_CHANCE: f32 = 0.012;
 const HOOK_COOLDOWN_TICKS: u32 = 420;
+/// Hunting the live BOUNTY (`Assignment::hunting`, docs/bounty.md): the rope reaches a lot farther and fires a
+/// lot more readily than an ordinary hook, so a wanted player gets actively run down with traversal instead of
+/// just standing out on the HUD. Still a per-tick roll with the same cooldown, not a guaranteed yank.
+const HOOK_HUNT_MAX: f32 = 140.0;
+const HOOK_HUNT_CHANCE: f32 = 0.03;
+const HOOK_HUNT_NEAR_CHANCE: f32 = 0.015;
 /// A target this close after a cut gets the next cut of the combo (blade reach 2.4 m + a little).
 const COMBO_REACH: f32 = 2.9;
 /// Katana moves: the share of combo openers that turn into a heavy cut (hold ~0.83 s, then release), the chance to
@@ -84,6 +90,10 @@ pub struct Assignment {
     /// Slot angle relative to the target's facing (0 = ahead, pi = behind).
     pub slot_angle: f32,
     pub rank: usize,
+    /// This bot has committed to hunting the live BOUNTY (docs/bounty.md) and `target` is them: the rope
+    /// reaches farther and fires more readily, so a wanted player is chased down, not just flagged with a
+    /// HUD color. `false` for every other target, including the bounty before any bot commits to the hunt.
+    pub hunting: bool,
 }
 
 pub struct ThinkCtx<'a, 'w> {
@@ -581,10 +591,9 @@ impl BotMem {
                 && me.hook_ready
                 && t.los
                 && !t.view.spawn_protected
-                && (HOOK_NEAR_MIN..=HOOK_MAX).contains(&t.dist)
                 && tick >= self.hook_ok
                 && matches!(self.phase, Phase::Advance | Phase::Flank | Phase::Zone)
-                && rng.chance(if t.dist < HOOK_MIN { HOOK_NEAR_CHANCE } else { HOOK_CHANCE })
+                && hook_decision(ctx.assign.hunting, t.dist).is_some_and(|c| rng.chance(c))
             {
                 zip = true;
                 self.hook_ok = tick + HOOK_COOLDOWN_TICKS;
@@ -1386,4 +1395,45 @@ fn roped_by_enemy(ctx: &ThinkCtx, me: u16, pos: V3) -> bool {
     ctx.world.server.players.iter().any(|q| {
         q.id != me && q.ch.pulling_enemy() && q.ch.grapple.map_or(false, |g| (g.anchor - pos).norm() <= 2.5)
     })
+}
+
+/// This tick's hook roll: `None` outside the hook window at this distance, else the chance to take it.
+/// `hunting` (`Assignment::hunting`, docs/bounty.md) widens the window and raises the chance -- a committed
+/// bounty hunter reaches farther and pulls the trigger more often than an ordinary opportunistic hook.
+fn hook_decision(hunting: bool, dist: f32) -> Option<f32> {
+    let max = if hunting { HOOK_HUNT_MAX } else { HOOK_MAX };
+    if !(HOOK_NEAR_MIN..=max).contains(&dist) {
+        return None;
+    }
+    Some(if dist < HOOK_MIN {
+        if hunting { HOOK_HUNT_NEAR_CHANCE } else { HOOK_NEAR_CHANCE }
+    } else if hunting {
+        HOOK_HUNT_CHANCE
+    } else {
+        HOOK_CHANCE
+    })
+}
+
+#[cfg(test)]
+mod hook_decision_tests {
+    use super::*;
+
+    #[test]
+    fn hunting_a_live_bounty_reaches_farther_and_fires_more_often() {
+        assert!(hook_decision(false, HOOK_MAX + 1.0).is_none(), "an ordinary hook has no reach out here");
+        assert!(hook_decision(true, HOOK_MAX + 1.0).is_some(), "a bounty hunter's rope reaches farther");
+        assert!(hook_decision(true, HOOK_HUNT_MAX + 1.0).is_none(), "but it still ends somewhere");
+
+        let (near_c, hunt_near_c) = (hook_decision(false, HOOK_MIN - 1.0).unwrap(), hook_decision(true, HOOK_MIN - 1.0).unwrap());
+        assert!(hunt_near_c > near_c, "near-range hunt chance beats the ordinary near-range chance");
+
+        let (far_c, hunt_far_c) = (hook_decision(false, HOOK_MIN + 1.0).unwrap(), hook_decision(true, HOOK_MIN + 1.0).unwrap());
+        assert!(hunt_far_c > far_c, "far-range hunt chance beats the ordinary far-range chance");
+    }
+
+    #[test]
+    fn below_the_near_minimum_nobody_hooks() {
+        assert!(hook_decision(false, HOOK_NEAR_MIN - 0.1).is_none());
+        assert!(hook_decision(true, HOOK_NEAR_MIN - 0.1).is_none(), "hunting does not lower the minimum reach");
+    }
 }
