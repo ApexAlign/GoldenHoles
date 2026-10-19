@@ -104,6 +104,11 @@ roughly doubles at both the near and far bands (`HOOK_HUNT_NEAR_CHANCE` / `HOOK_
 committed to hunt — an ordinary target never gets the wider window. The wanted player gets actively run down
 with traversal, not just flagged on everyone's HUD.
 
+The bounty gets a counter to that, not just the hunt: while marked (grace or live), the bounty's own lock-on
+reaches `combat::BOUNTY_ASSIST_RANGE_MULT` (1.5x) farther than usual (`CombatSystem::assist_boost`, set every
+tick in `tick.rs` the same way `suppress_lock` is). A wanted player can pick off a pursuer at range with the
+lock-assisted bow before their hook/wall-run closes the distance, instead of only being able to run.
+
 ## HUD
 
 * The bounty's own screen gets `"MARKED AS BOUNTY"` during the grace window, then `"YOU ARE THE BOUNTY"` once

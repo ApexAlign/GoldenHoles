@@ -39,6 +39,10 @@ pub const GROUP_ENEMY_BODY: Group = Group::GROUP_6;
 pub const GROUP_PROJECTILE: Group = Group::GROUP_4;
 pub const GROUP_MELEE: Group = Group::GROUP_5;
 
+/// The live BOUNTY's own lock-on range multiplier (`CombatSystem::assist_boost`, docs/bounty.md): the
+/// counter-play to a committed hunter's wider hook reach (`fsm::hook_decision` in shinobi-ai).
+pub const BOUNTY_ASSIST_RANGE_MULT: f32 = 1.5;
+
 /// Everything except targets, player bodies and (sensor) light-walls: what blocks shots and slashes.
 pub fn solid_groups() -> Group {
     Group::ALL.difference(TARGETS).difference(GROUP_TRAIL).difference(GROUP_PLAYER).difference(GROUP_ENEMY_BODY)
@@ -210,6 +214,11 @@ pub struct CombatSystem {
     pub lock_edge: Option<aim_assist::LockEdge>,
     /// Blinded (flash star): no lock-on can form and the lock that was held breaks; set every tick by the owner of the sim.
     pub suppress_lock: bool,
+    /// This player is the live BOUNTY (docs/bounty.md) right now: set every tick by the owner of the sim, the
+    /// same way `suppress_lock` is. The bounty's own lock-on reaches farther (`BOUNTY_ASSIST_RANGE_MULT`) --
+    /// the counter-play to a committed hunter's own wider hook reach (`fsm::hook_decision`): a wanted player can
+    /// pick a pursuer off at range before their traversal closes the gap, instead of only being chased.
+    pub assist_boost: bool,
     /// Hitboxes never acquired as a lock-on target (they still take hits); unused, kept for hiding effects.
     pub hidden: Vec<ColliderHandle>,
     /// Flow streak: chained traversal moves (wall-run, hook, dash, wall-jump) without a ground reset
@@ -237,6 +246,7 @@ impl CombatSystem {
             assist_range: s.assist_range,
             lock_edge: None,
             suppress_lock: false,
+            assist_boost: false,
             hidden: Vec::new(),
             flow: flow::Flow::new(flow::FlowCfg::default()),
         }
@@ -340,7 +350,8 @@ impl CombatSystem {
         // hidden players are skipped by the lock like allies
         let mut skip = self.allies.clone();
         skip.extend(self.hidden.iter().copied());
-        let found = if self.suppress_lock { None } else { aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, self.assist_range, &skip, ch.body, held) };
+        let range = if self.assist_boost { self.assist_range * BOUNTY_ASSIST_RANGE_MULT } else { self.assist_range };
+        let found = if self.suppress_lock { None } else { aim_assist::best_target_held(world, eye, fwd, self.assist_cone_deg, range, &skip, ch.body, held) };
         self.lock_edge = self.lock.update(dt, &self.lock_cfg, found.as_ref());
         let hint = found.filter(|_| self.lock.holding()).map(|t| aim_assist::LockHint { dir: t.dir, pull: self.lock.pull(&self.lock_cfg), collider: t.collider, centre: t.centre, vel: self.lock.target_vel });
         // cancel: a dash, hook or wall jump started out of a cut frees the blade at once (costs a little star energy)

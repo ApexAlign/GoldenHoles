@@ -639,6 +639,7 @@ impl Server {
                 p.combat.allies = allies;
                 p.combat.hidden = hidden;
                 p.combat.suppress_lock = tick < p.blind_until;
+                p.combat.assist_boost = self.match_state.bounty().is_some_and(|bt| bt.live && bt.id == p.id);
                 p.combat.set_moves(crate::combat::MoveCtx { counter, just_unblocked });
                 p.combat.update(
                     dt,

@@ -403,3 +403,20 @@ mod disc_physics {
         assert_eq!(run(Some(target)), Some(9), "the homing disc curves onto the target");
     }
 }
+
+/// The live BOUNTY's lock-on reaches `BOUNTY_ASSIST_RANGE_MULT` farther than usual (docs/bounty.md): a
+/// target just past the base range is missed at the plain range and acquired at the boosted one.
+#[test]
+fn bounty_assist_boost_reaches_a_target_the_base_range_misses() {
+    let mut w = world();
+    let base_range = 50.0;
+    // strictly between base_range and base_range * BOUNTY_ASSIST_RANGE_MULT
+    let dist = base_range * (1.0 + (BOUNTY_ASSIST_RANGE_MULT - 1.0) / 2.0);
+    add_enemy(&mut w, vector![0.0, 1.0, -dist], 7);
+    w.queries.update(&w.colliders);
+    let (ch, _) = add_player(&mut w, vector![0.0, 1.0, 0.0]);
+    let (eye, fwd) = (vector![0.0, 1.0, 0.0], vector![0.0, 0.0, -1.0]);
+    let find = |range: f32| aim_assist::best_target_held(&w, eye, fwd, 10.0, range, &[], ch.body, None);
+    assert!(find(base_range).is_none(), "the base range should not reach this far: {dist} m");
+    assert!(find(base_range * BOUNTY_ASSIST_RANGE_MULT).is_some(), "the boosted bounty range should reach it");
+}
