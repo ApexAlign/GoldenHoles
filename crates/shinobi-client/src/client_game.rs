@@ -989,7 +989,14 @@ impl ClientGame {
         );
         let mut ch = CharacterSystem::new(body, cfg);
         ch.restore_own(&mut world, &ack.own);
-        let combat = CombatSystem::ninja(&cfg);
+        let mut combat = CombatSystem::ninja(&cfg);
+        // `ninja()` only wires up the weapons; every tunable `apply_balance` sets (lock-on range/cone, lock
+        // timing, ultimate speed...) otherwise stays at `shuriken::ShurikenCfg::default()`'s bare defaults --
+        // 20 m assist range, not the demo preset's 250 m -- because this predicted copy never gets the
+        // server's balance over the wire (balance is not a wire type at all). The demo preset is the only
+        // thing `demo.sh` ever actually runs, so matching it here keeps the client's own lock-on prediction
+        // (and so the HUD triangle, which reads straight from it) in sync with what the server will confirm.
+        combat.apply_balance(&shinobi_sim::balance::Balance::demo(), &cfg);
         let katana = KatanaCfg::for_character(&cfg);
         let mut p = Predicted {
             world,

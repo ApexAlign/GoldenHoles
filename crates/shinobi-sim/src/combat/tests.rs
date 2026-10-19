@@ -404,6 +404,20 @@ mod disc_physics {
     }
 }
 
+/// `CombatSystem::ninja` alone leaves every Balance-driven tunable at `ShurikenCfg::default()` (20 m assist
+/// range): the client's own predicted combat (`client_game.rs::start_prediction`) must call `apply_balance`
+/// with the demo preset too, or its local lock-on (and so the HUD triangle, which reads straight from the
+/// predicted copy) silently stays stuck at 20 m even though the server runs the full demo range.
+#[test]
+fn ninja_alone_is_the_bare_default_but_the_demo_balance_matches_the_server() {
+    let cfg = Cfg::default();
+    let bare = CombatSystem::ninja(&cfg);
+    assert_eq!(bare.assist_range, shuriken::ShurikenCfg::default().assist_range, "ninja() alone: bare default");
+    let mut matched = CombatSystem::ninja(&cfg);
+    matched.apply_balance(&crate::balance::Balance::demo(), &cfg);
+    assert_eq!(matched.assist_range, crate::balance::Balance::demo().combat.shuriken.assist_range, "apply_balance(demo): matches the server's own range");
+}
+
 /// The live BOUNTY's lock-on reaches `BOUNTY_ASSIST_RANGE_MULT` farther than usual (docs/bounty.md): a
 /// target just past the base range is missed at the plain range and acquired at the boosted one.
 #[test]
