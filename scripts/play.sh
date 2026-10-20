@@ -81,10 +81,11 @@ cat <<EOF
   CONTROLS
     click window   grab the mouse (Esc releases)
     W A S D        move            Space  jump / double-jump     mouse  aim
-    Shift dash     Q roll          C slide                       W into a wall: wall-run
+    Shift dash     4 roll          C slide                       W into a wall: wall-run
     E              wrist grapple: hook the crosshair, E again releases
     N / M          print a floor-ramp / a wall (grid piece); anyone can shoot or slice pieces apart
-    Left click     katana dash-slice         Right click  throw shuriken (hold an enemy in your cone: the lock-on triangle)
+    Left click     katana dash-slice         Q  throw the selected star (hold = MARK)
+    Right click    block (time the raise to parry)              1 / 2  katana / yumi bow
   Free-for-all: first to 10 kills or 6 minutes. Telemetry lines ("TELEMETRY ...") appear below every minute.
 
   Telemetry : $TELEMETRY

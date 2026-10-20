@@ -96,7 +96,7 @@ impl Rig {
                 if self.srv.players.is_empty() {
                     self.srv.add_player(1, level().spawn(0));
                 }
-                self.down.push(Welcome { player_id: 1, server_tick: self.srv.tick }.encode().to_vec());
+                self.down.push(Welcome { player_id: 1, server_tick: self.srv.tick, ..Default::default() }.encode().to_vec());
             } else if !self.srv.players.is_empty() {
                 let _ = ClientPacket::decode(&pkt).expect("valid packet");
                 self.srv.ingest(1, &pkt);

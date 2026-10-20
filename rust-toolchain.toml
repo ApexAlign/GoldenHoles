@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned so the sim's determinism (and the wire format) cannot drift under a `rustup update`.
+# CI reads this file too; both crates' lockfiles were resolved with 1.98.1.
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

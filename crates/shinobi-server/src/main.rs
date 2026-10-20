@@ -154,8 +154,12 @@ fn main() -> std::io::Result<()> {
     };
     let socket = UdpSocket::bind(&conf.bind)?;
     socket.set_nonblocking(true)?;
+    // Prediction-config parity: the client compares these against its own level / balance and warns on a mismatch.
+    let level_hash = setup.level.fingerprint();
+    let balance_hash = setup.balance.fingerprint();
     eprintln!("shinobi-server: {}, {TICK_HZ} Hz, protocol v{VERSION}", conf.bind);
     eprintln!("{}", conf.describe());
+    eprintln!("world: level {level_hash:016x}, balance {balance_hash:016x} (sent in WELCOME)");
     let level_summary = format!(
         "{} ({} boxes, {} spawns, {} pickups)",
         level_path.as_ref().map_or("built-in arena".to_string(), |p| p.display().to_string()),
@@ -219,7 +223,7 @@ fn main() -> std::io::Result<()> {
                         p.last_heard = now;
                         if datagram::is_hello(pkt) {
                             // client retry: our WELCOME was lost
-                            let w = Welcome { player_id: p.id, server_tick: server.tick };
+                            let w = Welcome { player_id: p.id, server_tick: server.tick, level_hash, balance_hash };
                             let _ = socket.send_to(&w.encode(), addr);
                             stats.on_tx();
                             continue;
@@ -286,7 +290,7 @@ fn main() -> std::io::Result<()> {
                             addr,
                             Peer { id, last_heard: now, limiter: RateLimiter::new(PEER_PPS, PEER_BURST), drops: 0 },
                         );
-                        let w = Welcome { player_id: id, server_tick: server.tick };
+                        let w = Welcome { player_id: id, server_tick: server.tick, level_hash, balance_hash };
                         let _ = socket.send_to(&w.encode(), addr);
                         stats.on_tx();
                         eprintln!("join {addr} as player {id}");

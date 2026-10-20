@@ -543,7 +543,7 @@ pub fn input(
 
     // the latch in ClientGame turns these into one-shot sim-tick edges, so a sub-tick tap is not lost
     let mut out = action_events(&keys, &mouse);
-    // the throwable: R or the wheel cycles it (Q is the roll); one-tick edges
+    // the throwable: R or the wheel cycles it (Q throws it, 4 is the roll); one-tick edges
     if keys.just_pressed(KeyCode::KeyR) || scroll.delta.y < -0.5 {
         out.push(ButtonEvent { action: Action::StarNext, down: true });
     }

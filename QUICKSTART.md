@@ -86,7 +86,7 @@ cd crates/shinobi-game && cargo run --release -- --server 192.168.1.20:7777 --le
 
 Press **E** to fire the wrist grapple at the crosshair (the rope reels you in; E again releases) and use it with
 dash, wall-run and slide. Shurikens and the katana pass through teammates; first team to 50 team kills wins.
-(Player-built blocks work on the server and the wire, but the game has no build key yet.)
+(Player-built blocks work: **N** prints a floor-ramp and **M** prints a wall; anyone can shoot or slice them apart.)
 
 **No window?** `scripts/demo_8v8_headless.sh` runs a release server with `--team-size 8` plus 8 scripted clients that
 hook the grapple and try to place blocks for 60 s, then prints PASS/FAIL (connections, tick rate, teams on the wire,
@@ -122,15 +122,17 @@ the compact copy (39 bytes) it receives. AI bots wear a few built-in presets.
 | Shift / 4 / C | dash / roll / slide |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
 | Left click | katana dash-slice |
-| Q | throw shuriken (auto-locks the enemy nearest the crosshair) |
+| Q | throw the selected star (hold = MARK; R / wheel switch type) |
 | Right click | block (a timed raise parries) |
+| 1 / 2 | katana / yumi bow up |
 | E | wrist grapple: hook the crosshair and reel in, E again releases |
+| N / M | print a floor-ramp / a wall (anyone can shoot or slice them apart) |
 
 ## What to expect
 
 - Free-for-all: no teams, anyone can hurt anyone; your colour is derived from your player id. A match starts after a
   short warmup (one player is enough). Default rules (the demo preset): 100 hp,
-  respawn in 3 s with brief spawn protection, katana kills in 2 hits, first to 10 kills or 6 minutes wins,
+  respawn in 2.5 s with brief spawn protection, katana combos kill in 5 cuts, first to 10 kills or 6 minutes wins,
   8 s intermission, then the next round.
 - Grid-beam cubes (glowing pickups) respawn after 20 s. Fall off the map and you die (kill plane).
 - The server console prints a kill feed (`KILL p3 sliced p7`), match flow and a stats line every 10 s.
@@ -157,9 +159,10 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
   `TEAM_SIZE=8 ./demo.sh` starts a local 8v8.
 - Level `spawn x y z [team]`: team 0/1 = that team's spawn, omitted = either team uses it.
 - `--balance PATH`: `key = value` lines (hp, respawn time, damage, match rules). Start from the built-in preset:
-  the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers.
+  the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers. Pass the **same file** to
+  every game window (`shinobi-game ... --balance PATH`); the `Welcome` fingerprint warns in the HUD on a mismatch.
 
-## Network events (protocol v22, for client authors)
+## Network events (protocol v25, for client authors)
 
 Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
 flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:

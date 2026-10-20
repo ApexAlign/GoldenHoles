@@ -15,6 +15,7 @@ pub mod enemies;
 pub mod env_events;
 pub mod events;
 pub mod hazards;
+pub mod hash;
 pub mod lagcomp;
 pub mod katana_moves;
 pub mod melee;

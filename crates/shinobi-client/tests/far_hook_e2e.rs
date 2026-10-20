@@ -146,7 +146,7 @@ fn run(dist: f32, strike_at: Option<u32>) -> Out {
                 if srv.players.is_empty() {
                     srv.add_player(1, [0.0, 0.81, 0.0]);
                 }
-                down.push((now + one_way, Welcome { player_id: 1, server_tick: srv.tick }.encode().to_vec()));
+                down.push((now + one_way, Welcome { player_id: 1, server_tick: srv.tick, ..Default::default() }.encode().to_vec()));
             } else if !srv.players.is_empty() {
                 srv.ingest(1, &pkt);
             }

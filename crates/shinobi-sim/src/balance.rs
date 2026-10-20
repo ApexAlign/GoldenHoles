@@ -1389,6 +1389,12 @@ impl Balance {
         Balance::from_text(&text)
     }
 
+    /// Stable fingerprint of the whole preset (canonical `key = value` text). Sent in `Welcome`: the client
+    /// predicts movement, flow and lock-on from its local preset, so a mismatch would drift until corrected.
+    pub fn fingerprint(&self) -> u64 {
+        crate::hash::fnv1a64(self.to_text().as_bytes())
+    }
+
     /// Every key with its current value (round-trips through `from_text`).
     pub fn to_text(&self) -> String {
         let mut c = self.clone();
@@ -1587,6 +1593,17 @@ mod tests {
 
     fn b0_owner_immune() -> bool {
         Balance::default().hazards.owner_immune
+    }
+
+    #[test]
+    fn demo_fingerprint_is_stable_and_covers_every_value() {
+        let d = Balance::demo();
+        assert_eq!(d.fingerprint(), Balance::demo().fingerprint());
+        assert_eq!(d.fingerprint(), Balance::from_text(&d.to_text()).unwrap().fingerprint());
+        assert_ne!(d.fingerprint(), Balance::default().fingerprint(), "demo and default are different presets");
+        let mut b = d.clone();
+        b.player.max_hp += 1.0;
+        assert_ne!(d.fingerprint(), b.fingerprint(), "a one-value change changes the fingerprint");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //!   per-pedestal roll), so a map does not turn into a queue.
 //! * YUMI: the bow every player carries. At a visible target 12 to 40 m away it draws (the draw ring, the slowed walk and
 //!   the faint laser line are all there for the target to see), aims with lead and drop, and looses when the draw is full
-//!   and the aim has settled. After a shot it sits out the 2.2 s reload.
+//!   and the aim has settled. After a shot it sits out the 1.1 s reload.
 //! * TAGS: thrown at a target 5 to 18 m away, more eagerly when other enemies stand near it (a cluster); once the hands
 //!   are empty the bot sets them off when a foe is inside the blast, or lets the fuse run.
 //! * DEFENCE: a bot that sees an arrow coming sometimes raises its shield (a fresh one parries it back), and a bot with a tag
@@ -31,7 +31,7 @@ const TAG_MAX: f32 = 18.0;
 /// Share of bots that go for a given pedestal.
 const FANCY_PERCENT: u64 = 30;
 /// Chance per tick that a loaded bot with a target in bow range starts a draw (about one every 5 s), and the pause after a shot
-/// (on top of the 2.2 s reload).
+/// (on top of the 1.1 s reload).
 const BOW_START_CHANCE: f32 = 0.003;
 const BOW_PAUSE_TICKS: u32 = 180;
 

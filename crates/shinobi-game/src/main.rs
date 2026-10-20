@@ -6,6 +6,7 @@
 //!   shinobi-game --shot out.ppm [--secs 3] [--idle]     offscreen render against a live server, no window
 //!   shinobi-game --shot-offline out.ppm [--secs 2]      deterministic offscreen render, no network (golden test)
 //!   options: --tier high|medium|low   --touch (show touch overlay)   --scale F (pin dynamic resolution)
+//!            --level FILE   --balance FILE (must match the server; the Welcome fingerprint warns otherwise)
 //!   shinobi-game --record out.mp4 [--secs 20] [--fps 30] [--demo] --server ADDR   offscreen 1280x720 clip via ffmpeg
 //!   shinobi-game --headless [--secs 5] [--server ADDR]  network-only smoke test (no window/GPU)
 
@@ -77,6 +78,27 @@ fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
     }
 }
 
+/// `--balance PATH` (or `$SHINOBI_BALANCE`) overlays the server's file on the demo preset, exactly like
+/// `shinobi-server --balance` does. Without it the client predicts with the demo preset (what `demo.sh` runs).
+fn load_balance(path: Option<String>) -> shinobi_sim::balance::Balance {
+    use shinobi_sim::balance::Balance;
+    let Some(path) = path.or_else(|| std::env::var("SHINOBI_BALANCE").ok()) else {
+        return Balance::demo();
+    };
+    let p = std::path::Path::new(&path);
+    let text = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("balance {}: {e}", p.display()));
+    let mut b = Balance::demo();
+    if let Err(errs) = b.apply_text(&text) {
+        eprintln!("error: balance {}:", p.display());
+        for e in errs {
+            eprintln!("  {e}");
+        }
+        std::process::exit(2);
+    }
+    eprintln!("balance: {} (overlay on the demo preset)", p.display());
+    b
+}
+
 fn present_mode(s: Option<&str>) -> bevy::window::PresentMode {
     use bevy::window::PresentMode;
     match s.map(str::to_ascii_lowercase).as_deref() {
@@ -116,6 +138,7 @@ fn main() {
     let tier_arg = arg_value(&args, "--tier").filter(|t| !t.eq_ignore_ascii_case("auto"));
     let tier = tier_arg.as_deref().map(|t| Tier::parse(t).expect("--tier high|medium|low|auto")).unwrap_or_default();
     let auto_tier = tier_arg.is_none();
+    let balance = load_balance(arg_value(&args, "--balance"));
     let opts = shot::ShotOpts {
         // offline review shots are idle (rest pose) unless `--action` asks for the scripted swing + throw (goldens use it)
         idle: flag("--idle") || (flag("--shot-offline") && !flag("--action")),
@@ -123,12 +146,18 @@ fn main() {
         quality: Quality::from_tier(tier),
         scale: arg_value(&args, "--scale").and_then(|s| s.parse().ok()),
         level: load_level(arg_value(&args, "--level")),
+        balance: balance.clone(),
         spawn: arg_value(&args, "--spawn").and_then(|s| s.parse().ok()).unwrap_or(0),
     };
+    eprintln!(
+        "predict: level {:016x}, balance {:016x} (must match the server's WELCOME)",
+        opts.level.fingerprint(),
+        opts.balance.fingerprint()
+    );
 
     if flag("--headless") {
         let secs = arg_value(&args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(5.0);
-        headless::run(server, secs, flag("--demo"), opts.level.clone());
+        headless::run(server, secs, flag("--demo"), opts.level.clone(), opts.balance.clone());
         return;
     }
 
@@ -188,7 +217,7 @@ fn main() {
                 ..default()
             }),
     )
-    .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone() })
+    .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone(), balance: opts.balance.clone() })
     .add_plugins(mobile::MobilePlugin { quality: opts.quality, auto_tier, touch_overlay: opts.touch, screen: (1280.0, 720.0) })
     .add_plugins(grid::GridPlugin);
     if !off("crt") {

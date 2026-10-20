@@ -1,6 +1,6 @@
 # Playtest guide
 
-You: one human against 7 bots in a free-for-all on the big map. About 5 minutes of play gives useful data; 15 is better.
+You: one human against 5 bots in a free-for-all on the small arena. About 5 minutes of play gives useful data; 15 is better.
 
 ## Run it (one command)
 
@@ -8,14 +8,14 @@ You: one human against 7 bots in a free-for-all on the big map. About 5 minutes 
 scripts/play.sh
 ```
 
-It builds the server (release) and the game, starts a free-for-all with 7 bots on `levels/ffa.lvl`, opens the game
+It builds the server (release) and the game, starts a free-for-all with 5 bots on `levels/ffa_small.lvl`, opens the game
 window and prints the controls. The first build compiles the Bevy engine and takes several minutes; later runs start in
 seconds. Add `OFFLINE=1` if the machine has no network but the crate cache is warm.
 
 | Want | Command |
 |---|---|
 | fewer / smarter bots | `BOTS=3 scripts/play.sh`, `BOT_SKILL=hard scripts/play.sh` (easy, normal, hard) |
-| the other (smaller) map | `LEVEL=levels/ffa_xl.lvl scripts/play.sh` |
+| the bigger map | `LEVEL=levels/ffa_xl.lvl scripts/play.sh` |
 | friends on the LAN | server: `cargo run --release -p shinobi-server -- --bind 0.0.0.0 --level levels/ffa.lvl --bots 4 --telemetry playtest/lan.txt` (UDP 7777 open); every player: `cd crates/shinobi-game && cargo run -- --server SERVER_IP:7777 --level ../../levels/ffa.lvl` |
 | no window (smoke test) | `scripts/demo_headless.sh` |
 
@@ -55,7 +55,7 @@ No bash (Windows PowerShell / macOS / Linux): plain cargo commands are in QUICKS
 4. Grapple to a ledge, swing off a pillar, release with a jump, grapple again. Try to cross the map without touching the ground.
 5. Print floors and walls (N / M): a bridge over a gap, a wall to hide behind. Shoot your own wall until it breaks; watch the
    cracks. Do bots use your pieces or get stuck on them?
-6. Die on purpose twice (fall off the edge, get shot). Is it clear why you died and where you respawn? Respawn is 3 s with
+6. Die on purpose twice (fall off the edge, get shot). Is it clear why you died and where you respawn? Respawn is 2.5 s with
    1.5 s protection.
 7. Finish a match (first to 10 kills or 6 minutes) and look at the end screen, the intermission and the next match starting.
 

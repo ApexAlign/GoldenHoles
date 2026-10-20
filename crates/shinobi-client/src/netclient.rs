@@ -120,6 +120,11 @@ pub struct NetClient {
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
     anchor: Option<(u32, f64)>,
     kicked: Option<KickReason>,
+    /// `(level, balance)` fingerprints the local predictor was built from; `None` = no parity check.
+    expected_world: Option<(u64, u64)>,
+    /// WELCOME's fingerprints differed from `expected_world`: prediction will drift until the client fixes its config.
+    level_mismatch: bool,
+    balance_mismatch: bool,
     own: Option<OwnUpdate>,
     /// Handshake: echoed in HELLO; 0 until the server's CHALLENGE.
     cookie: u64,
@@ -195,6 +200,9 @@ impl Default for NetClient {
             match_rules: None,
             anchor: None,
             kicked: None,
+            expected_world: None,
+            level_mismatch: false,
+            balance_mismatch: false,
             own: None,
             cookie: 0,
             connect_started: None,
@@ -241,6 +249,23 @@ impl NetClient {
     /// fresh `NetClient` (cheat/flood bans last ~10 s server-side).
     pub fn kicked(&self) -> Option<KickReason> {
         self.kicked
+    }
+
+    /// Tell the network layer which world the local predictor was built from. Called by `ClientGame::new`;
+    /// the next WELCOME compares the server's fingerprints against these.
+    pub fn set_expected_world(&mut self, level_hash: u64, balance_hash: u64) {
+        self.expected_world = Some((level_hash, balance_hash));
+    }
+
+    /// WELCOME came from a server running different level geometry (`--level`).
+    pub fn level_mismatch(&self) -> bool {
+        self.level_mismatch
+    }
+
+    /// WELCOME came from a server running a different balance preset (`--balance`): flow / guard / lock-on
+    /// prediction will drift even though the level matches.
+    pub fn balance_mismatch(&self) -> bool {
+        self.balance_mismatch
     }
 
     /// HELLO with the current cookie (0 until the server's CHALLENGE).
@@ -300,6 +325,11 @@ impl NetClient {
         let w = Welcome::decode(buf)?;
         // Welcome is re-sent if the first was lost; ignore repeats so the clock anchor isn't reset.
         if self.state == ConnState::Connecting {
+            if let Some((level, balance)) = self.expected_world {
+                // 0 = the server does not know its fingerprints (test harnesses): do not warn.
+                self.level_mismatch = w.level_hash != 0 && w.level_hash != level;
+                self.balance_mismatch = w.balance_hash != 0 && w.balance_hash != balance;
+            }
             self.state = ConnState::Connected { player_id: w.player_id };
             self.anchor = Some((w.server_tick, self.clk(local_tick)));
         }
@@ -848,7 +878,7 @@ mod tests {
     }
 
     fn welcome(c: &mut NetClient, id: u16, tick: u32) {
-        c.on_datagram(&Welcome { player_id: id, server_tick: tick }.encode(), 0.0).unwrap();
+        c.on_datagram(&Welcome { player_id: id, server_tick: tick, ..Default::default() }.encode(), 0.0).unwrap();
     }
 
     fn intent(tick: u32) -> PlayerIntent {
@@ -891,6 +921,37 @@ mod tests {
         assert_eq!(pkt.ack_snapshot_tick, 1004);
         assert_eq!(pkt.ack_event_seq, 1);
         assert_eq!(pkt.intents[0], intent(10));
+    }
+
+    #[test]
+    fn world_fingerprints_flag_a_level_or_balance_mismatch() {
+        let w = |level, balance| Welcome { player_id: 1, server_tick: 0, level_hash: level, balance_hash: balance };
+
+        // No local expectation: nothing to compare, so no warning even when the server sends fingerprints.
+        let mut c = NetClient::default();
+        c.on_datagram(&w(11, 22).encode(), 0.0).unwrap();
+        assert!(!c.level_mismatch() && !c.balance_mismatch());
+
+        let mut c = NetClient::default();
+        c.set_expected_world(11, 22);
+        c.on_datagram(&w(11, 22).encode(), 0.0).unwrap();
+        assert!(!c.level_mismatch() && !c.balance_mismatch(), "matching fingerprints stay silent");
+
+        let mut c = NetClient::default();
+        c.set_expected_world(11, 22);
+        c.on_datagram(&w(99, 22).encode(), 0.0).unwrap();
+        assert!(c.level_mismatch() && !c.balance_mismatch(), "level mismatch is flagged on its own");
+
+        let mut c = NetClient::default();
+        c.set_expected_world(11, 22);
+        c.on_datagram(&w(11, 99).encode(), 0.0).unwrap();
+        assert!(!c.level_mismatch() && c.balance_mismatch(), "balance mismatch is flagged on its own");
+
+        // 0 = the server does not know its fingerprints (old harness / test fixture): unknown, not a mismatch.
+        let mut c = NetClient::default();
+        c.set_expected_world(11, 22);
+        c.on_datagram(&w(0, 0).encode(), 0.0).unwrap();
+        assert!(!c.level_mismatch() && !c.balance_mismatch());
     }
 
     #[test]
@@ -1443,7 +1504,7 @@ mod tests {
         let mut c = NetClient::default();
         welcome(&mut c, 1, 500);
         assert_eq!(c.server_tick_estimate(10.0), Some(510.0));
-        c.on_datagram(&Welcome { player_id: 9, server_tick: 9999 }.encode(), 11.0).unwrap();
+        c.on_datagram(&Welcome { player_id: 9, server_tick: 9999, ..Default::default() }.encode(), 11.0).unwrap();
         assert_eq!(c.player_id(), Some(1));
         c.on_datagram(&frame_snapshot_v3(&no_events(), &[], &[], &encode_delta(None, &snap(600, 0))), 20.0).unwrap();
         assert_eq!(c.server_tick_estimate(25.0), Some(605.0));

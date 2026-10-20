@@ -132,7 +132,7 @@ impl Rig {
         }
         if let Some(pkt) = self.game.sim_tick(&f, now) {
             if is_hello(&pkt) {
-                self.pending.push(Welcome { player_id: 1, server_tick: self.srv.tick }.encode().to_vec());
+                self.pending.push(Welcome { player_id: 1, server_tick: self.srv.tick, ..Default::default() }.encode().to_vec());
                 self.welcomed = true;
                 self.outbox.push(NetEvent::BlockRules(self.srv.blocks.cfg.rules()));
             } else {

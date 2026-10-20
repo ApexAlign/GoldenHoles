@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-command demo: local server + game window.
 #   ./demo.sh              build, start a local server, open the game window on this machine's display
-#   ./demo.sh              free-for-all against 7 AI opponents (the default game)
+#   ./demo.sh              free-for-all against 5 AI opponents on the sky city (the default game)
 #   BOTS=3 ./demo.sh       fewer / more AI opponents (BOTS=0 for none)
 #   ./demo.sh              the sky city: a floating vertical world, four tiers (levels/ffa_sky.lvl, the default); MAP=isles for the Skyfall Archipelago, MAP=runs for the Run Gauntlet, MAP=small|big|xl for the ground maps
 #   TEAM_SIZE=8 ./demo.sh  8v8 Cyan vs Orange team deathmatch, bots fill empty slots (opt-in; instead of BOTS)
@@ -47,7 +47,7 @@ if [ "$TEAM_SIZE" != "0" ]; then
   TEAM_ARGS=(--team-size "$TEAM_SIZE"); BOT_ARGS=()
 fi
 
-echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-} ${TEAM_ARGS[*]:-}"
+echo ">> starting server on 127.0.0.1:$PORT ${LEVEL_ARGS[*]:-} ${BOT_ARGS[*]:-} ${TEAM_ARGS[*]:-} ${BAL_ARGS[*]:-}"
 SHINOBI_STATS_SECS=3600 "$SERVER" "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BOT_ARGS[@]}" "${TEAM_ARGS[@]}" "${BAL_ARGS[@]}" &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM
@@ -72,19 +72,21 @@ cat <<'EOF'
   CONTROLS
     click window   grab the mouse (Esc releases)
     W A S D        move            Space   jump / double-jump
-    mouse          aim             Shift   dash          Q   roll          C   slide
+    mouse          aim             Shift   dash          4   roll          C   slide
     W into a wall  wall-cling / wall-run (keep speed up, hold Space or W)
-    Left click     katana dash-slice        Right click   throw shuriken
+    Left click     katana dash-slice        Right click   block (time the raise to parry)
+    Q              throw the selected star (hold = MARK)      R / wheel   switch star
     E              wrist grapple: hooks the crosshair (reels you in), press E again to release
+    1 / 2          katana / yumi bow up (bow: hold left click to draw, release to loose)
+    N / M          print a floor-ramp / a wall (grid pieces anyone can shoot or slice apart)
 
   FREE-FOR-ALL (default): everyone for themselves, every player has their own neon colour, first to the frag limit wins.
 
   TEAMS (optional, TEAM_SIZE=8 ./demo.sh): Cyan vs Orange, 8 per side, bots fill the empty slots. You join the smaller team.
     Shurikens and the katana pass through teammates. First team to 50 team kills wins (tie = 60 s sudden death).
-  BLOCKS: the server and the wire support player-built blocks, but the game window has no build key yet.
 
 EOF
 # no `exec`: the shell must stay alive so the trap stops the server when the window closes
 echo ">> game log (GPU line + PERF frame times): $LOG"
-crates/shinobi-game/target/$PROFILE/shinobi-game --server "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" 2> >(tee "$LOG" >&2) || true
+crates/shinobi-game/target/$PROFILE/shinobi-game --server "127.0.0.1:$PORT" "${LEVEL_ARGS[@]}" "${BAL_ARGS[@]}" 2> >(tee "$LOG" >&2) || true
 grep -E "GPU|PERF" "$LOG" | tail -n 3 | sed 's/^/>> /' || true

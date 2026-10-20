@@ -30,11 +30,14 @@ pub struct NetPlugin {
     pub offline: bool,
     /// Same geometry the server runs (`--level`); prediction diverges at the first wall otherwise.
     pub level: LevelDesc,
+    /// Same balance preset the server runs (`--balance`); the Welcome fingerprint flags a mismatch.
+    pub balance: shinobi_sim::balance::Balance,
 }
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
-        let net = UdpGame::new(self.server, self.level.clone(), ClientGameCfg::default()).expect("bind UDP socket");
+        let cfg = ClientGameCfg::with_balance(self.balance.clone());
+        let net = UdpGame::new(self.server, self.level.clone(), cfg).expect("bind UDP socket");
         let mut net = net;
         let view = ViewRes(net.view());
         app.insert_resource(LevelRes(self.level.clone()))

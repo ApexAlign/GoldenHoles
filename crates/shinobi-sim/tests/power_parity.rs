@@ -85,7 +85,7 @@ fn aim() -> PlayerIntent {
 
 #[test]
 fn drawing_and_loosing_a_bow_steps_identically_on_both_sides() {
-    // walk + draw 40 ticks, release; a short tap; a half draw; two more full draws after the 2.2 s reload
+    // walk + draw 40 ticks, release; a short tap; a half draw; two more full draws after the 1.1 s reload
     let script = |t: u32| {
         let mut it = PlayerIntent { move_z: 127, ..aim() };
         it.draw = matches!(t, 5..=45 | 80..=84 | 100..=140 | 200..=204 | 220..=240 | 260..=300 | 450..=490);

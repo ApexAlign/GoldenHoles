@@ -136,6 +136,10 @@ fn run_ex(one_way: f64, jitter: f64, loss: f64, seed: u64, ticks: u32, hook: boo
     let lv = level();
     let mut game = ClientGame::new(lv.clone(), ClientGameCfg { lead_ticks: lead, ..ClientGameCfg::default() });
     let mut srv = Server::new(Cfg::default());
+    // The client predictor runs on the demo preset (`ClientGameCfg::default`); players added here pick this
+    // up at creation. Assign the field rather than `set_balance`: the latter also installs the demo match
+    // rules (warmup/intermission), which would shift this harness's tick timeline.
+    srv.balance = shinobi_sim::balance::Balance::demo();
     lv.apply_to_server(&mut srv);
     let start = [30.0, 0.81, -30.0];
     let mut up = Link::new(seed, one_way, jitter, loss);
@@ -233,7 +237,7 @@ fn run_ex(one_way: f64, jitter: f64, loss: f64, seed: u64, ticks: u32, hook: boo
                 if srv.players.is_empty() {
                     srv.add_player(1, start);
                 }
-                down.send(now, Welcome { player_id: 1, server_tick: srv.tick }.encode().to_vec());
+                down.send(now, Welcome { player_id: 1, server_tick: srv.tick, ..Default::default() }.encode().to_vec());
             } else if !srv.players.is_empty() {
                 srv.ingest(1, &pkt);
             }

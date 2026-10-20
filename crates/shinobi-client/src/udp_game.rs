@@ -147,7 +147,7 @@ mod tests {
         assert!(!c.connected() && !c.view().connected);
 
         let to: SocketAddr = format!("127.0.0.1:{}", caddr.port()).parse().unwrap();
-        srv.send_to(&Welcome { player_id: 3, server_tick: 500 }.encode(), to).unwrap();
+        srv.send_to(&Welcome { player_id: 3, server_tick: 500, ..Default::default() }.encode(), to).unwrap();
         std::thread::sleep(Duration::from_millis(15));
         c.fixed_step(&InputFrame::default());
         assert_eq!(c.own_id(), Some(3));
@@ -181,7 +181,7 @@ mod tests {
         let mut buf = [0u8; 2048];
         let (_, first) = srv.recv_from(&mut buf).unwrap();
         let to: SocketAddr = format!("127.0.0.1:{}", first.port()).parse().unwrap();
-        srv.send_to(&Welcome { player_id: 3, server_tick: 100 }.encode(), to).unwrap();
+        srv.send_to(&Welcome { player_id: 3, server_tick: 100, ..Default::default() }.encode(), to).unwrap();
         srv.send_to(&shinobi_proto::datagram::encode_kick(shinobi_proto::datagram::KickReason::Flood), to).unwrap();
         std::thread::sleep(Duration::from_millis(15));
         c.fixed_step(&InputFrame::default());
@@ -194,7 +194,7 @@ mod tests {
         assert_ne!(second.port(), first.port(), "a new socket, a new peer address");
         assert_eq!(&buf[..n], &c.game.net.hello());
         let to2: SocketAddr = format!("127.0.0.1:{}", second.port()).parse().unwrap();
-        srv.send_to(&Welcome { player_id: 9, server_tick: 900 }.encode(), to2).unwrap();
+        srv.send_to(&Welcome { player_id: 9, server_tick: 900, ..Default::default() }.encode(), to2).unwrap();
         std::thread::sleep(Duration::from_millis(15));
         c.fixed_step(&InputFrame::default());
         assert_eq!(c.own_id(), Some(9));

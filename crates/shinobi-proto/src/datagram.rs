@@ -7,12 +7,15 @@
 //!   keeps NO per-address state before the cookie comes back. Valid for the current and previous bucket.
 //! * Client answers CHALLENGE with `HELLO` carrying that cookie (and keeps resending every ~100 ms, taking the
 //!   newest cookie). A HELLO whose cookie verifies allocates the slot and gets `WELCOME`.
-//! * `WELCOME` server -> client, 7 bytes: `[0x57] | player_id u16 LE | server_tick u32 LE` (unchanged).
+//! * `WELCOME` server -> client, 23 bytes: `[0x57] | player_id u16 LE | server_tick u32 LE | level_hash u64 LE |
+//!   balance_hash u64 LE` (v25; the hashes are `LevelDesc::fingerprint()` / `Balance::fingerprint()`). 0 = unknown.
 //! * HELLO with another VERSION gets `KICK(BadVersion)`; known peers re-sending HELLO get `WELCOME` again.
 //! * v19: character wire grew to 41 bytes (spec v1.1: ears, expression, horns, nose, tail, shoulders).
 //! * v20: destructible level boxes: NetEvent::WorldBreak / WorldRez / WorldCrack (ids 27-29) and `dbox` level lines.
 //! * v21: environmental events: NetEvent::EnvFx (id 31): quakes and lightning (`env_events.rs`).
-//! * v23: barrels and canisters are gone (star kinds 1 and 3 read as a standard star, `StarFx` what is only 3 = flash burst, hit kind 5 is retired, no stuck-star snapshot entities); the yumi is every player's own primary bow (own-state `power_kind` is 1 unless a fuda tag bag is in hand, `power_ammo` 1, `power_left_q` 0; the reload runs client-side from the loose, 2.2 s); stars end at 14 m.
+//! * v23: barrels and canisters are gone (star kinds 1 and 3 read as a standard star, `StarFx` what is only 3 = flash burst, hit kind 5 is retired, no stuck-star snapshot entities); the yumi is every player's own primary bow (own-state `power_kind` is 1 unless a fuda tag bag is in hand, `power_ammo` 1, `power_left_q` 0; the reload runs client-side from the loose, 1.1 s); stars end at 14 m.
+//! * v25: `WELCOME` carries the server's level and balance fingerprints (u64 each) so a client predicting on a
+//!   different `--level` / `--balance` can flag the mismatch instead of drifting silently.
 //! * v24: BOUNTY system (docs/bounty.md): the periodic `board` section gained `bounty: u16` (0 = none, else the
 //!   marked player's id) and, only when `bounty != 0`, `bounty_live: bool` (the grace window elapsed, marker
 //!   live map-wide). No new reliable event tag: the board is re-sent at once on a bounty transition the same
@@ -56,7 +59,8 @@ use super::bits::{DecodeError, DecodeResult};
 
 pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 3: cookie handshake, snapshot datagram with own/board sections, gameplay events. See the module doc.
-pub const VERSION: u8 = 24;
+/// 25: `Welcome` carries the server's level and balance fingerprints (prediction-config parity).
+pub const VERSION: u8 = 25;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;
@@ -109,26 +113,44 @@ pub fn decode_challenge(buf: &[u8]) -> DecodeResult<u64> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Welcome {
     pub player_id: u16,
     /// Server tick at send time: seeds the client's clock estimate.
     pub server_tick: u32,
+    /// `LevelDesc::fingerprint()` of the geometry the server runs. 0 = unknown (older test harness).
+    pub level_hash: u64,
+    /// `Balance::fingerprint()` of the server's preset. 0 = unknown.
+    pub balance_hash: u64,
 }
 
 impl Welcome {
-    pub fn encode(&self) -> [u8; 7] {
-        let t = self.server_tick.to_le_bytes();
-        let i = self.player_id.to_le_bytes();
-        [TAG_WELCOME, i[0], i[1], t[0], t[1], t[2], t[3]]
+    pub const LEN: usize = 23;
+
+    pub fn encode(&self) -> [u8; Self::LEN] {
+        let mut out = [0u8; Self::LEN];
+        out[0] = TAG_WELCOME;
+        out[1..3].copy_from_slice(&self.player_id.to_le_bytes());
+        out[3..7].copy_from_slice(&self.server_tick.to_le_bytes());
+        out[7..15].copy_from_slice(&self.level_hash.to_le_bytes());
+        out[15..23].copy_from_slice(&self.balance_hash.to_le_bytes());
+        out
     }
 
     pub fn decode(buf: &[u8]) -> DecodeResult<Self> {
         match buf {
-            [TAG_WELCOME, i0, i1, t0, t1, t2, t3] => Ok(Self {
-                player_id: u16::from_le_bytes([*i0, *i1]),
-                server_tick: u32::from_le_bytes([*t0, *t1, *t2, *t3]),
-            }),
+            [TAG_WELCOME, rest @ ..] if rest.len() == Self::LEN - 1 => {
+                let mut l = [0u8; 8];
+                l.copy_from_slice(&rest[6..14]);
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&rest[14..22]);
+                Ok(Self {
+                    player_id: u16::from_le_bytes([rest[0], rest[1]]),
+                    server_tick: u32::from_le_bytes([rest[2], rest[3], rest[4], rest[5]]),
+                    level_hash: u64::from_le_bytes(l),
+                    balance_hash: u64::from_le_bytes(b),
+                })
+            }
             _ => Err(DecodeError::Malformed),
         }
     }
@@ -244,8 +266,11 @@ mod tests {
 
     #[test]
     fn welcome_kick_and_snapshot_frame() {
-        let w = Welcome { player_id: 513, server_tick: 123_456 };
+        let w = Welcome { player_id: 513, server_tick: 123_456, level_hash: 0x1122_3344_5566_7788, balance_hash: 0x99aa_bbcc_ddee_ff00 };
         assert_eq!(Welcome::decode(&w.encode()), Ok(w));
+        assert_eq!(w.encode().len(), Welcome::LEN);
+        assert!(Welcome::decode(&w.encode()[..Welcome::LEN - 1]).is_err(), "a truncated Welcome is rejected");
+        assert!(Welcome::decode(&[TAG_WELCOME, 1, 0, 0, 0, 0, 0]).is_err(), "the v24 7-byte Welcome is rejected");
         for r in [KickReason::Cheat, KickReason::Flood, KickReason::Timeout, KickReason::ServerFull, KickReason::BadVersion] {
             assert_eq!(decode_kick(&encode_kick(r)), Ok(r));
         }

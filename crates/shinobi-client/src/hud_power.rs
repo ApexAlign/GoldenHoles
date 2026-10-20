@@ -248,7 +248,7 @@ fn zoom_reticle(out: &mut Vec<Prim>, z: &crate::zoom::ZoomView, time: f32, p: &P
     out.push(Prim::Line { a: (0.5, y), b: (0.5, y + 0.008), color: col.a(0.3 + 0.6 * f), glow: 0.0 });
 }
 
-/// The bow's reload bar under the crosshair: a track with a gold fill that grows over the 2.2 s and brightens when ready.
+/// The bow's reload bar under the crosshair: a track with a gold fill that grows over the 1.1 s and brightens when ready.
 fn reload_bar(out: &mut Vec<Prim>, v: &PowerView, col: Rgba, ax: f32) {
     let (cx, y) = (0.5, 0.5 + RING_R + 0.022);
     let w = 0.06 * ax;

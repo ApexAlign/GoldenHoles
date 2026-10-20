@@ -4,7 +4,7 @@ Pitch: a Tron grid FFA arena shooter where you run on walls, grapple, lock on wi
 discs, slice with a katana, and print floors/walls out of the grid that others can de-rez.
 
 ## Locked decisions (change only via Engine)
-- Mode: FREE-FOR-ALL. Demo default: 1 human + 5 bots on the 88 m `levels/ffa_small.lvl` (`BOTS=5 ./demo.sh`). Up to 16 players. Match: first to 10 kills
+- Mode: FREE-FOR-ALL. Demo default: 1 human + 5 bots on the sky city (`levels/ffa_sky.lvl`, `BOTS=5 ./demo.sh`). Up to 16 players. Match: first to 10 kills
   or 6 minutes, 2.5 s respawn (a death animation fills it: flash, collapse camera, the body bursts into fragments), 1.5 s spawn protection, 8 s intermission. Team mode stays hidden (`--teams` only).
 - Default map (`./demo.sh`, `MAP=sky`): `levels/ffa_sky.lvl`, a floating vertical city, 232 x 190 m and 200 m tall, 248 boxes, 20 spawns, 10 pickups,
   no ground (kill plane y = -20). Four tiers of decks at y 24 / 55 / 86 / 117 (plates, catwalks, towers, canyons, terraces, arcades, chicanes)

@@ -1,6 +1,6 @@
 //! The yumi through the REAL stack: server binary over loopback UDP, `UdpGame` as the player. Everyone has the bow from
 //! spawn (no pickup): the client raises it (key 2), holds the slice button (the predicted draw ring fills, the walk slows),
-//! releases (the arrow appears in the snapshot, the reload bar empties), and the bow is loaded again 2.2 s later.
+//! releases (the arrow appears in the snapshot, the reload bar empties), and the bow is loaded again 1.1 s later.
 
 use std::net::UdpSocket;
 use std::process::{Child, Command, Stdio};
@@ -114,7 +114,7 @@ fn everyone_has_the_bow_draw_loose_and_reload_through_the_real_server() {
     assert!(arrow_seen, "the arrow flew through the snapshot");
     assert!(min_reload < 0.5, "the reload bar emptied after the shot: {min_reload}");
 
-    // ---- 2.2 s later the bow is loaded again and a second draw starts
+    // ---- 1.1 s later the bow is loaded again and a second draw starts
     for _ in 0..200 {
         step(&mut g, &none);
     }

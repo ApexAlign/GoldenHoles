@@ -164,8 +164,9 @@ crates/shinobi-game/target/release/shinobi-game --server 127.0.0.1:7777 --level 
 .\crates\shinobi-game\target\release\shinobi-game.exe --server 127.0.0.1:7777 --level levels\ffa_small.lvl
 ```
 
-> **The server and every game window must load the same `--level`**, or movement prediction desyncs and the game feels broken.
-> Always pass `--level` to both, with the same file.
+> **The server and every game window must load the same `--level` and `--balance`**, or movement prediction desyncs and the game feels broken.
+> Always pass the same files to both. Since protocol v25 the server's `Welcome` carries fingerprints of both, and the
+> client shows a persistent **LEVEL / BALANCE MISMATCH** warning instead of drifting silently.
 
 Click the game window to grab the mouse. **Esc** releases it and opens the pause screen.
 
@@ -174,11 +175,11 @@ Click the game window to grab the mouse. **Esc** releases it and opens the pause
 ## 6. Multiplayer with friends
 
 One person **hosts** (runs the server); everyone else **joins**. The host can also play. Up to ~16 players per server is
-the tested range (bots count toward that; see [Troubleshooting](#12-troubleshooting)).
+the tested range (bots fill the empty slots but do not count against this cap; see [Troubleshooting](#12-troubleshooting)).
 
 **Before you start, everyone must:**
 1. `git pull` and rebuild so you're all on the **same version** (the server rejects mismatched clients).
-2. Agree on **one map** (`--level ...`) — see [Maps](#8-maps-and-game-modes).
+2. Agree on **one map** (`--level ...`) and, if the host uses one, **one balance file** (`--balance ...`) — see [Maps](#8-maps-and-game-modes).
 
 ### Step 1 — Host: start the server
 
@@ -293,8 +294,9 @@ Full list in [`QUICKSTART.md`](QUICKSTART.md); online play notes in [`docs/ONLIN
 | Left click | katana dash-slice (hold = heavy cut) |
 | Q | throw the selected star (standard or flash; 14 m close-range tool; hold = MARK star; R / wheel switch type) |
 | Right click (or Ctrl) | block; raise it just before a hit to parry |
-| 1 / 2 | katana / yumi bow up (bow up: hold left click to draw, release to loose; 2.2 s reload) |
+| 1 / 2 | katana / yumi bow up (bow up: hold left click to draw, release to loose; 1.1 s reload) |
 | E | wrist grapple: hook the crosshair and reel in; E again releases |
+| N / M | print a floor-ramp / a wall (grid pieces anyone can shoot or slice apart) |
 | Tab (hold) | scoreboard (frees the cursor) |
 | `` ` `` (backquote) | in-game console |
 
@@ -315,7 +317,7 @@ Maps live in `levels/`. Pass the **same** file to the server and every client wi
 | `levels/8v8.lvl` | team deathmatch map (Cyan vs Orange) |
 
 **Modes:** free-for-all (default; every player has their own neon colour) and team deathmatch (`--team-size 8` / `--teams`).
-Default rules: 100 hp, respawn after 3 s with brief spawn protection, katana kills in 2 hits, first to 10 kills or 6 minutes
+Default rules: 100 hp, respawn after 2.5 s with brief spawn protection, katana combos kill in 5 cuts, first to 10 kills or 6 minutes
 wins. Falling off the map kills you. Glowing grid-beam cubes are pickups and respawn after 20 s.
 
 **More maps, modes and mechanics are coming.** Maps are plain text (`box`, `spawn`, `pickup` lines), so you can make your own —
@@ -325,11 +327,11 @@ see `scripts/gen_*_level.py` for generators.
 
 ## 9. Weapons and power-ups
 
-- **Katana** — dash-slice (left click). Two hits kill.
+- **Katana** — dash-slice (left click). A combo: 20, 20, then a 30 finisher; five clean cuts kill.
 - **Shuriken** — thrown stars (Q); they bounce. A close-range tool: 14 m max, full damage inside 7 m. Standard or flash star only.
 - **Wrist grapple** (E) — swing and reel in; combos with dash and wall-run.
 - **Block / parry shield** — time it right to stop damage and punish attackers.
-- **Yumi (digital bow)** — everyone's primary weapon. Press 2 (1 = katana, the spawn weapon), hold left click to draw, release a full draw to loose; a headshot kills; 2.2 s reload. Can be parried back at the shooter.
+- **Yumi (digital bow)** — everyone's primary weapon. Press 2 (1 = katana, the spawn weapon), hold left click to draw, release a full draw to loose; a headshot kills; 1.1 s reload. Can be parried back at the shooter.
 - **Fuda tag (explosive paper tag)** — sticks to surfaces *or players* and detonates with a launching blast.
 
 Details and tuning values: [`docs/powerups.md`](docs/powerups.md), [`docs/melee.md`](docs/melee.md), [`docs/grapple.md`](docs/grapple.md),
@@ -372,7 +374,7 @@ see *"client out of date"* when joining, you and the host are on different commi
 |---|---|
 | Stuck on "connecting" / *"client out of date"* | Host and players must be on the **same commit**. `git pull` + rebuild both. |
 | Works locally, friends can't connect | Open **UDP** (not TCP) port 7777 in the host's firewall; use the host's LAN/public IP, not `127.0.0.1`; for internet play forward the port or use Tailscale/ZeroTier. |
-| Movement feels rubber-banded / wrong | Server and client loaded **different levels**. Pass the same `--level` to both. |
+| Movement feels rubber-banded / wrong | Server and client loaded **different levels or balance presets**. Pass the same `--level` and `--balance` to both; the HUD shows which one differs. |
 | *"server full"* | Host raises `--max-players`. Bots don't count against it. |
 | *"kicked: packet flood / cheat detection"* | Temporary 10 s ban; wait and reconnect. |
 | Very low FPS | Use a `--release` build (debug is ~10 fps). Hybrid-GPU laptop? Set `SHINOBI_GPU=dgpu`. NVIDIA + Wayland vsync issue? Set `SHINOBI_PRESENT=immediate`. |

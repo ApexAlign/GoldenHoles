@@ -519,6 +519,8 @@ pub struct HudState {
     pub respawn_total: f32,
     /// Undecodable datagrams arrived since the caller's baseline; ping readout turns magenta with "!".
     pub net_warn: bool,
+    /// The server's WELCOME fingerprints did not match the local level / balance (prediction would drift).
+    pub world_warn: Option<String>,
     pub time: f32,
 }
 
@@ -574,6 +576,12 @@ impl HudState {
             match_clock: stats.match_clock,
             match_map: stats.match_map,
             net_warn: net.bad_datagrams > stats.bad_datagrams_baseline,
+            world_warn: match (net.level_mismatch(), net.balance_mismatch()) {
+                (false, false) => None,
+                (true, true) => Some("WORLD MISMATCH: level + balance differ from the server".to_string()),
+                (true, false) => Some("LEVEL MISMATCH: start with the server's --level".to_string()),
+                (false, true) => Some("BALANCE MISMATCH: start with the server's --balance".to_string()),
+            },
             time,
             ..Default::default()
         };
@@ -991,6 +999,10 @@ impl Hud {
             let c = if ms < 80 { p.cyan } else if ms < 150 { p.orange } else { p.magenta };
             let (c, warn) = if s.net_warn { (p.magenta, "!") } else { (c, "") };
             out.push(Prim::Text { pos: (1.0 - SIDE_CLEAR - 0.01, 0.045), text: format!("{ms} MS{warn}"), size: 0.022, color: c.a(0.85), align: Align::Right });
+        }
+        if let Some(w) = &s.world_warn {
+            // Prediction-config mismatch: persistent, not a toast, because it stays wrong until the client restarts.
+            out.push(Prim::Text { pos: (0.5, 0.045), text: w.clone(), size: 0.019, color: p.magenta.a(0.95), align: Align::Center });
         }
         if s.dead {
             death_overlay(&mut out, s, p);
@@ -2608,7 +2620,7 @@ mod tests {
         use shinobi_proto::datagram::{frame_snapshot_v3, Welcome};
         use shinobi_proto::snapshot::{encode_delta, EntityState, Snapshot};
         let mut net = NetClient::default();
-        let w = Welcome { player_id: 7, server_tick: 100 };
+        let w = Welcome { player_id: 7, server_tick: 100, ..Default::default() };
         net.on_datagram(&w.encode(), 0.0).unwrap();
         let stats = LocalStats { hp: 0.8, dash_ready: 2.0, ping_ms: Some(40), ..Default::default() };
         let fx = HudFx::default();
@@ -2635,7 +2647,7 @@ mod tests {
         use shinobi_proto::datagram::{frame_snapshot_v3, Welcome};
         use shinobi_proto::snapshot::{encode_delta, EntityState, Snapshot};
         let mut net = NetClient::default();
-        net.on_datagram(&Welcome { player_id: 1, server_tick: 0 }.encode(), 0.0).unwrap();
+        net.on_datagram(&Welcome { player_id: 1, server_tick: 0, ..Default::default() }.encode(), 0.0).unwrap();
         let snap = Snapshot { tick: 2, entities: vec![(1, EntityState { flags: FLAG_DEAD, ..Default::default() })] };
         let mut ev = shinobi_proto::bits::BitWriter::new();
         shinobi_sim::events::EventOutbox::default().write_pending(&mut ev, 64);
@@ -2649,6 +2661,32 @@ mod tests {
         assert!(t.iter().any(|p| matches!(p, Prim::Text { text, .. } if text == "30 MS!")));
         let acked = LocalStats { bad_datagrams_baseline: net.bad_datagrams, ..stats };
         assert!(!HudState::from_frame(&net, &acked, &HudFx::default(), 0.0).net_warn);
+    }
+
+    #[test]
+    fn world_fingerprint_mismatch_draws_a_persistent_warning() {
+        use shinobi_proto::datagram::Welcome;
+        let mut net = NetClient::default();
+        net.set_expected_world(1, 2);
+        net.on_datagram(
+            &Welcome { player_id: 1, server_tick: 0, level_hash: 1, balance_hash: 9, ..Default::default() }.encode(),
+            0.0,
+        )
+        .unwrap();
+        let s = HudState::from_frame(&net, &LocalStats::default(), &HudFx::default(), 0.0);
+        assert_eq!(s.world_warn.as_deref(), Some("BALANCE MISMATCH: start with the server's --balance"));
+        let t = Hud::build(&s);
+        assert!(t.iter().any(|p| matches!(p, Prim::Text { text, .. } if text.contains("BALANCE MISMATCH"))));
+
+        let mut net = NetClient::default();
+        net.set_expected_world(1, 2);
+        net.on_datagram(
+            &Welcome { player_id: 1, server_tick: 0, level_hash: 1, balance_hash: 2, ..Default::default() }.encode(),
+            0.0,
+        )
+        .unwrap();
+        let s = HudState::from_frame(&net, &LocalStats::default(), &HudFx::default(), 0.0);
+        assert!(s.world_warn.is_none(), "matching fingerprints stay silent");
     }
 
     fn vitals(hp: f32, dead_until: Option<u32>, invuln_until: u32, kills: u16) -> Vitals {
@@ -2680,7 +2718,7 @@ mod tests {
     #[test]
     fn respawn_countdown_is_drawn_only_while_dead() {
         let mut net = NetClient::default();
-        net.on_datagram(&shinobi_proto::datagram::Welcome { player_id: 1, server_tick: 0 }.encode(), 0.0).unwrap();
+        net.on_datagram(&shinobi_proto::datagram::Welcome { player_id: 1, server_tick: 0, ..Default::default() }.encode(), 0.0).unwrap();
         let stats = LocalStats { respawn_in_s: Some(2.5), ..Default::default() };
         let alive = Hud::build(&HudState::from_frame(&net, &stats, &HudFx::default(), 0.0));
         assert!(!alive.iter().any(|p| matches!(p, Prim::Text { text, .. } if text.starts_with("RESPAWN"))));

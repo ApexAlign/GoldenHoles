@@ -27,7 +27,7 @@ use shinobi_proto::snapshot::{disc_kind, EntityId, POWER_ID_BASE, PROJECTILE_ID_
 use shinobi_sim::power::{PowerCfg, PowerEvent, PowerInput, PowerKind, PowerState};
 use crate::power_view::{PowerView, PowerWorld};
 use shinobi_proto::TICK_DT;
-use shinobi_sim::balance::FeedbackBalance;
+use shinobi_sim::balance::{Balance, FeedbackBalance};
 use shinobi_sim::combat::aim_assist::{LockEdge, LockPhase};
 use shinobi_sim::blocks::{BlockCfg, BlockEvent, BlockInfo, Blocks, Piece, PieceKind};
 use shinobi_sim::character::{Cfg, CharacterSystem, GrappleEvent, MoveState, PhysicsWorld, PlayerInput};
@@ -111,10 +111,14 @@ pub struct OwnAck {
     pub own: OwnState,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ClientGameCfg {
     pub sim: Cfg,
     pub camera: FpsCameraCfg,
+    /// Balance preset the local predictor runs. The server's `Welcome` carries a fingerprint of its preset; if
+    /// they differ the HUD warns (flow speed tiers, guard, lock-on and ultimate prediction would drift). Start
+    /// the game with the same `--balance` file as the server to match a custom preset.
+    pub balance: Balance,
     /// Ticks of headroom the intent clock gets over the server-clock estimate. It must cover RTT plus jitter
     /// (the estimate lags the real server tick by one one-way trip), and stay under `MAX_FUTURE_TICKS` (24).
     pub lead_ticks: u32,
@@ -134,13 +138,32 @@ impl Default for ClientGameCfg {
         Self {
             sim: Cfg::default(),
             camera: FpsCameraCfg::default(),
+            // `demo.sh` / `scripts/play.sh` run the demo preset, so that is the matching client default. A server
+            // started with a custom `--balance` is detected by the Welcome fingerprint and flagged in the HUD.
+            balance: Balance::demo(),
             lead_ticks: 8,
             melee_home: true,
-            rad_per_unit: 0.0022,
+            rad_per_unit: Self::DEFAULT_RAD_PER_UNIT,
             hitstop_slash: FeedbackBalance::default().hitstop_slash_ms / 1000.0,
             hitstop_kill: FeedbackBalance::default().hitstop_kill_ms / 1000.0,
             assist: Default::default(),
         }
+    }
+}
+
+impl ClientGameCfg {
+    /// Default mouse/look sensitivity (radians per device unit), also used by the scripted demo.
+    pub const DEFAULT_RAD_PER_UNIT: f32 = 0.0022;
+
+    /// Defaults, but with the client-side feel knobs derived from `balance` (hit-stop, look assist). Use this
+    /// when the game loads a custom `--balance` file so prediction *and* feedback match the server's preset.
+    pub fn with_balance(balance: Balance) -> Self {
+        let mut cfg = Self::default();
+        cfg.hitstop_slash = balance.feedback.hitstop_slash_ms / 1000.0;
+        cfg.hitstop_kill = balance.feedback.hitstop_kill_ms / 1000.0;
+        cfg.assist = balance.assist.clone();
+        cfg.balance = balance;
+        cfg
     }
 }
 
@@ -724,10 +747,14 @@ struct Death {
 impl ClientGame {
     pub fn new(level: LevelDesc, mut cfg: ClientGameCfg) -> Self {
         cfg.camera.slide_drop = cfg.sim.slide_eye_drop; // one source for the eye drop: camera and shot origin agree
+        // The predictor runs from the local level + balance. Tell the net layer what that was, so the server's
+        // WELCOME can flag a level / balance mismatch instead of letting prediction drift silently.
+        let mut net = NetClient::default();
+        net.set_expected_world(level.fingerprint(), cfg.balance.fingerprint());
         Self {
             camera: FpsCamera::new(cfg.camera),
             cfg,
-            net: NetClient::default(),
+            net,
             aim: Aim::default(),
             look_assist: Default::default(),
             look_touch: false,
@@ -991,12 +1018,10 @@ impl ClientGame {
         ch.restore_own(&mut world, &ack.own);
         let mut combat = CombatSystem::ninja(&cfg);
         // `ninja()` only wires up the weapons; every tunable `apply_balance` sets (lock-on range/cone, lock
-        // timing, ultimate speed...) otherwise stays at `shuriken::ShurikenCfg::default()`'s bare defaults --
-        // 20 m assist range, not the demo preset's 250 m -- because this predicted copy never gets the
-        // server's balance over the wire (balance is not a wire type at all). The demo preset is the only
-        // thing `demo.sh` ever actually runs, so matching it here keeps the client's own lock-on prediction
-        // (and so the HUD triangle, which reads straight from it) in sync with what the server will confirm.
-        combat.apply_balance(&shinobi_sim::balance::Balance::demo(), &cfg);
+        // timing, ultimate speed...) otherwise stays at the bare defaults. The preset comes from
+        // `ClientGameCfg::balance` (demo by default, the file `--balance` selects on the game side), which the
+        // Welcome fingerprint checks against the server.
+        combat.apply_balance(&self.cfg.balance, &cfg);
         let katana = KatanaCfg::for_character(&cfg);
         let mut p = Predicted {
             world,

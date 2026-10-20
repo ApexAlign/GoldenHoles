@@ -484,7 +484,7 @@ mod tests {
     fn for_net_maps_connection_state() {
         let mut net = NetClient::default();
         assert_eq!(Screen::for_net(&net, 1.5, 0.0, 0.0), Screen::Connecting { elapsed_s: 1.5 });
-        net.on_datagram(&Welcome { player_id: 1, server_tick: 0 }.encode(), 0.0).unwrap();
+        net.on_datagram(&Welcome { player_id: 1, server_tick: 0, ..Default::default() }.encode(), 0.0).unwrap();
         assert_eq!(Screen::for_net(&net, 0.0, 1.0, 0.0), Screen::InGame);
         assert!(matches!(Screen::for_net(&net, 0.0, SILENCE_TIMEOUT_S + 0.1, 0.0), Screen::Disconnected { .. }));
     }

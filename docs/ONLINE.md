@@ -5,14 +5,14 @@ The game is server-authoritative over **UDP, port 7777** (change with `PORT=`). 
 ## Host
 
 ```bash
-HOST=1 scripts/play.sh          # you + 7 bots, open to your network
+HOST=1 scripts/play.sh          # you + 5 bots, open to your network
 HOST=1 BOTS=0 scripts/play.sh   # humans only
 ```
 
 The script builds everything in `--release`, starts the server on `0.0.0.0:7777`, prints your LAN IP and the exact command
 for friends, then opens your own game window. Closing the window (or Ctrl-C) stops the server.
 
-Up to 16 players per server (bots count). Free-for-all by default; `scripts/play.sh` forwards nothing else, so for teams run
+Up to 16 players per server (bots do not count against `--max-players`). Free-for-all by default; `scripts/play.sh` forwards nothing else, so for teams run
 the server by hand: `target/release/shinobi-server 0.0.0.0:7777 --level levels/8v8.lvl --teams`.
 
 ## Join

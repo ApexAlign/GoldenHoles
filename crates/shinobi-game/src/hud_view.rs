@@ -303,7 +303,10 @@ fn reconnect_system(
         return;
     }
     let Some(level) = level else { return };
-    match net.0.reconnect(level.0.clone(), shinobi_client::client_game::ClientGameCfg::default()) {
+    // Keep the prediction config (level already comes from `LevelRes`): a custom `--balance` must survive a retry,
+    // otherwise the fresh session silently falls back to the demo preset and drifts from the server.
+    let cfg = net.0.game.cfg.clone();
+    match net.0.reconnect(level.0.clone(), cfg) {
         Ok(()) => {
             ctl.watch = ConnWatch::default();
             ctl.bridge = HudBridge::default();

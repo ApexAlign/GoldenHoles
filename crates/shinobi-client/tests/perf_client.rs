@@ -39,7 +39,7 @@ fn client_frame_cost_with_16_remotes_at_144hz() {
     let own_pos = own.pos;
 
     let mut game = ClientGame::new(level.clone(), ClientGameCfg::default());
-    game.on_datagram(&Welcome { player_id: 1, server_tick: 1 }.encode(), 0.0).unwrap();
+    game.on_datagram(&Welcome { player_id: 1, server_tick: 1, ..Default::default() }.encode(), 0.0).unwrap();
 
     let snapshot = |tick: u32, with_own: bool| -> Vec<u8> {
         let mut entities = vec![(1u16, EntityState { pos: q_pos3(own_pos), ..Default::default() })];

@@ -59,7 +59,7 @@ mod tests {
         let mut w2 = ConnWatch::default();
         assert!(matches!(w2.update(0.1, &net, true, "x"), Screen::Disconnected { .. }));
         // a late WELCOME recovers
-        net.on_datagram(&Welcome { player_id: 1, server_tick: 10 }.encode(), 0.0).unwrap();
+        net.on_datagram(&Welcome { player_id: 1, server_tick: 10, ..Default::default() }.encode(), 0.0).unwrap();
         assert_eq!(w.update(0.1, &net, false, "x"), Screen::InGame);
     }
 
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn silence_after_connect_becomes_connection_lost() {
         let mut net = NetClient::default();
-        net.on_datagram(&Welcome { player_id: 1, server_tick: 10 }.encode(), 0.0).unwrap();
+        net.on_datagram(&Welcome { player_id: 1, server_tick: 10, ..Default::default() }.encode(), 0.0).unwrap();
         let mut w = ConnWatch::default();
         assert_eq!(w.update(0.5, &net, false, "x"), Screen::InGame);
         let s = w.update(crate::screens::SILENCE_TIMEOUT_S + 0.1, &net, false, "x");

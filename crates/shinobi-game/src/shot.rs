@@ -37,6 +37,8 @@ pub struct ShotOpts {
     pub quality: Quality,
     pub scale: Option<f32>,
     pub level: shinobi_sim::level::LevelDesc,
+    /// Prediction preset; must match the server's (the Welcome fingerprint warns otherwise).
+    pub balance: shinobi_sim::balance::Balance,
     /// Offline scene: which level spawn point we stand on.
     pub spawn: usize,
 }
@@ -62,7 +64,7 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
             .disable::<WinitPlugin>()
             .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() }),
     )
-    .add_plugins(NetPlugin { server, offline, level: o.level.clone() })
+    .add_plugins(NetPlugin { server, offline, level: o.level.clone(), balance: o.balance.clone() })
     .add_plugins(MobilePlugin { quality: o.quality, auto_tier: false, touch_overlay: o.touch, screen: (dims.0 as f32, dims.1 as f32) })
     .add_plugins(grid::GridPlugin)
     .add_plugins(crt::CrtPlugin)
@@ -348,7 +350,7 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
                 };
                 v.camera.fov = v.zoom.fov_deg;
             }
-            // `reload`: our bow just loosed, 40 % of the 2.2 s reload done (the bar under the crosshair)
+            // `reload`: our bow just loosed, 40 % of the 1.1 s reload done (the bar under the crosshair)
             "reload" => {
                 use shinobi_client::power_view::PowerView;
                 use shinobi_sim::power::{PowerCfg, PowerState};
@@ -432,7 +434,7 @@ fn review_pieces(block_size: f32, base: [f32; 3]) -> Vec<shinobi_sim::blocks::Bl
 }
 
 fn connect_offline(mut net: ResMut<Net>) {
-    let _ = net.0.game.on_datagram(&Welcome { player_id: 1, server_tick: 0 }.encode(), 0.0);
+    let _ = net.0.game.on_datagram(&Welcome { player_id: 1, server_tick: 0, ..Default::default() }.encode(), 0.0);
 }
 
 /// 1/512 m, 1/64 m/s, yaw 0..65535 = 0..2pi (yaw 0 faces -Z).

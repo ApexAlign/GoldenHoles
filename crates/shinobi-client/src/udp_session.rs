@@ -168,7 +168,7 @@ mod tests {
 
         // client_addr is 0.0.0.0:port; reply to the loopback port
         let to: SocketAddr = format!("127.0.0.1:{}", client_addr.port()).parse().unwrap();
-        srv.send_to(&Welcome { player_id: 7, server_tick: 1000 }.encode(), to).unwrap();
+        srv.send_to(&Welcome { player_id: 7, server_tick: 1000, ..Default::default() }.encode(), to).unwrap();
         settle();
         c.buttons.set(Buttons::SLICE, true);
         c.buttons.set(Buttons::SLICE, false);
@@ -205,7 +205,7 @@ mod tests {
         let (_, client_addr) = srv.recv_from(&mut buf).unwrap();
         let to: SocketAddr = format!("127.0.0.1:{}", client_addr.port()).parse().unwrap();
         let imposter = UdpSocket::bind("127.0.0.1:0").unwrap();
-        imposter.send_to(&Welcome { player_id: 9, server_tick: 5 }.encode(), to).unwrap();
+        imposter.send_to(&Welcome { player_id: 9, server_tick: 5, ..Default::default() }.encode(), to).unwrap();
         settle();
         c.fixed_step((0.0, 0.0));
         assert!(!c.connected());

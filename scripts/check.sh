@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The one pre-push check every agent runs (same as CI would):
-#   scripts/check.sh            workspace tests + Bevy game crate `cargo check`
+# The one pre-push check every agent runs (same as CI):
+#   scripts/check.sh            workspace tests + Bevy game crate tests
 #   scripts/check.sh --fast     workspace tests only (skip the game crate; first Bevy build takes minutes)
 #   OFFLINE=1 scripts/check.sh  pass --offline to cargo (no crate downloads)
 set -euo pipefail
@@ -13,9 +13,9 @@ echo ">> cargo test --workspace"
 cargo test --workspace "${OFFLINE_ARG[@]}"
 
 if [ "$FAST" -eq 1 ]; then
-  echo ">> skipped: shinobi-game cargo check (--fast)"
+  echo ">> skipped: shinobi-game cargo test (--fast)"
 else
-  echo ">> cd crates/shinobi-game && cargo check   (the Bevy app is outside the workspace)"
-  (cd crates/shinobi-game && cargo check "${OFFLINE_ARG[@]}")
+  echo ">> cd crates/shinobi-game && cargo test   (the Bevy app is outside the workspace)"
+  (cd crates/shinobi-game && cargo test "${OFFLINE_ARG[@]}")
 fi
 echo "OK: check passed"

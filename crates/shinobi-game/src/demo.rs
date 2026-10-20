@@ -48,7 +48,7 @@ pub fn drive(time: Res<Time>, view: Res<ViewRes>, mut d: ResMut<DemoDrive>, mut 
         return;
     }
     let world = World { pos, yaw: v.aim.yaw, remotes: v.remotes.iter().map(|(_, s)| s.pos).collect() };
-    let out = d.script.step(t, dt, ClientGameCfg::default().rad_per_unit, &world);
+    let out = d.script.step(t, dt, ClientGameCfg::DEFAULT_RAD_PER_UNIT, &world);
     let f = &mut pending.0;
     f.stick = out.stick;
     f.look.0 += out.look.0;

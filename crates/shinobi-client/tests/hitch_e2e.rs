@@ -167,7 +167,7 @@ fn run(p: Profile, one_way: usize, seconds: u32, seed_moves: bool, wall_sync: bo
                 if srv.players.is_empty() {
                     srv.add_player(1, start);
                 }
-                down.push_back((wall + one_way as u64, Welcome { player_id: 1, server_tick: srv.tick }.encode().to_vec()));
+                down.push_back((wall + one_way as u64, Welcome { player_id: 1, server_tick: srv.tick, ..Default::default() }.encode().to_vec()));
             } else if !srv.players.is_empty() {
                 srv.ingest(1, &pkt);
             }

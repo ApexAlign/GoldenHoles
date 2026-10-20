@@ -301,6 +301,28 @@ impl LevelDesc {
         parse_level_file(text).map(|f| f.level)
     }
 
+    /// Stable fingerprint of everything both sides simulate: box centres / half extents / roll / hit points and
+    /// the spawn points. Sent in `Welcome` so a client on a different level gets a clear warning instead of
+    /// silent prediction drift. FNV-1a over the raw f32 bits: identical on every platform.
+    pub fn fingerprint(&self) -> u64 {
+        use crate::hash::{mix_f32, mix_u64, OFFSET};
+        let mut h = mix_u64(OFFSET, self.boxes.len() as u64);
+        for b in &self.boxes {
+            for v in b.center.iter().chain(b.half.iter()) {
+                h = mix_f32(h, *v);
+            }
+            h = mix_f32(h, b.rot_z);
+            h = mix_f32(h, b.hp);
+        }
+        h = mix_u64(h, self.spawns.len() as u64);
+        for s in &self.spawns {
+            for v in s {
+                h = mix_f32(h, *v);
+            }
+        }
+        h
+    }
+
     /// Level-file text for just the geometry and spawns.
     pub fn to_text(&self) -> String {
         LevelFile { level: self.clone(), pickups: Vec::new() }.to_text()
@@ -377,6 +399,21 @@ mod tests {
         let b: Vec<_> = w.colliders.iter().map(|(_, c)| (*c.position(), c.shape().as_cuboid().unwrap().half_extents)).collect();
         assert_eq!(a, b);
         assert!((a[1].0.rotation.angle() - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fingerprint_tracks_geometry_and_spawns() {
+        let a = LevelDesc::from_text("box 0 -0.5 0 50 0.5 50\nbox 5 1 0 1 1 4 0.3\nspawn 0 0.81 0\nspawn 4 0.81 4\n").unwrap();
+        let b = LevelDesc::from_text(&a.to_text()).unwrap();
+        assert_eq!(a, b, "the file round-trip preserves the parsed level");
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        let mut c = a.clone();
+        c.boxes[0].center[0] += 0.001;
+        assert_ne!(a.fingerprint(), c.fingerprint(), "a moved box changes the fingerprint");
+        let mut d = a.clone();
+        d.spawns[0][1] += 0.5;
+        assert_ne!(a.fingerprint(), d.fingerprint(), "a moved spawn changes the fingerprint");
+        assert_ne!(a.fingerprint(), LevelDesc::standard().fingerprint());
     }
 
     #[test]
