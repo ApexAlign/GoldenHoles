@@ -456,7 +456,7 @@ mod tests {
     }
 
     fn slash() -> CombatEvent {
-        CombatEvent::Slash { flip: false, dir: Vector::z(), lunge: true, hits: 1, origin: Point::origin(), reach: 2.0, half_width: 1.0, half_height: 1.0, damage: 60.0, kind: shinobi_sim::combat::SlashKind::Light }
+        CombatEvent::Slash { flip: false, dir: Vector::z(), lunge: true, hits: 1, origin: Point::origin(), reach: 2.0, half_width: 1.0, half_height: 1.0, damage: 60.0, kind: shinobi_sim::combat::SlashKind::Light, combo: shinobi_sim::combat::KatanaCombo::None }
     }
 
     #[test]
@@ -474,9 +474,9 @@ mod tests {
         let head = s.balance.combat.shuriken.damage * s.balance.combat.headshot_mult;
         s.events = vec![(1, thrown()), (1, thrown()), (1, slash()), (1, CombatEvent::GrappleAttach { origin: Point::origin(), anchor: Point::origin() }), (1, CombatEvent::GrappleMiss { origin: Point::origin(), dir: Vector::z() })];
         s.pvp_events = vec![
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: s.balance.combat.shuriken.damage, kind: DamageKind::Shuriken, head: false, bonus: false },
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: head, kind: DamageKind::Shuriken, head: false, bonus: false },
-            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: 60.0, kind: DamageKind::Slash, head: false, bonus: false },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: s.balance.combat.shuriken.damage, kind: DamageKind::Shuriken, head: false, bonus: false, point: [5.0, 1.0, 0.0], guarded: false },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: head, kind: DamageKind::Shuriken, head: false, bonus: false, point: [5.0, 1.2, 0.0], guarded: false },
+            PvpEvent::Hit { tick: 20, attacker: 1, victim: BOT_ID_BASE, amount: 60.0, kind: DamageKind::Slash, head: false, bonus: false, point: [5.0, 0.9, 0.0], guarded: false },
             PvpEvent::Kill { tick: 20, killer: 1, victim: BOT_ID_BASE, kind: DamageKind::Slash, head: false },
         ];
         s.block_events = vec![

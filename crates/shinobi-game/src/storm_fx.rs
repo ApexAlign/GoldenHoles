@@ -1,8 +1,5 @@
 //! Environmental events drawn (sim side: `shinobi_sim::env_events`; the client queues `EnvFx`):
 //!
-//! * QUAKE: a warning (HUD banner with countdown, orange edge pulse, faint tremor), then camera shake for the whole
-//!   duration (ramps in, decays at the end), dust falling in the view. Shake is bounded (`SHAKE_MAX_M`), scaled by the
-//!   fx-intensity setting, off with reduced motion or `STORM_SHAKE=0`.
 //! * LIGHTNING: a red-white pulsing ground ring + faint light column where a bolt WILL land, brighter and faster as the
 //!   warning runs out (the ring is removed on the strike); the strike is a jagged sky-to-ground bolt, a full-screen flash
 //!   scaled by proximity, a point light, an expanding shock ring and a spark / debris burst. An edge arrow points at the
@@ -11,7 +8,7 @@
 //! This module is the only consumer of `take_env_fx` and republishes the events as `StormFeed` for `storm_audio` (order
 //! after `StormSet`). Everything is cosmetic.
 //!
-//! Review aid: `SHOT_STORM=quake|bolt` (optionally `SHOT_STORM_AT=seconds`, default 1.0) fakes the event sequence locally.
+//! Review aid: `SHOT_STORM=bolt` (optionally `SHOT_STORM_AT=seconds`, default 1.0) fakes the event sequence locally.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
@@ -31,10 +28,6 @@ const LAYER: usize = 5;
 const TAU: f32 = std::f32::consts::TAU;
 /// Danger radius drawn for a marked bolt (the client does not know the server's `bolt_radius`).
 pub const BOLT_RADIUS: f32 = 8.0;
-/// Largest camera displacement (m) the shake ever applies.
-pub const SHAKE_MAX_M: f32 = 0.10;
-/// Faint tremor during the warning, as a share of the full shake.
-const WARN_TREMOR: f32 = 0.12;
 const BOLT_TOP: f32 = 120.0;
 const BOLT_SEGS: usize = 9;
 const BOLT_LIFE: f32 = 0.15;
@@ -44,67 +37,6 @@ const MAX_FX: usize = 360;
 const ARROW_MIN_ANGLE: f32 = 0.9;
 
 // ----------------------------------------------------------------------------------------------- pure logic
-
-/// `STORM_SHAKE=0|off|false` turns the camera shake off.
-pub fn shake_enabled(var: Option<&str>) -> bool {
-    !matches!(var.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("0") | Some("off") | Some("false") | Some("no"))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub enum Quake {
-    #[default]
-    Idle,
-    Warn { t: f32, total: f32 },
-    Active { t: f32, dur: f32 },
-}
-
-fn smooth(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
-}
-
-impl Quake {
-    /// Advance by `dt`; a finished warning without a start event just lapses to idle.
-    pub fn tick(&mut self, dt: f32) {
-        *self = match *self {
-            Quake::Warn { t, total } if t + dt < total + 0.5 => Quake::Warn { t: t + dt, total },
-            Quake::Active { t, dur } if t + dt < dur => Quake::Active { t: t + dt, dur },
-            Quake::Idle => Quake::Idle,
-            _ => Quake::Idle,
-        };
-    }
-
-    /// Shake strength 0..=1: a faint tremor swelling during the warning; ramps in over 0.3 s, holds, decays over the last
-    /// 30 % (0.4..1.5 s) of the shaking.
-    pub fn amp(&self) -> f32 {
-        match *self {
-            Quake::Idle => 0.0,
-            Quake::Warn { t, total } => WARN_TREMOR * smooth(t / total.max(0.1)),
-            Quake::Active { t, dur } => {
-                if t >= dur {
-                    return 0.0;
-                }
-                let tail = (dur * 0.3).clamp(0.4, 1.5).min(dur);
-                let rise = smooth(t / 0.3);
-                let fall = smooth((dur - t) / tail);
-                rise.min(fall).clamp(0.0, 1.0)
-            }
-        }
-    }
-
-    pub fn warn_left(&self) -> Option<f32> {
-        match *self {
-            Quake::Warn { t, total } => Some((total - t).max(0.0)),
-            _ => None,
-        }
-    }
-}
-
-/// Camera offset (right, up) in metres for strength `amp` at time `t`: always within `SHAKE_MAX_M`.
-pub fn shake_offset(amp: f32, t: f32) -> (f32, f32) {
-    let k = amp.clamp(0.0, 1.0) * SHAKE_MAX_M;
-    (k * ((t * 47.0).sin() * 0.6 + (t * 83.0 + 1.0).sin() * 0.4), k * ((t * 61.0 + 2.0).sin() * 0.55 + (t * 97.0).cos() * 0.45))
-}
 
 /// Ground ring of a marked bolt with `left` of `warn` seconds to go: `(brightness, pulse Hz)`. Both rise as it nears.
 pub fn ring_look(left: f32, warn: f32) -> (f32, f32) {
@@ -250,7 +182,6 @@ impl Geo {
 /// What the overlay shows this frame.
 #[derive(Default)]
 struct HudView {
-    quake: Quake,
     marks: Vec<MarkInfo>,
     /// Yaw of the view, for the arrow.
     yaw: f32,
@@ -258,10 +189,8 @@ struct HudView {
     t: f32,
 }
 
-fn build(g: &mut Geo, v: &HudView, reduced: bool) {
+fn build(g: &mut Geo, v: &HudView) {
     g.clear();
-    let pulse = 0.65 + 0.35 * (v.t * TAU * 2.5).sin();
-    // QUAKE banner + edge pulse
     let banner = |g: &mut Geo, text: &str, y: f32, size: f32, rgb: (f32, f32, f32), a: f32| {
         let split = 0.004;
         let at = |dx: f32, c: Rgba| Prim::Text { pos: (0.5 + dx, y), text: text.to_string(), size, color: c, align: Align::Center };
@@ -269,21 +198,6 @@ fn build(g: &mut Geo, v: &HudView, reduced: bool) {
         let t = tessellate(&prims, g.aspect);
         g.append(t);
     };
-    match v.quake {
-        Quake::Warn { t, total } => {
-            let u = smooth(t / total.max(0.1));
-            g.edge_glow([1.0, 0.45, 0.05], (0.12 + 0.3 * u) * pulse, 0.10 + 0.08 * u);
-            banner(g, "QUAKE", 0.15, 0.07, (1.0, 0.6, 0.1), pulse);
-            banner(g, &format!("{:.1}", (total - t).max(0.0)), 0.205, 0.04, (1.0, 0.9, 0.7), 0.9);
-        }
-        Quake::Active { t, dur } => {
-            let fade = smooth((dur - t) / 0.6);
-            let flick = if reduced { 1.0 } else { 0.8 + 0.2 * (v.t * 31.0).sin() };
-            g.edge_glow([1.0, 0.4, 0.05], 0.22 * flick * fade, 0.09);
-            banner(g, "QUAKE", 0.15, 0.06, (1.0, 0.5, 0.1), 0.8 * fade);
-        }
-        Quake::Idle => {}
-    }
     // LIGHTNING banner + arrow to the nearest mark
     if let Some(i) = nearest_mark(&v.marks) {
         let m = v.marks[i];
@@ -291,7 +205,7 @@ fn build(g: &mut Geo, v: &HudView, reduced: bool) {
         let urgent = (1.0 - m.left / m.warn.max(0.05)).clamp(0.0, 1.0);
         let blink = 0.6 + 0.4 * (v.t * TAU * (1.5 + 6.0 * urgent)).sin();
         let inside = dist < BOLT_RADIUS + 1.0;
-        let y = if matches!(v.quake, Quake::Idle) { 0.15 } else { 0.27 };
+        let y = 0.15;
         if inside {
             g.edge_glow([1.0, 0.1, 0.1], (0.18 + 0.4 * urgent) * blink, 0.12);
             banner(g, "MOVE", y, 0.07, (1.0, 0.3, 0.25), blink);
@@ -334,18 +248,13 @@ struct Mark {
 #[derive(Resource)]
 struct State {
     t: f32,
-    quake: Quake,
     marks: Vec<Mark>,
     /// Strike flash: distance and age of the latest one.
     flash: Option<(f32, f32)>,
-    dust_acc: f32,
-    seed: u32,
-    shake_on: bool,
     ring: Option<Handle<Mesh>>,
     disc: Option<Handle<Mesh>>,
     cyl: Option<Handle<Mesh>>,
     cube: Option<Handle<Mesh>>,
-    dust_mat: Option<Handle<StandardMaterial>>,
     bolt_mat: Option<Handle<StandardMaterial>>,
     spark_mat: Option<Handle<StandardMaterial>>,
     chunk_mat: Option<Handle<StandardMaterial>>,
@@ -358,17 +267,12 @@ impl Default for State {
     fn default() -> Self {
         State {
             t: 0.0,
-            quake: Quake::Idle,
             marks: Vec::new(),
             flash: None,
-            dust_acc: 0.0,
-            seed: 1,
-            shake_on: shake_enabled(std::env::var("STORM_SHAKE").ok().as_deref()),
             ring: None,
             disc: None,
             cyl: None,
             cube: None,
-            dust_mat: None,
             bolt_mat: None,
             spark_mat: None,
             chunk_mat: None,
@@ -399,21 +303,15 @@ struct HudMesh(Handle<Mesh>);
 #[derive(Resource)]
 struct GeoRes(Geo, bool);
 
-/// Current shake strength 0..=1 (read by the camera shake).
-#[derive(Resource, Default)]
-pub struct ShakeAmp(pub f32);
-
 pub struct StormFxPlugin;
 
 impl Plugin for StormFxPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<State>()
             .init_resource::<StormFeed>()
-            .init_resource::<ShakeAmp>()
             .insert_resource(GeoRes(Geo { aspect: 16.0 / 9.0, ..default() }, false))
             .add_systems(Startup, setup)
-            .add_systems(Update, (gather.in_set(StormSet), handle, drive_marks, animate, overlay).chain())
-            .add_systems(PostUpdate, shake.before(TransformSystems::Propagate));
+            .add_systems(Update, (gather.in_set(StormSet), handle, drive_marks, animate, overlay).chain());
     }
 }
 
@@ -446,7 +344,6 @@ fn setup(
     st.disc = Some(meshes.add(Circle::new(1.0)));
     st.cyl = Some(meshes.add(Cylinder::new(1.0, 1.0)));
     st.cube = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
-    st.dust_mat = Some(emissive(&mut mats, [0.55, 0.48, 0.40]));
     st.bolt_mat = Some(emissive(&mut mats, [5.0, 6.0, 9.0]));
     st.spark_mat = Some(emissive(&mut mats, [8.0, 7.0, 4.0]));
     st.chunk_mat = Some(emissive(&mut mats, [1.4, 0.7, 0.35]));
@@ -495,7 +392,6 @@ fn gather(time: Res<Time>, view: Res<ViewRes>, mut net: ResMut<Net>, mut st: Res
         let ahead = eye + Vec3::new(-yaw.sin(), 0.0, -yaw.cos()) * 12.0;
         let ground = [ahead.x, (v.eye[1] - 1.6).max(0.0), ahead.z];
         match kind.as_str() {
-            "quake" => st.script = vec![(at, EnvFx::QuakeWarn { warn_s: 2.0 }), (at + 2.0, EnvFx::QuakeStart { dur_s: 4.0 }), (at + 6.0, EnvFx::QuakeEnd)],
             "bolt" => st.script = vec![(at, EnvFx::BoltMark { id: 1, pos: ground, warn_s: 2.0 }), (at + 2.0, EnvFx::BoltStrike { id: 1, pos: ground })],
             _ => {}
         }
@@ -514,11 +410,6 @@ fn gather(time: Res<Time>, view: Res<ViewRes>, mut net: ResMut<Net>, mut st: Res
     }
 }
 
-fn rnd(st: &mut State) -> f32 {
-    st.seed = st.seed.wrapping_add(1);
-    hash01(st.seed.wrapping_mul(2_654_435_761))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn handle(
     mut st: ResMut<State>,
@@ -532,9 +423,6 @@ fn handle(
     let mut budget = MAX_FX.saturating_sub(live.iter().count());
     for ev in feed.events.iter().copied() {
         match ev {
-            EnvFx::QuakeWarn { warn_s } => st.quake = Quake::Warn { t: 0.0, total: warn_s.max(0.1) },
-            EnvFx::QuakeStart { dur_s } => st.quake = Quake::Active { t: 0.0, dur: dur_s.max(0.5) },
-            EnvFx::QuakeEnd => st.quake = Quake::Idle,
             EnvFx::BoltMark { id, pos, warn_s } => {
                 st.marks.retain(|m| {
                     if m.id == id {
@@ -639,50 +527,9 @@ fn strike(st: &mut State, commands: &mut Commands, mats: &mut Assets<StandardMat
     }
 }
 
-/// Quake clock, dust, marked-bolt rings.
-fn drive_marks(
-    time: Res<Time>,
-    view: Res<ViewRes>,
-    mut st: ResMut<State>,
-    mut amp: ResMut<ShakeAmp>,
-    mut commands: Commands,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-    mut tr: Query<&mut Transform, Without<PlayerCam>>,
-    live: Query<(), With<Fx>>,
-) {
+/// Marked-bolt rings.
+fn drive_marks(time: Res<Time>, mut st: ResMut<State>, mut mats: ResMut<Assets<StandardMaterial>>, mut tr: Query<&mut Transform, Without<PlayerCam>>) {
     let dt = time.delta_secs();
-    st.quake.tick(dt);
-    amp.0 = if st.shake_on { st.quake.amp() } else { 0.0 };
-    // dust falling through the view during the shaking
-    let qa = if matches!(st.quake, Quake::Active { .. }) { st.quake.amp() } else { 0.0 };
-    if qa > 0.02 {
-        st.dust_acc += dt * 70.0 * qa;
-        let n = st.dust_acc as u32;
-        st.dust_acc -= n as f32;
-        let v = &view.0;
-        let (yaw, _) = v.look_angles();
-        let eye = Vec3::from(v.eye);
-        let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-        let mut free = MAX_FX.saturating_sub(live.iter().count());
-        let cube = st.cube.clone().unwrap();
-        let mat = st.dust_mat.clone().unwrap();
-        for _ in 0..n {
-            if free == 0 {
-                break;
-            }
-            free -= 1;
-            let (a, b, c, d) = (rnd(&mut st), rnd(&mut st), rnd(&mut st), rnd(&mut st));
-            let pos = eye + fwd * (3.0 + 14.0 * a) + Vec3::new((b - 0.5) * 20.0, 4.0 + 6.0 * c, (d - 0.5) * 20.0);
-            let size = Vec3::splat(0.04 + 0.08 * rnd(&mut st));
-            let vel = Vec3::new((rnd(&mut st) - 0.5) * 0.8, -(2.5 + 3.5 * rnd(&mut st)), (rnd(&mut st) - 0.5) * 0.8);
-            commands.spawn((
-                Mesh3d(cube.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(pos).with_scale(size),
-                Fx { age: 0.0, life: 2.2, kind: Kind::Bit { vel, spin: Vec3::ZERO, grav: 0.0, floor: eye.y - 3.0, base: size } },
-            ));
-        }
-    }
     // marked-bolt rings: brighter and faster as the strike nears
     for m in st.marks.iter_mut() {
         m.left = (m.left - dt).max(0.0);
@@ -769,7 +616,6 @@ fn overlay(
     view: Res<ViewRes>,
     window: Option<Single<&Window>>,
     shot: Option<Res<ShotRequest>>,
-    settings: Option<Res<crate::hud_view::SettingsRes>>,
     st: Res<State>,
     mut geo: ResMut<GeoRes>,
     mesh: Res<HudMesh>,
@@ -777,7 +623,7 @@ fn overlay(
 ) {
     let _ = time;
     let flash = st.flash.map_or(0.0, |(d, a)| flash_alpha(d, a));
-    let active = st.quake != Quake::Idle || !st.marks.is_empty() || flash > 0.0;
+    let active = !st.marks.is_empty() || flash > 0.0;
     if !active {
         if geo.1 {
             geo.1 = false;
@@ -795,14 +641,12 @@ fn overlay(
     let v = &view.0;
     let (yaw, _) = v.look_angles();
     let hv = HudView {
-        quake: st.quake,
         marks: st.marks.iter().map(|m| MarkInfo { left: m.left, warn: m.warn, d: [m.pos.x - v.eye[0], m.pos.z - v.eye[2]] }).collect(),
         yaw,
         flash,
         t: st.t,
     };
-    let reduced = settings.as_ref().map_or(false, |s| s.0.reduced_motion);
-    build(&mut geo.0, &hv, reduced);
+    build(&mut geo.0, &hv);
     geo.1 = true;
     let g = &geo.0;
     if let Some(mut m) = meshes.get_mut(&mesh.0) {
@@ -817,82 +661,9 @@ fn overlay(
     }
 }
 
-/// Translation-only camera shake in the view frame (aim never moves); off with reduced motion, scaled by fx intensity.
-fn shake(amp: Res<ShakeAmp>, st: Res<State>, settings: Option<Res<crate::hud_view::SettingsRes>>, mut cam: Single<&mut Transform, With<PlayerCam>>) {
-    if amp.0 < 0.005 {
-        return;
-    }
-    let Some(s) = settings.as_ref().map(|s| &s.0) else { return };
-    if s.reduced_motion {
-        return;
-    }
-    let (r, u) = shake_offset(amp.0, st.t);
-    let k = s.fx_intensity.clamp(0.0, 1.0);
-    let (right, up) = (cam.right(), cam.up());
-    cam.translation += (right * r + up * u) * k;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shake_switch_reads_the_env_value() {
-        assert!(shake_enabled(None) && shake_enabled(Some("1")) && shake_enabled(Some("")));
-        assert!(!shake_enabled(Some("0")) && !shake_enabled(Some(" OFF ")) && !shake_enabled(Some("false")));
-    }
-
-    #[test]
-    fn quake_amp_ramps_holds_and_decays_to_zero() {
-        let a = |t| Quake::Active { t, dur: 4.0 }.amp();
-        assert_eq!(a(0.0), 0.0);
-        assert!(a(0.15) > 0.3 && a(0.15) < 0.8, "ramping in");
-        assert!((a(2.0) - 1.0).abs() < 1e-6, "full in the middle");
-        assert!(a(3.5) < a(3.0) && a(3.9) < a(3.5), "decays at the end");
-        assert!(a(3.99) < 0.05 && a(4.0) == 0.0 && a(9.0) == 0.0);
-        // a short quake still starts and ends at zero and never exceeds one
-        for i in 0..=100 {
-            let v = Quake::Active { t: i as f32 * 0.01, dur: 1.0 }.amp();
-            assert!((0.0..=1.0).contains(&v));
-        }
-        assert_eq!(Quake::Idle.amp(), 0.0);
-    }
-
-    #[test]
-    fn warning_tremor_is_faint_and_swells() {
-        let w = |t| Quake::Warn { t, total: 2.0 }.amp();
-        assert_eq!(w(0.0), 0.0);
-        assert!(w(1.0) < w(2.0) && w(2.0) <= WARN_TREMOR + 1e-6);
-        assert!(WARN_TREMOR < 0.2);
-        assert_eq!(Quake::Warn { t: 0.5, total: 2.0 }.warn_left(), Some(1.5));
-    }
-
-    #[test]
-    fn quake_phases_expire() {
-        let mut q = Quake::Active { t: 0.0, dur: 1.0 };
-        q.tick(0.5);
-        assert!(matches!(q, Quake::Active { .. }));
-        q.tick(0.6);
-        assert_eq!(q, Quake::Idle);
-        let mut w = Quake::Warn { t: 0.0, total: 1.0 };
-        w.tick(1.2);
-        assert!(matches!(w, Quake::Warn { .. }), "waits a little for the start event");
-        w.tick(0.6);
-        assert_eq!(w, Quake::Idle, "a warning whose start never came lapses");
-    }
-
-    #[test]
-    fn shake_offset_is_always_bounded() {
-        for i in 0..2000 {
-            let t = i as f32 * 0.0137;
-            for amp in [0.0, 0.3, 1.0, 5.0, -2.0] {
-                let (r, u) = shake_offset(amp, t);
-                assert!(r.abs() <= SHAKE_MAX_M + 1e-6 && u.abs() <= SHAKE_MAX_M + 1e-6, "{amp} {t}");
-            }
-        }
-        assert_eq!(shake_offset(0.0, 1.0), (0.0, 0.0));
-        assert!(SHAKE_MAX_M <= 0.12, "intense, not nauseating");
-    }
 
     #[test]
     fn ring_gets_brighter_and_faster_as_the_strike_nears() {
@@ -951,17 +722,15 @@ mod tests {
     fn overlay_builds_finite_geometry_for_every_state() {
         let mut g = Geo { aspect: 16.0 / 9.0, ..default() };
         let marks = vec![MarkInfo { left: 1.0, warn: 2.0, d: [-20.0, 5.0] }, MarkInfo { left: 0.4, warn: 2.0, d: [2.0, 1.0] }];
-        for q in [Quake::Idle, Quake::Warn { t: 0.5, total: 2.0 }, Quake::Active { t: 1.0, dur: 4.0 }] {
-            for mk in [vec![], marks.clone(), marks[..1].to_vec()] {
-                build(&mut g, &HudView { quake: q, marks: mk.clone(), yaw: 0.3, flash: 0.5, t: 1.7 }, false);
-                assert_eq!(g.pos.len(), g.col.len());
-                assert_eq!(g.idx.len() % 3, 0);
-                assert!(g.idx.iter().all(|i| (*i as usize) < g.pos.len()));
-                assert!(g.pos.iter().all(|p| p.iter().all(|v| v.is_finite())));
-                assert!(!g.idx.is_empty());
-            }
+        for mk in [vec![], marks.clone(), marks[..1].to_vec()] {
+            build(&mut g, &HudView { marks: mk.clone(), yaw: 0.3, flash: 0.5, t: 1.7 });
+            assert_eq!(g.pos.len(), g.col.len());
+            assert_eq!(g.idx.len() % 3, 0);
+            assert!(g.idx.iter().all(|i| (*i as usize) < g.pos.len()));
+            assert!(g.pos.iter().all(|p| p.iter().all(|v| v.is_finite())));
+            assert!(!g.idx.is_empty());
         }
-        build(&mut g, &HudView::default(), false);
+        build(&mut g, &HudView::default());
         assert!(g.idx.is_empty(), "nothing going on, nothing drawn");
     }
 }

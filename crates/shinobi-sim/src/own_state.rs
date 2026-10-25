@@ -12,16 +12,17 @@
 //!
 //! Wire layout (bits), `OwnState::write`:
 //!   pos 3x32 | vel 3x32 | facing 2x32 | kind 2 (0 grounded, 1 airborne, 2 wall-run) | double_used 1 |
-//!   was_grounded 1 | has_evasion 1 | has_slide 1 | has_grapple 1 |
-//!   timers 7x8 (coyote, jump_buf, dash_cd, wall_cd, slide_cd, slice_cd, grapple_cd) |
+//!   was_grounded 1 | has_evasion 1 | has_slide 1 | has_grapple 1 | has_grind 1 |
+//!   timers 8x8 (coyote, jump_buf, dash_cd, wall_cd, slide_cd, slice_cd, grapple_cd, slice_buf) |
 //!   [wall-run: normal 2x32, tangent 2x32, ticks_left 8] [evasion: roll 1, elapsed 8, dir 2x32]
-//!   [slide: dir 2x32, speed 32, elapsed 8] [grapple: anchor 3x32, len 32, elapsed 8]
-//!   = 319 bits base (40 bytes); +136 attached to a grapple; +136 in a wall-run, +73 in a dash/roll, +104 in a slide.
+//!   [slide: dir 2x32, speed 32, elapsed 8] [grapple: anchor 3x32, len 32, elapsed 8] [grind: dir 2x32, speed 32, elapsed 8]
+//!   = 328 bits base (41 bytes); +136 attached to a grapple; +136 in a wall-run, +73 in a dash/roll, +104 in a slide,
+//!   +104 in a grind.
 
 use shinobi_proto::bits::{BitReader, BitWriter, DecodeError, DecodeResult};
 use shinobi_proto::TICK_DT;
 
-use crate::character::{Cfg, CharacterSnapshot, Evasion, GrappleState, MoveState, SlideState};
+use crate::character::{Cfg, CharacterSnapshot, Evasion, GrappleState, GrindState, MoveState, SlideState};
 use crate::rapier3d::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -32,14 +33,16 @@ pub struct OwnState {
     pub kind: u8,
     pub double_used: bool,
     pub was_grounded: bool,
-    /// coyote, jump_buf, dash_cd, wall_cd, slide_cd, slice_cd (katana), grapple_cd: ticks remaining (ceil).
-    pub timers: [u8; 7],
+    /// coyote, jump_buf, dash_cd, wall_cd, slide_cd, slice_cd (katana), grapple_cd, slice_buf (katana press buffer):
+    /// ticks remaining (ceil).
+    pub timers: [u8; 8],
     /// Horizontal (x, z).
     pub facing: [f32; 2],
     pub wall: Option<WallQ>,
     pub evasion: Option<EvasionQ>,
     pub slide: Option<SlideQ>,
     pub grapple: Option<GrappleQ>,
+    pub grind: Option<SlideQ>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -107,12 +110,13 @@ impl OwnState {
             kind,
             double_used: s.double_used,
             was_grounded: s.was_grounded,
-            timers: [q_t(s.coyote), q_t(s.jump_buf), q_t(s.dash_cd), q_t(s.wall_cd), q_t(s.slide_cd), q_t(s.slice_cd), q_t(s.grapple_cd)],
+            timers: [q_t(s.coyote), q_t(s.jump_buf), q_t(s.dash_cd), q_t(s.wall_cd), q_t(s.slide_cd), q_t(s.slice_cd), q_t(s.grapple_cd), q_t(s.slice_buf)],
             facing: xz(s.facing),
             wall,
             evasion: s.evasion.map(|e| EvasionQ { roll: e.roll, elapsed: q_elapsed(e.total, e.left), dir: xz(e.dir) }),
             slide: s.slide.map(|l| SlideQ { dir: xz(l.dir), speed: l.speed, elapsed: q_elapsed(0.0, -l.time) }),
             grapple: s.grapple.map(|g| GrappleQ { anchor: [g.anchor.x, g.anchor.y, g.anchor.z], len: g.len, elapsed: q_elapsed(0.0, -g.time) }),
+            grind: s.grind.map(|l| SlideQ { dir: xz(l.dir), speed: l.speed, elapsed: q_elapsed(0.0, -l.time) }),
         }
     }
 
@@ -159,6 +163,14 @@ impl OwnState {
                 GrappleState { anchor: vector![g.anchor[0], g.anchor[1], g.anchor[2]], len: g.len, time }
             }),
             grapple_cd: dq_t(self.timers[6]),
+            slice_buf: dq_t(self.timers[7]),
+            grind: self.grind.map(|l| {
+                let mut time = 0.0;
+                for _ in 0..l.elapsed {
+                    time += TICK_DT;
+                }
+                GrindState { dir: v3(l.dir), speed: l.speed, time }
+            }),
         }
     }
 
@@ -173,6 +185,7 @@ impl OwnState {
         w.write_bool(self.evasion.is_some());
         w.write_bool(self.slide.is_some());
         w.write_bool(self.grapple.is_some());
+        w.write_bool(self.grind.is_some());
         for t in self.timers {
             w.write_bits(t as u32, 8);
         }
@@ -204,6 +217,13 @@ impl OwnState {
             f(w, g.len);
             w.write_bits(g.elapsed as u32, 8);
         }
+        if let Some(l) = self.grind {
+            for v in l.dir {
+                f(w, v);
+            }
+            f(w, l.speed);
+            w.write_bits(l.elapsed as u32, 8);
+        }
     }
 
     pub fn read(r: &mut BitReader) -> DecodeResult<Self> {
@@ -226,7 +246,8 @@ impl OwnState {
         let has_ev = r.read_bool()?;
         let has_sl = r.read_bool()?;
         let has_gr = r.read_bool()?;
-        let mut timers = [0u8; 7];
+        let has_gd = r.read_bool()?;
+        let mut timers = [0u8; 8];
         for t in &mut timers {
             *t = r.read_bits(8)? as u8;
         }
@@ -250,7 +271,12 @@ impl OwnState {
         } else {
             None
         };
-        Ok(Self { pos, vel, kind, double_used, was_grounded, timers, facing, wall, evasion, slide, grapple })
+        let grind = if has_gd {
+            Some(SlideQ { dir: f2(r)?, speed: f(r)?, elapsed: r.read_bits(8)? as u8 })
+        } else {
+            None
+        };
+        Ok(Self { pos, vel, kind, double_used, was_grounded, timers, facing, wall, evasion, slide, grapple, grind })
     }
 }
 
@@ -265,12 +291,13 @@ mod tests {
             kind: 2,
             double_used: true,
             was_grounded: false,
-            timers: [1, 2, 255, 0, 99, 7, 12],
+            timers: [1, 2, 255, 0, 99, 7, 12, 9],
             facing: [0.6, -0.8],
             wall: Some(WallQ { normal: [-1.0, 0.0], tangent: [0.0, -1.0], ticks_left: 130 }),
             evasion: Some(EvasionQ { roll: true, elapsed: 50, dir: [0.0, 1.0] }),
             slide: Some(SlideQ { dir: [1.0, 0.0], speed: 11.25, elapsed: 200 }),
             grapple: Some(GrappleQ { anchor: [3.5, 20.0, -7.25], len: 18.5, elapsed: 77 }),
+            grind: Some(SlideQ { dir: [0.0, -1.0], speed: 14.5, elapsed: 90 }),
         }
     }
 
@@ -279,18 +306,19 @@ mod tests {
         for o in [full(), OwnState::default(), OwnState { kind: 1, ..Default::default() }] {
             let mut w = BitWriter::new();
             o.write(&mut w);
-            let expect = 319
+            let expect = 328
                 + if o.grapple.is_some() { 136 } else { 0 }
                 + if o.kind == 2 { 136 } else { 0 }
                 + if o.evasion.is_some() { 73 } else { 0 }
-                + if o.slide.is_some() { 104 } else { 0 };
+                + if o.slide.is_some() { 104 } else { 0 }
+                + if o.grind.is_some() { 104 } else { 0 };
             assert_eq!(w.bit_len(), expect);
             let bytes = w.finish();
             assert_eq!(OwnState::read(&mut BitReader::new(&bytes)).unwrap(), o);
         }
     }
 
-    /// The wire frame prefixes the own block with a u8 length (max 255 B). Wall-run, dash/roll and slide cannot
+    /// The wire frame prefixes the own block with a u8 length (max 255 B). Wall-run, dash/roll, slide and grind cannot
     /// actually coexist (a dash ends a wall-run, a slide needs the ground and no evasion), so the theoretical
     /// all-flags blob below is an upper bound on anything the sim can produce.
     #[test]
@@ -300,13 +328,13 @@ mod tests {
             o.write(&mut w);
             w.finish().len()
         };
-        assert_eq!(bytes(&full()), 96, "theoretical worst: all optional blocks present");
+        assert_eq!(bytes(&full()), 111, "theoretical worst: all optional blocks present");
         assert!(bytes(&full()) <= 255);
         let typical = OwnState { kind: 0, ..Default::default() };
-        assert_eq!(bytes(&typical), 40, "grounded / airborne, nothing else active");
+        assert_eq!(bytes(&typical), 41, "grounded / airborne, nothing else active");
         assert!(bytes(&typical) <= 64);
         let wall_run = OwnState { kind: 2, wall: full().wall, ..Default::default() };
-        assert_eq!(bytes(&wall_run), 57);
+        assert_eq!(bytes(&wall_run), 58);
     }
 
     #[test]

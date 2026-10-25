@@ -30,6 +30,6 @@ are untouched, so the crosshair stays on the aim that goes out in intents (test:
 
 ## First-30-seconds controls card
 `shinobi_client::controls_card` (pure, tested): `RenderView.controls` -> `HudState.controls` -> `controls_card::prims`
-(appended at the end of `Hud::build_with`, left edge x 0.045, y 0.30..0.54, clear of the centre). Rows: W A S D, SPACE, SHIFT, C (slide),
+(appended at the end of `Hud::build_with`, left edge x 0.045, y 0.30..0.54, clear of the centre). Rows: W A S D, SPACE, SHIFT, C (grind),
 E (C swings), N / M, LMB, Q (stars), RMB (block). Each row fades 0.6 s after its first use; the whole card fades after 30 s of play (counted
 from the first predicted tick); all keys used = gone early. HUD UI may restyle `prims`.

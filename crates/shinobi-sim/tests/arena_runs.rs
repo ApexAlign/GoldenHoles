@@ -79,7 +79,7 @@ fn gaps(l: &LevelFile) -> Vec<(usize, f32, f32)> {
 #[test]
 fn counts_budgets_and_pedestals() {
     let l = load();
-    assert!((80..=200).contains(&l.level.boxes.len()), "{} boxes", l.level.boxes.len());
+    assert!((80..=360).contains(&l.level.boxes.len()), "{} boxes", l.level.boxes.len());
     assert!(l.level.boxes.iter().all(|b| b.hp == 0.0), "the gauntlet is permanent geometry");
     assert!((14..=20).contains(&l.level.spawns.len()), "{} spawns", l.level.spawns.len());
     let cubes = l.pickups.iter().filter(|p| p.kind == PowerKind::None).count();

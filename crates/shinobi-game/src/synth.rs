@@ -11,12 +11,9 @@ pub const SR: u32 = 22_050;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sound {
-    /// Rising tone while the lock triangle converges (0.35 s = `combat.lock_secs`).
-    LockTone,
-    /// Sharp chirp at full lock.
-    LockChirp,
-    /// Falling fade when the lock breaks.
-    LockBreak,
+    /// A soft, short click at full lock (the lock-on used to boop on acquire, chirp on lock and fade on break; only the
+    /// click is left).
+    LockClick,
     Throw,
     Ricochet,
     /// Low thud: a body hit.
@@ -78,6 +75,10 @@ pub enum Sound {
     Land,
     LandHard,
     Slide,
+    /// Landing into a grind: thump and a rising scrape.
+    GrindStart,
+    /// One grain of the scrape, pulsed while grinding.
+    GrindScrape,
     WallSlash,
     GuardLow,
     /// Kill streak note (played at a rising speed).
@@ -120,12 +121,6 @@ pub enum Sound {
     CollapseFar,
     /// A broken box re-forms: quiet rising neon shimmer (~0.5 s).
     Reform,
-    /// Storm: low earth rumble (1.6 s), retriggered and swelling during a quake warning and the shaking.
-    QuakeRumble,
-    /// Storm: loose-debris rattle (0.4 s) during the shaking.
-    QuakeRattle,
-    /// Storm: the settle thud when a quake ends.
-    QuakeThud,
     /// Storm: rising electrical whine of a marked bolt (0.5 s, retriggered faster and higher as it nears).
     BoltWhine,
     /// Storm: thunder crack + rolling rumble (3.2 s).
@@ -143,10 +138,7 @@ pub enum Sound {
 }
 
 impl Sound {
-    pub const ALL: [Sound; 79] = [
-        Sound::QuakeRumble,
-        Sound::QuakeRattle,
-        Sound::QuakeThud,
+    pub const ALL: [Sound; 76] = [
         Sound::BoltWhine,
         Sound::Thunder,
         Sound::ThunderFar,
@@ -201,9 +193,9 @@ impl Sound {
         Sound::UiBack,
         Sound::Wind,
         Sound::Hum,
-        Sound::LockTone,
-        Sound::LockChirp,
-        Sound::LockBreak,
+        Sound::LockClick,
+        Sound::GrindStart,
+        Sound::GrindScrape,
         Sound::Throw,
         Sound::Ricochet,
         Sound::HitBody,
@@ -253,8 +245,22 @@ fn env(t: f32, dur: f32, attack: f32, pow: f32) -> f32 {
     a * (1.0 - t / dur).powf(pow)
 }
 
-/// Phase-accumulating oscillator over a frequency sweep f0 -> f1 (exponential), `shape`: 0 sine, 1 saw, 2 square.
+/// Nothing is allowed to ring above this (Hz): a shrill partial is folded down whole octaves until it sits below, so
+/// chords keep their pitch classes but the ear-piercing 2-6 kHz pings are gone.
+const SHRILL_HZ: f32 = 1800.0;
+
+fn warm(f: f32) -> f32 {
+    let mut f = f;
+    while f > SHRILL_HZ {
+        f *= 0.5;
+    }
+    f
+}
+
+/// Phase-accumulating oscillator over a frequency sweep f0 -> f1 (exponential), `shape`: 0 sine, 1 saw, 2 square,
+/// 3 triangle (the soft 8-bit lead). Frequencies above `SHRILL_HZ` fold down an octave at a time (`warm`).
 fn sweep(secs: f32, f0: f32, f1: f32, shape: u8, amp: impl Fn(f32) -> f32) -> Vec<f32> {
+    let (f0, f1) = (warm(f0), warm(f1));
     let n = len(secs);
     let mut phase = 0.0f32;
     (0..n)
@@ -266,6 +272,7 @@ fn sweep(secs: f32, f0: f32, f1: f32, shape: u8, amp: impl Fn(f32) -> f32) -> Ve
             let v = match shape {
                 0 => (phase * TAU).sin(),
                 1 => 2.0 * phase - 1.0,
+                3 => 4.0 * (phase - 0.5).abs() - 1.0,
                 _ => if phase < 0.5 { 1.0 } else { -1.0 },
             };
             v * amp(t)
@@ -301,9 +308,9 @@ fn place(parts: &[(f32, Vec<f32>)]) -> Vec<f32> {
     out
 }
 
-/// Decaying sine note.
+/// Decaying triangle note (soft, hollow, 8-bit: a sine is too pure and pierces).
 fn tone(f: f32, d: f32, pow: f32, g: f32) -> Vec<f32> {
-    sweep(d, f, f, 0, |t| env(t, d, 0.003, pow) * g)
+    sweep(d, f, f, 3, |t| env(t, d, 0.003, pow) * g)
 }
 
 /// Several decaying sines at once.
@@ -329,7 +336,7 @@ fn rattle(secs: f32, rate: f32, seed: u32, gain: f32) -> Vec<f32> {
         let u = i as f32 / n as f32;
         let p = rate * (1.0 - u).powf(1.6) / SR as f32;
         if (nz.next() * 0.5 + 0.5) < p {
-            let f = 500.0 + (nz.next() * 0.5 + 0.5) * 2600.0;
+            let f = warm(500.0 + (nz.next() * 0.5 + 0.5) * 2600.0);
             let g = gain * (0.4 + 0.6 * (nz.next() * 0.5 + 0.5)) * (1.0 - u);
             let d = len(0.03);
             for j in 0..d.min(n - i) {
@@ -393,18 +400,72 @@ fn muffled(v: &[f32], gain: f32) -> Vec<f32> {
     scaled(lowpass(&lowpass(v, 0.09), 0.09), gain)
 }
 
-/// Render one sound to mono f32 samples in -1..1.
+/// Render one sound to mono f32 samples in -1..1: the raw synthesis, then the shared "old console" voicing.
 pub fn render(s: Sound) -> Vec<f32> {
+    let raw = render_raw(s);
+    if s.looped() {
+        return raw; // the beds are low and must stay seamless
+    }
+    voice(raw)
+}
+
+/// Console-style master voicing, applied to every one-shot: a two-pole low-pass at ~2.2 kHz (no shrill top end), a
+/// half-rate sample-and-hold with ~6.5-bit steps (the gritty 8-bit texture), a soft smoothing pass for the stair steps,
+/// then the original peak is restored (never boosted past 3x) and the last 3 ms fade out so nothing clicks.
+fn voice(raw: Vec<f32>) -> Vec<f32> {
+    let peak_in = raw.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    if peak_in < 1e-6 {
+        return raw;
+    }
+    let soft = lowpass(&lowpass(&raw, 0.5), 0.5);
+    const STEPS: f32 = 96.0;
+    let mut held = 0.0;
+    let crushed: Vec<f32> = soft
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            if i % 2 == 0 {
+                held = (v * STEPS).round() / STEPS;
+            }
+            held
+        })
+        .collect();
+    let mut out = lowpass(&crushed, 0.7);
+    let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    let g = if peak > 1e-6 { (peak_in / peak).min(3.0) } else { 1.0 };
+    let fade = len(0.003).min(out.len());
+    let n = out.len();
+    for (i, v) in out.iter_mut().enumerate() {
+        let tail = if i + fade > n { (n - i) as f32 / fade as f32 } else { 1.0 };
+        *v = (*v * g * tail).clamp(-1.0, 1.0);
+    }
+    out
+}
+
+fn render_raw(s: Sound) -> Vec<f32> {
     let out = match s {
-        Sound::LockTone => {
-            let d = 0.35;
-            mix(&[(sweep(d, 300.0, 1000.0, 0, |t| env(t, d, 0.02, 0.5)), 0.5), (sweep(d, 600.0, 2000.0, 0, |t| env(t, d, 0.05, 1.0)), 0.15)])
+        Sound::LockClick => {
+            // a dry little tick: a few ms of high-passed noise over a low, very short thump. No pitch to speak of, so it
+            // never reads as a note.
+            mix(&[
+                (highpass(&noise_burst(0.012, 17, |t| env(t, 0.012, 0.0, 2.0)), 0.3), 0.5),
+                (sweep(0.06, 420.0, 300.0, 0, |t| env(t, 0.06, 0.001, 7.0)), 0.25), // dies in ~10 ms; the length only keeps the buffer above the 50 ms floor
+            ])
         }
-        Sound::LockChirp => {
-            let d = 0.14;
-            mix(&[(sweep(d, 1400.0, 2400.0, 2, |t| env(t, d, 0.002, 1.5)), 0.22), (sweep(d, 2800.0, 4800.0, 0, |t| env(t, d, 0.002, 2.0)), 0.25)])
+        Sound::GrindStart => {
+            // the landing turns into a scrape: a low thump, then a rising band of gritty noise
+            let d = 0.3;
+            mix(&[
+                (sweep(0.1, 140.0, 70.0, 0, |t| env(t, 0.1, 0.002, 2.0)), 0.6),
+                (highpass(&noise_burst(d, 105, |t| env(t, d, 0.03, 1.2)), 0.12), 0.9),
+                (sweep(d, 260.0, 520.0, 1, |t| env(t, d, 0.05, 1.5)), 0.12),
+            ])
         }
-        Sound::LockBreak => sweep(0.28, 900.0, 200.0, 0, |t| env(t, 0.28, 0.005, 1.0) * 0.5),
+        Sound::GrindScrape => {
+            // one grain of the scrape, repeated while grinding: short, gritty, quiet
+            let d = 0.09;
+            mix(&[(highpass(&noise_burst(d, 107, |t| env(t, d, 0.005, 1.6)), 0.15), 1.1), (sweep(d, 180.0, 140.0, 1, |t| env(t, d, 0.003, 1.8)), 0.1)])
+        }
         Sound::Throw => {
             let d = 0.22;
             let w = lowpass(&noise_burst(d, 11, |t| env(t, d, 0.04, 1.2)), 0.25);
@@ -412,7 +473,7 @@ pub fn render(s: Sound) -> Vec<f32> {
         }
         Sound::Ricochet => {
             let d = 0.3;
-            mix(&[(sweep(d, 1800.0, 1750.0, 0, |t| env(t, d, 0.001, 3.0)), 0.4), (sweep(d, 3600.0, 3500.0, 0, |t| env(t, d, 0.001, 4.0)), 0.18)])
+            mix(&[(sweep(d, 900.0, 870.0, 3, |t| env(t, d, 0.001, 3.0)), 0.45), (sweep(d, 1350.0, 1300.0, 3, |t| env(t, d, 0.001, 4.0)), 0.18), (noise_burst(0.02, 15, |t| env(t, 0.02, 0.0, 1.5)), 0.2)])
         }
         Sound::HitBody => {
             let d = 0.18;
@@ -420,11 +481,12 @@ pub fn render(s: Sound) -> Vec<f32> {
         }
         Sound::HitHard => {
             let d = 0.09;
-            mix(&[(sweep(d, 2600.0, 2400.0, 0, |t| env(t, d, 0.001, 2.5)), 0.5), (noise_burst(0.02, 5, |t| env(t, 0.02, 0.0, 2.0)), 0.3)])
+            mix(&[(sweep(d, 1300.0, 900.0, 2, |t| env(t, d, 0.001, 2.5)), 0.28), (sweep(0.07, 220.0, 120.0, 0, |t| env(t, 0.07, 0.001, 2.0)), 0.5), (noise_burst(0.02, 5, |t| env(t, 0.02, 0.0, 2.0)), 0.3)])
         }
         Sound::Kill => {
-            let note = |f: f32| sweep(0.22, f, f, 0, |t| env(t, 0.22, 0.003, 1.6) * 0.4);
-            place(&[(0.0, note(880.0)), (0.07, note(1175.0)), (0.14, note(1568.0))])
+            // a C-major arpeggio on the triangle voice: a warm 8-bit "got him"
+            let note = |f: f32| sweep(0.22, f, f, 3, |t| env(t, 0.22, 0.003, 1.6) * 0.55);
+            place(&[(0.0, note(523.0)), (0.07, note(659.0)), (0.14, note(784.0))])
         }
         Sound::Swing => {
             let d = 0.26;
@@ -435,16 +497,16 @@ pub fn render(s: Sound) -> Vec<f32> {
             let d = 0.34;
             mix(&[
                 (noise_burst(0.05, 7, |t| env(t, 0.05, 0.0, 1.5)), 0.5),
-                (sweep(d, 1320.0, 1310.0, 0, |t| env(t, d, 0.001, 2.5)), 0.28),
-                (sweep(d, 2110.0, 2100.0, 0, |t| env(t, d, 0.001, 3.0)), 0.2),
-                (sweep(d, 3330.0, 3320.0, 0, |t| env(t, d, 0.001, 3.5)), 0.12),
+                (sweep(d, 660.0, 655.0, 0, |t| env(t, d, 0.001, 2.5)), 0.32),
+                (sweep(d, 1055.0, 1050.0, 0, |t| env(t, d, 0.001, 3.0)), 0.2),
+                (sweep(d, 1665.0, 1660.0, 0, |t| env(t, d, 0.001, 3.5)), 0.1),
             ])
         }
         Sound::Whiff => {
             let d = 0.16;
             lowpass(&noise_burst(d, 31, |t| env(t, d, 0.05, 1.5)), 0.15).iter().map(|v| v * 1.2).collect()
         }
-        Sound::GrappleFire => sweep(0.16, 400.0, 1800.0, 1, |t| env(t, 0.16, 0.005, 1.5) * 0.2),
+        Sound::GrappleFire => sweep(0.16, 220.0, 900.0, 1, |t| env(t, 0.16, 0.005, 1.5) * 0.2),
         Sound::GrappleAttach => mix(&[
             (sweep(0.22, 110.0, 55.0, 0, |t| env(t, 0.22, 0.002, 2.0)), 0.9),
             (noise_burst(0.02, 9, |t| env(t, 0.02, 0.0, 1.0)), 0.5),
@@ -459,22 +521,22 @@ pub fn render(s: Sound) -> Vec<f32> {
             (highpass(&noise_burst(0.05, 17, |t| env(t, 0.05, 0.0, 1.6)), 0.3), 1.6),
             (sweep(0.3, 110.0, 52.0, 0, |t| env(t, 0.3, 0.002, 1.8)), 1.1),
             (sweep(0.12, 220.0, 120.0, 0, |t| env(t, 0.12, 0.001, 2.0)), 0.5),
-            (tone(2300.0, 0.18, 2.5, 0.28), 1.0),
+            (tone(620.0, 0.18, 2.5, 0.2), 1.0),
         ]),
         Sound::HurtHeavy => mix(&[
             (highpass(&noise_burst(0.09, 18, |t| env(t, 0.09, 0.0, 1.4)), 0.25), 2.0),
             (lowpass(&noise_burst(0.2, 19, |t| env(t, 0.2, 0.0, 1.8)), 0.3), 1.2),
             (sweep(0.5, 95.0, 42.0, 0, |t| env(t, 0.5, 0.002, 1.5)), 1.4),
             (sweep(0.22, 200.0, 70.0, 2, |t| env(t, 0.22, 0.001, 2.0)), 0.2),
-            (tone(1750.0, 0.4, 2.2, 0.3), 1.0),
-            (tone(2600.0, 0.3, 2.5, 0.2), 1.0),
+            (tone(560.0, 0.4, 2.2, 0.22), 1.0),
+            (tone(840.0, 0.3, 2.5, 0.12), 1.0),
         ]),
         Sound::HurtHead => mix(&[
             (highpass(&noise_burst(0.07, 20, |t| env(t, 0.07, 0.0, 1.2)), 0.2), 2.4),
-            (sweep(0.14, 3800.0, 1500.0, 2, |t| env(t, 0.14, 0.0, 1.6)), 0.3),
+            (sweep(0.14, 900.0, 600.0, 2, |t| env(t, 0.14, 0.0, 1.6)), 0.2),
             (sweep(0.4, 100.0, 40.0, 0, |t| env(t, 0.4, 0.002, 1.5)), 1.4),
-            (tone(3100.0, 0.7, 1.6, 0.3), 1.0),
-            (tone(4300.0, 0.55, 1.8, 0.2), 1.0),
+            (tone(780.0, 0.7, 1.6, 0.22), 1.0),
+            (tone(1170.0, 0.55, 1.8, 0.12), 1.0),
             (sweep(0.3, 190.0, 60.0, 2, |t| env(t, 0.3, 0.001, 2.0)), 0.18),
         ]),
         Sound::Whoosh => {
@@ -498,10 +560,10 @@ pub fn render(s: Sound) -> Vec<f32> {
             let d = 0.6;
             mix(&[
                 (highpass(&noise_burst(0.05, 133, |t| env(t, 0.05, 0.0, 1.2)), 0.3), 1.2),
-                (sweep(d, 880.0, 870.0, 0, |t| env(t, d, 0.001, 2.2)), 0.4),
-                (sweep(d, 1405.0, 1395.0, 0, |t| env(t, d, 0.001, 2.6)), 0.34),
-                (sweep(d, 2310.0, 2300.0, 0, |t| env(t, d, 0.001, 3.0)), 0.3),
-                (sweep(d, 3790.0, 3780.0, 0, |t| env(t, d, 0.001, 3.5)), 0.22),
+                (sweep(d, 440.0, 436.0, 0, |t| env(t, d, 0.001, 2.2)), 0.5),
+                (sweep(d, 702.0, 698.0, 0, |t| env(t, d, 0.001, 2.6)), 0.34),
+                (sweep(d, 1155.0, 1150.0, 0, |t| env(t, d, 0.001, 3.0)), 0.2),
+                (sweep(d, 1480.0, 1475.0, 0, |t| env(t, d, 0.001, 3.5)), 0.1),
                 (sweep(0.12, 200.0, 90.0, 0, |t| env(t, 0.12, 0.001, 2.0)), 0.7),
             ])
         }
@@ -520,8 +582,8 @@ pub fn render(s: Sound) -> Vec<f32> {
             place(&[(0.0, thump()), (0.18, thump().iter().map(|v| v * 0.7).collect())]).iter().map(|v| v * 0.9).collect()
         }
         Sound::Print => {
-            let blip = |f: f32| sweep(0.05, f, f, 2, |t| env(t, 0.05, 0.001, 1.0) * 0.12);
-            place(&[(0.0, blip(660.0)), (0.05, blip(880.0)), (0.10, blip(1100.0)), (0.15, blip(1320.0))])
+            let blip = |f: f32| sweep(0.05, f, f, 3, |t| env(t, 0.05, 0.001, 1.0) * 0.3);
+            place(&[(0.0, blip(330.0)), (0.05, blip(440.0)), (0.10, blip(550.0)), (0.15, blip(660.0))])
         }
         Sound::Derez => {
             let d = 0.42;
@@ -536,12 +598,12 @@ pub fn render(s: Sound) -> Vec<f32> {
             mix(&[(crackle, 0.6), (sweep(d, 900.0, 120.0, 1, |t| env(t, d, 0.01, 1.5) * 0.12), 1.0)])
         }
         Sound::Boot => {
-            let blip = |f: f32| sweep(0.07, f, f, 0, |t| env(t, 0.07, 0.003, 1.0) * 0.3);
-            place(&[(0.0, blip(1046.0)), (0.1, blip(1568.0))])
+            let blip = |f: f32| sweep(0.07, f, f, 3, |t| env(t, 0.07, 0.003, 1.0) * 0.45);
+            place(&[(0.0, blip(523.0)), (0.1, blip(784.0))])
         }
         Sound::Parry => {
             let bell = |f: f32| chord(&[f, f * 1.5, f * 2.0], 0.5, 2.5, 0.2);
-            place(&[(0.0, scaled(noise_burst(0.02, 61, |t| env(t, 0.02, 0.0, 1.0)), 0.5)), (0.0, bell(1568.0)), (0.08, bell(2093.0))])
+            place(&[(0.0, scaled(noise_burst(0.02, 61, |t| env(t, 0.02, 0.0, 1.0)), 0.5)), (0.0, bell(587.0)), (0.08, bell(784.0))])
         }
         Sound::Block => mix(&[
             (noise_burst(0.04, 63, |t| env(t, 0.04, 0.0, 1.5)), 0.5),
@@ -552,12 +614,12 @@ pub fn render(s: Sound) -> Vec<f32> {
             let d = 0.28;
             sweep(d, 110.0, 105.0, 2, |t| env(t, d, 0.004, 0.4) * if (t * 36.0).fract() < 0.5 { 0.32 } else { 0.1 })
         }
-        Sound::Refill => place(&[(0.0, tone(1318.0, 0.16, 1.8, 0.3)), (0.07, tone(1760.0, 0.3, 2.0, 0.3))]),
+        Sound::Refill => place(&[(0.0, tone(659.0, 0.16, 1.8, 0.4)), (0.07, tone(880.0, 0.3, 2.0, 0.4))]),
         Sound::HeavyCharge => {
             let d = 0.7;
             mix(&[
-                (sweep(d, 120.0, 720.0, 1, |t| { let u = t / d; u.powf(1.5) * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.22 }), 1.0),
-                (sweep(d, 240.0, 1440.0, 0, |t| { let u = t / d; u * u * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.12 }), 1.0),
+                (sweep(d, 100.0, 520.0, 1, |t| { let u = t / d; u.powf(1.5) * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.22 }), 1.0),
+                (sweep(d, 200.0, 1040.0, 3, |t| { let u = t / d; u * u * (1.0 - ((u - 0.92) / 0.08).clamp(0.0, 1.0)) * 0.14 }), 1.0),
             ])
         }
         Sound::HeavyRelease => {
@@ -581,15 +643,15 @@ pub fn render(s: Sound) -> Vec<f32> {
         Sound::Execute => place(&[
             (0.0, scaled(highpass(&noise_burst(0.07, 85, |t| env(t, 0.07, 0.0, 1.5)), 0.2), 1.2)),
             (0.0, sweep(0.2, 120.0, 45.0, 0, |t| env(t, 0.2, 0.002, 2.0) * 0.8)),
-            (0.07, chord(&[1760.0, 2349.0], 0.4, 2.0, 0.18)),
+            (0.07, chord(&[880.0, 1175.0], 0.4, 2.0, 0.25)),
         ]),
         Sound::CounterFlash => mix(&[
-            (sweep(0.14, 3200.0, 700.0, 2, |t| env(t, 0.14, 0.001, 2.0)), 0.2),
-            (tone(2400.0, 0.2, 3.0, 1.0), 0.25),
+            (sweep(0.14, 1600.0, 600.0, 2, |t| env(t, 0.14, 0.001, 2.0)), 0.16),
+            (tone(1200.0, 0.2, 3.0, 1.0), 0.2),
             (noise_burst(0.03, 87, |t| env(t, 0.03, 0.0, 1.0)), 0.4),
         ]),
         Sound::GrappleYank => mix(&[
-            (sweep(0.22, 700.0, 110.0, 1, |t| env(t, 0.22, 0.002, 2.0)), 0.22),
+            (sweep(0.22, 600.0, 110.0, 1, |t| env(t, 0.22, 0.002, 2.0)), 0.2),
             (sweep(0.2, 160.0, 70.0, 0, |t| env(t, 0.2, 0.002, 2.0)), 0.6),
             (noise_burst(0.02, 89, |t| env(t, 0.02, 0.0, 1.0)), 0.4),
         ]),
@@ -598,7 +660,7 @@ pub fn render(s: Sound) -> Vec<f32> {
         Sound::Jump => mix(&[(sweep(0.11, 180.0, 380.0, 0, |t| env(t, 0.11, 0.005, 1.5)), 0.35), (lowpass(&noise_burst(0.1, 93, |t| env(t, 0.1, 0.02, 1.5)), 0.3), 0.8)]),
         Sound::DoubleJump => mix(&[
             (sweep(0.15, 300.0, 760.0, 0, |t| env(t, 0.15, 0.005, 1.4)), 0.35),
-            (tone(1500.0, 0.2, 2.5, 1.0), 0.14),
+            (tone(760.0, 0.2, 2.5, 1.0), 0.16),
             (lowpass(&noise_burst(0.12, 95, |t| env(t, 0.12, 0.02, 1.5)), 0.4), 0.8),
         ]),
         Sound::Land => mix(&[(sweep(0.12, 110.0, 55.0, 0, |t| env(t, 0.12, 0.002, 2.0)), 0.7), (lowpass(&noise_burst(0.08, 97, |t| env(t, 0.08, 0.0, 2.0)), 0.3), 1.0)]),
@@ -609,24 +671,24 @@ pub fn render(s: Sound) -> Vec<f32> {
         }
         Sound::WallSlash => mix(&[
             (highpass(&noise_burst(0.18, 103, |t| env(t, 0.18, 0.01, 1.5)), 0.25), 1.1),
-            (sweep(0.18, 2300.0, 900.0, 0, |t| env(t, 0.18, 0.005, 2.0)), 0.18),
+            (sweep(0.18, 1500.0, 600.0, 3, |t| env(t, 0.18, 0.005, 2.0)), 0.2),
         ]),
         Sound::GuardLow => {
-            let b = || sweep(0.07, 1000.0, 1000.0, 2, |t| env(t, 0.07, 0.003, 0.8) * 0.2);
+            let b = || sweep(0.07, 440.0, 440.0, 2, |t| env(t, 0.07, 0.003, 0.8) * 0.2);
             place(&[(0.0, b()), (0.11, b())])
         }
-        Sound::Streak => place(&[(0.0, tone(988.0, 0.12, 1.5, 0.3)), (0.06, tone(1319.0, 0.22, 2.0, 0.3))]),
+        Sound::Streak => place(&[(0.0, tone(494.0, 0.12, 1.5, 0.4)), (0.06, tone(659.0, 0.22, 2.0, 0.4))]),
         Sound::FlowTierUp => place(&[
-            (0.0, tone(784.0, 0.1, 1.6, 0.25)),
-            (0.05, tone(1047.0, 0.12, 1.6, 0.28)),
-            (0.1, chord(&[1319.0, 1760.0], 0.3, 1.8, 0.22)),
+            (0.0, tone(392.0, 0.1, 1.6, 0.35)),
+            (0.05, tone(523.0, 0.12, 1.6, 0.38)),
+            (0.1, chord(&[659.0, 880.0], 0.3, 1.8, 0.3)),
         ]),
         Sound::BountyKill => place(&[
             (0.0, {
-                let note = |f: f32| sweep(0.22, f, f, 0, |t| env(t, 0.22, 0.003, 1.6) * 0.4);
-                place(&[(0.0, note(880.0)), (0.07, note(1175.0)), (0.14, note(1568.0))])
+                let note = |f: f32| sweep(0.22, f, f, 3, |t| env(t, 0.22, 0.003, 1.6) * 0.55);
+                place(&[(0.0, note(523.0)), (0.07, note(659.0)), (0.14, note(784.0))])
             }),
-            (0.1, chord(&[1568.0, 1976.0, 2349.0], 0.4, 1.6, 0.22)),
+            (0.1, chord(&[784.0, 988.0, 1175.0], 0.4, 1.6, 0.3)),
             (0.0, scaled(noise_burst(0.03, 97, |t| env(t, 0.03, 0.0, 1.5)), 0.4)),
         ]),
         Sound::BecomeBounty => {
@@ -640,7 +702,7 @@ pub fn render(s: Sound) -> Vec<f32> {
         Sound::StealthKill => place(&[
             (0.0, scaled(highpass(&noise_burst(0.05, 109, |t| env(t, 0.05, 0.0, 1.8)), 0.15), 1.5)),
             (0.0, sweep(0.3, 70.0, 30.0, 0, |t| env(t, 0.3, 0.001, 1.8) * 0.9)),
-            (0.03, chord(&[1200.0, 1800.0, 2400.0], 0.35, 2.4, 0.2)),
+            (0.03, chord(&[600.0, 900.0, 1200.0], 0.35, 2.4, 0.3)),
         ]),
         Sound::VoidFall => {
             let d = 1.0;
@@ -674,11 +736,11 @@ pub fn render(s: Sound) -> Vec<f32> {
             (0.5, tone(311.0, 0.4, 1.5, 0.3)),
             (0.75, chord(&[262.0, 247.0], 0.45, 1.8, 0.25)),
         ]),
-        Sound::UiClick => mix(&[(sweep(0.035, 1800.0, 1800.0, 2, |t| env(t, 0.035, 0.001, 1.5)), 0.15), (tone(900.0, 0.07, 2.0, 1.0), 0.2)]),
-        Sound::UiBack => sweep(0.06, 1200.0, 700.0, 0, |t| env(t, 0.06, 0.002, 1.5) * 0.3),
+        Sound::UiClick => mix(&[(sweep(0.035, 900.0, 900.0, 2, |t| env(t, 0.035, 0.001, 1.5)), 0.14), (tone(450.0, 0.07, 2.0, 1.0), 0.3)]),
+        Sound::UiBack => sweep(0.06, 700.0, 420.0, 3, |t| env(t, 0.06, 0.002, 1.5) * 0.4),
         Sound::CrackStone => mix(&[
             (highpass(&noise_burst(0.05, 231, |t| env(t, 0.05, 0.0, 2.0)), 0.25), 0.9),
-            (sweep(0.09, 1500.0, 1100.0, 0, |t| env(t, 0.09, 0.001, 2.5)), 0.28),
+            (sweep(0.09, 900.0, 700.0, 3, |t| env(t, 0.09, 0.001, 2.5)), 0.3),
             (sweep(0.07, 140.0, 80.0, 0, |t| env(t, 0.07, 0.001, 2.0)), 0.6),
         ]),
         Sound::CrackWood => mix(&[
@@ -698,38 +760,13 @@ pub fn render(s: Sound) -> Vec<f32> {
                 (scaled(highpass(&noise_burst(d, 235, |t| env(t, d, 0.2, 1.2) * (0.5 + 0.5 * (TAU * 18.0 * t).sin())), 0.2), 0.5), 1.0),
             ])
         }
-        Sound::QuakeRumble => {
-            let d = 1.6;
-            let r = lowpass(&noise_burst(d, 301, |t| env(t, d, 0.35, 0.6) * (0.65 + 0.35 * (TAU * 7.0 * t).sin())), 0.05);
-            normalized(mix(&[(r, 6.0), (sweep(d, 46.0, 36.0, 0, |t| env(t, d, 0.3, 0.8)), 0.5), (rattle(d, 30.0, 303, 0.15), 1.0)]), 0.8)
-        }
-        Sound::QuakeRattle => {
-            let d = 0.4;
-            let chop = |t: f32| 0.55 + 0.45 * (TAU * 38.0 * t).sin();
-            normalized(
-                mix(&[
-                    (highpass(&noise_burst(d, 311, |t| env(t, d, 0.01, 1.3) * chop(t)), 0.2), 1.0),
-                    (rattle(d, 140.0, 313, 0.5), 1.0),
-                    (sweep(d, 120.0, 70.0, 0, |t| env(t, d, 0.01, 1.8)), 0.3),
-                ]),
-                0.7,
-            )
-        }
-        Sound::QuakeThud => normalized(
-            mix(&[
-                (sweep(0.7, 72.0, 28.0, 0, |t| env(t, 0.7, 0.004, 1.7)), 1.0),
-                (lowpass(&noise_burst(0.5, 321, |t| env(t, 0.5, 0.004, 1.6)), 0.12), 4.0),
-                (rattle(0.7, 50.0, 323, 0.2), 1.0),
-            ]),
-            0.9,
-        ),
         Sound::BoltWhine => {
             let d = 0.5;
             let trem = |t: f32| 0.7 + 0.3 * (TAU * 55.0 * t).sin();
             normalized(
                 mix(&[
-                    (sweep(d, 520.0, 2600.0, 1, |t| env(t, d, 0.35, 0.5) * trem(t)), 0.35),
-                    (sweep(d, 1040.0, 5200.0, 0, |t| env(t, d, 0.35, 0.5)), 0.25),
+                    (sweep(d, 300.0, 1400.0, 1, |t| env(t, d, 0.35, 0.5) * trem(t)), 0.3),
+                    (sweep(d, 600.0, 1700.0, 3, |t| env(t, d, 0.35, 0.5)), 0.25),
                     (highpass(&noise_burst(d, 331, |t| env(t, d, 0.4, 0.6) * trem(t)), 0.3), 0.25),
                 ]),
                 0.7,
@@ -739,12 +776,12 @@ pub fn render(s: Sound) -> Vec<f32> {
         Sound::ThunderFar => normalized(muffled(&thunder(), 2.4), 0.8),
         Sound::EarRing => {
             let d = 1.2;
-            normalized(mix(&[(tone(4200.0, d, 1.4, 1.0), 1.0), (tone(3100.0, d, 1.8, 1.0), 0.5)]), 0.35)
+            normalized(mix(&[(tone(1400.0, d, 1.4, 1.0), 1.0), (tone(1050.0, d, 1.8, 1.0), 0.5)]), 0.3)
         }
         Sound::FlashBang => mix(&[
             (highpass(&noise_burst(0.06, 341, |t| env(t, 0.06, 0.0, 1.2)), 0.2), 2.0),
-            (sweep(0.25, 5000.0, 900.0, 2, |t| env(t, 0.25, 0.001, 2.0)), 0.2),
-            (tone(3000.0, 0.4, 2.5, 0.3), 1.0),
+            (sweep(0.25, 1700.0, 700.0, 2, |t| env(t, 0.25, 0.001, 2.0)), 0.18),
+            (tone(1100.0, 0.4, 2.5, 0.25), 1.0),
             (sweep(0.3, 120.0, 50.0, 0, |t| env(t, 0.3, 0.002, 2.0)), 0.9),
         ]),
         Sound::Tinnitus => {
@@ -754,13 +791,13 @@ pub fn render(s: Sound) -> Vec<f32> {
                 .map(|i| {
                     let t = t_of(i);
                     let a = env(t, d, 0.03, 0.9) * (0.9 + 0.1 * (TAU * 7.0 * t).sin());
-                    ((TAU * 4300.0 * t).sin() * 0.2 + (TAU * 6100.0 * t).sin() * 0.07) * a
+                    ((TAU * 1400.0 * t).sin() * 0.14 + (TAU * 2100.0 * t).sin() * 0.04) * a
                 })
                 .collect()
         }
         Sound::WhipCrack => mix(&[
             (highpass(&noise_burst(0.04, 351, |t| env(t, 0.04, 0.0, 1.0)), 0.2), 2.6),
-            (sweep(0.12, 2800.0, 300.0, 1, |t| env(t, 0.12, 0.001, 2.0)), 0.25),
+            (sweep(0.12, 1700.0, 300.0, 1, |t| env(t, 0.12, 0.001, 2.0)), 0.22),
             (sweep(0.25, 110.0, 45.0, 0, |t| env(t, 0.25, 0.002, 2.0)), 0.9),
             (lowpass(&noise_burst(0.08, 353, |t| env(t, 0.08, 0.0, 1.8)), 0.3), 1.0),
         ]),
@@ -960,8 +997,7 @@ mod tests {
     fn storm_sounds_have_their_lengths_and_far_thunder_is_darker() {
         let secs = |s| render(s).len() as f32 / SR as f32;
         assert!((3.1..3.3).contains(&secs(Sound::Thunder)));
-        assert!((1.5..1.7).contains(&secs(Sound::QuakeRumble)));
-        assert!(secs(Sound::BoltWhine) < 0.6 && secs(Sound::QuakeRattle) < 0.5);
+        assert!(secs(Sound::BoltWhine) < 0.6);
         let zc = |v: &[f32]| v.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
         assert!(zc(&render(Sound::ThunderFar)) < zc(&render(Sound::Thunder)) / 2);
         // the whine rises
@@ -970,12 +1006,43 @@ mod tests {
         assert!(zc(&v[h..]) > zc(&v[..h]));
     }
 
+    /// Share of the signal's energy in its sample-to-sample change: ~0.08 for a 1 kHz tone, ~0.9 for a 3.5 kHz one, 2.0
+    /// for white noise. A sound well above this is piercing; the voicing stage keeps every one-shot under the limit.
+    fn brightness(v: &[f32]) -> f32 {
+        let e: f32 = v.iter().map(|x| x * x).sum();
+        let d: f32 = v.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum();
+        d / e.max(1e-9)
+    }
+
     #[test]
-    fn lock_tone_rises() {
-        // zero crossings per half: the second half oscillates faster than the first
-        let v = render(Sound::LockTone);
-        let zc = |s: &[f32]| s.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
-        let h = v.len() / 2;
-        assert!(zc(&v[h..]) > zc(&v[..h]), "tone should rise in pitch");
+    fn no_one_shot_is_shrill() {
+        let mut worst = (0.0f32, Sound::Hurt);
+        for s in Sound::ALL.into_iter().filter(|s| !s.looped()) {
+            let b = brightness(&render(s));
+            if b > worst.0 {
+                worst = (b, s);
+            }
+            assert!(b < 0.6, "{s:?} is shrill (brightness {b})");
+        }
+        eprintln!("brightest one-shot: {:?} {:.3}", worst.1, worst.0);
+    }
+
+    #[test]
+    fn shrill_partials_fold_down_whole_octaves() {
+        assert_eq!(warm(440.0), 440.0);
+        assert_eq!(warm(1800.0), 1800.0);
+        assert_eq!(warm(2400.0), 1200.0);
+        assert_eq!(warm(4800.0), 1200.0);
+        assert!(warm(10_000.0) <= SHRILL_HZ);
+    }
+
+    #[test]
+    fn lock_click_is_a_tick_not_a_boop() {
+        let v = render(Sound::LockClick);
+        assert!(v.len() as f32 / SR as f32 <= 0.08, "a click is short: {} samples", v.len());
+        let tail = v[len(0.03)..].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(tail < 0.05, "and silent after ~30 ms: {tail}");
+        let peak = v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak > 0.02 && peak < 0.6, "audible but soft: {peak}");
     }
 }

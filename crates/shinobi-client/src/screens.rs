@@ -223,11 +223,12 @@ pub enum SettingRow {
     InvertY,
     ReducedMotion,
     HeadBob,
+    Gore,
     LeftHanded,
 }
 
 impl SettingRow {
-    pub const ALL: [SettingRow; 12] = [
+    pub const ALL: [SettingRow; 13] = [
         Self::MouseSens,
         Self::AimPadSens,
         Self::StickRadius,
@@ -239,6 +240,7 @@ impl SettingRow {
         Self::InvertY,
         Self::ReducedMotion,
         Self::HeadBob,
+        Self::Gore,
         Self::LeftHanded,
     ];
 
@@ -254,6 +256,7 @@ impl SettingRow {
             Self::InvertY => "INVERT Y",
             Self::ReducedMotion => "REDUCED MOTION",
             Self::HeadBob => "HEAD BOB",
+            Self::Gore => "GORE",
             Self::HudScale => "HUD SCALE",
             Self::LeftHanded => "LEFT HANDED",
         }
@@ -280,6 +283,7 @@ impl SettingRow {
             Self::Fov => cfg::FOV,
             Self::FxIntensity => cfg::FX_INTENSITY,
             Self::CrtWarp => cfg::CRT_WARP,
+            Self::Gore => cfg::GORE_INTENSITY,
             Self::HudScale => cfg::HUD_SCALE,
             _ => return None,
         })
@@ -294,6 +298,7 @@ impl SettingRow {
             Self::Fov => s.fov_deg,
             Self::FxIntensity => s.fx_intensity,
             Self::CrtWarp => s.crt_warp,
+            Self::Gore => s.gore_intensity,
             Self::HudScale => s.hud_scale,
             _ => return None,
         })
@@ -311,7 +316,7 @@ impl SettingRow {
 }
 
 const SET_PANEL: Rect = Rect { x: 0.22, y: 0.07, w: 0.56, h: 0.84 };
-const SET_ROW_H: f32 = 0.058;
+const SET_ROW_H: f32 = 0.054;
 const SET_TRACK_X: f32 = 0.47;
 const SET_TRACK_W: f32 = 0.18;
 
@@ -365,6 +370,7 @@ pub fn settings_apply(s: &mut Settings, row: SettingRow, frac: f32, click: bool)
             SettingRow::Fov => s.fov_deg = v,
             SettingRow::FxIntensity => s.fx_intensity = v,
             SettingRow::CrtWarp => s.crt_warp = v,
+            SettingRow::Gore => s.gore_intensity = v,
             SettingRow::HudScale => s.hud_scale = v,
             _ => {}
         }

@@ -68,7 +68,7 @@ All colours are `"#RRGGBB"` strings. Numbers outside a range are clamped. Every 
 | `accessories` | up to 3 of `"shoulder_fins"` `"kunai_belt"` `"horns"` `"tabi_glow"` `"earring"` `"glasses"` | extras |
 
 Default when a field is missing: the standard game ninja. Ears, expression, horns, nose and tail are only drawn near
-you (like the hood and hair, they hide beyond 22 m); the hot core, outline and beacon colours are untouched.
+you (like the hood and hair, they hide beyond 22 m); the hot core, outline and aura colours are untouched.
 
 ### Examples
 

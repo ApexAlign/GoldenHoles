@@ -58,9 +58,6 @@ const MS_PER_TICK: f64 = 1000.0 / TICK_HZ as f64;
 /// Environmental events for the renderer and the sound (from `NetEvent::EnvFx`, `env_events.rs`). Times in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EnvFx {
-    QuakeWarn { warn_s: f32 },
-    QuakeStart { dur_s: f32 },
-    QuakeEnd,
     BoltMark { id: u8, pos: [f32; 3], warn_s: f32 },
     BoltStrike { id: u8, pos: [f32; 3] },
 }
@@ -112,9 +109,8 @@ pub struct NetClient {
     world_broken: std::collections::BTreeSet<u16>,
     world_hp: HashMap<u16, u8>,
     world_fx: Vec<WorldFx>,
-    /// Quakes / lightning not yet drawn (`take_env_fx`), and the local time until which a quake is shaking (client clock, s).
+    /// Lightning not yet drawn (`take_env_fx`).
     env_fx: Vec<EnvFx>,
-    quake_until: Option<f64>,
     /// Match rules from `NetEvent::MatchRules`: (frag limit, team frag limit, time limit s, respawn delay ticks).
     match_rules: Option<(u16, u16, u16, u16)>,
     /// (snapshot tick, local tick at arrival): anchor for the server-clock estimate.
@@ -196,7 +192,6 @@ impl Default for NetClient {
             world_hp: HashMap::new(),
             world_fx: Vec::new(),
             env_fx: Vec::new(),
-            quake_until: None,
             match_rules: None,
             anchor: None,
             kicked: None,
@@ -418,19 +413,10 @@ impl NetClient {
                     }
                 }
                 NetEvent::EnvFx { what, id, pos, aux } => {
-                    use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE, ENV_QUAKE_END, ENV_QUAKE_START, ENV_QUAKE_WARN};
+                    use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE};
                     let p = dq_pos3(pos);
                     let secs = aux as f32 / TICK_HZ as f32;
                     match what {
-                        ENV_QUAKE_WARN => self.env_fx.push(EnvFx::QuakeWarn { warn_s: secs }),
-                        ENV_QUAKE_START => {
-                            self.quake_until = Some(self.clk(local_tick) + aux as f64);
-                            self.env_fx.push(EnvFx::QuakeStart { dur_s: secs });
-                        }
-                        ENV_QUAKE_END => {
-                            self.quake_until = None;
-                            self.env_fx.push(EnvFx::QuakeEnd);
-                        }
                         ENV_BOLT_MARK => self.env_fx.push(EnvFx::BoltMark { id, pos: p, warn_s: secs }),
                         ENV_BOLT_STRIKE => self.env_fx.push(EnvFx::BoltStrike { id, pos: p }),
                         _ => {}
@@ -723,14 +709,9 @@ impl NetClient {
         self.world_hp.get(&idx).copied().unwrap_or(255)
     }
 
-    /// Quakes and lightning since the last call (cue for shake, dust, rings, bolts, sound).
+    /// Lightning since the last call (cue for rings, bolts, sound).
     pub fn take_env_fx(&mut self) -> Vec<EnvFx> {
         std::mem::take(&mut self.env_fx)
-    }
-
-    /// A quake is shaking right now (`local_tick` = the client clock the datagrams are fed with).
-    pub fn quake_active(&self, local_tick: f64) -> bool {
-        self.quake_until.map_or(false, |t| self.clk(local_tick) < t)
     }
 
     /// Breaks / re-forms / cracks since the last call (the renderer's cue for debris, dust and sound).
@@ -1181,33 +1162,21 @@ mod tests {
     }
 
     #[test]
-    fn env_events_queue_quake_and_bolt_cues_and_track_the_shaking() {
-        use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE, ENV_QUAKE_END, ENV_QUAKE_START, ENV_QUAKE_WARN};
+    fn env_events_queue_bolt_cues() {
+        use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE};
         let mut c = NetClient::default();
         welcome(&mut c, 1, 0);
         let mut ob = EventOutbox::default();
-        ob.push(NetEvent::EnvFx { what: ENV_QUAKE_WARN, id: 0, pos: [0; 3], aux: 120 });
-        ob.push(NetEvent::EnvFx { what: ENV_QUAKE_START, id: 0, pos: [0; 3], aux: 300 });
         ob.push(NetEvent::EnvFx { what: ENV_BOLT_MARK, id: 3, pos: [0; 3], aux: 96 });
         ob.push(NetEvent::EnvFx { what: ENV_BOLT_STRIKE, id: 3, pos: [0; 3], aux: 0 });
         let mut w = BitWriter::new();
         ob.write_pending(&mut w, 480);
         c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(10, 0))), 1.0).unwrap();
         let fx = c.take_env_fx();
-        assert_eq!(fx.len(), 4, "{fx:?}");
-        assert!(matches!(fx[0], EnvFx::QuakeWarn { warn_s } if (warn_s - 2.0).abs() < 1e-3));
-        assert!(matches!(fx[1], EnvFx::QuakeStart { dur_s } if (dur_s - 5.0).abs() < 1e-3));
-        assert!(matches!(fx[2], EnvFx::BoltMark { id: 3, warn_s, .. } if (warn_s - 1.6).abs() < 1e-3));
-        assert!(matches!(fx[3], EnvFx::BoltStrike { id: 3, .. }));
+        assert_eq!(fx.len(), 2, "{fx:?}");
+        assert!(matches!(fx[0], EnvFx::BoltMark { id: 3, warn_s, .. } if (warn_s - 1.6).abs() < 1e-3));
+        assert!(matches!(fx[1], EnvFx::BoltStrike { id: 3, .. }));
         assert!(c.take_env_fx().is_empty());
-        assert!(c.quake_active(10.0), "shaking right after the start");
-        ob.push(NetEvent::EnvFx { what: ENV_QUAKE_END, id: 0, pos: [0; 3], aux: 0 });
-        let mut w = BitWriter::new();
-        ob.write_pending(&mut w, 480);
-        c.on_datagram(&frame_snapshot_v3(&w.finish(), &[], &[], &encode_delta(None, &snap(11, 0))), 1.1).unwrap();
-        let e = c.take_env_fx();
-        assert!(matches!(e[..], [EnvFx::QuakeEnd]), "{e:?}");
-        assert!(!c.quake_active(11.0));
     }
 
     #[test]
@@ -1359,7 +1328,7 @@ mod tests {
 
     #[test]
     fn resent_hits_survive_loss_and_surface_once() {
-        let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false, head: false, bonus: false };
+        let mk = |other: u16| HitMsg { other, amount: 10, kind: 0, taken: false, kill: false, head: false, bonus: false, guarded: false };
         let blk = |hits: Vec<HitMsg>, seq: u8| {
             let x = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: seq, ..Default::default() };
             let mut w = BitWriter::new();
@@ -1383,7 +1352,7 @@ mod tests {
     fn own_extras_surface_with_position_hp_and_hits() {
         let mut c = NetClient::default();
         welcome(&mut c, 1, 0); // our entity id = 1 (see snap())
-        let hit = HitMsg { other: 2, amount: 30, kind: 0, taken: false, kill: false, head: false, bonus: false };
+        let hit = HitMsg { other: 2, amount: 30, kind: 0, taken: false, kill: false, head: false, bonus: false, guarded: false };
         let d = frame_snapshot_v3(&no_events(), &own_block(true, 77, 755, vec![hit]), &[], &encode_delta(None, &snap(10, 6400)));
         c.on_datagram(&d, 1.0).unwrap();
         let u = c.take_own_state().expect("own update");

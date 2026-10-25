@@ -286,43 +286,6 @@ impl LevelBreaks {
         changed
     }
 
-    /// Quake: every standing box takes `frac` of its hit points this tick (jittered per box; boxes held up by at most one
-    /// other box, or by nothing permanent, take 2.5x), SILENTLY (no crack events: `flush_cracks` reports them once the
-    /// shaking stops). True when something broke.
-    pub fn quake(&mut self, world: &mut PhysicsWorld, tick: u32, frac: f32, ev: &mut Vec<BreakEvent>) -> bool {
-        let mut broke = false;
-        for e in 0..self.entries.len() {
-            if self.entries[e].handle.is_none() {
-                continue;
-            }
-            let en = &self.entries[e];
-            let weak = !en.static_support && en.supports.len() <= 1;
-            let h = (en.idx as u32).wrapping_mul(2654435761).wrapping_add((tick / 10).wrapping_mul(40503));
-            let jitter = 0.5 + ((h >> 8) & 1023) as f32 / 1023.0;
-            let dmg = en.b.hp * frac * jitter * if weak { 2.5 } else { 1.0 } / self.cfg.hp_mult;
-            self.entries[e].hurt += dmg;
-            if self.entries[e].hurt >= self.entries[e].b.hp {
-                self.break_entry(world, e, tick, false, ev);
-                broke = true;
-            }
-        }
-        broke
-    }
-
-    /// Report the most damaged standing boxes (at most `cap`) as `Damaged` events (after a quake).
-    pub fn flush_cracks(&self, tick: u32, cap: usize, ev: &mut Vec<BreakEvent>) {
-        let mut v: Vec<(f32, u16, u8)> = self
-            .entries
-            .iter()
-            .filter(|e| e.handle.is_some() && e.hurt > 0.0)
-            .map(|e| (e.hurt / e.b.hp, e.idx, self.hp_q(e.idx)))
-            .collect();
-        v.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, idx, hp_q) in v.into_iter().take(cap) {
-            ev.push(BreakEvent::Damaged { tick, idx, hp_q });
-        }
-    }
-
     /// Client: make the world match the server's broken set (idempotent). True when a collider changed.
     pub fn set_broken(&mut self, world: &mut PhysicsWorld, broken: &BTreeSet<u16>) -> bool {
         let mut changed = false;

@@ -392,7 +392,7 @@ mod tests {
     use super::*;
 
     fn hit(kind: u8, amount: u8, kill: bool, head: bool, bonus: bool) -> HitMsg {
-        HitMsg { other: 3, amount, kind, taken: false, kill, head, bonus }
+        HitMsg { other: 3, amount, kind, taken: false, kill, head, bonus, guarded: false }
     }
 
     #[test]

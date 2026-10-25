@@ -25,7 +25,6 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use shinobi_proto::intent::{Buttons, PlayerIntent};
 use shinobi_proto::quant::{q_axis, q_pitch, q_yaw};
-use shinobi_proto::TICK_HZ;
 
 use crate::nav::*;
 use crate::rng::Rng;
@@ -650,6 +649,8 @@ impl BotMem {
             mark: false,
             star: if buttons & Buttons::FIRE != 0 { self.star_pick } else { 0 },
             draw: pout.draw && !blocking,
+            zoom: pout.draw && !blocking,
+            grind: false,
             cloak: cloak_held && !blocking,
         };
         // leaving Strike hands the ticket back
@@ -896,7 +897,7 @@ impl BotMem {
     }
 
     fn tactical_move(&mut self, ctx: &ThinkCtx, p: &Perception, buttons: &mut u8) -> (V3, f32) {
-        let (tick, me, world) = (ctx.world.tick, ctx.me, ctx.world);
+        let (tick, me, _world) = (ctx.world.tick, ctx.me, ctx.world);
         let Some(t) = p.target else {
             // nobody to fight: patrol. Standing still is lethal under Tron rules (own newest segment arms in 15 ticks).
             let mut r = Rng::new(self.seed, self.id, tick / 90, 7);
@@ -1107,7 +1108,7 @@ impl BotMem {
             if elapsed > 160 || (elapsed >= 3 && !airborne) {
                 self.trav = Traverse::Free;
             } else {
-                if !double_sent && elapsed >= 2 && airborne && me.vel.y.abs() <= cfg.peak_window - 0.05 {
+                if !double_sent && elapsed >= 2 && airborne && me.vel.y.abs() <= 2.5 /* bots wait for the apex: the most height */ {
                     *buttons |= Buttons::JUMP_PRESSED; // edge only
                     double_sent = true;
                     self.trav = Traverse::Hop { kind, since, dir: hdir, start, double_sent };

@@ -33,6 +33,9 @@ pub struct Settings {
     pub crt_warp: f32,
     /// Subtle vertical camera bob while running. Off by default; scaled by the FX intensity, zero in reduced motion.
     pub head_bob: bool,
+    /// Blood, wounds, dismemberment and corpse gore strength, 0..=1. 0 turns all of it off; low values keep the
+    /// blood but suppress dismemberment.
+    pub gore_intensity: f32,
     /// HUD size multiplier (`HUD_SCALE` range). The shell multiplies it by 1.15 on windows 800 px tall or less.
     pub hud_scale: f32,
     /// Times each contextual hint was shown (`hud_energy::HintId` order); a hint stops after `HINT_MAX_SHOWS`.
@@ -54,6 +57,7 @@ pub fn cm_per_360(sens: f32) -> f32 {
 }
 pub const FX_INTENSITY: (f32, f32, f32) = (0.0, 1.0, 1.0);
 pub const CRT_WARP: (f32, f32, f32) = (0.0, 1.0, 1.0);
+pub const GORE_INTENSITY: (f32, f32, f32) = (0.0, 1.0, 1.0);
 pub const HUD_SCALE: (f32, f32, f32) = (0.8, 1.4, 1.0);
 
 /// Windows this tall (px) or shorter get the HUD enlarged by `SMALL_SCREEN_BOOST` on top of the setting.
@@ -80,6 +84,7 @@ impl Default for Settings {
             reduced_motion: false,
             crt_warp: CRT_WARP.2,
             head_bob: false,
+            gore_intensity: GORE_INTENSITY.2,
             hud_scale: HUD_SCALE.2,
             hints_seen: [0; 5],
         }
@@ -100,6 +105,7 @@ impl Settings {
         self.fov_deg = clamp(FOV, self.fov_deg);
         self.fx_intensity = clamp(FX_INTENSITY, self.fx_intensity);
         self.crt_warp = clamp(CRT_WARP, self.crt_warp);
+        self.gore_intensity = clamp(GORE_INTENSITY, self.gore_intensity);
         self.hud_scale = clamp(HUD_SCALE, self.hud_scale);
         self
     }
@@ -117,9 +123,9 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let s = self.clamped();
         format!(
-            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\nhud_scale={}\nhints_seen={},{},{},{},{}\n",
+            "mouse_sens={}\naim_pad_sens={}\nstick_radius={}\nstick_deadzone={}\nfov={}\ninvert_y={}\nleft_handed={}\nfx_intensity={}\nreduced_motion={}\ncrt_warp={}\nhead_bob={}\ngore_intensity={}\nhud_scale={}\nhints_seen={},{},{},{},{}\n",
             s.mouse_sens, s.aim_pad_sens, s.stick_radius_frac, s.stick_deadzone, s.fov_deg, s.invert_y, s.left_handed,
-            s.fx_intensity, s.reduced_motion, s.crt_warp, s.head_bob, s.hud_scale,
+            s.fx_intensity, s.reduced_motion, s.crt_warp, s.head_bob, s.gore_intensity, s.hud_scale,
             s.hints_seen[0], s.hints_seen[1], s.hints_seen[2], s.hints_seen[3], s.hints_seen[4]
         )
     }
@@ -157,6 +163,7 @@ impl Settings {
                 "reduced_motion" => flag().map(|b| s.reduced_motion = b).is_some(),
                 "crt_warp" => num().map(|f| s.crt_warp = f).is_some(),
                 "head_bob" => flag().map(|b| s.head_bob = b).is_some(),
+                "gore_intensity" => num().map(|f| s.gore_intensity = f).is_some(),
                 "hud_scale" => num().map(|f| s.hud_scale = f).is_some(),
                 "hints_seen" => {
                     let v: Vec<u8> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -310,6 +317,7 @@ mod tests {
             reduced_motion: true,
             crt_warp: 0.65,
             head_bob: true,
+            gore_intensity: 0.55,
             hud_scale: 1.2,
             hints_seen: [3, 1, 0, 2, 1],
         };

@@ -12,6 +12,7 @@ pub const SHOCK_S: f32 = 0.55;
 pub const WHIRL_S: f32 = 0.30;
 pub const COUNTER_S: f32 = 0.35;
 pub const EXECUTE_S: f32 = 0.50;
+pub const COMBO_S: f32 = 0.80;
 /// How long after our shield parried a blow a hit of ours counts as the counter cut (`melee.counter_window_s`).
 pub const COUNTER_WINDOW_S: f32 = 0.25;
 
@@ -23,6 +24,8 @@ pub struct KatanaFx {
     pub whirl: Option<f32>,
     pub counter: Option<f32>,
     pub execute: Option<f32>,
+    /// A named combo landed (`KatanaCombo::label`): its age and the callout text.
+    pub combo: Option<(f32, &'static str)>,
 }
 
 /// What the HUD needs per frame: the state plus where to draw (the lock triangle, else the crosshair).
@@ -48,6 +51,13 @@ impl KatanaFx {
         self.charge = 0.0;
     }
 
+    /// A cut completed a named combo (TWIN FANG, BREAKER, ...): flash its name.
+    pub fn on_combo(&mut self, combo: shinobi_sim::combat::KatanaCombo) {
+        if let Some(label) = combo.label() {
+            self.combo = Some((0.0, label));
+        }
+    }
+
     /// A confirmed slash kill that the server marked as a bonus hit is an execute.
     pub fn on_confirmed_hit(&mut self, kill: bool, bonus: bool) {
         if kill && bonus {
@@ -60,10 +70,11 @@ impl KatanaFx {
         for (v, life) in [(&mut self.shock, SHOCK_S), (&mut self.whirl, WHIRL_S), (&mut self.counter, COUNTER_S), (&mut self.execute, EXECUTE_S)] {
             *v = v.map(|a| a + dt).filter(|a| *a < life);
         }
+        self.combo = self.combo.map(|(a, l)| (a + dt, l)).filter(|(a, _)| *a < COMBO_S);
     }
 
     pub fn active(&self) -> bool {
-        self.charge > 0.0 || self.shock.is_some() || self.whirl.is_some() || self.counter.is_some() || self.execute.is_some()
+        self.charge > 0.0 || self.shock.is_some() || self.whirl.is_some() || self.counter.is_some() || self.execute.is_some() || self.combo.is_some()
     }
 }
 
@@ -120,6 +131,12 @@ pub fn prims(cue: &KatanaCue, p: &Palette) -> Vec<Prim> {
         out.push(Prim::Vignette { start: 0.25, max_a: 0.7 * (1.0 - u), tint: p.magenta });
         out.push(Prim::Ring { c, r: 0.03 + 0.12 * u, color: p.gold.a(1.0 - u), fill: false, glow: 0.012 });
         out.push(Prim::Text { pos: (c.0, c.1 + 0.12), text: "EXECUTE".into(), size: 0.026, color: p.magenta.a(1.0 - 0.5 * u), align: Align::Center });
+    }
+    // named combo: the name pops in large, rises a little and fades (above the counter / execute words)
+    if let Some((a, label)) = f.combo {
+        let u = (a / COMBO_S).clamp(0.0, 1.0);
+        let pop = 1.0 + 0.35 * (1.0 - (u * 6.0).min(1.0));
+        out.push(Prim::Text { pos: (c.0, c.1 - 0.13 - 0.03 * u), text: label.into(), size: 0.024 * pop, color: p.gold.a(1.0 - u * u), align: Align::Center });
     }
     out
 }

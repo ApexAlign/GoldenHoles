@@ -63,7 +63,7 @@ fn run(kind: PowerKind, script: impl Fn(u32) -> PlayerIntent, ticks: u32) -> (Ve
         // what the server will count before it steps this tick
         let (live, armed) = (s.live_tags(A), s.armed_tags(A));
         let mut ev = Vec::new();
-        pred.update(TICK_DT, &PowerInput { draw: it.draw, fire: it.buttons.has(Buttons::FIRE), live_tags: live, armed_tags: armed, can_act: true }, &cfg, &mut ev);
+        pred.update(TICK_DT, &PowerInput { draw: it.draw, zoom: it.zoom, fire: it.buttons.has(Buttons::FIRE), live_tags: live, armed_tags: armed, can_act: true }, &cfg, &mut ev);
         cev.extend(ev.into_iter().map(|e| (t, e)));
         feed(&mut s, it);
         let sp = player_power(&s);
@@ -88,14 +88,14 @@ fn drawing_and_loosing_a_bow_steps_identically_on_both_sides() {
     // walk + draw 40 ticks, release; a short tap; a half draw; two more full draws after the 1.1 s reload
     let script = |t: u32| {
         let mut it = PlayerIntent { move_z: 127, ..aim() };
-        it.draw = matches!(t, 5..=45 | 80..=84 | 100..=140 | 200..=204 | 220..=240 | 260..=300 | 450..=490);
+        it.draw = matches!(t, 5..=45 | 80..=84 | 100..=120 | 200..=204 | 220..=240 | 260..=300 | 450..=490);
         if t == 205 {
             it.buttons = Buttons(Buttons::FIRE); // the tap's star
         }
         it
     };
     let (_, c) = run(PowerKind::Yumi, script, 540);
-    let looses: Vec<u32> = c.iter().filter(|(_, e)| *e == PowerEvent::Loose).map(|(t, _)| *t).collect();
+    let looses: Vec<u32> = c.iter().filter(|(_, e)| matches!(e, PowerEvent::Loose { .. })).map(|(t, _)| *t).collect();
     assert_eq!(looses, vec![46, 301, 491], "the arrows leave on the release ticks of the full draws");
     assert!(c.iter().any(|(_, e)| matches!(e, PowerEvent::DrawCancel { tap: true })));
     assert!(c.iter().any(|(_, e)| matches!(e, PowerEvent::DrawCancel { tap: false })));

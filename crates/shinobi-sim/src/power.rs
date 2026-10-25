@@ -47,13 +47,19 @@ pub struct YumiCfg {
     /// Walk speed multiplier while the bow is held out, and the look-speed multiplier the client applies (slow turn assist).
     pub move_mult: f32,
     pub turn_mult: f32,
-    /// ZOOM (client-only camera, but the walk part is sim): the view starts to narrow once the draw passes `zoom_start`
-    /// (0..1 of the draw, so a tap or a quick release stays hip-fire) and reaches `zoom_fov` degrees at full draw; at full
+    /// ZOOM (client-only camera, but the tradeoff is sim): holding the focus button (RMB) while drawing starts to narrow
+    /// the view once the draw passes `zoom_start` (0..1 of the draw) and reaches `zoom_fov` degrees at full draw; at full
     /// draw (the focus state) the walk drops from `move_mult` to `focus_move_mult`. A hit on you drops the zoom for `zoom_hurt_s`.
+    /// Without the focus button the draw is HIP-FIRE: no zoom, `hip_damage_mult` of the damage, `hip_reload_mult` of the reload.
     pub zoom_fov: f32,
     pub zoom_start: f32,
     pub focus_move_mult: f32,
     pub zoom_hurt_s: f32,
+    /// A focused shot needs the focus (RMB) held for this long during the draw; a quick tap at the end does not count.
+    pub focus_hold_s: f32,
+    /// Hip-fire tradeoff: damage and reload fractions of a focused shot (`1.0` = no tradeoff).
+    pub hip_damage_mult: f32,
+    pub hip_reload_mult: f32,
     /// Arrow speed (m/s), gravity on it (m/s^2: the slight drop), range (m) and the radius of its hit reach (m).
     pub speed: f32,
     pub gravity: f32,
@@ -89,6 +95,9 @@ impl Default for YumiCfg {
             zoom_start: 0.25,
             focus_move_mult: 0.6,
             zoom_hurt_s: 0.35,
+            focus_hold_s: 0.3,
+            hip_damage_mult: 0.8,
+            hip_reload_mult: 0.75,
             speed: 280.0,
             gravity: 4.0,
             range: 250.0,
@@ -209,8 +218,10 @@ impl PowerCfg {
 /// What the state machine sees each tick.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PowerInput {
-    /// Right button held (yumi draw).
+    /// Left button held (yumi draw).
     pub draw: bool,
+    /// Focus (RMB) held: gates the zoom and makes a full-draw release a focused shot. Without it the shot is hip-fire.
+    pub zoom: bool,
     /// Right button pressed this tick (an edge: tag throw / detonate).
     pub fire: bool,
     /// Live tags of this player, and how many of them are armed (a press with no tags left in hand sets the armed ones off).
@@ -226,8 +237,9 @@ pub enum PowerEvent {
     DrawStart,
     /// The draw ended before full: nothing fired. `tap`: shorter than `tap_s`, so the press is a star throw after all.
     DrawCancel { tap: bool },
-    /// A full draw was released: an arrow leaves the bow.
-    Loose,
+    /// A full draw was released: an arrow leaves the bow. `focused` = the focus (RMB) was held long enough during the
+    /// draw: full damage / reload. Hip-fire is `hip_damage_mult` / `hip_reload_mult` of those.
+    Loose { focused: bool },
     /// A tag leaves the hand.
     TagThrow,
     /// A press with the hands empty sets off the armed tags.
@@ -246,11 +258,14 @@ pub struct PowerState {
     pub ammo: u8,
     /// Tag carry seconds left (unused by the bow, which is never lost).
     pub left: f32,
-    /// Yumi: drawing now, seconds drawn.
+    /// Yumi: drawing now, seconds drawn, and seconds the focus has been held in this draw.
     pub drawing: bool,
     pub draw: f32,
+    pub zoom: f32,
     /// Seconds until the weapon can act again: the bow's reload, a tag's throw delay.
     pub cooldown: f32,
+    /// Duration of the reload now running (hip-fire reloads are shorter), for the HUD bar.
+    pub reload_total: f32,
     /// The press of this tick was used up by the weapon (no star may be thrown with it). Reset every `update`.
     pub used_fire: bool,
 }
@@ -258,7 +273,7 @@ pub struct PowerState {
 impl Default for PowerState {
     /// Everyone carries the bow, loaded.
     fn default() -> Self {
-        Self { kind: PowerKind::Yumi, ammo: 1, left: 0.0, drawing: false, draw: 0.0, cooldown: 0.0, used_fire: false }
+        Self { kind: PowerKind::Yumi, ammo: 1, left: 0.0, drawing: false, draw: 0.0, zoom: 0.0, cooldown: 0.0, reload_total: 0.0, used_fire: false }
     }
 }
 
@@ -278,7 +293,8 @@ impl PowerState {
         if self.kind != PowerKind::Yumi || cfg.yumi.reload_s <= 0.0 {
             return 1.0;
         }
-        (1.0 - self.cooldown / cfg.yumi.reload_s).clamp(0.0, 1.0)
+        let total = if self.reload_total > 0.0 { self.reload_total } else { cfg.yumi.reload_s };
+        (1.0 - self.cooldown / total).clamp(0.0, 1.0)
     }
 
     /// Take a pickup weapon (the tags) in place of the bow. `ammo`/`secs` of 0 mean a fresh load. The bow cannot be
@@ -292,7 +308,7 @@ impl PowerState {
             return true;
         }
         let (a, s) = cfg.fresh(kind);
-        *self = Self { kind, ammo: if ammo == 0 { a } else { ammo }, left: if secs <= 0.0 { s } else { secs }, drawing: false, draw: 0.0, cooldown: 0.0, used_fire: false };
+        *self = Self { kind, ammo: if ammo == 0 { a } else { ammo }, left: if secs <= 0.0 { s } else { secs }, drawing: false, draw: 0.0, zoom: 0.0, cooldown: 0.0, reload_total: 0.0, used_fire: false };
         true
     }
 
@@ -333,15 +349,20 @@ impl PowerState {
                 if self.drawing {
                     if want {
                         self.draw = (self.draw + dt).min(cfg.yumi.draw_s);
+                        self.zoom = if inp.zoom { (self.zoom + dt).min(cfg.yumi.draw_s) } else { 0.0 };
                     } else {
                         let full = self.full(cfg);
                         let tap = self.draw < cfg.yumi.tap_s;
+                        let focused = self.zoom + 1e-4 >= cfg.yumi.focus_hold_s;
                         self.drawing = false;
                         self.draw = 0.0;
+                        self.zoom = 0.0;
                         if full && inp.can_act {
                             self.used_fire = true;
-                            self.cooldown = cfg.yumi.reload_s;
-                            out.push(PowerEvent::Loose);
+                            let reload = if focused { cfg.yumi.reload_s } else { cfg.yumi.reload_s * cfg.yumi.hip_reload_mult };
+                            self.cooldown = reload;
+                            self.reload_total = reload;
+                            out.push(PowerEvent::Loose { focused });
                         } else {
                             out.push(PowerEvent::DrawCancel { tap });
                         }
@@ -349,6 +370,7 @@ impl PowerState {
                 } else if want && self.cooldown <= 0.0 {
                     self.drawing = true;
                     self.draw = 0.0;
+                    self.zoom = 0.0;
                     out.push(PowerEvent::DrawStart);
                 }
             }
@@ -545,8 +567,9 @@ mod tests {
         ev
     }
 
-    const HOLD: PowerInput = PowerInput { draw: true, fire: false, live_tags: 0, armed_tags: 0, can_act: true };
-    const IDLE: PowerInput = PowerInput { draw: false, fire: false, live_tags: 0, armed_tags: 0, can_act: true };
+    const HOLD: PowerInput = PowerInput { draw: true, zoom: false, fire: false, live_tags: 0, armed_tags: 0, can_act: true };
+    const FOCUS: PowerInput = PowerInput { zoom: true, ..HOLD };
+    const IDLE: PowerInput = PowerInput { draw: false, zoom: false, fire: false, live_tags: 0, armed_tags: 0, can_act: true };
 
     #[test]
     fn a_full_draw_looses_exactly_one_arrow_and_a_short_one_cancels() {
@@ -555,9 +578,20 @@ mod tests {
         assert_eq!(ev, vec![PowerEvent::DrawStart]);
         assert!(s.full(&cfg) && s.draw_frac(&cfg) > 0.999, "0.6 s at 60 Hz is 36 ticks");
         let ev = run(&mut s, &cfg, 1, IDLE);
-        assert_eq!(ev, vec![PowerEvent::Loose]);
+        assert_eq!(ev, vec![PowerEvent::Loose { focused: false }], "hip-fire");
         assert!(s.used_fire && !s.drawing && s.held() == false && s.kind == PowerKind::Yumi, "the bow is never used up");
-        assert!((s.cooldown - 1.1).abs() < 1e-4, "1.1 s reload");
+        assert!((s.cooldown - cfg.yumi.reload_s * cfg.yumi.hip_reload_mult).abs() < 1e-4, "hip-fire reload is quicker");
+        assert!((s.reload_total - s.cooldown).abs() < 1e-4);
+        // the same full draw with RMB held is the focused sniper shot: full damage and the standard reload
+        let (mut s, cfg) = yumi();
+        run(&mut s, &cfg, 40, FOCUS);
+        assert_eq!(run(&mut s, &cfg, 1, IDLE), vec![PowerEvent::Loose { focused: true }]);
+        assert!((s.cooldown - cfg.yumi.reload_s).abs() < 1e-4, "focused: 1.1 s reload");
+        // tapping RMB only at the end is not enough to focus the shot
+        let (mut s, cfg) = yumi();
+        run(&mut s, &cfg, 27, HOLD);
+        run(&mut s, &cfg, 10, FOCUS);
+        assert_eq!(run(&mut s, &cfg, 1, IDLE), vec![PowerEvent::Loose { focused: false }], "focus needs `focus_hold_s`");
         // a half draw cancels and costs nothing; inside the tap time it is a tap
         let (mut s, cfg) = yumi();
         run(&mut s, &cfg, 20, HOLD);
@@ -572,15 +606,15 @@ mod tests {
     #[test]
     fn the_bow_reloads_for_1_1_seconds_and_is_never_lost() {
         let (mut s, cfg) = yumi();
-        run(&mut s, &cfg, 37, HOLD);
+        run(&mut s, &cfg, 37, FOCUS);
         run(&mut s, &cfg, 1, IDLE);
         assert!(s.reload_frac(&cfg) < 0.01);
-        run(&mut s, &cfg, 33, HOLD);
+        run(&mut s, &cfg, 33, FOCUS);
         assert!(!s.drawing, "reloading: no new draw yet");
         assert!(s.reload_frac(&cfg) > 0.4 && s.reload_frac(&cfg) < 0.6, "half way: {}", s.reload_frac(&cfg));
         run(&mut s, &cfg, 40, IDLE);
         assert_eq!(s.reload_frac(&cfg), 1.0);
-        run(&mut s, &cfg, 1, HOLD);
+        run(&mut s, &cfg, 1, FOCUS);
         assert!(s.drawing, "reloaded: the next draw starts");
         // the bow does not time out or run dry
         let (mut s, cfg) = yumi();

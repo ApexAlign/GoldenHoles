@@ -143,8 +143,6 @@ pub fn min_gap(s: Sound) -> f32 {
         Sound::CrackStone | Sound::CrackWood => 0.05,
         Sound::Shatter | Sound::ShatterFar | Sound::Collapse | Sound::CollapseFar => 0.04,
         Sound::Reform => 0.06,
-        Sound::QuakeRumble => 0.3,
-        Sound::QuakeRattle => 0.25,
         Sound::BoltWhine => 0.08,
         Sound::Thunder | Sound::ThunderFar => 0.15,
         Sound::GuardLow => 0.2,

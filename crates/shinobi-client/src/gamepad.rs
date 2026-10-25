@@ -2,8 +2,8 @@
 //! frame and gets back a move stick, a look turn for this frame and the button edges, in the same shapes keyboard + mouse
 //! produce (`InputFrame.stick`, `Settings::look`, `ButtonEvent`), so a pad plays exactly like the PC controls.
 //!
-//! Layout (Xbox naming): left stick move, right stick look, RT throw shuriken, LT katana slash, A jump, B slide,
-//! X grapple, Y roll, LB dash, RB print floor, D-pad right print wall, stick forward into a wall = wall cling.
+//! Layout (Xbox naming): left stick move, right stick look, RT throw shuriken, LT katana slash, A jump, B grind,
+//! X grapple, LB dash, RB print floor, D-pad right print wall, stick forward into a wall = wall cling.
 
 use crate::client_game::{Action, ButtonEvent};
 use crate::settings::MOUSE_SENS;
@@ -137,9 +137,9 @@ impl PadMapper {
             let pad = [Pad::South, Pad::East, Pad::West, Pad::North, Pad::LeftBumper, Pad::RightBumper, Pad::DPadRight, Pad::Start, Pad::DPadUp, Pad::DPadLeft][b];
             let action = match pad {
                 Pad::South => Some(Action::Jump),
-                Pad::East => Some(Action::Slide),
+                Pad::East => Some(Action::Grind),
                 Pad::West => Some(Action::Grapple),
-                Pad::North => Some(Action::Roll),
+                Pad::North => None, // the roll is gone
                 Pad::LeftBumper => Some(Action::Dash),
                 Pad::RightBumper => Some(Action::Block), // hold the right bumper to guard / parry
                 Pad::DPadRight => Some(Action::BuildFloor),
@@ -241,9 +241,8 @@ mod tests {
         let mut s = snap();
         let table = [
             (Pad::South, Action::Jump),
-            (Pad::East, Action::Slide),
+            (Pad::East, Action::Grind),
             (Pad::West, Action::Grapple),
-            (Pad::North, Action::Roll),
             (Pad::LeftBumper, Action::Dash),
             (Pad::RightBumper, Action::Block),
             (Pad::DPadRight, Action::BuildFloor),

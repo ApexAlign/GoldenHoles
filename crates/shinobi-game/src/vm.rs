@@ -14,6 +14,7 @@ use shinobi_client::hud::Palette;
 use shinobi_client::viewmodel::{KatanaViewModel, ViewCfg};
 use shinobi_client::viewmodel_draw::{katana_draw, HitPulse, ShurikenViewModel};
 
+use crate::gore::GoreCfg;
 use crate::impacts::{Impact, ImpactKind, ImpactQueue};
 use crate::net::{Net, ViewRes};
 use crate::team::LocalColour;
@@ -34,14 +35,18 @@ pub fn recoil_kick(left: f32) -> (f32, f32) {
     (0.05 * e, 0.06 * e)
 }
 
-/// Target speed-line intensity 0..1: dash is full, a grapple pull strong, plain running fades in above ~14 m/s.
+/// Target speed-line intensity 0..1: dash is full, a grapple pull strong, a grind (landed from a jump, jump held) steady,
+/// plain running fades in above ~14 m/s.
 /// A flow streak (`combat::flow`, docs/traversal_melee.md "Flow") raises the floor by tier (0..3), so the lines
 /// read as "building toward something" through a long chain of wall-runs / hooks / dashes, not just the latest move.
-pub fn streak_target(dashing: bool, grappling: bool, speed: f32, flow_tier: u32) -> f32 {
+pub fn streak_target(dashing: bool, grappling: bool, grinding: bool, speed: f32, flow_tier: u32) -> f32 {
     let run = ((speed - 14.0) / 18.0).clamp(0.0, 0.45);
     let mut t = run;
     if grappling {
         t = t.max(0.7);
+    }
+    if grinding {
+        t = t.max(0.45 + ((speed - 8.0) / 20.0).clamp(0.0, 0.25));
     }
     if dashing {
         t = 1.0;
@@ -123,6 +128,8 @@ pub struct Vm {
     /// Block pose blend 0..1 (blade raised across the screen, shield up) and the shield flash (absorbed hit / parry).
     guard: f32,
     guard_flash: f32,
+    /// Blood left on the blade/gloves after a landed hit, 0..1; fades over a few seconds.
+    blood: f32,
 }
 
 #[derive(Resource)]
@@ -145,6 +152,9 @@ pub struct VmEnts {
     /// Glove and sleeve materials (recoloured by a custom character, see `apply_look`).
     glove: Handle<StandardMaterial>,
     sleeve: Handle<StandardMaterial>,
+    /// Blood flecks parented to the blade and both gloves, shown after a connect.
+    blood: Vec<Entity>,
+    blood_mat: Handle<StandardMaterial>,
     /// (material, base colour, gain) flared by hit confirmation
     glow: Vec<(Handle<StandardMaterial>, shinobi_client::hud::Rgba, f32)>,
 }
@@ -153,7 +163,7 @@ pub struct VmPlugin;
 
 impl Plugin for VmPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, prev_flow_tier: 0, tier_kick: 0.0, guard: 0.0, guard_flash: 0.0 })
+        app.insert_resource(Vm { katana: KatanaViewModel::new(ViewCfg::default()), shuriken: ShurikenViewModel::default(), pulse: HitPulse::default(), flip: false, freeze: 0.0, whiff: 0.0, flare: 0.0, recoil: 0.0, streak: 0.0, prev_flow_tier: 0, tier_kick: 0.0, guard: 0.0, guard_flash: 0.0, blood: 0.0 })
             .add_systems(Startup, spawn.after(crate::play::setup))
             .add_systems(Update, apply_look.before(update));
     }
@@ -358,26 +368,61 @@ fn spawn(
     let bracer = mats.add(unlit(pal.cyan, 1.8));
     let muzzle = mats.add(unlit(pal.orange, 3.8));
     let glow_extra = [(bracer.clone(), pal.cyan, 1.8), (muzzle.clone(), pal.orange, 3.8)];
-    let mut hand = |commands: &mut Commands, parent: Entity, p: [f32; 3], sc: [f32; 3], rot: Quat, m: &Handle<StandardMaterial>| {
-        commands.spawn((Mesh3d(cube.clone()), MeshMaterial3d(m.clone()), Transform { translation: Vec3::from(p), rotation: rot, scale: Vec3::from(sc) }, ChildOf(parent), layer.clone()));
+    let hand_mesh = meshes.add(crate::character_look::hand_mesh());
+    let hand = |commands: &mut Commands, parent: Entity, mesh: &Handle<Mesh>, p: [f32; 3], sc: [f32; 3], rot: Quat, m: &Handle<StandardMaterial>| {
+        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(m.clone()), Transform { translation: Vec3::from(p), rotation: rot, scale: Vec3::from(sc) }, ChildOf(parent), layer.clone()));
     };
     let q = Quat::IDENTITY;
-    hand(&mut commands, blade, [0.0, -0.004, 0.07], [0.058, 0.062, 0.095], q, &glove); // fist on the grip
-    hand(&mut commands, blade, [0.0, -0.02, 0.07], [0.04, 0.03, 0.082], q, &glove); // knuckles
-    hand(&mut commands, blade, [0.02, -0.075, 0.33], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.25), &sleeve); // forearm back toward the shoulder
-    hand(&mut commands, blade, [0.02, -0.052, 0.17], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.25), &bracer); // lit cuff
+    // Right hand: the open hand mesh turned so the fingers wrap forward around the tsuka instead of a block fist.
+    let grip_q = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_z(0.12);
+    hand(&mut commands, blade, &hand_mesh, [0.0, -0.006, 0.075], [0.72, 0.86, 1.08], grip_q, &glove);
+    hand(&mut commands, blade, &cube, [0.02, -0.075, 0.33], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.25), &sleeve); // forearm back toward the shoulder
+    hand(&mut commands, blade, &cube, [0.02, -0.052, 0.17], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.25), &bracer); // lit cuff
     let left_hand = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
-    hand(&mut commands, left_hand, [0.0, -0.045, 0.0], [0.07, 0.07, 0.07], q, &glove);
-    hand(&mut commands, left_hand, [-0.05, -0.16, 0.2], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &sleeve);
-    hand(&mut commands, left_hand, [-0.03, -0.11, 0.07], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &bracer);
+    hand(&mut commands, left_hand, &hand_mesh, [0.0, -0.05, 0.0], [0.8, 0.8, 0.8], Quat::from_rotation_y(-0.25), &glove);
+    hand(&mut commands, left_hand, &cube, [-0.05, -0.16, 0.2], [0.075, 0.075, 0.42], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &sleeve);
+    hand(&mut commands, left_hand, &cube, [-0.03, -0.11, 0.07], [0.082, 0.082, 0.03], Quat::from_rotation_x(0.35) * Quat::from_rotation_y(-0.2), &bracer);
+    // blood on the blade and the gloves: hidden until a landed hit, then faded out over a few seconds
+    let blood_mat = mats.add(StandardMaterial {
+        base_color: Color::linear_rgba(0.42, 0.008, 0.012, 0.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let blood_mesh = meshes.add(Sphere::new(0.5));
+    let mut blood = Vec::new();
+    for (parent, p, sc) in [
+        (blade, [0.014, 0.002, -0.14], [0.030, 0.010, 0.060]),
+        (blade, [0.018, -0.004, -0.30], [0.020, 0.008, 0.085]),
+        (blade, [0.008, 0.004, -0.46], [0.014, 0.007, 0.045]),
+        (blade, [0.010, -0.001, 0.078], [0.020, 0.013, 0.028]),
+        (blade, [-0.006, -0.018, 0.092], [0.014, 0.010, 0.020]),
+        (left_hand, [-0.020, -0.032, 0.012], [0.018, 0.012, 0.024]),
+        (left_hand, [0.014, -0.064, 0.018], [0.013, 0.009, 0.018]),
+    ] {
+        blood.push(
+            commands
+                .spawn((
+                    Mesh3d(blood_mesh.clone()),
+                    MeshMaterial3d(blood_mat.clone()),
+                    Transform::from_translation(Vec3::from(p)).with_scale(Vec3::from(sc)),
+                    ChildOf(parent),
+                    layer.clone(),
+                    Visibility::Hidden,
+                ))
+                .id(),
+        );
+    }
     let launcher = commands.spawn((Transform::from_xyz(0.22, -0.2, -0.4), Visibility::default(), layer.clone())).id();
-    hand(&mut commands, launcher, [0.0, 0.0, 0.04], [0.06, 0.04, 0.12], q, &glove);
-    hand(&mut commands, launcher, [0.0, 0.022, 0.04], [0.026, 0.006, 0.1], q, &bracer);
-    hand(&mut commands, launcher, [0.0, 0.0, -0.035], [0.024, 0.024, 0.03], q, &muzzle);
+    hand(&mut commands, launcher, &cube, [0.0, 0.0, 0.04], [0.06, 0.04, 0.12], q, &glove);
+    hand(&mut commands, launcher, &cube, [0.0, 0.022, 0.04], [0.026, 0.006, 0.1], q, &bracer);
+    hand(&mut commands, launcher, &cube, [0.0, 0.0, -0.035], [0.024, 0.024, 0.03], q, &muzzle);
     let mut glow = glow;
     glow.extend(glow_extra);
 
-    commands.insert_resource(VmEnts { blade, left_hand, launcher, glove, sleeve, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
+    commands.insert_resource(VmEnts { blade, left_hand, launcher, glove, sleeve, blood, blood_mat, shield, shield_mat, frame_mat, ribbons_mesh, ribbons, streaks, streaks_mesh, streaks_mat: ribbon_mat, shuriken, glow });
 }
 
 /// A custom character recolours the first-person hands and weapons: gloves (or skin), sleeves (suit base), the lit
@@ -424,6 +469,7 @@ pub fn update(
     mut vm: ResMut<Vm>,
     local: Res<LocalColour>,
     mut impacts: ResMut<ImpactQueue>,
+    gore: Option<Res<GoreCfg>>,
     ents: Res<VmEnts>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -447,10 +493,18 @@ pub fn update(
         vm.recoil = RECOIL_S;
         vm.shuriken.throw_now();
     }
-    // a landed hit (own hit message from the server) jolts and flares both held weapons
+    // a landed hit (own hit message from the server) jolts and flares both held weapons and leaves blood on them
+    let gore_on = gore.as_ref().is_some_and(|g| g.intensity > 0.0);
     for h in view.0.hits.iter().filter(|h| !h.taken) {
         vm.pulse.on_hit(h.kill);
+        if gore_on {
+            vm.blood = (vm.blood + if h.kill { 0.9 } else { 0.55 }).min(1.0);
+        }
     }
+    if !gore_on {
+        vm.blood = 0.0;
+    }
+    vm.blood = (vm.blood - dt * 0.30).max(0.0);
     // katana feedback from the predicted sim: connect = flash + arc flare + hit-stop, whiff = dim arc
     let l = &view.0.fx;
     if let Some(h) = l.slash_hit {
@@ -476,6 +530,14 @@ pub fn update(
         if let Some(mut mat) = mats.get_mut(m) {
             let k = g * (1.0 + 2.5 * pulse);
             mat.base_color = Color::linear_rgb(c.0 * k, c.1 * k, c.2 * k);
+        }
+    }
+    if let Some(mut mat) = mats.get_mut(&ents.blood_mat) {
+        mat.base_color = Color::linear_rgba(0.42, 0.008, 0.012, 0.88 * vm.blood);
+    }
+    for e in &ents.blood {
+        if let Ok(mut v) = vis.get_mut(*e) {
+            v.set_if_neq(if vm.blood > 0.02 { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
 
@@ -542,7 +604,7 @@ pub fn update(
         let kick = (vm.tier_kick / TIER_KICK_S).clamp(0.0, 1.0);
         vm.tier_kick = (vm.tier_kick - dt).max(0.0);
 
-        let target = streak_target(l.dashing, l.grappling, l.speed, l.flow_tier);
+        let target = streak_target(l.dashing, l.grappling, l.grinding, l.speed, l.flow_tier);
         vm.streak += (target - vm.streak) * (1.0 - (-9.0 * dt).exp());
         let boosted = (vm.streak + 0.35 * kick).min(1.0);
         let rgb = [local.0[0] + (1.0 - local.0[0]) * kick, local.0[1] + (1.0 - local.0[1]) * kick, local.0[2] + (1.0 - local.0[2]) * kick];
@@ -704,14 +766,15 @@ mod tests {
         let (pos, col, _) = streak_quads(2.0, 1.0, 1.78, 0.8, [1.0; 3]);
         assert!(pos.iter().all(|p| p[0].abs() < 1.45 && p[1].abs() < 0.82 && p[2] == -0.8), "inside the screen");
         assert!(col.iter().all(|c| (0.0..=1.0).contains(&c[3])));
-        assert!(streak_target(true, false, 0.0, 0) == 1.0 && streak_target(false, true, 0.0, 0) > 0.5);
-        assert!(streak_target(false, false, 30.0, 0) > streak_target(false, false, 16.0, 0));
-        assert_eq!(streak_target(false, false, 5.0, 0), 0.0);
+        assert!(streak_target(false, false, true, 12.0, 0) >= 0.45 && streak_target(false, false, true, 15.0, 0) < 0.75, "a grind has lines of its own");
+        assert!(streak_target(true, false, false, 0.0, 0) == 1.0 && streak_target(false, true, false, 0.0, 0) > 0.5);
+        assert!(streak_target(false, false, false, 30.0, 0) > streak_target(false, false, false, 16.0, 0));
+        assert_eq!(streak_target(false, false, false, 5.0, 0), 0.0);
         // flow raises the floor by tier, growing as the streak builds, even standing still
-        assert!(streak_target(false, false, 0.0, 1) > 0.0);
-        assert!(streak_target(false, false, 0.0, 2) > streak_target(false, false, 0.0, 1));
-        assert!(streak_target(false, false, 0.0, 3) > streak_target(false, false, 0.0, 2));
-        assert!(streak_target(true, false, 0.0, 3) == 1.0, "dash still wins outright");
+        assert!(streak_target(false, false, false, 0.0, 1) > 0.0);
+        assert!(streak_target(false, false, false, 0.0, 2) > streak_target(false, false, false, 0.0, 1));
+        assert!(streak_target(false, false, false, 0.0, 3) > streak_target(false, false, false, 0.0, 2));
+        assert!(streak_target(true, false, false, 0.0, 3) == 1.0, "dash still wins outright");
     }
 
     #[test]

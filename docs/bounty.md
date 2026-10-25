@@ -57,9 +57,9 @@ Set any of these from a balance text file the same way as every other key (`matc
 
 ## On the wire
 
-No new reliable event tag was added — the protocol's 5-bit event tag space (`shinobi_sim::events::NetEvent`)
-was already full at exactly 32 variants. Instead the periodic scoreboard (`board` section of the SNAPSHOT
-datagram, `shinobi_proto::gameplay::Board`) gained two fields:
+No new reliable event tag was added — when the bounty landed the protocol's event tag space (`shinobi_sim::events::NetEvent`)
+was full at exactly 32 variants. (v26 widened the tag to 6 bits and added `InjuryFx` as tag 32.) Instead the
+periodic scoreboard (`board` section of the SNAPSHOT datagram, `shinobi_proto::gameplay::Board`) gained two fields:
 
 * `bounty: u16` — 0 = none, else the marked player's id.
 * `bounty_live: bool` — only present on the wire when `bounty != 0`; true once the grace window has elapsed.

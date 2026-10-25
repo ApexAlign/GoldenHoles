@@ -137,6 +137,41 @@ pub enum SlashKind {
     Counter,
 }
 
+/// A named katana combo a connecting swing completed (docs/melee.md "Combos"): the HUD callout and the announcer key
+/// off it. `None` for an ordinary cut (and for every swing that missed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum KatanaCombo {
+    #[default]
+    None,
+    /// The third connected cut of a combo.
+    Finisher,
+    /// The wall-run chain's closing kick.
+    WallKick,
+    /// Heavy into heavy.
+    TwinFang,
+    /// Cut, cut, heavy.
+    Breaker,
+    /// Heavy (the launch) into an air cut.
+    RisingStrike,
+    /// Dash into a cut.
+    DashStrike,
+}
+
+impl KatanaCombo {
+    /// HUD callout text; `None` for no combo.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            KatanaCombo::None => None,
+            KatanaCombo::Finisher => Some("FINISHER"),
+            KatanaCombo::WallKick => Some("WALL KICK"),
+            KatanaCombo::TwinFang => Some("TWIN FANG"),
+            KatanaCombo::Breaker => Some("BREAKER"),
+            KatanaCombo::RisingStrike => Some("RISING STRIKE"),
+            KatanaCombo::DashStrike => Some("DASH STRIKE"),
+        }
+    }
+}
+
 /// Server-side facts the katana moves need but the weapon cannot see (the shield state lives on the server). The server
 /// fills it before every `CombatSystem::update`; the client leaves it empty (these moves only change who is hit and how
 /// hard, which the server decides).
@@ -165,6 +200,8 @@ pub enum CombatEvent {
         half_height: f32,
         damage: f32,
         kind: SlashKind,
+        /// The named combo this swing completed (`KatanaCombo::None` for a plain cut or a miss).
+        combo: KatanaCombo,
     },
     ShurikenThrown { pos: Point<Real>, dir: Vector<Real>, kind: stars::StarKind },
     /// A flash star burst at `pos` (impact or fuse). The server turns it into white-outs (`StarBlind`).
@@ -319,6 +356,16 @@ impl CombatSystem {
 
     pub fn set_slice_cooldown_left(&mut self, v: f32) {
         self.loadout.set_cooldown_left(weapon::Trigger::Secondary, v);
+    }
+
+    /// Katana press queued while the blade recovers (seconds left, `katana::PRESS_BUFFER_S` at most). Mirrored into
+    /// `CharacterSystem::slice_buffer` next to the cooldown, for the same reason.
+    pub fn slice_buffer_left(&self) -> f32 {
+        self.loadout.buffered(weapon::Trigger::Secondary)
+    }
+
+    pub fn set_slice_buffer_left(&mut self, v: f32) {
+        self.loadout.set_buffered(weapon::Trigger::Secondary, v);
     }
 
     /// True while this player's combat will query the world this tick regardless of input (discs / bursts

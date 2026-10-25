@@ -175,3 +175,6 @@ for kind, x, y, z in weapons:
 out = sys.argv[1] if len(sys.argv) > 1 else "levels/ffa_small.lvl"
 open(out, "w").write("\n".join(lines) + "\n")
 print("wrote %s: %d boxes, %d spawns, %d pickups, %d weapon pedestals" % (out, n, len(spawns), len(pickups), len(weapons)))
+if os.path.abspath(out) == os.path.abspath("levels/ffa_small.lvl"):
+    import lvl_env
+    lvl_env.main([out])

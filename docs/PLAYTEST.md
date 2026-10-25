@@ -41,7 +41,7 @@ No window? `LAG=50:40:5 scripts/demo_headless.sh` runs the scripted clients thro
 
 ## Controls
 
-WASD move, mouse aim, Space jump (again = double jump), Shift dash, 4 roll, C slide, W into a wall = wall-run,
+WASD move, mouse aim, Space jump (again = double jump), Shift dash, C grind (hold), W into a wall = wall-run,
 **E** wrist grapple (hook the crosshair, E again releases), **N** floor/ramp and **M** wall (grid pieces: anyone can shoot
 or slice them apart), left click katana dash-slice, Q throw a shuriken, right click block (keep an enemy near the crosshair
 and a three-dot triangle locks on to them automatically). Esc releases the mouse; click the window to grab it again (focus loss releases it too).
@@ -49,7 +49,7 @@ No bash (Windows PowerShell / macOS / Linux): plain cargo commands are in QUICKS
 
 ## First 5 minutes: try each of these at least once
 
-1. Run, jump, double-jump, dash, slide down a slope, wall-run along a long wall. Does anything feel sticky or floaty?
+1. Run, jump, double-jump, dash, grind down a slope (hold C), wall-run along a long wall. Does anything feel sticky or floaty?
 2. Throw shurikens at a bot from 10 m, 30 m and across the map. Does the lock-on triangle appear, and does it help or fight you?
 3. Hit a bot with the katana from a dash. Do you feel the hit (flash, freeze, sound-less shake)? Does a miss feel like a miss?
 4. Grapple to a ledge, swing off a pillar, release with a jump, grapple again. Try to cross the map without touching the ground.
@@ -85,7 +85,7 @@ starts). Definitions are at the top of `crates/shinobi-server/src/telemetry.rs` 
 ```
 1. Date / machine / how long you played, map (ffa or ffa_xl), bots + skill:
 2. First impression in one sentence:
-3. Movement (run, wall-run, slide, grapple): best moment / worst moment:
+3. Movement (run, wall-run, grind, grapple): best moment / worst moment:
 4. Combat (shuriken, lock-on, katana): too easy / too hard / just right, and why:
 5. Aim assist: did you notice the lock pulling your aim? Helpful, annoying, invisible?
 6. Building (N / M, shooting pieces apart): fun / confusing / useless. What did you build?

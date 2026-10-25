@@ -23,7 +23,7 @@ pub enum Correction {
     None,
     /// Reset the character to `server_pos` (plus its velocity / move state from the snapshot) and re-run
     /// `CharacterSystem::update` over `replay` in order (ticks after the acked one).
-    Replay { server_pos: [f32; 3], replay: Vec<PlayerIntent> },
+    Replay { server_pos: [f32; 3], replay: Vec<PlayerIntent>, prev: PlayerIntent },
 }
 
 pub struct Reconciler {
@@ -83,7 +83,7 @@ impl Reconciler {
                 rendered_pos[2] - server_pos[2],
             ];
         }
-        Correction::Replay { server_pos, replay }
+        Correction::Replay { server_pos, replay, prev: front.intent }
     }
 
     /// Call every rendered frame.
@@ -114,10 +114,15 @@ pub fn apply_replay(
     server_pos: [f32; 3],
     own: &OwnState,
     replay: &[PlayerIntent],
+    prev: &PlayerIntent,
     now_at_ack: f32,
     input_for: &mut dyn FnMut(&PlayerIntent, &mut CharacterSystem) -> PlayerInput,
 ) -> [f32; 3] {
     ch.restore_own(world, own);
+    // press edges (grind cuts the rope, the katana cuts on a press) must replay exactly as first predicted: seed the
+    // "last tick" button state from the acked intent
+    ch.grind_prev = prev.grind;
+    ch.slice_prev = prev.buttons.has(shinobi_proto::intent::Buttons::SLICE);
     let mut now = now_at_ack;
     let mut pos = server_pos;
     for it in replay {
@@ -150,9 +155,9 @@ impl Reconciler {
         let server_pos = own.pos;
         match self.on_server_state(acked_tick, server_pos, rendered_pos) {
             Correction::None => None,
-            Correction::Replay { server_pos, replay } => {
+            Correction::Replay { server_pos, replay, prev } => {
                 let now = (acked_tick + 1) as f32 * TICK_DT;
-                let new_pos = apply_replay(self, ch, world, server_pos, own, &replay, now, input_for);
+                let new_pos = apply_replay(self, ch, world, server_pos, own, &replay, &prev, now, input_for);
                 // `rendered_pos` is what is on screen now (simulated + offset). Keep the screen still: the new
                 // simulated position is `new_pos`, so the offset is the difference. (`on_server_state` alone
                 // computes it against the acked-tick position, which is only right if nothing is replayed.)
@@ -189,7 +194,7 @@ mod tests {
             r.record(it(t), [t as f32, 0.0, 0.0]);
         }
         match r.on_server_state(2, [1.5, 0.0, 0.0], [4.0, 0.0, 0.0]) {
-            Correction::Replay { server_pos, replay } => {
+            Correction::Replay { server_pos, replay, .. } => {
                 assert_eq!(server_pos[0], 1.5);
                 assert_eq!(replay.iter().map(|i| i.tick).collect::<Vec<_>>(), vec![3, 4]);
             }

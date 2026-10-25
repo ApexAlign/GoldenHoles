@@ -2,7 +2,8 @@
 
 ## What exists
 - **Quality tiers** (`shinobi-client/src/quality.rs`): High (bloom, CRT, native res), Medium (cheaper bloom, CRT, dynamic
-  resolution 0.70-1.0), Low (no bloom, no CRT, dyn-res 0.55-1.0).
+  resolution 0.70-1.0), Low (no bloom, no CRT, dyn-res 0.55-1.0). Gore budgets follow the tier: 160/32/24 live drops,
+  pools and wound decals on High, 90/20/14 on Medium, 40/10/6 on Low (`shinobi-game/src/gore.rs`).
 - **Auto tier** (live game, no `--tier`): the adapter's device type picks the start tier (discrete -> High, integrated /
   unknown -> Medium, software -> Low); `--tier high|medium|low` pins it, `--tier auto` is the default. A `FrameGovernor`
   watches real frame times: p95 > 16.6 ms (+5%) over a 2 s window -> drop one tier (6 s warm-up, 4 s cooldown).
@@ -17,7 +18,7 @@
   X11-only and ran through XWayland on Wayland desktops: XWayland has its own frame pacing (a classic judder source) and
   NVIDIA PRIME windows via XWayland are fragile. Falls back to X11 when there is no Wayland session (verified under Xvfb).
   `--x11` (or `WINIT_UNIX_BACKEND=x11`) forces X11/XWayland; `--no-default-features` builds without Wayland.
-- **Profiling aid**: `SHINOBI_DISABLE=sky,crt,vm,fx` leaves plugins out. A `PERF` line prints every 3 s (fps, worst frame,
+- **Profiling aid**: `SHINOBI_DISABLE=sky,crt,vm,fx,gore` leaves plugins out. A `PERF` line prints every 3 s (fps, worst frame,
   fixed steps/s).
 
 ## dGPU (RTX 5060) never opens a window under Wayland/PRIME

@@ -432,6 +432,8 @@ pub struct HudState {
     pub since_damage: Option<(f32, f32)>,
     /// Size of the last hit taken as a fraction of max HP (0 = unknown): widens the damage wedge.
     pub damage_frac: f32,
+    /// GORE setting (0..=1): screen-edge blood splatter while the last hit is fresh.
+    pub gore: f32,
     pub build: Option<BuildHud>,
     pub grapple: Option<GrappleHud>,
     /// Free-for-all match: leaderboard + leading marker (teams off).
@@ -474,7 +476,8 @@ pub struct HudState {
     /// down, a blocked hit costs 20 %).
     pub guard_spent: f32,
     /// Guard feedback: (kind, age seconds). 0 parried (you blocked it just in time), 1 your cut was parried (staggered),
-    /// 2 you hit inside a strike window (bonus damage).
+    /// 2 you hit inside a strike window (bonus damage), 3 your hit only chipped a raised shield (BLOCKED), 4 your cut
+    /// found nothing (WHIFF).
     pub guard_flash: Option<(u8, f32)>,
     /// Star-energy pool readout (`hud_energy`); `None` hides it.
     pub star: Option<crate::hud_energy::StarHud>,
@@ -957,6 +960,25 @@ impl Hud {
         };
         out.push(Prim::Vignette { start: VIGNETTE_START, max_a: VIGNETTE_MAX_A * (0.55 + 0.45 * beat), tint: chrome.a(1.0) });
         out.push(Prim::Scanlines { count: 240, scroll: (s.time * 0.05).fract(), a: 0.035 });
+        if s.gore > 0.0 {
+            if let Some((t, _)) = s.since_damage.filter(|(t, _)| *t < DAMAGE_TIME) {
+                let heat = (1.0 - t / DAMAGE_TIME).clamp(0.0, 1.0) * (0.35 + 0.65 * s.damage_frac.clamp(0.0, 1.0)) * s.gore;
+                let blood = Rgba(0.42, 0.004, 0.012, 0.62 * heat);
+                for i in 0..7u32 {
+                    let h = |n: u32| {
+                        let mut x = (i + 1).wrapping_mul(0x9E37_79B1) ^ n;
+                        x ^= x >> 15;
+                        x = x.wrapping_mul(0x2C1B_3C6D);
+                        (x & 0xFFFF) as f32 / 65535.0
+                    };
+                    let edge = if i % 2 == 0 { 1.0 } else { -1.0 };
+                    let x = 0.5 + edge * (0.34 + 0.14 * h(0xA1));
+                    let y = 0.12 + 0.76 * h(0xB2);
+                    let r = 0.022 + 0.05 * h(0xC3);
+                    out.push(Prim::Ring { c: (x, y), r, color: blood, fill: true, glow: 0.0 });
+                }
+            }
+        }
 
         // Visor rails: hairlines hugging the side edges, brow and chin.
         let rail = chrome.a(0.55 * pulse);
@@ -1846,6 +1868,8 @@ fn guard_cue(out: &mut Vec<Prim>, s: &HudState, p: &Palette) {
         let (text, col) = match kind {
             0 => ("PARRY", p.gold),
             1 => ("STAGGERED", p.magenta),
+            3 => ("BLOCKED", p.cyan),
+            4 => ("WHIFF", p.magenta),
             _ => ("STRIKE x1.5", p.gold),
         };
         if kind == 0 {
@@ -2349,6 +2373,16 @@ mod tests {
     }
 
     #[test]
+    fn gore_setting_adds_edge_splatter_only_while_hurt() {
+        let rings = |s: &HudState| Hud::build(s).iter().filter(|p| matches!(p, Prim::Ring { fill: true, .. })).count();
+        let hurt = HudState { since_damage: Some((0.1, 0.0)), damage_frac: 0.5, gore: 1.0, ..Default::default() };
+        let off = HudState { gore: 0.0, ..hurt.clone() };
+        let calm = HudState { since_damage: None, ..hurt.clone() };
+        assert_eq!(rings(&hurt) - rings(&off), 7, "seven blood flecks with GORE on");
+        assert_eq!(rings(&calm), rings(&off), "no splatter once the hit is old");
+    }
+
+    #[test]
     fn enemy_markers_show_a_dim_speck_outside_the_cone_and_corner_brackets_inside_it() {
         let pal = Palette::TRON;
         let tag = |heat| EnemyTag { pos: (0.5, 0.4), name: "VOID WOLF".into(), dist: 10.0, team: None, colour: None, hp: None, heat };
@@ -2737,7 +2771,7 @@ mod tests {
         assert!(KillEntry::from_pvp(&PvpEvent::Respawn { tick: 1, player: 1 }, 1, name).is_none());
         assert!(!KillEntry::from_pvp(&kill, 9, name).unwrap().involves_local);
 
-        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false, bonus: false };
+        let hit = |a, v| PvpEvent::Hit { tick: 1, attacker: a, victim: v, amount: 10.0, kind: DamageKind::Shuriken, head: false, bonus: false, point: [0.0; 3], guarded: false };
         let mut fx = HudFx::default();
         fx.on_pvp(&hit(5, 6), 5, |_| panic!("not hurt"));
         let mut s = HudState::default();

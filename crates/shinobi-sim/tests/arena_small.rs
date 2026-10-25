@@ -45,8 +45,8 @@ fn d2(a: [f32; 3], b: [f32; 3]) -> f32 {
 #[test]
 fn small_and_uncluttered_with_a_spawn_ring_and_sparse_pickups() {
     let l = load();
-    assert!(l.level.boxes.len() <= 80, "{} boxes: the map must stay uncluttered", l.level.boxes.len());
-    assert!(l.level.boxes.len() >= 12, "{} boxes: too empty to play on", l.level.boxes.len());
+    assert!(l.level.boxes.len() <= 140, "{} boxes: the map must stay uncluttered", l.level.boxes.len());
+    assert!(l.level.boxes.len() >= 60, "{} boxes: too empty to play on (the environment pass adds melee furniture)", l.level.boxes.len());
     assert!((8..=12).contains(&l.level.spawns.len()), "{} spawns", l.level.spawns.len());
     let cubes = l.pickups.iter().filter(|p| p.kind == shinobi_sim::power::PowerKind::None).count();
     assert!((2..=6).contains(&cubes), "{cubes} cubes: sparse");
@@ -55,6 +55,8 @@ fn small_and_uncluttered_with_a_spawn_ring_and_sparse_pickups() {
     assert!(yumi == 1 && (3..=5).contains(&tags), "{yumi} bow and {tags} tag bags");
     assert!(l.pickups.iter().filter(|p| p.kind != shinobi_sim::power::PowerKind::None).all(|p| p.respawn_secs == 45.0), "weapons respawn after 45 s");
     assert!(l.pickups.iter().all(|p| p.respawn_secs >= 10.0));
+    let breakable = l.level.boxes.iter().filter(|b| b.hp > 0.0).count();
+    assert!(breakable >= 15, "{breakable} breakable boxes: the environment pass's melee cover is missing");
 }
 
 #[test]

@@ -50,7 +50,7 @@ Per tick the sim loops the destructible set once (support + re-form), a blast lo
 Each is a server-driven event with a telegraph (sound + HUD cue + visual) so it is dramatic and fair, replicated as one reliable
 event, cosmetic parts on the client, physics parts in the shared sim so prediction matches:
 
-1. **Quake:** the floor shakes for 3 s (camera shake, dust); every brick takes damage proportional to how little holds it up;
+1. **Quake (REMOVED, it was just an annoyance):** the floor shakes for 3 s (camera shake, dust); every brick takes damage proportional to how little holds it up;
    weak towers and overhangs fall. Telegraph: rumble 2 s before.
 2. **Lightning strike:** a bolt hits a marked column: blast-sized damage on bricks + shock to players inside 6 m. Marked
    2 s ahead by a glowing ring. Great for chewing up whoever camps one spot.
@@ -64,5 +64,5 @@ event, cosmetic parts on the client, physics parts in the shared sim so predicti
 8. **Crush hazard:** falling bricks deal damage to a player they land on (scaled by drop height): turns pulling a tower
    down on someone into a weapon.
 
-First pick I would build: Quake + Lightning (they feed the destruction loop, are cheap: one event type, damage goes through
-`LevelBreaks::blast`), then Wind. Tell me which ones you want and the severity.
+Status: Lightning was built; Quake was built and then removed (a screen-shake timer, not a melee tool: it only annoyed).
+The environment work moved into the levels themselves (`scripts/lvl_env.py`: break-cover, splat walls, alleys, monoliths).

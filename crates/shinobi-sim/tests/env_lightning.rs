@@ -1,12 +1,10 @@
-//! Quakes and lightning through the real `Server` (docs/destruction_design.md): telegraph, shaking that brings weak structures
-//! down, bolts that land where players stood and hurt only inside their radius, nothing at all when the preset is off.
+//! Lightning through the real `Server` (docs/destruction_design.md): telegraph, bolts that land where players stood and hurt only inside their radius, nothing at all when the preset is off.
 
 use std::time::Duration;
 
 use shinobi_proto::intent::{ClientPacket, PlayerIntent, ViewState};
 use shinobi_proto::quant::{q_pitch, q_yaw};
 use shinobi_sim::balance::Balance;
-use shinobi_sim::breaks::BreakEvent;
 use shinobi_sim::character::Cfg;
 use shinobi_sim::env_events::{EnvEvent, LIGHTNING};
 use shinobi_sim::level::{LevelBox, LevelDesc};
@@ -85,41 +83,6 @@ fn nothing_happens_with_the_demo_preset() {
 }
 
 #[test]
-fn a_quake_warns_shakes_breaks_weak_towers_and_ends() {
-    let low = LevelBox::new([10.0, 2.0, 10.0], [1.5, 2.0, 1.5]).destructible(100.0);
-    let high = LevelBox::new([10.0, 6.0, 10.0], [1.5, 2.0, 1.5]).destructible(100.0);
-    let perm = LevelBox::new([-10.0, 2.0, 10.0], [1.5, 2.0, 1.5]);
-    let mut s = server(vec![low, high, perm], |b| {
-        b.env.quake = 1.0;
-        b.env.quake_min_s = 1.0;
-        b.env.quake_max_s = 1.0;
-        b.env.quake_warn_s = 0.5;
-        b.env.quake_s = 3.0;
-        b.env.quake_dmg_frac_per_s = 0.6;
-        b.destruct.rez_s = 0.0;
-    });
-    let mut env = Vec::new();
-    let mut brk = Vec::new();
-    for _ in 0..600 {
-        feed(&mut s);
-        env.extend(s.env_events.iter().copied());
-        brk.extend(s.break_events.iter().copied());
-    }
-    let kinds: Vec<&str> = env.iter().map(|e| match e {
-        EnvEvent::QuakeWarn { .. } => "warn",
-        EnvEvent::QuakeStart { .. } => "start",
-        EnvEvent::QuakeEnd { .. } => "end",
-        _ => "other",
-    }).collect();
-    assert!(kinds.starts_with(&["warn", "start", "end"]), "{kinds:?}");
-    let start_tick = env.iter().find_map(|e| if let EnvEvent::QuakeStart { tick, .. } = e { Some(*tick) } else { None }).unwrap();
-    assert!(brk.iter().all(|e| matches!(e, BreakEvent::Break { tick, .. } | BreakEvent::Damaged { tick, .. } if *tick >= start_tick)), "nothing breaks before the shaking starts: {brk:?}");
-    assert!(s.breaks.is_broken(1) && s.breaks.is_broken(2), "the whole weak tower came down: {brk:?}");
-    assert!(!s.breaks.is_broken(3) || s.breaks.max_hp(3) == 0.0, "the permanent block is untouched");
-    assert!(brk.iter().any(|e| matches!(e, BreakEvent::Break { cascade: false, .. })));
-}
-
-#[test]
 fn lightning_marks_where_a_player_stands_and_strikes_there() {
     let pillar = LevelBox::new([4.0, 1.5, 0.0], [0.8, 1.5, 0.8]).destructible(300.0);
     let mut s = server(vec![pillar], |b| {
@@ -189,13 +152,9 @@ fn a_target_who_runs_clear_of_the_ring_is_not_hurt_and_a_nearby_pillar_is_blown_
 }
 
 #[test]
-fn late_joiners_hear_about_a_quake_and_marked_bolts_in_progress() {
+fn late_joiners_hear_about_marked_bolts_in_progress() {
     let mut s = server(vec![], |b| {
-        b.env.quake = 1.0;
         b.env.lightning = 1.0;
-        b.env.quake_min_s = 1.0;
-        b.env.quake_max_s = 1.0;
-        b.env.quake_warn_s = 2.0;
         b.env.bolt_min_s = 1.0;
         b.env.bolt_max_s = 1.0;
         b.env.bolt_warn_s = 3.0;
@@ -203,13 +162,12 @@ fn late_joiners_hear_about_a_quake_and_marked_bolts_in_progress() {
     let mut caught = None;
     for _ in 0..400 {
         feed(&mut s);
-        let (q, bolts) = s.env.catch_up(s.tick);
-        if matches!(q, Some((_, true))) && !bolts.is_empty() {
-            caught = Some((q.unwrap(), bolts));
+        let bolts = s.env.catch_up(s.tick);
+        if !bolts.is_empty() {
+            caught = Some(bolts);
             break;
         }
     }
-    let ((left, warning), bolts) = caught.expect("a quake warning and a marked bolt overlapped");
-    assert!(warning && left > 0 && left <= 120, "{left} ticks of warning left");
+    let bolts = caught.expect("a bolt was marked");
     assert!(bolts[0].2 > 0 && bolts[0].2 <= 180);
 }

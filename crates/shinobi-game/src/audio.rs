@@ -104,6 +104,8 @@ pub struct Frame {
     pub landed: bool,
     pub landing_speed: f32,
     pub slide_started: bool,
+    pub grinding: bool,
+    pub grind_started: bool,
     /// Heavy-cut charge 0..1.
     pub slice_charge: f32,
     /// Flow tier (0..3, `combat::flow`): a tier-up gets its own stinger, distinct from the kill streak note.
@@ -116,8 +118,9 @@ pub struct Frame {
     pub blocking: bool,
     /// Health 0..=1 (None before the first extras block).
     pub hp: Option<f32>,
-    /// Hits we dealt: (damage, killed, headshot).
+    /// Hits we dealt: (damage, killed, headshot). Hits that only chipped a raised shield are in `dealt_blocked`.
     pub dealt: Vec<(u8, bool, bool)>,
+    pub dealt_blocked: u32,
     /// Damage amounts we took (hits our shield absorbed or parried are counted in `absorbed` / `parried` instead).
     pub taken: Vec<u8>,
     /// One of the damage hits we took this frame was a headshot.
@@ -199,6 +202,8 @@ impl Frame {
             landed: f.landed,
             landing_speed: f.landing_speed,
             slide_started: f.slide_started,
+            grinding: f.grinding,
+            grind_started: f.grind_started,
             slice_charge: f.slice_charge,
             flow_tier: f.flow_tier,
             bounty_now: v.board.as_ref().and_then(|b| (b.bounty != 0).then_some((b.bounty, b.bounty_live))),
@@ -207,9 +212,10 @@ impl Frame {
             star_refused: v.star_refused,
             blocking: v.blocking,
             hp: v.hp.map(|h| (h / 100.0).clamp(0.0, 1.0)),
-            dealt: v.hits.iter().filter(|h| !h.taken).map(|h| (h.amount, h.kill, h.head)).collect(),
-            taken: v.hits.iter().filter(|h| h.taken && h.amount > 0 && !v.blocking).map(|h| h.amount).collect(),
-            taken_head: v.hits.iter().any(|h| h.taken && h.amount > 0 && h.head && !v.blocking),
+            dealt: v.hits.iter().filter(|h| !h.taken && !h.guarded).map(|h| (h.amount, h.kill, h.head)).collect(),
+            dealt_blocked: v.hits.iter().filter(|h| !h.taken && h.guarded && h.amount > 0).count() as u32,
+            taken: v.hits.iter().filter(|h| h.taken && h.amount > 0 && !v.blocking && !h.guarded).map(|h| h.amount).collect(),
+            taken_head: v.hits.iter().any(|h| h.taken && h.amount > 0 && h.head && !v.blocking && !h.guarded),
             eye: v.eye,
             threats: v
                 .discs
@@ -219,7 +225,7 @@ impl Frame {
                 .chain(v.power_world.arrows.iter().map(|a| (a.pos, a.owner)))
                 .filter(|(_, o)| *o != own_id)
                 .collect(),
-            absorbed: v.hits.iter().filter(|h| h.taken && h.amount > 0 && v.blocking).count() as u32,
+            absorbed: v.hits.iter().filter(|h| h.taken && h.amount > 0 && (v.blocking || h.guarded)).count() as u32,
             parried: v.hits.iter().filter(|h| h.taken && h.amount == 0 && !h.kill && h.other != 0).count() as u32,
             power_own: v.power_events.clone(),
             tag_on_me: v.power_world.tag_on(own_id).map(|t| t.fuse_left * shinobi_sim::power::TagCfg::default().fuse_s),
@@ -274,11 +280,15 @@ const GUARD_HIT_COST: f32 = 0.2;
 const GUARD_LOW: f32 = 0.75;
 const MAX_HP: f32 = shinobi_sim::pvp::MAX_HP;
 const ROPE_PULSE: f32 = 0.5;
+/// Seconds between scrape grains while grinding.
+const GRIND_PULSE: f32 = 0.11;
 
 /// Edge detector over frames: remembers last frame's discs / pieces / ropes and emits a `Cue` for each change.
 #[derive(Default)]
 pub struct Cuer {
     prev_dashing: bool,
+    grind_t: f32,
+    grind_alt: bool,
     prev_discs: Vec<([f32; 3], u16)>,
     prev_blocks: HashSet<(u16, [i32; 3])>,
     prev_ropes: HashSet<u16>,
@@ -326,15 +336,9 @@ impl Cuer {
             cues.push(Cue::flat(Sound::UiBack, 0.6));
         }
 
-        for e in &f.lock_edges {
-            cues.push(Cue::flat(
-                match e {
-                    LockEdge::Acquired => Sound::LockTone,
-                    LockEdge::Locked => Sound::LockChirp,
-                    LockEdge::Broken => Sound::LockBreak,
-                },
-                0.8,
-            ));
+        // the lock-on is silent but for one soft click when it snaps on (no acquire boop, no break fade)
+        if f.lock_edges.iter().any(|e| matches!(e, LockEdge::Locked)) {
+            cues.push(Cue::flat(Sound::LockClick, 0.5));
         }
         if f.threw {
             cues.push(Cue::flat(Sound::Throw, 0.8));
@@ -358,12 +362,12 @@ impl Cuer {
             match e {
                 DrawStart => cues.push(Cue::flat(Sound::HeavyCharge, 0.5)),
                 DrawCancel { .. } => cues.push(Cue::flat(Sound::Whiff, 0.4)),
-                Loose => {
+                Loose { .. } => {
                     cues.push(Cue::flat(Sound::Throw, 1.0).pitched(0.55));
                     cues.push(Cue::flat(Sound::HeavyRelease, 0.5));
                     duck = duck.max(0.2);
                 }
-                TagThrow => cues.push(Cue::flat(Sound::Throw, 0.6).pitched(1.4)),
+                TagThrow => cues.push(Cue::flat(Sound::Throw, 0.6).pitched(1.15)),
                 TagDetonate => cues.push(Cue::flat(Sound::UiClick, 0.7)),
                 Expired => cues.push(Cue::flat(Sound::Lockout, 0.5)),
                 Spent => {}
@@ -386,12 +390,12 @@ impl Cuer {
             }
             let (s, v, pitch) = match *what {
                 FX_PICKUP_YUMI | FX_PICKUP_TAG => {
-                    cues.push(if mine { Cue::flat(Sound::Refill, 0.8) } else { Cue::flat(Sound::Execute, 0.45).pitched(1.3) });
+                    cues.push(if mine { Cue::flat(Sound::Refill, 0.8) } else { Cue::flat(Sound::Execute, 0.45).pitched(1.0) });
                     continue;
                 }
                 FX_DRAW if !mine => (Sound::HeavyCharge, 0.45, 1.0),
                 FX_LOOSE if !mine => (Sound::Throw, 0.9, 0.55),
-                FX_TAG_THROW if !mine => (Sound::Throw, 0.5, 1.4),
+                FX_TAG_THROW if !mine => (Sound::Throw, 0.5, 1.15),
                 FX_ARROW_HIT => (Sound::HitBody, 1.0, 1.0),
                 FX_ARROW_HEAD => (Sound::HitHard, 1.0, 1.0),
                 // a near miss: the same body-hit cue as FX_ARROW_HIT, but quieter and a touch lower so it reads as
@@ -399,10 +403,10 @@ impl Cuer {
                 FX_ARROW_SPLASH => (Sound::HitBody, 0.55, 0.85),
                 FX_ARROW_BLOCKED => (Sound::Block, 0.9, 1.0),
                 FX_ARROW_PARRIED => (Sound::Parry, 1.0, 1.0),
-                FX_ARROW_CUT | FX_TAG_CUT => (Sound::Clash, 0.8, 1.2),
+                FX_ARROW_CUT | FX_TAG_CUT => (Sound::Clash, 0.8, 1.0),
                 FX_ARROW_WALL => (Sound::Ricochet, 0.6, 0.8),
-                FX_TAG_STUCK => (Sound::Print, 0.7, 1.2),
-                FX_TAG_ARMED => (Sound::Refill, 0.45, 1.8),
+                FX_TAG_STUCK => (Sound::Print, 0.7, 1.0),
+                FX_TAG_ARMED => (Sound::Refill, 0.45, 1.2),
                 FX_TAG_BLAST => (Sound::AirSlam, 1.1, 0.8),
                 FX_DROP => (Sound::Land, 0.6, 1.0),
                 _ => continue,
@@ -414,7 +418,7 @@ impl Cuer {
             Some(secs) => {
                 self.tag_beep -= f.dt;
                 if self.tag_beep <= 0.0 {
-                    cues.push(Cue::flat(Sound::RopePulse, 0.9).pitched(1.6));
+                    cues.push(Cue::flat(Sound::RopePulse, 0.9).pitched(1.2));
                     self.tag_beep = 0.1 + 0.35 * (secs / 2.0).clamp(0.0, 1.0);
                 }
             }
@@ -517,6 +521,21 @@ impl Cuer {
         if f.slide_started {
             cues.push(Cue::flat(Sound::Slide, 0.6));
         }
+        if f.grind_started {
+            cues.push(Cue::flat(Sound::GrindStart, 0.7));
+            self.grind_t = GRIND_PULSE;
+        }
+        // the scrape: a grain every GRIND_PULSE s while grinding, quicker and a touch higher the faster you go
+        if f.grinding {
+            self.grind_t -= f.dt;
+            if self.grind_t <= 0.0 {
+                self.grind_t = GRIND_PULSE;
+                self.grind_alt = !self.grind_alt;
+                cues.push(Cue::flat(Sound::GrindScrape, (0.2 + f.speed / 50.0).min(0.5)).pitched((0.9 + f.speed / 60.0) * if self.grind_alt { 1.0 } else { 0.93 }));
+            }
+        } else {
+            self.grind_t = 0.0;
+        }
         if f.jumped {
             cues.push(Cue::flat(Sound::Jump, 0.5));
         }
@@ -528,7 +547,7 @@ impl Cuer {
             cues.push(Cue::flat(if hard { Sound::LandHard } else { Sound::Land }, (0.3 + f.landing_speed / 25.0).min(1.0)));
         }
         // footsteps: stride-timed, alternating pitch, only while running on the ground
-        let on_foot = f.grounded && !f.sliding && !f.dashing && !f.wall_running;
+        let on_foot = f.grounded && !f.sliding && !f.grinding && !f.dashing && !f.wall_running;
         match step_interval(f.speed).filter(|_| on_foot) {
             Some(iv) => {
                 self.step_t -= f.dt;
@@ -565,7 +584,7 @@ impl Cuer {
         for _ in 0..f.my_kills {
             self.streak += 1;
             if self.streak >= 2 {
-                cues.push(Cue::flat(Sound::Streak, 0.8).pitched(1.0 + 0.12 * (self.streak - 2).min(8) as f32));
+                cues.push(Cue::flat(Sound::Streak, 0.8).pitched(1.0 + 0.05 * (self.streak - 2).min(8) as f32));
             }
         }
         // a stealth kill (cloak.rs) gets its own harsher sting layered on top of the plain Kill chime already
@@ -576,7 +595,7 @@ impl Cuer {
         }
         // flow tier-up (combat::flow): a rise gets a bright ascending sparkle, distinct from the kill streak note
         if f.flow_tier > self.flow_tier_prev {
-            cues.push(Cue::flat(Sound::FlowTierUp, 0.75).pitched(1.0 + 0.1 * (f.flow_tier - 1).min(2) as f32));
+            cues.push(Cue::flat(Sound::FlowTierUp, 0.75).pitched(1.0 + 0.06 * (f.flow_tier - 1).min(2) as f32));
         }
         self.flow_tier_prev = f.flow_tier;
         // landed the kill on the marked BOUNTY (docs/bounty.md): the bounty as of the START of this frame (before
@@ -600,10 +619,14 @@ impl Cuer {
             duck = duck.max(0.35);
             self.guard_spent = (self.guard_spent + GUARD_HIT_COST).min(1.0);
         }
+        for _ in 0..f.dealt_blocked {
+            // our blow rang off a shield: a dull clank, never the hit thud
+            cues.push(Cue::flat(Sound::Clang, 0.55).pitched(0.8));
+        }
         for _ in 0..f.parried {
             // bright chime: the bell, plus a higher octave copy on top
             cues.push(Cue::flat(Sound::Parry, 1.0));
-            cues.push(Cue::flat(Sound::Parry, 0.6).pitched(1.5));
+            cues.push(Cue::flat(Sound::Parry, 0.5).pitched(0.75));
             duck = duck.max(0.4);
         }
         if f.blocking {
@@ -1200,11 +1223,11 @@ mod tests {
     }
 
     #[test]
-    fn lock_edges_map_to_tone_chirp_and_fade() {
+    fn only_the_lock_snap_makes_a_sound_and_it_is_a_click() {
         let mut c = Cuer::default();
         let mut f = frame();
         f.lock_edges = vec![LockEdge::Acquired, LockEdge::Locked, LockEdge::Broken];
-        assert_eq!(sounds(&c.update(&f).0), vec![Sound::LockTone, Sound::LockChirp, Sound::LockBreak]);
+        assert_eq!(sounds(&c.update(&f).0), vec![Sound::LockClick], "no acquire boop, no break fade");
     }
 
     #[test]

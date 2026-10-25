@@ -35,6 +35,9 @@ pub struct HitMsg {
     pub head: bool,
     /// The hit landed inside the target's strike window (bonus damage): draw the strike marker.
     pub bonus: bool,
+    /// The victim's guard blocked or parried this hit (blocked damage is the reduced `front_mult` amount, a parry is 0):
+    /// shield / "BLOCKED" feedback, no wound.
+    pub guarded: bool,
 }
 
 /// The owner-only block. `OwnState` (sim crate) sits between `acked_tick` and the tail, so it is passed as a
@@ -121,6 +124,7 @@ impl OwnExtras {
             w.write_bool(h.kill);
             w.write_bool(h.head);
             w.write_bool(h.bonus);
+            w.write_bool(h.guarded);
         }
     }
 
@@ -157,6 +161,7 @@ impl OwnExtras {
                 kill: r.read_bool()?,
                 head: r.read_bool()?,
                 bonus: r.read_bool()?,
+                guarded: r.read_bool()?,
             });
         }
         Ok((Self { has_state, acked_tick, hp_x10, hits, hit_seq, intent_complete, lead_margin, echo_seq, echo_age, star_max, star_energy, star_locked, power_kind, power_ammo, power_left_q }, state))
@@ -250,7 +255,7 @@ mod tests {
 
     #[test]
     fn own_extras_roundtrip_with_and_without_state() {
-        let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7, head: other == 7 || taken, bonus: other == 7 };
+        let hit = |other, taken| HitMsg { other, amount: 34, kind: KIND_SLASH, taken, kill: other == 7, head: other == 7 || taken, bonus: other == 7, guarded: other == 7 && !taken };
         let full = OwnExtras { has_state: true, acked_tick: 123_456, hp_x10: 875, hits: vec![hit(7, false), hit(0, true)], hit_seq: 9, intent_complete: 123_450, lead_margin: -3, echo_seq: 65_000, echo_age: 3, star_max: 6, star_energy: 77, star_locked: true, power_kind: 2, power_ammo: 1, power_left_q: 200 };
         let mut w = BitWriter::new();
         full.write(&mut w, |w| {
@@ -275,7 +280,7 @@ mod tests {
 
     #[test]
     fn hit_list_keeps_newest_and_truncation_errors() {
-        let hits: Vec<_> = (0..30u16).map(|i| HitMsg { other: i, amount: 1, kind: 0, taken: false, kill: false, head: false, bonus: false }).collect();
+        let hits: Vec<_> = (0..30u16).map(|i| HitMsg { other: i, amount: 1, kind: 0, taken: false, kill: false, head: false, bonus: false, guarded: false }).collect();
         let e = OwnExtras { has_state: false, acked_tick: 0, hp_x10: 1000, hits, hit_seq: 4, ..Default::default() };
         let mut w = BitWriter::new();
         e.write(&mut w, |_| {});

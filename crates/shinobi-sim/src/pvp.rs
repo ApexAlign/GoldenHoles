@@ -95,7 +95,21 @@ pub enum Cause {
 pub enum PvpEvent {
     /// `head`: a shuriken that struck head height (`HeadCfg`), for the headshot marker.
     /// `bonus`: the hit landed inside the victim's strike window (`block.rs`) and dealt bonus damage.
-    Hit { tick: u32, attacker: u16, victim: u16, amount: f32, kind: DamageKind, head: bool, bonus: bool },
+    /// `point`: the world-space impact point (precise for slashes/arrows, the victim centre for blasts and enemy
+    /// blows), used by the server to pick the wound region and blood origin.
+    /// `guarded`: the hit was blocked or parried (and, for shuriken, may have dealt 0 damage): it still shows a
+    /// hit marker but must not spawn gore.
+    Hit {
+        tick: u32,
+        attacker: u16,
+        victim: u16,
+        amount: f32,
+        kind: DamageKind,
+        head: bool,
+        bonus: bool,
+        point: [f32; 3],
+        guarded: bool,
+    },
     Kill { tick: u32, killer: u16, victim: u16, kind: DamageKind, head: bool },
     /// Obstacle / light-wall contact on a player. `Wall` hits carry the owner in `source`.
     HazardHit { tick: u32, victim: u16, amount: f32, source: HazardSource },
@@ -120,6 +134,10 @@ pub struct PvpHit {
     /// The attacker was still cloaked when this hit left their hands / blade: a stealth kill
     /// (`combat.cloak.stealth_mult`, see `apply_hits`). Never set on a hazard hit.
     pub stealth: bool,
+    /// World-space impact point for gore. `[0, 0, 0]` on hazards (they never spawn blood).
+    pub point: [f32; 3],
+    /// Resolved blocked/parried before `apply_hits` (arrows, tag blasts): only the server gore filter reads it.
+    pub guarded: bool,
 }
 
 pub fn new_vitals(world: &mut PhysicsWorld, cfg: &Cfg, id: u16, spawn: [f32; 3], max_hp: f32) -> Vitals {
@@ -234,7 +252,16 @@ pub fn player_hits(
                     let centre_y = world.colliders.get(collider).map_or(point.y, |c| c.translation().y);
                     let is_head = kind == DamageKind::Shuriken && point.y - centre_y >= head.min_height;
                     let amount = if is_head { amount * head.mult } else { amount };
-                    out.push(PvpHit { attacker: atk.id, victim: v, amount, cause: Cause::Weapon(kind), head: is_head, stealth: false });
+                    out.push(PvpHit {
+                        attacker: atk.id,
+                        victim: v,
+                        amount,
+                        cause: Cause::Weapon(kind),
+                        head: is_head,
+                        stealth: false,
+                        point: [point.x, point.y, point.z],
+                        guarded: false,
+                    });
                 }
             }
         }
@@ -253,8 +280,9 @@ pub fn player_hits(
                 continue;
             }
             let Some((p0, p1)) = rewound_segment(&p.history, rt) else { continue };
-            if swept_hit([a0.x, a0.y, a0.z], [a1.x, a1.y, a1.z], body, p0, p1, hit_body(cfg)).is_some() {
-                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash), head: false, stealth: false });
+            if let Some(t) = swept_hit([a0.x, a0.y, a0.z], [a1.x, a1.y, a1.z], body, p0, p1, hit_body(cfg)) {
+                let hp = [p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t, p0[2] + (p1[2] - p0[2]) * t];
+                out.push(PvpHit { attacker: atk.id, victim: j, amount: damage, cause: Cause::Weapon(DamageKind::Slash), head: false, stealth: false, point: hp, guarded: false });
                 // the box test missed this target (it moved across the tick), so no raw `Damage` exists yet: emit
                 // it, so every `PvpEvent::Hit` has its combat-side twin (FX, hit markers, bookkeeping)
                 synthesized.push(CombatEvent::Damage {
@@ -262,7 +290,7 @@ pub fn player_hits(
                     collider: p.vitals.hitbox,
                     amount: damage,
                     kind: DamageKind::Slash,
-                    point: Point::new(p1[0], p1[1], p1[2]),
+                    point: Point::new(hp[0], hp[1], hp[2]),
                 });
             }
         }
@@ -280,7 +308,7 @@ pub fn void_hits(players: &[Player], world: &PhysicsWorld, plane_y: f32, tick: u
         .map(|(i, p)| {
             // ring-out: whoever hit this player a moment ago gets the kill
             let pusher = p.melee.last_hit.filter(|(_, t)| melee.ring_ticks > 0 && tick.wrapping_sub(*t) <= melee.ring_ticks).map(|(a, _)| a);
-            PvpHit { attacker: pusher.unwrap_or(NO_ATTACKER), victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false, stealth: false }
+            PvpHit { attacker: pusher.unwrap_or(NO_ATTACKER), victim: i, amount: p.vitals.max_hp * 10.0, cause: Cause::Hazard(VOID), head: false, stealth: false, point: [0.0; 3], guarded: false }
         })
         .collect()
 }
@@ -440,7 +468,17 @@ pub fn apply_hits(
         let killer = players.iter().position(|p| p.id == h.attacker && p.id != victim_id);
         match h.cause {
             Cause::Weapon(kind) => {
-                out.push(PvpEvent::Hit { tick, attacker: h.attacker, victim: victim_id, amount, kind, head: h.head, bonus });
+                out.push(PvpEvent::Hit {
+                    tick,
+                    attacker: h.attacker,
+                    victim: victim_id,
+                    amount,
+                    kind,
+                    head: h.head,
+                    bonus,
+                    point: h.point,
+                    guarded: h.guarded || !matches!(guard_seen, crate::block::Guard::None),
+                });
                 if dead {
                     out.push(PvpEvent::Kill { tick, killer: h.attacker, victim: victim_id, kind, head: h.head });
                 }
@@ -688,6 +726,8 @@ mod tests {
         star: 0,
         draw: false,
         cloak: false,
+        grind: false,
+        zoom: false,
     };
 
     #[test]
@@ -710,6 +750,7 @@ mod tests {
             half_height: 1.0,
             damage: 60.0,
             kind: crate::combat::SlashKind::Light,
+            combo: crate::combat::KatanaCombo::None,
         };
         let mut synth = Vec::new();
         let hits = player_hits(&sim.s.world, &sim.s.players, 0, &[slash], tick, &Cfg::default(), HeadCfg::default(), &mut synth);

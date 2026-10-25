@@ -175,7 +175,7 @@ pub struct Server {
     /// Destructible level boxes (`dbox` lines, `breaks.rs`) and what happened to them in the most recent `frame`.
     pub breaks: crate::breaks::LevelBreaks,
     pub break_events: Vec<crate::breaks::BreakEvent>,
-    /// Quakes and lightning (`env_events.rs`) and what happened in the most recent `frame`.
+    /// Lightning (`env_events.rs`) and what happened in the most recent `frame`.
     pub env: crate::env_events::Env,
     pub env_events: Vec<crate::env_events::EnvEvent>,
     /// `Removed` events of blocks dropped between frames (a player left); delivered with the next frame's events.
@@ -599,12 +599,12 @@ impl Server {
                 let pid = self.players[i].id;
                 let p = &mut self.players[i];
                 let mut pev = Vec::new();
-                p.power.update(dt, &crate::power::PowerInput { draw: it.draw && !shut, fire: fire_in, live_tags: live, armed_tags: armed, can_act: !shut }, &pcfg, &mut pev);
+                p.power.update(dt, &crate::power::PowerInput { draw: it.draw && !shut, zoom: it.zoom && !shut, fire: fire_in, live_tags: live, armed_tags: armed, can_act: !shut }, &pcfg, &mut pev);
                 if p.power.blocks_star() {
                     fire_in = false;
                 }
                 // a loosed arrow or a thrown tag is an attack: breaks the cloak just like a katana swing
-                if pev.iter().any(|e| matches!(e, crate::power::PowerEvent::Loose | crate::power::PowerEvent::TagThrow)) {
+                if pev.iter().any(|e| matches!(e, crate::power::PowerEvent::Loose { .. } | crate::power::PowerEvent::TagThrow)) {
                     p.cloak.brk(&cloak_cfg);
                 }
                 let dir = aim.forward();
@@ -658,6 +658,7 @@ impl Server {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // travels in OwnState (lunge prediction)
+                p.ch.set_slice_buffer(p.combat.slice_buffer_left()); // so does a queued press
             }
             // a swing leaves the swordsman open for a moment (the strike window the lock triangle shows)
             if ev.iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
@@ -792,7 +793,7 @@ impl Server {
                 if let Some(by) = mcfg.splat(&mut p.melee, moved, airborne, tick) {
                     p.blk.stagger_until = tick + mcfg.splat_stagger_ticks;
                     p.blk.open_for(tick, mcfg.splat_stagger_ticks);
-                    hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false, stealth: false });
+                    hits.push(pvp::PvpHit { attacker: by, victim: i, amount: mcfg.splat_damage, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false, stealth: false, point: now_pos, guarded: false });
                 }
             }
             // air-cut slam: when the slammed player lands, a shock-wave goes off (applied once everyone has moved)
@@ -1119,6 +1120,7 @@ pub fn to_player_input_scaled(it: &PlayerIntent, draw_mult: f32) -> PlayerInput 
         move_dir: Vector::new(x, 0.0, z),
         jump_pressed: it.buttons.has(Buttons::JUMP_PRESSED),
         jump_held: it.buttons.has(Buttons::JUMP_HELD),
+        grind_held: it.grind,
         dash_pressed: it.buttons.has(Buttons::DASH),
         roll_pressed: it.buttons.has(Buttons::ROLL),
         wall_cling: it.buttons.has(Buttons::WALL_CLING),

@@ -26,7 +26,7 @@ if [ -z "${LEVEL:-}" ]; then
 fi
 LEVEL_ARGS=()
 [ -f "$LEVEL" ] && LEVEL_ARGS=(--level "$LEVEL")
-# PRESET=storm (default: quakes + lightning)|demolition|fortress|none overlays balance/<name>.cfg on the demo preset (docs/destruction_design.md)
+# PRESET=storm (default: faster re-forming of smashed props/walls)|demolition|fortress|none overlays balance/<name>.cfg on the demo preset (docs/destruction_design.md)
 BAL_ARGS=()
 PRESET="${PRESET-storm}"
 [ -n "${PRESET:-}" ] && [ -f "balance/$PRESET.cfg" ] && BAL_ARGS=(--balance "balance/$PRESET.cfg")

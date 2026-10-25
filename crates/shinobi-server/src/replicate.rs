@@ -12,7 +12,7 @@ use shinobi_proto::snapshot::{
 };
 use shinobi_sim::character::{Cfg, MoveState};
 use shinobi_sim::combat::DamageKind;
-use shinobi_sim::events::{EventOutbox, NetEvent};
+use shinobi_sim::events::{EventOutbox, InjuryRegion, NetEvent};
 use shinobi_sim::match_state::{EndReason, MatchEvent, MatchState, PhaseKind};
 use shinobi_sim::pickups::PickupEvent;
 use shinobi_sim::pvp::{HazardSource, PvpEvent, NO_ATTACKER};
@@ -44,6 +44,8 @@ const BOARD_EVERY_TICKS: u32 = 60;
 const MAX_PENDING_HITS: usize = 32;
 /// Datagrams each hit rides in (survives 2 consecutive losses).
 const HIT_RESENDS: u8 = 3;
+/// Cap per tick so a team-fight burst cannot crowd reliable events out of the datagram budget.
+const INJURY_EVENTS_PER_TICK: usize = 16;
 
 /// Optional world features. The game is a shooter: Tron is a visual style, so by default the server creates NO
 /// obstacle waves (explicit opt-in). The light-cycle trail walls are gone from the server.
@@ -187,14 +189,10 @@ impl Replicator {
         for (idx, hp_q) in server.breaks.cracked() {
             st.outbox.push(NetEvent::WorldCrack { idx, hp_q });
         }
-        // a quake in progress and bolts already marked when this peer joined
+        // bolts already marked when this peer joined
         {
-            use shinobi_sim::events::{ENV_BOLT_MARK, ENV_QUAKE_START, ENV_QUAKE_WARN};
-            let (quake, bolts) = server.env.catch_up(server.tick);
-            if let Some((left, warning)) = quake {
-                st.outbox.push(NetEvent::EnvFx { what: if warning { ENV_QUAKE_WARN } else { ENV_QUAKE_START }, id: 0, pos: [0; 3], aux: left.min(u16::MAX as u32) as u16 });
-            }
-            for (id, pos, left) in bolts {
+            use shinobi_sim::events::ENV_BOLT_MARK;
+            for (id, pos, left) in server.env.catch_up(server.tick) {
                 st.outbox.push(NetEvent::EnvFx { what: ENV_BOLT_MARK, id, pos: q_pos3(pos), aux: left.min(u16::MAX as u32) as u16 });
             }
         }
@@ -373,16 +371,13 @@ impl Replicator {
         }
     }
 
-    /// `Server::env_events` of the last frame (quakes, lightning) -> one reliable event each, for everyone.
+    /// `Server::env_events` of the last frame (lightning) -> one reliable event each, for everyone.
     fn sync_env(&mut self, server: &mut Server) {
         use shinobi_sim::env_events::EnvEvent;
-        use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE, ENV_QUAKE_END, ENV_QUAKE_START, ENV_QUAKE_WARN};
+        use shinobi_sim::events::{ENV_BOLT_MARK, ENV_BOLT_STRIKE};
         let tick = server.tick;
         for ev in std::mem::take(&mut server.env_events) {
             let (what, id, pos, aux) = match ev {
-                EnvEvent::QuakeWarn { warn_ticks, .. } => (ENV_QUAKE_WARN, 0, [0.0; 3], warn_ticks),
-                EnvEvent::QuakeStart { dur_ticks, .. } => (ENV_QUAKE_START, 0, [0.0; 3], dur_ticks),
-                EnvEvent::QuakeEnd { .. } => (ENV_QUAKE_END, 0, [0.0; 3], 0),
                 EnvEvent::BoltMark { id, pos, warn_ticks, .. } => (ENV_BOLT_MARK, id, pos, warn_ticks),
                 EnvEvent::BoltStrike { id, pos, .. } => (ENV_BOLT_STRIKE, id, pos, 0),
             };
@@ -517,24 +512,49 @@ impl Replicator {
         let who = |id: u16| if id == NO_ATTACKER { 0 } else { id };
         self.sync_stars(server, tick);
         self.sync_power(server, tick);
+        let mut injuries = 0usize;
         for ev in pvp {
             match ev {
-                PvpEvent::Hit { attacker, victim, amount, kind, head, bonus, .. } => {
-                    let (amount, kind) = (amount.round().clamp(0.0, 255.0) as u8, weapon_code(kind));
-                    self.push_hit(attacker, HitMsg { other: victim, amount, kind, taken: false, kill: false, head, bonus });
-                    self.push_hit(victim, HitMsg { other: who(attacker), amount, kind, taken: true, kill: false, head, bonus });
+                PvpEvent::Hit { tick, attacker, victim, amount, kind, head, bonus, point, guarded } => {
+                    let damage_q = amount.round().clamp(0.0, 255.0) as u8;
+                    let kind = weapon_code(kind);
+                    self.push_hit(attacker, HitMsg { other: victim, amount: damage_q, kind, taken: false, kill: false, head, bonus, guarded });
+                    self.push_hit(victim, HitMsg { other: who(attacker), amount: damage_q, kind, taken: true, kill: false, head, bonus, guarded });
+                    if damage_q > 0 && !guarded && injuries < INJURY_EVENTS_PER_TICK {
+                        if let Some(p) = server.players.iter().find(|p| p.id == victim) {
+                            let pos = p.pos(&server.world);
+                            let yaw = shinobi_proto::quant::dq_yaw(p.yaw);
+                            let region = injury_region_code(kind, head, tick, attacker, victim, pos, yaw, point);
+                            // A blast or enemy blow reports the victim centre: replace it with the body point of
+                            // the chosen region. Precise weapon hits keep the real impact point.
+                            let (dx, dy, dz) = (point[0] - pos[0], point[1] - pos[1], point[2] - pos[2]);
+                            let blood = if dx * dx + dy * dy + dz * dz < 0.0025 { injury_point(pos, yaw, region) } else { q_pos3(point) };
+                            injuries += 1;
+                            self.broadcast(NetEvent::InjuryFx {
+                                tick,
+                                attacker: who(attacker),
+                                victim,
+                                damage_q,
+                                kind,
+                                region,
+                                point: blood,
+                                blocked: false,
+                                sever: 0,
+                            });
+                        }
+                    }
                 }
                 PvpEvent::Kill { tick, killer, victim, kind, head } => {
                     let kind = weapon_code(kind);
                     self.log_line(tick, format!("KILL    p{killer} {} p{victim}", kind_verb(kind)));
                     self.broadcast(NetEvent::Kill { tick, killer: who(killer), victim, kind });
-                    self.push_hit(killer, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head, bonus: false });
-                    self.push_hit(victim, HitMsg { other: who(killer), amount: 0, kind, taken: true, kill: true, head, bonus: false });
+                    self.push_hit(killer, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head, bonus: false, guarded: false });
+                    self.push_hit(victim, HitMsg { other: who(killer), amount: 0, kind, taken: true, kill: true, head, bonus: false, guarded: false });
                 }
                 PvpEvent::HazardHit { victim, amount, source, .. } => {
                     let (kind, owner) = hazard_code(source);
                     let amount = amount.round().clamp(0.0, 255.0) as u8;
-                    self.push_hit(victim, HitMsg { other: owner, amount, kind, taken: true, kill: false, head: false, bonus: false });
+                    self.push_hit(victim, HitMsg { other: owner, amount, kind, taken: true, kill: false, head: false, bonus: false, guarded: false });
                 }
                 PvpEvent::HazardKill { tick, victim, source, killer } => {
                     let (kind, _) = hazard_code(source);
@@ -555,9 +575,9 @@ impl Replicator {
                     };
                     self.log_line(tick, format!("KILL    p{victim} {verb}{by}"));
                     self.broadcast(NetEvent::Kill { tick, killer: killer.unwrap_or(0), victim, kind });
-                    self.push_hit(victim, HitMsg { other: killer.unwrap_or(0), amount: 0, kind, taken: true, kill: true, head: false, bonus: false });
+                    self.push_hit(victim, HitMsg { other: killer.unwrap_or(0), amount: 0, kind, taken: true, kill: true, head: false, bonus: false, guarded: false });
                     if let Some(k) = killer {
-                        self.push_hit(k, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head: false, bonus: false });
+                        self.push_hit(k, HitMsg { other: victim, amount: 0, kind, taken: false, kill: true, head: false, bonus: false, guarded: false });
                     }
                 }
                 PvpEvent::Respawn { tick, player } => {
@@ -744,6 +764,102 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32
     let mut w = BitWriter::new();
     extras.write(&mut w, |w| OwnState::from_snapshot(&p.ch.snapshot(&server.world)).write(w));
     w.finish()
+}
+
+/// Hurt region for an already-resolved weapon hit. Precise impact points are classified against the victim's
+/// capsule (head/neck/torso/arms/pelvis/legs, rotated into the victim's yaw); blasts and enemy blows report the
+/// centre, so those fall back to a stable hash of the hit (replays and tests stay identical).
+fn injury_region_code(
+    kind: u8,
+    head: bool,
+    tick: u32,
+    attacker: u16,
+    victim: u16,
+    pos: [f32; 3],
+    yaw: f32,
+    point: [f32; 3],
+) -> u8 {
+    if head {
+        return InjuryRegion::Head as u8;
+    }
+    let (dx, dy, dz) = (point[0] - pos[0], point[1] - pos[1], point[2] - pos[2]);
+    if dx * dx + dy * dy + dz * dz < 0.0025 {
+        return injury_region_hash(kind, tick, attacker, victim);
+    }
+    let (s, c) = yaw.sin_cos();
+    let ox = dx * c - dz * s;
+    let region = if dy > 0.48 {
+        InjuryRegion::Head
+    } else if dy > 0.30 {
+        InjuryRegion::Neck
+    } else if dy > 0.02 {
+        if ox > 0.20 {
+            InjuryRegion::ArmR
+        } else if ox < -0.20 {
+            InjuryRegion::ArmL
+        } else {
+            InjuryRegion::Torso
+        }
+    } else if dy > -0.15 {
+        InjuryRegion::Pelvis
+    } else if ox < 0.0 {
+        InjuryRegion::LegL
+    } else {
+        InjuryRegion::LegR
+    };
+    region as u8
+}
+
+fn injury_region_hash(kind: u8, tick: u32, attacker: u16, victim: u16) -> u8 {
+    use shinobi_proto::gameplay::{KIND_ARROW, KIND_SHURIKEN, KIND_SLASH, KIND_TAG};
+    let mut h = tick.wrapping_mul(0x9E37_79B1) ^ (attacker as u32) << 16 ^ victim as u32;
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    let pick = |n: u32| ((h >> 8) % n) as u8;
+    (match kind {
+        KIND_SLASH => match pick(8) {
+            0 => InjuryRegion::ArmL,
+            1 => InjuryRegion::ArmR,
+            2 => InjuryRegion::LegL,
+            3 => InjuryRegion::LegR,
+            4 => InjuryRegion::Neck,
+            5 => InjuryRegion::Pelvis,
+            _ => InjuryRegion::Torso,
+        },
+        KIND_SHURIKEN => match pick(5) {
+            0 => InjuryRegion::ArmL,
+            1 => InjuryRegion::ArmR,
+            _ => InjuryRegion::Torso,
+        },
+        KIND_ARROW => match pick(4) {
+            0 => InjuryRegion::Neck,
+            1 => InjuryRegion::Torso,
+            2 => InjuryRegion::LegL,
+            _ => InjuryRegion::LegR,
+        },
+        KIND_TAG => match pick(3) {
+            0 => InjuryRegion::LegL,
+            1 => InjuryRegion::LegR,
+            _ => InjuryRegion::Pelvis,
+        },
+        _ => InjuryRegion::Torso,
+    }) as u8
+}
+
+/// A point on the victim's body for the gore effect: the capsule centre plus a region offset, rotated by yaw.
+fn injury_point(pos: [f32; 3], yaw: f32, region: u8) -> [i32; 3] {
+    let (ox, oy) = match region {
+        r if r == InjuryRegion::Head as u8 => (0.0, 0.55),
+        r if r == InjuryRegion::Neck as u8 => (0.0, 0.40),
+        r if r == InjuryRegion::ArmL as u8 => (-0.29, 0.16),
+        r if r == InjuryRegion::ArmR as u8 => (0.29, 0.16),
+        r if r == InjuryRegion::LegL as u8 => (-0.11, -0.45),
+        r if r == InjuryRegion::LegR as u8 => (0.11, -0.45),
+        r if r == InjuryRegion::Pelvis as u8 => (0.0, -0.20),
+        _ => (0.0, 0.10),
+    };
+    let (s, c) = yaw.sin_cos();
+    q_pos3([pos[0] + ox * c, pos[1] + oy, pos[2] - ox * s])
 }
 
 fn weapon_code(k: DamageKind) -> u8 {
@@ -1692,8 +1808,8 @@ mod tests {
         let (mut s, mut r) = two_peers();
         r.add_peer(&s, 3, 0); // a bystander (no Player needed for routing)
         let tick = s.tick;
-        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 34.4, kind: DamageKind::Slash, head: false, bonus: false });
-        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 68.8, kind: DamageKind::Shuriken, head: true, bonus: false });
+        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 34.4, kind: DamageKind::Slash, head: false, bonus: false, point: [5.0, 0.95, 0.2], guarded: false });
+        s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 68.8, kind: DamageKind::Shuriken, head: true, bonus: false, point: [5.0, 1.45, 0.1], guarded: false });
         s.pvp_events.push(PvpEvent::HazardHit { tick, victim: 2, amount: 100.0, source: HazardSource::Wall { id: 9, owner: 1 } });
         s.pvp_events.push(PvpEvent::Kill { tick, killer: 1, victim: 2, kind: DamageKind::Slash, head: false });
         s.pvp_events.push(PvpEvent::Respawn { tick, player: 2 });
@@ -1739,7 +1855,86 @@ mod tests {
             read_events(datagram_for(&round, id).0, &mut inbox, |e| got.push(e)).unwrap();
             assert!(got.contains(&NetEvent::Kill { tick, killer: 1, victim: 2, kind: KIND_SLASH }), "peer {id}: {got:?}");
             assert!(got.contains(&NetEvent::Respawn { tick, player: 2 }), "peer {id}");
+            let injuries: Vec<&NetEvent> = got.iter().filter(|e| matches!(e, NetEvent::InjuryFx { .. })).collect();
+            assert_eq!(injuries.len(), 2, "one injury per damaging hit, peer {id}: {got:?}");
+            assert!(injuries.iter().all(|e| matches!(e, NetEvent::InjuryFx { attacker: 1, victim: 2, damage_q, blocked: false, sever: 0, .. } if *damage_q > 0)), "{injuries:?}");
+            assert!(injuries.iter().any(|e| matches!(e, NetEvent::InjuryFx { region, kind, .. } if *region == InjuryRegion::Head as u8 && *kind == gameplay::KIND_SHURIKEN)), "headshot hits the head: {injuries:?}");
+            assert!(injuries.iter().all(|e| matches!(e, NetEvent::InjuryFx { point: [x, y, z], .. } if *y > 0 && (*x != 0 || *z != 0))), "directed points: {injuries:?}");
         }
+    }
+
+    #[test]
+    fn guarded_and_zero_damage_hits_keep_their_marker_but_spawn_no_gore() {
+        let (mut s, mut r) = two_peers();
+        let tick = s.tick;
+        s.pvp_events.push(PvpEvent::Hit {
+            tick,
+            attacker: 1,
+            victim: 2,
+            amount: 30.0,
+            kind: DamageKind::Slash,
+            head: false,
+            bonus: false,
+            point: [5.0, 0.95, 0.2],
+            guarded: true,
+        });
+        s.pvp_events.push(PvpEvent::Hit {
+            tick,
+            attacker: 1,
+            victim: 2,
+            amount: 0.0,
+            kind: DamageKind::Shuriken,
+            head: false,
+            bonus: false,
+            point: [5.0, 1.0, 0.2],
+            guarded: false,
+        });
+        r.post_frame(&mut s);
+        let round = r.build_round(&s);
+        let (events, own_bytes, _, _) = datagram_for(&round, 1);
+        assert!(decode_own(own_bytes).0.hits.iter().any(|h| h.amount > 0), "the blocked hit still flashes the marker");
+        let mut inbox = shinobi_sim::events::EventInbox::default();
+        let mut got = Vec::new();
+        read_events(events, &mut inbox, |e| got.push(e)).unwrap();
+        assert!(!got.iter().any(|e| matches!(e, NetEvent::InjuryFx { .. })), "no gore for guarded or zero hits: {got:?}");
+    }
+
+    #[test]
+    fn injury_events_are_capped_per_tick_but_every_hit_still_has_a_marker() {
+        let (mut s, mut r) = two_peers();
+        let tick = s.tick;
+        for i in 0..20 {
+            s.pvp_events.push(PvpEvent::Hit {
+                tick,
+                attacker: 1,
+                victim: 2,
+                amount: 1.0,
+                kind: DamageKind::Shuriken,
+                head: false,
+                bonus: false,
+                point: [5.0, 0.9 + i as f32 * 0.01, 0.2],
+                guarded: false,
+            });
+        }
+        r.post_frame(&mut s);
+        let round = r.build_round(&s);
+        let (events, _, _, _) = datagram_for(&round, 1);
+        let mut inbox = shinobi_sim::events::EventInbox::default();
+        let mut got = Vec::new();
+        read_events(events, &mut inbox, |e| got.push(e)).unwrap();
+        let injuries = got.iter().filter(|e| matches!(e, NetEvent::InjuryFx { .. })).count();
+        assert_eq!(injuries, INJURY_EVENTS_PER_TICK, "reliable gore is capped per tick: {got:?}");
+    }
+
+    #[test]
+    fn impact_points_pick_limbs_in_the_victim_frame() {
+        use shinobi_proto::gameplay::KIND_SLASH;
+        let pos = [5.0, 0.81, 0.0];
+        assert_eq!(injury_region_code(KIND_SLASH, false, 1, 1, 2, pos, 0.0, [5.3, 1.0, 0.0]), InjuryRegion::ArmR as u8);
+        assert_eq!(injury_region_code(KIND_SLASH, false, 1, 1, 2, pos, 0.0, [5.0, 0.3, 0.0]), InjuryRegion::LegR as u8);
+        assert_eq!(injury_region_code(KIND_SLASH, false, 1, 1, 2, pos, 0.0, [5.0, 1.45, 0.1]), InjuryRegion::Head as u8);
+        // blast / enemy centres have no useful point: stable hash fallback
+        assert_eq!(injury_region_code(KIND_SLASH, false, 1, 1, 2, pos, 0.0, pos), injury_region_hash(KIND_SLASH, 1, 1, 2));
     }
 
     fn hits_of_next(r: &mut Replicator, s: &Server, id: u16) -> Vec<shinobi_proto::gameplay::HitMsg> {
@@ -1752,7 +1947,7 @@ mod tests {
         let (mut s, mut r) = two_peers();
         let tick = s.tick;
         for _ in 0..200 {
-            s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 1.0, kind: DamageKind::Shuriken, head: false, bonus: false });
+            s.pvp_events.push(PvpEvent::Hit { tick, attacker: 1, victim: 2, amount: 1.0, kind: DamageKind::Shuriken, head: false, bonus: false, point: [5.0, 1.2, 0.1], guarded: false });
             r.post_frame(&mut s);
         }
         assert!(r.peers[&1].hits.len() <= MAX_PENDING_HITS);

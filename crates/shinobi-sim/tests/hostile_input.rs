@@ -121,6 +121,8 @@ fn fuzz(seed: u64, players: u16, ticks: u32) {
                     star: (h.yaw & 3) as u8,
                     draw: h.yaw & 4 != 0,
                     cloak: false,
+                    grind: h.yaw & 8 != 0,
+                    zoom: h.yaw & 16 != 0,
                 })
                 .collect();
             seqs[i] = seqs[i].wrapping_add(1);

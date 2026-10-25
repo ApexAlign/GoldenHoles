@@ -3,14 +3,17 @@
 //! wrist grapple launcher, a spinning star glyph and a trailing scarf; and cheap procedural poses (arm swing, tuck,
 //! wall-run, grapple, block, strike). All cosmetic and client-only.
 //!
-//! The four-box body from `shinobi_client::remote::ninja_draw` stays the readable core (bright body, black rim, beacons,
-//! gem and aura live in `play.rs`). This rig only decorates it, so readability is never traded for detail:
+//! The four-box body from `shinobi_client::remote::ninja_draw` stays the readable core (bright body, black rim and aura
+//! live in `play.rs`). This rig only decorates it, so readability is never traded for detail:
 //!   * beyond `DARK_MAX` m the dark armour hides and the bright core shows again,
-//!   * beyond `GLOW_MAX` m the whole rig hides (the body, beacon and gem carry the read).
+//!   * beyond `GLOW_MAX` m the whole rig hides (the bright body, black rim and aura carry the read).
 //!
-//! Every part is an instance of the shared unit cube. Static parts are children of a few animated pivots, so a frame
-//! costs ~12 transform writes per player.
+//! Every decorative part is an instance of the shared unit cube. A close-range anatomical shell (rounded torso,
+//! limbs, hands, skull and boots) sits under it; the shell is PBR, the neon trim stays unlit. Static parts are
+//! children of a few animated pivots, so a frame stays cheap per player.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use std::collections::HashMap;
 
@@ -48,7 +51,6 @@ enum Src {
     Trim,
     Glow,
     Visor,
-    Glove,
     Scarf,
     Hair,
     Skin,
@@ -64,7 +66,6 @@ impl Src {
             Src::Trim => s.rgb(C_TRIM),
             Src::Glow => s.rgb(C_GLOW),
             Src::Visor => s.rgb(C_VISOR),
-            Src::Glove => s.rgb(C_GLOVE).or_else(|| s.rgb(C_SKIN)),
             Src::Scarf => s.rgb(C_SCARF),
             Src::Hair => s.rgb(C_HAIR),
             Src::Skin => s.rgb(C_SKIN),
@@ -74,9 +75,229 @@ impl Src {
     }
 }
 
+/// Close-range anatomical shell slot; each has its own PBR response (skin, suit, glove).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BodySlot {
+    Skin,
+    Suit,
+    Glove,
+    /// Rounded armour shell: crown, pauldrons.
+    Armor,
+}
+
+/// A limb that gore can remove from a remote rig.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limb {
+    Head,
+    ArmL,
+    ArmR,
+    LegL,
+    LegR,
+}
+
 /// Material handles per final colour (quantised, see `colour_key`).
 #[derive(Resource, Default)]
-pub struct LookMats(HashMap<u64, Handle<StandardMaterial>>);
+pub struct LookMats {
+    unlit: HashMap<u64, Handle<StandardMaterial>>,
+    body: HashMap<(u64, u8), Handle<StandardMaterial>>,
+}
+
+/// Procedural meshes shared by every player body: the unit cube used by the neon costume and the rounded anatomical
+/// shell. Generated once at startup; no asset files.
+#[derive(Clone)]
+pub struct RigMeshes {
+    cube: Handle<Mesh>,
+    torso: Handle<Mesh>,
+    head: Handle<Mesh>,
+    neck: Handle<Mesh>,
+    arm: Handle<Mesh>,
+    hand: Handle<Mesh>,
+    leg: Handle<Mesh>,
+    foot: Handle<Mesh>,
+}
+
+impl RigMeshes {
+    pub fn new(meshes: &mut Assets<Mesh>, cube: Handle<Mesh>) -> Self {
+        Self {
+            cube,
+            torso: meshes.add(loft(&TORSO_RINGS, 18)),
+            head: meshes.add(loft(&HEAD_RINGS, 18)),
+            neck: meshes.add(loft(&NECK_RINGS, 12)),
+            arm: meshes.add(loft(&ARM_RINGS, 12)),
+            hand: meshes.add(hand_mesh()),
+            leg: meshes.add(loft(&LEG_RINGS, 14)),
+            foot: meshes.add(foot_mesh()),
+        }
+    }
+
+}
+
+// Model-space profile rings (y, half-width X, half-depth Z), feet at the root origin. The torso/head are drawn under
+// the existing hood/plates; limbs replace the old cube arms and the core leg silhouette up close.
+const TORSO_RINGS: [(f32, f32, f32); 11] = [
+    (-0.365, 0.18, 0.128),
+    (-0.32, 0.195, 0.135),
+    (-0.20, 0.168, 0.118),
+    (-0.06, 0.150, 0.108),
+    (0.08, 0.165, 0.118),
+    (0.20, 0.195, 0.132),
+    (0.29, 0.21, 0.138),
+    (0.34, 0.18, 0.125),
+    (0.365, 0.105, 0.09),
+    (0.385, 0.07, 0.065),
+    (0.405, 0.05, 0.05),
+];
+const HEAD_RINGS: [(f32, f32, f32); 9] = [
+    (-0.135, 0.032, 0.035),
+    (-0.115, 0.070, 0.074),
+    (-0.085, 0.095, 0.098),
+    (-0.035, 0.112, 0.113),
+    (0.015, 0.116, 0.116),
+    (0.070, 0.108, 0.108),
+    (0.105, 0.083, 0.090),
+    (0.125, 0.045, 0.055),
+    (0.135, 0.010, 0.012),
+];
+const NECK_RINGS: [(f32, f32, f32); 5] = [
+    (-0.07, 0.055, 0.052),
+    (-0.02, 0.048, 0.046),
+    (0.035, 0.046, 0.043),
+    (0.075, 0.055, 0.05),
+    (0.10, 0.062, 0.055),
+];
+const ARM_RINGS: [(f32, f32, f32); 10] = [
+    (-0.57, 0.048, 0.044),
+    (-0.54, 0.052, 0.048),
+    (-0.45, 0.058, 0.052),
+    (-0.38, 0.054, 0.050),
+    (-0.30, 0.061, 0.055),
+    (-0.25, 0.060, 0.054),
+    (-0.18, 0.070, 0.062),
+    (-0.09, 0.080, 0.072),
+    (-0.03, 0.078, 0.071),
+    (0.00, 0.072, 0.067),
+];
+const LEG_RINGS: [(f32, f32, f32); 10] = [
+    (-0.72, 0.050, 0.054),
+    (-0.68, 0.058, 0.063),
+    (-0.60, 0.062, 0.068),
+    (-0.53, 0.070, 0.075),
+    (-0.45, 0.086, 0.083),
+    (-0.38, 0.078, 0.079),
+    (-0.32, 0.072, 0.074),
+    (-0.22, 0.086, 0.085),
+    (-0.10, 0.098, 0.094),
+    (0.00, 0.102, 0.098),
+];
+
+/// A closed, smooth-ish loft around the Y axis. Radii are elliptical; normals are generated by Bevy.
+fn loft(rings: &[(f32, f32, f32)], segments: usize) -> Mesh {
+    let mut positions = Vec::with_capacity(rings.len() * segments + 2);
+    let mut indices = Vec::with_capacity(rings.len() * segments * 6);
+    let bottom = positions.len() as u32;
+    positions.push([0.0, rings[0].0, 0.0]);
+    for (i, &(y, rx, rz)) in rings.iter().enumerate() {
+        for k in 0..segments {
+            let a = k as f32 / segments as f32 * std::f32::consts::TAU;
+            positions.push([a.cos() * rx, y, a.sin() * rz]);
+            if i > 0 {
+                let a0 = bottom + 1 + (i - 1) as u32 * segments as u32 + k as u32;
+                let a1 = bottom + 1 + (i - 1) as u32 * segments as u32 + ((k + 1) % segments) as u32;
+                let b0 = bottom + 1 + i as u32 * segments as u32 + k as u32;
+                let b1 = bottom + 1 + i as u32 * segments as u32 + ((k + 1) % segments) as u32;
+                indices.extend_from_slice(&[a0, b0, b1, a0, b1, a1]);
+            }
+        }
+    }
+    let top = positions.len() as u32;
+    positions.push([0.0, rings[rings.len() - 1].0, 0.0]);
+    for k in 0..segments {
+        let b0 = bottom + 1 + (rings.len() - 1) as u32 * segments as u32 + k as u32;
+        let b1 = bottom + 1 + (rings.len() - 1) as u32 * segments as u32 + ((k + 1) % segments) as u32;
+        indices.extend_from_slice(&[top, b1, b0]);
+        let t0 = bottom + 1 + k as u32;
+        let t1 = bottom + 1 + ((k + 1) % segments) as u32;
+        indices.extend_from_slice(&[bottom, t0, t1]);
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_indices(bevy::mesh::Indices::U32(indices));
+    m.compute_normals();
+    m
+}
+
+/// A relaxed hand: a rounded palm plus four tapered fingers and a thumb, merged into one mesh.
+pub(crate) fn hand_mesh() -> Mesh {
+    let mut p = Vec::<[f32; 3]>::new();
+    let mut idx = Vec::<u32>::new();
+    let mut add_ellipsoid = |cx: f32, cy: f32, cz: f32, rx: f32, ry: f32, rz: f32, seg: usize| {
+        let base = p.len() as u32;
+        for j in 0..=seg {
+            let a = j as f32 / seg as f32 * std::f32::consts::PI;
+            for k in 0..seg {
+                let u = k as f32 / seg as f32 * std::f32::consts::TAU;
+                p.push([cx + rx * a.sin() * u.cos(), cy + ry * a.cos(), cz + rz * a.sin() * u.sin()]);
+                if j < seg {
+                    let i0 = base + j as u32 * seg as u32 + k as u32;
+                    let i1 = base + j as u32 * seg as u32 + ((k + 1) % seg) as u32;
+                    let i2 = base + (j as u32 + 1) * seg as u32 + k as u32;
+                    let i3 = base + (j as u32 + 1) * seg as u32 + ((k + 1) % seg) as u32;
+                    idx.extend_from_slice(&[i0, i2, i3, i0, i3, i1]);
+                }
+            }
+        }
+    };
+    add_ellipsoid(0.0, -0.015, 0.0, 0.047, 0.062, 0.032, 10);
+    for k in 0..4 {
+        let x = -0.031 + k as f32 * 0.021;
+        add_ellipsoid(x, -0.072, -0.004, 0.012, 0.045, 0.014, 8);
+    }
+    add_ellipsoid(-0.048, -0.035, -0.005, 0.016, 0.036, 0.018, 8);
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, p)
+        .with_inserted_indices(bevy::mesh::Indices::U32(idx));
+    m.compute_normals();
+    m
+}
+
+/// A boot: a rounded heel, instep and toe box, with the sole just below the origin.
+fn foot_mesh() -> Mesh {
+    let mut p = Vec::new();
+    let mut idx = Vec::new();
+    let seg = 12usize;
+    let mut rings = Vec::new();
+    for (i, (z, w, h)) in [(-0.17f32, 0.012f32, 0.012f32), (-0.15, 0.055, 0.035), (-0.10, 0.085, 0.055), (-0.01, 0.078, 0.062), (0.08, 0.062, 0.072), (0.13, 0.022, 0.028)].iter().enumerate() {
+        let base = p.len() as u32;
+        for k in 0..seg {
+            let a = k as f32 / seg as f32 * std::f32::consts::TAU;
+            p.push([a.cos() * *w, *h + a.sin() * *h * 0.55, *z]);
+            if i > 0 {
+                let prev = base - seg as u32;
+                let i0 = prev + k as u32;
+                let i1 = prev + ((k + 1) % seg) as u32;
+                let i2 = base + k as u32;
+                let i3 = base + ((k + 1) % seg) as u32;
+                idx.extend_from_slice(&[i0, i2, i3, i0, i3, i1]);
+            }
+        }
+        rings.push(base);
+    }
+    let first = rings[0];
+    let last = *rings.last().unwrap();
+    let c0 = p.len() as u32;
+    p.push([0.0, 0.035, -0.17]);
+    let c1 = p.len() as u32;
+    p.push([0.0, 0.055, 0.13]);
+    for k in 0..seg {
+        idx.extend_from_slice(&[c0, first + ((k + 1) % seg) as u32, first + k as u32]);
+        idx.extend_from_slice(&[c1, last + k as u32, last + ((k + 1) % seg) as u32]);
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, p)
+        .with_inserted_indices(bevy::mesh::Indices::U32(idx));
+    m.compute_normals();
+    m
+}
 
 static STARTUP_LOOK: std::sync::OnceLock<Option<CharacterSpec>> = std::sync::OnceLock::new();
 
@@ -144,6 +365,40 @@ fn colour_key(c: [f32; 3]) -> u64 {
     c.iter().fold(0u64, |k, v| (k << 16) | (v.clamp(0.0, 60.0) * 1000.0).round() as u64)
 }
 
+fn body_colour(slot: BodySlot, hue: [f32; 3], spec: Option<&CharacterSpec>) -> [f32; 3] {
+    match slot {
+        BodySlot::Skin => spec.and_then(|s| s.rgb(C_SKIN)).map(|c| c.map(|v| v as f32 / 255.0)).unwrap_or([0.34, 0.21, 0.15]),
+        BodySlot::Suit => spec
+            .and_then(|s| s.rgb(C_BASE))
+            .map(|c| c.map(|v| v as f32 / 255.0))
+            .unwrap_or_else(|| std::array::from_fn(|i| 0.020 + hue[i] * 0.13)),
+        BodySlot::Glove => spec
+            .and_then(|s| s.rgb(C_GLOVE).or_else(|| s.rgb(C_SKIN)))
+            .map(|c| c.map(|v| v as f32 / 255.0))
+            .unwrap_or([0.018, 0.021, 0.026]),
+        BodySlot::Armor => spec
+            .and_then(|s| s.rgb(C_BASE))
+            .map(|c| c.map(|v| v as f32 / 255.0))
+            .unwrap_or_else(|| role_colour(Role::Dark, hue)),
+    }
+}
+
+fn body_material(c: [f32; 3], slot: BodySlot) -> StandardMaterial {
+    let (roughness, metallic) = match slot {
+        BodySlot::Skin => (0.74, 0.0),
+        BodySlot::Suit => (0.56, 0.04),
+        BodySlot::Glove => (0.48, 0.06),
+        BodySlot::Armor => (0.32, 0.34),
+    };
+    StandardMaterial {
+        base_color: Color::linear_rgb(c[0], c[1], c[2]),
+        perceptual_roughness: roughness,
+        metallic,
+        double_sided: true,
+        ..default()
+    }
+}
+
 /// Scale of the glyph sheet segments (half extent of a glyph, metres) on the chest.
 const GLYPH_R: f32 = 0.075;
 
@@ -193,8 +448,22 @@ pub struct Rig {
     roles: Vec<(Entity, Role, Src)>,
     /// Entities hidden beyond `DARK_MAX`.
     dark: Vec<Entity>,
+    /// Rounded anatomical shell entities, painted with PBR body materials on `skin`.
+    body: Vec<(Entity, BodySlot)>,
     /// Pivots hidden beyond `GLOW_MAX` (children follow).
     pivots: Vec<Entity>,
+    /// Everything that makes up one leg (shell, armour, knee, bands, boot) under the shared `legs` pivot.
+    leg_l_parts: [Entity; 6],
+    leg_r_parts: [Entity; 6],
+    /// Limbs blown off by gore; hidden on the next `update` (and the head's core silhouette in `play`).
+    severed_arm_l: bool,
+    severed_arm_r: bool,
+    severed_leg_l: bool,
+    severed_leg_r: bool,
+    severed_head: bool,
+    /// Reactive pose: hit flinch decays over ~0.3 s; limp is on while a leg is missing.
+    flinch: f32,
+    limp: f32,
     phase: f32,
     /// Scarf points in world space (anchor first); `None` until the first update.
     scarf_pts: Option<[Vec3; SCARF_SEGS + 1]>,
@@ -301,11 +570,7 @@ pub fn pose(kind: MoveKind, flags: u8, fx: u8, speed: f32, phase: f32, t: f32, g
 
 /// One scarf spring step: each point trails the previous one, pushed back by the player's velocity and sagging with
 /// gravity. Deterministic in its inputs; `dt` is clamped so a hitch never explodes the chain.
-pub fn scarf_step(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3, vel: Vec3, dt: f32) {
-    scarf_step_len(pts, anchor, back, vel, dt, 1.0)
-}
-
-/// `scarf_step` with every link `len` times as long (custom scarf length).
+/// Advance the scarf chain; every link is `len` times as long (custom scarf length).
 pub fn scarf_step_len(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3, vel: Vec3, dt: f32, len: f32) {
     let dt = dt.clamp(0.0, 0.05);
     pts[0] = anchor;
@@ -327,9 +592,10 @@ pub fn scarf_step_len(pts: &mut [Vec3; SCARF_SEGS + 1], anchor: Vec3, back: Vec3
 
 struct Spawner<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
-    cube: &'a Handle<Mesh>,
+    meshes: &'a RigMeshes,
     roles: Vec<(Entity, Role, Src)>,
     dark: Vec<Entity>,
+    body: Vec<(Entity, BodySlot)>,
 }
 
 impl Spawner<'_, '_, '_> {
@@ -338,7 +604,7 @@ impl Spawner<'_, '_, '_> {
         let e = self
             .commands
             .spawn((
-                Mesh3d(self.cube.clone()),
+                Mesh3d(self.meshes.cube.clone()),
                 Transform { translation: Vec3::from(pos), rotation: rot, scale: Vec3::from(size) },
                 Visibility::default(),
                 ChildOf(parent),
@@ -348,6 +614,22 @@ impl Spawner<'_, '_, '_> {
         if role == Role::Dark || matches!(src, Src::Skin | Src::Hair) {
             self.dark.push(e);
         }
+        e
+    }
+
+    /// A rounded PBR body part; material is applied once per skin on `Rig::skin`.
+    fn part_body(&mut self, parent: Entity, mesh: &Handle<Mesh>, slot: BodySlot, pos: [f32; 3], size: [f32; 3], rot: Quat) -> Entity {
+        let e = self
+            .commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                Transform { translation: Vec3::from(pos), rotation: rot, scale: Vec3::from(size) },
+                Visibility::default(),
+                ChildOf(parent),
+            ))
+            .id();
+        self.body.push((e, slot));
+        self.dark.push(e);
         e
     }
 
@@ -372,10 +654,10 @@ impl Spawner<'_, '_, '_> {
 impl Rig {
     /// Spawn the whole rig under `root` (model space: feet at the origin, facing -Z). `spec` = `None` or a default
     /// spec builds exactly the stock rig.
-    pub fn spawn(commands: &mut Commands, root: Entity, cube: &Handle<Mesh>, spec: Option<&CharacterSpec>) -> Rig {
+    pub fn spawn(commands: &mut Commands, root: Entity, meshes: &RigMeshes, spec: Option<&CharacterSpec>) -> Rig {
         let dflt = CharacterSpec::default();
         let sp = spec.unwrap_or(&dflt);
-        let mut s = Spawner { commands, cube, roles: Vec::new(), dark: Vec::new() };
+        let mut s = Spawner { commands, meshes, roles: Vec::new(), dark: Vec::new(), body: Vec::new() };
         let id = Quat::IDENTITY;
         let rz = Quat::from_rotation_z;
         let rx = Quat::from_rotation_x;
@@ -384,10 +666,10 @@ impl Rig {
 
         // ---- torso (nominal half extents 0.22 x 0.357 x 0.12, front is -Z) ----
         let torso = s.pivot(root);
-        // chest plate + circuit pattern + core diamond / emblem
-        if sp.plates >= 1 {
-            s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.10, -0.125], [0.36, 0.30, 0.03], id);
-        }
+        let torso_mesh = s.meshes.torso.clone();
+        s.part_body(torso, &torso_mesh, BodySlot::Suit, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], id);
+        s.part_body(torso, &torso_mesh, BodySlot::Armor, [0.0, 0.0, 0.002], [1.025, 1.0, 1.025], id);
+        // circuit pattern + core diamond / emblem sit directly on the rounded suit
         match sp.pattern {
             0 => {
                 // lines: a spine and up to three cross bars by density (4 = the stock two)
@@ -424,26 +706,32 @@ impl Rig {
                 s.part_s(torso, Role::Hot, Src::Glow, [g[0] * GLYPH_R, 0.10 + g[1] * GLYPH_R, -0.152], [g[2] * GLYPH_R * 0.5, g[3] * GLYPH_R * 0.25, 0.012], rz(g[4]));
             }
         }
-        // back plate + spine line
-        if sp.plates >= 1 {
-            s.part_s(torso, Role::Dark, Src::Base, [0.0, 0.10, 0.125], [0.36, 0.30, 0.03], id);
-        }
+        // spine line
         if sp.pattern != 3 {
             s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.10, 0.145], [0.022, 0.28, 0.012], id);
         }
-        // shoulder plates with a lit edge (heavy: a second layer and an abdomen guard)
+        // rounded pauldrons with a lit edge; heavier plate tiers add a second cap
         if sp.plates >= 1 {
             for sx in [-1.0f32, 1.0] {
-                s.part_s(torso, Role::Dark, Src::Base, [0.27 * sx * sh, 0.30, 0.0], [0.17, 0.05, 0.24], rz(-0.25 * sx));
+                let pad = s.meshes.head.clone();
+                s.part_body(torso, &pad, BodySlot::Armor, [0.255 * sx * sh, 0.295, 0.0], [0.72, 0.34, 0.95], rz(-0.28 * sx));
                 s.part_s(torso, Role::Glow, Src::Glow, [0.335 * sx * sh, 0.275, 0.0], [0.016, 0.02, 0.24], rz(-0.25 * sx));
                 if sp.plates == 2 {
-                    s.part_s(torso, Role::Dark, Src::Base, [0.285 * sx * sh, 0.345, 0.0], [0.2, 0.05, 0.3], rz(-0.25 * sx));
+                    let pad = s.meshes.head.clone();
+                    s.part_body(torso, &pad, BodySlot::Armor, [0.285 * sx * sh, 0.345, 0.0], [0.86, 0.32, 1.12], rz(-0.28 * sx));
                 }
             }
             if sp.plates == 2 {
-                s.part_s(torso, Role::Dark, Src::Base, [0.0, -0.12, -0.125], [0.34, 0.12, 0.03], id);
                 s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.12, -0.145], [0.3, 0.014, 0.01], id);
             }
+        }
+        if sp.plates >= 1 {
+            // a close-fitting harness breaks up the smooth chest and gives the plate a readable seam
+            for sx in [-1.0f32, 1.0] {
+                s.part_s(torso, Role::Dark, Src::Base, [0.085 * sx, 0.08, -0.143], [0.048, 0.33, 0.014], rz(0.22 * sx));
+            }
+            s.part_s(torso, Role::Dark, Src::Base, [0.0, -0.19, -0.137], [0.24, 0.045, 0.014], id);
+            s.part_s(torso, Role::Glow, Src::Glow, [0.0, 0.045, -0.152], [0.07, 0.025, 0.01], id);
         }
         if sp.has_acc(ACC_FINS) {
             for sx in [-1.0f32, 1.0] {
@@ -452,8 +740,8 @@ impl Rig {
         }
         // sash: waist band + knot + hanging tail
         if sp.sash {
-            s.part_s(torso, Role::Accent, Src::Trim, [0.0, -0.30, 0.0], [0.47, 0.075, 0.27], id);
-            s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.30, -0.138], [0.45, 0.014, 0.01], id);
+            s.part_s(torso, Role::Accent, Src::Trim, [0.0, -0.30, 0.0], [0.40, 0.055, 0.24], id);
+            s.part_s(torso, Role::Glow, Src::Glow, [0.0, -0.30, -0.124], [0.38, 0.012, 0.01], id);
             s.part_s(torso, Role::Accent, Src::Trim, [0.19, -0.33, -0.14], [0.07, 0.07, 0.04], rz(0.785));
             s.part_s(torso, Role::Accent, Src::Trim, [0.21, -0.52, -0.145], [0.05, 0.27, 0.015], rz(0.12));
         }
@@ -517,33 +805,26 @@ impl Rig {
 
         // ---- head: hood shell, mask, glowing visor (nominal half 0.11 x 0.12 x 0.11) ----
         let head = s.pivot(root);
+        let head_mesh = s.meshes.head.clone();
+        let neck_mesh = s.meshes.neck.clone();
         let hooded = sp.hood == 0;
-        match sp.hood {
-            0 => {
-                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.145, 0.0], [0.27, 0.05, 0.27], id); // hood top
-                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.0, 0.125], [0.27, 0.29, 0.04], id); // hood back
-                s.part_s(head, Role::Dark, Src::Base, [-0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
-                s.part_s(head, Role::Dark, Src::Base, [0.13, 0.0, 0.0], [0.04, 0.29, 0.25], id);
-                s.part_s(head, Role::Dark, Src::Base, [0.0, 0.17, 0.17], [0.2, 0.04, 0.2], rx(-0.45)); // hood peak
-            }
-            1 => {
-                // hood thrown back: the back and short side panels frame the face and hair
-                s.part_s(head, Role::Dark, Src::Base, [0.0, -0.01, 0.14], [0.27, 0.31, 0.05], id);
-                s.part_s(head, Role::Dark, Src::Base, [-0.13, -0.04, 0.07], [0.04, 0.2, 0.12], id);
-                s.part_s(head, Role::Dark, Src::Base, [0.13, -0.04, 0.07], [0.04, 0.2, 0.12], id);
-            }
-            _ => {}
+        // The rounded head is the hood itself when closed; with the hood open it is the bare head. The old hood
+        // boxes are gone so close-ups read as an anatomical skull, not a crate.
+        let head_slot = if hooded { BodySlot::Suit } else { BodySlot::Skin };
+        s.part_body(head, &head_mesh, head_slot, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], id);
+        s.part_body(head, &neck_mesh, BodySlot::Skin, [0.0, -0.135, 0.0], [1.0, 1.0, 1.0], id);
+        if hooded && sp.mask == 0 {
+            // an actual face inside the cowl instead of a flat skin card
+            s.part_body(head, &head_mesh, BodySlot::Skin, [0.0, -0.025, -0.098], [0.70, 0.55, 0.34], id);
         }
-        if !hooded {
-            s.part_s(head, Role::Plain, Src::Skin, [0.0, 0.0, 0.0], [0.235, 0.26, 0.235], id); // bare head
+        // A hood pushed back is a soft cowl around the back of the skull.
+        if sp.hood == 1 {
+            let cowl = s.meshes.head.clone();
+            s.part_body(head, &cowl, BodySlot::Suit, [0.0, -0.02, 0.045], [1.14, 1.08, 0.78], id);
         }
         // face covering
         match sp.mask {
-            0 => {
-                if hooded {
-                    s.part_s(head, Role::Plain, Src::Skin, [0.0, -0.02, -0.118], [0.2, 0.17, 0.02], id); // face in the hood opening
-                }
-            }
+            0 => {}
             1 => {
                 s.part_s(head, Role::Dark, Src::Base, [0.0, -0.065, -0.118], [0.22, 0.11, 0.03], id); // face mask
                 if hooded {
@@ -777,12 +1058,16 @@ impl Rig {
         }
 
         // ---- arms: pivot at the shoulder (torso space is applied at update time) ----
-        let hand_role = if sp.rgb(C_GLOVE).is_some() || sp.rgb(C_SKIN).is_some() { Role::Plain } else { Role::Accent };
+        let arm_mesh = s.meshes.arm.clone();
+        let hand_mesh = s.meshes.hand.clone();
         let arm = |s: &mut Spawner, launcher: bool| -> Entity {
             let a = s.pivot(root);
-            s.part_s(a, Role::Dark, Src::Base, [0.0, -0.29, 0.0], [0.09, 0.58, 0.09], id);
-            s.part_s(a, Role::Glow, Src::Glow, [0.0, -0.44, 0.0], [0.108, 0.06, 0.108], id);
-            s.part_s(a, hand_role, Src::Glove, [0.0, -0.61, 0.0], [0.075, 0.085, 0.075], id);
+            s.part_body(a, &arm_mesh, BodySlot::Suit, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], id);
+            s.part_body(a, &hand_mesh, BodySlot::Glove, [0.0, -0.585, -0.01], [1.0, 1.0, 1.0], id);
+            s.part_body(a, &arm_mesh, BodySlot::Armor, [0.0, -0.26, 0.0], [1.06, 0.55, 1.06], id);
+            let elbow = s.meshes.head.clone();
+            s.part_body(a, &elbow, BodySlot::Armor, [0.0, -0.30, -0.012], [0.55, 0.34, 0.5], id);
+            s.part_s(a, Role::Glow, Src::Glow, [0.0, -0.44, 0.0], [0.102, 0.035, 0.102], id);
             if launcher {
                 // wrist grapple launcher: a chunky bracer with a lit barrel (its muzzle is where the rope starts)
                 s.part_s(a, Role::Dark, Src::Base, [0.0, -0.40, -0.07], [0.13, 0.17, 0.08], id);
@@ -794,15 +1079,25 @@ impl Rig {
         let arm_l = arm(&mut s, true);
         let arm_r = arm(&mut s, false);
 
-        // ---- legs: lit greaves on the existing leg box, and two animated feet ----
+        // ---- legs: lit greaves on the existing leg box, rounded limbs and two animated feet ----
         // (greaves keep the match colour unless the character has glowing tabi, so teams still read from the legs)
         let legs = s.pivot(root);
-        s.part_s(legs, Role::Glow, tabi, [0.0, -0.62, 0.0], [0.375, 0.045, 0.255], id); // ankle
-        s.part_s(legs, Role::Glow, tabi, [0.0, 0.05, 0.0], [0.375, 0.03, 0.255], id); // knee
-        s.part_s(legs, Role::Dark, Src::Base, [0.0, -0.3, -0.115], [0.3, 0.3, 0.03], id); // shin guard
+        let leg_mesh = s.meshes.leg.clone();
+        let leg_l_mesh = s.part_body(legs, &leg_mesh, BodySlot::Suit, [-0.107, 0.36, 0.0], [0.92, 1.0, 0.92], id);
+        let leg_r_mesh = s.part_body(legs, &leg_mesh, BodySlot::Suit, [0.107, 0.36, 0.0], [0.92, 1.0, 0.92], id);
+        let leg_l_armour = s.part_body(legs, &leg_mesh, BodySlot::Armor, [-0.107, 0.0, 0.0], [0.98, 0.40, 0.98], id);
+        let leg_r_armour = s.part_body(legs, &leg_mesh, BodySlot::Armor, [0.107, 0.0, 0.0], [0.98, 0.40, 0.98], id);
+        let knee = s.meshes.head.clone();
+        let knee_l = s.part_body(legs, &knee, BodySlot::Armor, [-0.107, 0.0, -0.072], [0.62, 0.34, 0.45], id);
+        let knee_r = s.part_body(legs, &knee, BodySlot::Armor, [0.107, 0.0, -0.072], [0.62, 0.34, 0.45], id);
+        let ankle_l = s.part_s(legs, Role::Glow, tabi, [-0.107, -0.62, 0.0], [0.185, 0.025, 0.155], id);
+        let ankle_r = s.part_s(legs, Role::Glow, tabi, [0.107, -0.62, 0.0], [0.185, 0.025, 0.155], id);
+        let knee_band_l = s.part_s(legs, Role::Glow, tabi, [-0.107, 0.04, 0.0], [0.195, 0.020, 0.16], id);
+        let knee_band_r = s.part_s(legs, Role::Glow, tabi, [0.107, 0.04, 0.0], [0.195, 0.020, 0.16], id);
+        let boot_mesh = s.meshes.foot.clone();
         let foot = |s: &mut Spawner| -> Entity {
             let f = s.pivot(root);
-            s.part_s(f, Role::Dark, Src::Base, [0.0, 0.0, -0.03], [0.13, 0.08, 0.3], id);
+            s.part_body(f, &boot_mesh, BodySlot::Armor, [0.0, 0.0, -0.03], [1.0, 1.0, 1.0], id);
             s.part_s(f, Role::Glow, tabi, [0.0, 0.043, -0.03], [0.08, 0.012, 0.26], id);
             if tabi == Src::Glow {
                 s.part_s(f, Role::Glow, tabi, [0.0, -0.036, -0.03], [0.15, 0.012, 0.32], id); // sole glow
@@ -811,6 +1106,8 @@ impl Rig {
         };
         let foot_l = foot(&mut s);
         let foot_r = foot(&mut s);
+        let leg_l_parts = [leg_l_mesh, leg_l_armour, knee_l, ankle_l, knee_band_l, foot_l];
+        let leg_r_parts = [leg_r_mesh, leg_r_armour, knee_r, ankle_r, knee_band_r, foot_r];
 
         // ---- katana at the hip: lit edge + guard + wrapped grip (the body box is the blade core) ----
         let katana = s.pivot(root);
@@ -834,6 +1131,7 @@ impl Rig {
         let pivots = vec![torso, head, arm_l, arm_r, legs, foot_l, foot_r, katana, glyph];
         let mut roles = std::mem::take(&mut s.roles);
         let dark = std::mem::take(&mut s.dark);
+        let body = std::mem::take(&mut s.body);
         roles.shrink_to_fit();
         // scarf length: 4 = stock, +-15% per step; "long" is longer again; "tails" are narrow
         let scarf_len = (1.0 + (sp.scarf_len_q as f32 - 4.0) * 0.15) * if sp.scarf_style == 2 { 1.35 } else { 1.0 };
@@ -848,6 +1146,8 @@ impl Rig {
             arm_l,
             arm_r,
             legs,
+            leg_l_parts,
+            leg_r_parts,
             foot_l,
             foot_r,
             katana,
@@ -858,7 +1158,15 @@ impl Rig {
             shoulders: sh,
             roles,
             dark,
+            body,
             pivots,
+            severed_arm_l: false,
+            severed_arm_r: false,
+            severed_leg_l: false,
+            severed_leg_r: false,
+            severed_head: false,
+            flinch: 0.0,
+            limp: 0.0,
             phase: 0.0,
             scarf_pts: None,
             bulk: sp.bulk(),
@@ -886,14 +1194,59 @@ impl Rig {
         }
     }
 
+    pub fn sever(&mut self, limb: Limb) {
+        match limb {
+            Limb::Head => self.severed_head = true,
+            Limb::ArmL => self.severed_arm_l = true,
+            Limb::ArmR => self.severed_arm_r = true,
+            Limb::LegL => { self.severed_leg_l = true; self.limp = 1.0; }
+            Limb::LegR => { self.severed_leg_r = true; self.limp = 1.0; }
+        }
+    }
+
+    /// Put every limb back (respawn): the next update shows all geometry again.
+    pub fn restore(&mut self) {
+        self.severed_arm_l = false;
+        self.severed_arm_r = false;
+        self.severed_leg_l = false;
+        self.severed_leg_r = false;
+        self.severed_head = false;
+        self.flinch = 0.0;
+        self.limp = 0.0;
+    }
+
+    /// A close hit makes the remote body jolt; strength is 0..=1.
+    pub fn flinch(&mut self, strength: f32) {
+        self.flinch = self.flinch.max(strength.clamp(0.0, 1.0));
+    }
+
+    pub fn is_severed(&self, limb: Limb) -> bool {
+        match limb {
+            Limb::Head => self.severed_head,
+            Limb::ArmL => self.severed_arm_l,
+            Limb::ArmR => self.severed_arm_r,
+            Limb::LegL => self.severed_leg_l,
+            Limb::LegR => self.severed_leg_r,
+        }
+    }
+
     /// (Re)skin every part for a player colour and (optionally) a custom look.
     pub fn skin(&self, commands: &mut Commands, cache: &mut LookMats, mats: &mut Assets<StandardMaterial>, hue: [f32; 3], spec: Option<&CharacterSpec>) {
         for (e, role, src) in &self.roles {
             let c = paint(*role, *src, hue, spec);
             let h = cache
-                .0
+                .unlit
                 .entry(colour_key(c))
                 .or_insert_with(|| mats.add(StandardMaterial { base_color: Color::linear_rgb(c[0], c[1], c[2]), unlit: true, ..default() }))
+                .clone();
+            commands.entity(*e).insert(MeshMaterial3d(h));
+        }
+        for (e, slot) in &self.body {
+            let c = body_colour(*slot, hue, spec);
+            let h = cache
+                .body
+                .entry((colour_key(c), *slot as u8))
+                .or_insert_with(|| mats.add(body_material(c, *slot)))
                 .clone();
             commands.entity(*e).insert(MeshMaterial3d(h));
         }
@@ -902,6 +1255,9 @@ impl Rig {
     /// Paint every rig part with one material (the hit flash); `skin` restores the colours.
     pub fn flash(&self, commands: &mut Commands, mat: &Handle<StandardMaterial>) {
         for (e, _, _) in &self.roles {
+            commands.entity(*e).insert(MeshMaterial3d(mat.clone()));
+        }
+        for (e, _) in &self.body {
             commands.entity(*e).insert(MeshMaterial3d(mat.clone()));
         }
     }
@@ -925,6 +1281,22 @@ impl Rig {
                 v.set_if_neq(if dark_on { Visibility::Inherited } else { Visibility::Hidden });
             }
         }
+        for (e, severed) in [(self.head, self.severed_head), (self.arm_l, self.severed_arm_l), (self.arm_r, self.severed_arm_r)] {
+            if severed {
+                if let Ok(mut v) = vis.get_mut(e) {
+                    v.set_if_neq(Visibility::Hidden);
+                }
+            }
+        }
+        for (parts, severed) in [(self.leg_l_parts, self.severed_leg_l), (self.leg_r_parts, self.severed_leg_r)] {
+            if severed {
+                for e in parts {
+                    if let Ok(mut v) = vis.get_mut(e) {
+                        v.set_if_neq(Visibility::Hidden);
+                    }
+                }
+            }
+        }
         if !near {
             self.scarf_pts = None;
             return;
@@ -932,6 +1304,9 @@ impl Rig {
 
         let speed = c.vel.length();
         self.phase = (self.phase + c.dt * speed * 1.25) % std::f32::consts::TAU;
+        self.flinch = (self.flinch - c.dt * 3.2).max(0.0);
+        let limp_side = if self.severed_leg_l { 1.0 } else if self.severed_leg_r { -1.0 } else { 0.0 } * self.limp;
+        let hit_tilt = self.flinch * 0.32;
         let pz = pose(c.kind, c.flags, c.fx, speed, self.phase, c.t, c.anchor.is_some());
         let part = |n: &str| c.draw.parts.iter().find(|p| p.name == n);
         let (bw, bh) = c.boost;
@@ -945,7 +1320,11 @@ impl Rig {
         let mut torso_xf = Transform::IDENTITY;
         if let Some(p) = part("torso") {
             let sy = p.half[1] * bh / 0.357;
-            torso_xf = Transform { translation: Vec3::from(p.offset), rotation: Quat::from_rotation_x(p.pitch), scale: Vec3::new(bw, sy, bw) };
+            torso_xf = Transform {
+                translation: Vec3::from(p.offset),
+                rotation: Quat::from_rotation_x(p.pitch + hit_tilt) * Quat::from_rotation_z(limp_side * 0.14),
+                scale: Vec3::new(bw, sy, bw),
+            };
             shoulder_y = 0.30 * sy;
             if let Ok(mut t) = tf.get_mut(self.torso) {
                 *t = torso_xf;
@@ -953,7 +1332,11 @@ impl Rig {
         }
         if let Some(p) = part("head") {
             if let Ok(mut t) = tf.get_mut(self.head) {
-                *t = Transform { translation: Vec3::from(p.offset), rotation: Quat::from_rotation_x(p.pitch), scale: Vec3::new(bw, bh, bw) };
+                *t = Transform {
+                    translation: Vec3::from(p.offset),
+                    rotation: Quat::from_rotation_x(p.pitch + hit_tilt * 0.5) * Quat::from_rotation_z(limp_side * 0.08),
+                    scale: Vec3::new(bw, bh, bw),
+                };
             }
         }
         if let Some(p) = part("legs") {
@@ -969,7 +1352,7 @@ impl Rig {
             let foot_y = 0.04 + pz.lift;
             for (e, sign, sx) in [(self.foot_l, 1.0f32, -1.0f32), (self.foot_r, -1.0, 1.0)] {
                 if let Ok(mut t) = tf.get_mut(e) {
-                    t.translation = Vec3::new(0.09 * sx * bw, foot_y + 0.05 * pz.stride.abs(), -pz.stride * sign);
+                    t.translation = Vec3::new(0.107 * sx * bw, foot_y + 0.05 * pz.stride.abs(), -pz.stride * sign);
                     t.scale = Vec3::new(bw, 1.0, bw);
                 }
             }
@@ -982,7 +1365,14 @@ impl Rig {
         // arms hang from the shoulders in torso space
         let sx = 0.29 * bw * self.shoulders;
         let shoulder = |side: f32| torso_xf.translation + torso_xf.rotation * Vec3::new(sx * side, shoulder_y, 0.0);
-        let arm_rot = |a: Arm, side: f32| torso_xf.rotation * Quat::from_rotation_z(-a.splay * side) * Quat::from_rotation_x(a.swing);
+        let arm_rot = |a: Arm, side: f32| {
+            let mut q = torso_xf.rotation * Quat::from_rotation_z(-a.splay * side) * Quat::from_rotation_x(a.swing);
+            // hold the wound: the surviving hand comes across the chest while the other arm is gone
+            if (side < 0.0 && self.severed_arm_r) || (side > 0.0 && self.severed_arm_l) {
+                q *= Quat::from_rotation_x(-1.05) * Quat::from_rotation_z(0.45 * side);
+            }
+            q
+        };
         // right arm is +X (the katana side), left is -X (launcher side)
         let mut left_q = arm_rot(pz.left, -1.0);
         if let Some(anchor) = c.anchor {
@@ -1079,7 +1469,7 @@ mod tests {
         let anchor = Vec3::new(0.0, 1.4, 0.0);
         let mut p = [anchor - Vec3::Y * 0.1; SCARF_SEGS + 1];
         for _ in 0..240 {
-            scarf_step(&mut p, anchor, Vec3::Z, vel, 1.0 / 60.0);
+            scarf_step_len(&mut p, anchor, Vec3::Z, vel, 1.0 / 60.0, 1.0);
         }
         p
     }
@@ -1099,11 +1489,11 @@ mod tests {
     #[test]
     fn scarf_survives_a_frame_hitch() {
         let mut p = settle(Vec3::ZERO);
-        scarf_step(&mut p, Vec3::new(50.0, 1.4, 0.0), Vec3::Z, Vec3::new(40.0, 0.0, 0.0), 5.0);
+        scarf_step_len(&mut p, Vec3::new(50.0, 1.4, 0.0), Vec3::Z, Vec3::new(40.0, 0.0, 0.0), 5.0, 1.0);
         assert!(p.iter().all(|v| v.is_finite()));
     }
 
-    const ALL_SRC: [Src; 11] = [Src::Match, Src::Base, Src::Trim, Src::Glow, Src::Visor, Src::Glove, Src::Scarf, Src::Hair, Src::Skin, Src::Edge, Src::Star];
+    const ALL_SRC: [Src; 10] = [Src::Match, Src::Base, Src::Trim, Src::Glow, Src::Visor, Src::Scarf, Src::Hair, Src::Skin, Src::Edge, Src::Star];
     const ALL_ROLES: [Role; 5] = [Role::Dark, Role::Accent, Role::Glow, Role::Hot, Role::Plain];
 
     #[test]
@@ -1132,9 +1522,9 @@ mod tests {
         // edge falls back to the glow colour; the visor is unset so it keeps the match colour
         assert_eq!(paint(Role::Hot, Src::Edge, hue, Some(&sp)), role_colour(Role::Hot, sp.rgb(C_GLOW).unwrap().map(|v| v as f32 / 255.0)));
         assert_eq!(paint(Role::Hot, Src::Visor, hue, Some(&sp)), role_colour(Role::Hot, hue));
-        // gloves fall back to skin; plain slots are drawn exactly as given
+        // plain slots are drawn exactly as given
         let skin = sp.rgb(C_SKIN).unwrap().map(|v| v as f32 / 255.0);
-        assert_eq!(paint(Role::Plain, Src::Glove, hue, Some(&sp)), skin);
+        assert_eq!(paint(Role::Plain, Src::Skin, hue, Some(&sp)), skin);
     }
 
     #[test]

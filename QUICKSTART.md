@@ -85,7 +85,7 @@ cd crates/shinobi-game && cargo run --release -- --server 192.168.1.20:7777 --le
 ```
 
 Press **E** to fire the wrist grapple at the crosshair (the rope reels you in; E again releases) and use it with
-dash, wall-run and slide. Shurikens and the katana pass through teammates; first team to 50 team kills wins.
+dash, wall-run and grind. Shurikens and the katana pass through teammates; first team to 50 team kills wins.
 (Player-built blocks work: **N** prints a floor-ramp and **M** prints a wall; anyone can shoot or slice them apart.)
 
 **No window?** `scripts/demo_8v8_headless.sh` runs a release server with `--team-size 8` plus 8 scripted clients that
@@ -119,11 +119,12 @@ the compact copy (39 bytes) it receives. AI bots wear a few built-in presets.
 | click window | grab the mouse (Esc releases) |
 | W A S D, mouse | move, aim |
 | Space | jump / double-jump |
-| Shift / 4 / C | dash / roll / slide |
+| Shift | dash |
+| C | grind (hold on the ground or through a landing) |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
-| Left click | katana dash-slice |
+| Left click | katana dash-slice; with the yumi up, draw (release to loose) |
 | Q | throw the selected star (hold = MARK; R / wheel switch type) |
-| Right click | block (a timed raise parries) |
+| Right click | block (a timed raise parries); with the yumi up, hold to focus the draw (zoom) |
 | 1 / 2 | katana / yumi bow up |
 | E | wrist grapple: hook the crosshair and reel in, E again releases |
 | N / M | print a floor-ramp / a wall (anyone can shoot or slice them apart) |
@@ -162,10 +163,11 @@ defaults to 7777. Humans get ids 1..=200 (max 200 players), bots 201..=255 (max 
   the keys are listed by `Balance::demo().to_text()`; typos are reported with line numbers. Pass the **same file** to
   every game window (`shinobi-game ... --balance PATH`); the `Welcome` fingerprint warns in the HUD on a mismatch.
 
-## Network events (protocol v25, for client authors)
+## Network events (protocol v26, for client authors)
 
-Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). Besides the match
-flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`) and pickups:
+Reliable, ordered, acked events ride the snapshot datagrams (`shinobi_sim::events::NetEvent`). v26 tags are 6 bits
+(tag 32 is `InjuryFx`; 63 stays invalid). Besides the match flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`,
+`MatchEnd`, `MapChange`) and pickups:
 
 | Event | Meaning | Client state (`NetClient`) |
 |---|---|---|
@@ -177,6 +179,7 @@ flow (`Kill`, `Respawn`, `MatchCountdown`, `MatchStart`, `MatchEnd`, `MapChange`
 | `MatchRules { frag_limit, team_frag_limit, time_limit_secs, respawn_ticks }` | match limits + respawn delay, sent to every joiner; client `frag_limit()` / `team_frag_limit()` / `time_limit_secs()` / `respawn_secs()` (all `Option`, `None` until catch-up) | `frag_limit()` |
 | `CharacterLook { player, wire }` | the player's validated custom look (`shinobi_proto::character`, 39 bytes, quantised; docs/CHARACTER_SPEC.md). Sent to everyone when it changes and replayed to late joiners; stock ninjas send nothing. The client sends its own in `ClientPacket.look` (v17) until it sees its echo | `look_of(id)`, `set_look()` |
 | `BlockRefused { why }` | your build press failed: 0 occupied, 1 body in the way, 2 cooldown (builder only) | via `take_events()` |
+| `InjuryFx { tick, attacker, victim, damage_q, kind, region, point, blocked, sever }` | a damaging, unguarded weapon hit at the victim's authoritative region (0 torso, 1 head, 2 neck, 3/4 arm L/R, 5/6 leg L/R, 7 pelvis) and real quantised impact point (1/512 m; blasts and enemy blows use the victim centre). Blocked/parried and zero-damage hits keep their marker but send no InjuryFx; each tick is capped so gore cannot crowd reliable events. The client draws spray, wound decals, arterial spurts, trails, gibs and the death pool there, with per-tier budgets | `take_events()` |
 
 Shurikens are snapshot entities with ids `PROJECTILE_ID_BASE` (0x4000) and up: `yaw` = owner id, `flags` = bounce
 count (at most 128 replicated). Button edges (dash, jump, slice, zip, build, ultimate) are loss-proof: a client keeps sending the intents that carry

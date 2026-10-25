@@ -514,7 +514,7 @@ fn update(
                     let d = Vec3::from(s.pos) - eye;
                     arc_angle(d.x, d.z, yaw)
                 });
-                h.trigger(Ev { dmg: m.amount as f32, head: m.head, kind: m.kind, shield: m.amount == 0, angle });
+                h.trigger(Ev { dmg: m.amount as f32, head: m.head, kind: m.kind, shield: m.amount == 0 || m.guarded, angle });
             }
             // our own kill confirm: "big" (gold) for the marked BOUNTY (`h.bounty_seen` as of the START of this
             // frame, before the refresh below) or a stealth kill from cloak (`cloak.rs`); plain (cyan) otherwise.

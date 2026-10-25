@@ -508,6 +508,7 @@ fn update(
     ctl.bridge.hints.load(settings.0.hints_seen);
     ctl.bridge.blind_mult = Some(settings.0.fx_intensity.max(0.35) * if settings.0.reduced_motion { 0.5 } else { 1.0 });
     let mut state: HudState = ctl.bridge.update(dt, &view.0, &net.0.game.net, tab);
+    state.gore = settings.0.gore_intensity;
     // a hint was shown: remember it across runs (without re-applying the settings to the game)
     if ctl.bridge.hints.counts() != settings.0.hints_seen {
         settings.bypass_change_detection().0.hints_seen = ctl.bridge.hints.counts();

@@ -292,7 +292,8 @@ fn build_grid(l: &LevelFile, cfg: &Cfg) -> Grid {
 
 fn max_rise(cfg: &Cfg) -> f32 {
     let apex = |v: f32| v * v / (2.0 * cfg.gravity);
-    let w = cfg.peak_window;
+    // the double jump works at any height; level design (and the bots) assume it fires near the apex, |vy| <= 3 m/s
+    let w = 3.0;
     let at_window = (cfg.jump_speed * cfg.jump_speed - w * w) / (2.0 * cfg.gravity);
     at_window + apex(cfg.double_jump_speed) - 0.3
 }

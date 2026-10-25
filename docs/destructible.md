@@ -22,8 +22,12 @@ dbox  cx cy cz  hx hy hz  rot_z hp      # like `box`, rot_z always given (may be
 
 `box` index = order among all box/dbox lines (the wire id of a destructible box is its box index, a `u16`).
 `scripts/gen_isles_level.py` / `gen_sky_level.py` mark bamboo, cover walls, towers (stacked 6 to 12 m segments), canyon walls,
-ring segments, rocks, shard columns, torii posts, lantern pylons and pagoda daises; `gen_small_level.py` (the 88 m ground arena) marks its four cover pillars and two monoliths. The big legacy maps (`ffa`, `ffa_xl`, `8v8`) are not destructible yet. A post-pass keeps every box in a column under a
+ring segments, rocks, shard columns, torii posts, lantern pylons and pagoda daises; `gen_small_level.py` (the 88 m ground arena) marks its four cover pillars and two monoliths. The big legacy maps (`ffa`, `ffa_xl`, `arena`, `demo`) get destructible break-cover from the environment pass (`scripts/lvl_env.py`, below); `8v8` and `ffa_runs` stay untouched (pinned grapple lines / mirror symmetry, permanent traversal gauntlet). A post-pass keeps every box in a column under a
 pedestal permanent.
+
+## Environment pass (scripts/lvl_env.py)
+
+The empty ground maps are dressed for melee: `break-cover` dboxes (3.5 m blocks that die to a katana combo), permanent `splat-wall` panels (the surfaces you launch people into), facing `splat-alley` pairs and tall `monolith` pillars. The pass is idempotent (its marked section is replaced on a re-run), deterministic, keeps 2.5 m clear of existing geometry and 3.5 m of every spawn / pickup / pedestal, and only places full-height or step-height shapes so `unwalkable_obstacles` stays clean. Run it again after regenerating a level from its `gen_*.py`.
 
 ## Sim (crates/shinobi-sim/src/breaks.rs)
 

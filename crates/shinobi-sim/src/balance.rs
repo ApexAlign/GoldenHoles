@@ -125,12 +125,24 @@ pub struct KatanaBalance {
     pub hook_air_window: f32,
     pub walljump_air_mult: f32,
     pub walljump_air_window: f32,
+    /// Any cut made while grinding (landed from a jump with jump held; docs/grind.md) hits this much harder. 1 = off.
+    pub grind_mult: f32,
     /// Cancel: a dash, hook or wall jump started while the katana recovers frees the blade at once, for this much star energy (a charge; no pool = free). 0 = free. Only with `cancel` = 1.
     pub cancel_cost: f32,
     /// 1 = cancels on, 0 = off.
     pub cancel: f32,
     /// A katana swing that hits nothing locks the blade out at least this long (seconds; 0 = off).
     pub whiff_recover: f32,
+    /// Named combos (docs/melee.md "Combos"); mult 1 or window 0 = off. Twin Fang: heavy within `twin_window` s of a
+    /// connected heavy. Breaker: a heavy capping 2+ connected cuts. Rising Strike: air cut within `rise_window` s of a
+    /// connected heavy. Dash Strike: a cut within `dash_strike_window` s of your own dash.
+    pub twin_mult: f32,
+    pub twin_window: f32,
+    pub breaker_mult: f32,
+    pub rise_mult: f32,
+    pub rise_window: f32,
+    pub dash_strike_mult: f32,
+    pub dash_strike_window: f32,
 }
 
 /// Flow: a streak of chained traversal moves (wall-run, hook, dash, wall-jump) without a ground reset
@@ -492,18 +504,11 @@ pub struct EnemyBalance {
     pub disc_speed: f32,
 }
 
-/// Environmental events (`env_events.rs`): quakes and lightning. Off in the demo preset; `balance/storm.cfg` turns them on.
+/// Environmental events (`env_events.rs`): lightning. Off in the demo preset; `balance/storm.cfg` can turn it on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnvBalance {
     /// 1 = on.
-    pub quake: f32,
     pub lightning: f32,
-    pub quake_min_s: f32,
-    pub quake_max_s: f32,
-    pub quake_warn_s: f32,
-    pub quake_s: f32,
-    pub quake_dmg_frac_per_s: f32,
-    pub quake_shove: f32,
     pub bolt_min_s: f32,
     pub bolt_max_s: f32,
     pub bolt_warn_s: f32,
@@ -615,7 +620,7 @@ impl Default for Balance {
                 star: s.star,
                 power: crate::power::PowerCfg::default(),
                 cloak: crate::cloak::CloakCfg::default(),
-                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, cancel_cost: 0.0, cancel: 0.0, whiff_recover: 0.0 },
+                katana: KatanaBalance { damage: 120.0, blade_len: 1.6, half_width: 1.0, half_height: 1.0, magnet: 0.8, piece_damage: 60.0, hook_damage_mult: 1.5, hook_reach: 4.0, wall_damage_mult: 1.35, wall_reach: 3.0, rope_damage_mult: 1.6, rope_radius: 1.5, rope_reach: 25.0, combo_window: 1.0, finisher_mult: 1.0, finisher_reach: 0.0, cone_deg: 0.0, cone_extra: 0.0, heavy_mult: 1.8, heavy_reach: 1.2, heavy_recover: 0.9, air_mult: 1.25, air_half_height: 2.2, whirl_radius: 3.0, whirl_damage: 12.0, whirl_recover: 0.6, counter_range: 7.0, counter_scale: 0.5, combo_dmg: 0.0, combo_speed: 0.0, combo_max: 0.0, wall_chain_max: 0.0, wall_chain_window: 1.5, wallkick_mult: 1.0, wallkick_reach: 0.0, hook_air_mult: 1.0, hook_air_window: 0.0, walljump_air_mult: 1.0, walljump_air_window: 0.0, grind_mult: 1.0, cancel_cost: 0.0, cancel: 0.0, whiff_recover: 0.0, twin_mult: 1.0, twin_window: 0.0, breaker_mult: 1.0, rise_mult: 1.0, rise_window: 0.0, dash_strike_mult: 1.0, dash_strike_window: 0.0 },
                 flow: FlowBalance { tier1_moves: 0, tier2_moves: 0, tier3_moves: 0, tier1_speed: 1.0, tier2_speed: 1.0, tier3_speed: 1.0, tier1_dmg: 0.0, tier2_dmg: 0.0, tier3_dmg: 0.0, stop_speed: 1.0 },
                 knockback_slash: 9.0,
                 knockback_shuriken: 3.0,
@@ -729,14 +734,7 @@ impl Default for Balance {
             },
             destruct: DestructBalance { hp_mult: 1.0, rez_s: 40.0, blast_mult: 5.0, chip_mult: 1.0, collapse_ticks: 18, retry_ticks: 60 },
             env: EnvBalance {
-                quake: 0.0,
                 lightning: 0.0,
-                quake_min_s: 45.0,
-                quake_max_s: 75.0,
-                quake_warn_s: 2.5,
-                quake_s: 4.0,
-                quake_dmg_frac_per_s: 0.12,
-                quake_shove: 2.5,
                 bolt_min_s: 6.0,
                 bolt_max_s: 11.0,
                 bolt_warn_s: 2.0,
@@ -798,9 +796,20 @@ impl Balance {
         b.combat.katana.hook_air_window = 1.2;
         b.combat.katana.walljump_air_mult = 1.25;
         b.combat.katana.walljump_air_window = 0.9;
+        b.combat.katana.grind_mult = 1.4;
         b.combat.katana.cancel = 1.0;
         b.combat.katana.cancel_cost = 0.4;
         b.combat.katana.whiff_recover = 0.45; // commit: a missed cut leaves you open ~0.45 s (cancel into dash / hook / wall jump still frees it)
+        // named combos (docs/melee.md "Combos"): heavy -> heavy (Twin Fang) x1.35 inside 2.4 s; cut, cut, heavy (Breaker) x1.3;
+        // a connected heavy launches, an air cut inside 1.4 s is the Rising Strike x1.35; dash (or dash-cancel) -> cut
+        // inside 0.3 s is the Dash Strike x1.2 (shorter than a swing, so a lunge never triggers it by itself)
+        b.combat.katana.twin_mult = 1.35;
+        b.combat.katana.twin_window = 2.4;
+        b.combat.katana.breaker_mult = 1.3;
+        b.combat.katana.rise_mult = 1.35;
+        b.combat.katana.rise_window = 1.4;
+        b.combat.katana.dash_strike_mult = 1.2;
+        b.combat.katana.dash_strike_window = 0.3;
         // flow (docs/traversal_melee.md "Flow"): chain 2 / 4 / 6 traversal moves (wall-run, hook, dash, wall-jump) with no
         // ground reset for a modest +3 / +6 / +10 % move speed and +5 / +10 / +15 % on your next katana hits; a hit taken
         // or a full ground stop (not a landing roll into the next move) resets it
@@ -990,9 +999,17 @@ impl Balance {
         k.hook_air_window = b.hook_air_window;
         k.walljump_air_mult = b.walljump_air_mult;
         k.walljump_air_window = b.walljump_air_window;
+        k.grind_mult = b.grind_mult;
         k.cancel_cost = b.cancel_cost;
         k.whiff_recover = b.whiff_recover;
         k.cancel = b.cancel;
+        k.twin_mult = b.twin_mult;
+        k.twin_window = b.twin_window;
+        k.breaker_mult = b.breaker_mult;
+        k.rise_mult = b.rise_mult;
+        k.rise_window = b.rise_window;
+        k.dash_strike_mult = b.dash_strike_mult;
+        k.dash_strike_window = b.dash_strike_window;
     }
 
     /// Flow streak config (`combat/flow.rs`) from the `combat.flow.*` tunables.
@@ -1065,14 +1082,7 @@ impl Balance {
                 v.push(($name.to_string(), Slot::$kind(&mut $place)))
             };
         }
-        s!("env.quake", F, self.env.quake);
         s!("env.lightning", F, self.env.lightning);
-        s!("env.quake_min_s", F, self.env.quake_min_s);
-        s!("env.quake_max_s", F, self.env.quake_max_s);
-        s!("env.quake_warn_s", F, self.env.quake_warn_s);
-        s!("env.quake_s", F, self.env.quake_s);
-        s!("env.quake_dmg_frac_per_s", F, self.env.quake_dmg_frac_per_s);
-        s!("env.quake_shove", F, self.env.quake_shove);
         s!("env.bolt_min_s", F, self.env.bolt_min_s);
         s!("env.bolt_max_s", F, self.env.bolt_max_s);
         s!("env.bolt_warn_s", F, self.env.bolt_warn_s);
@@ -1148,9 +1158,17 @@ impl Balance {
         s!("combat.katana.hook_air_window", F, self.combat.katana.hook_air_window);
         s!("combat.katana.walljump_air_mult", F, self.combat.katana.walljump_air_mult);
         s!("combat.katana.walljump_air_window", F, self.combat.katana.walljump_air_window);
+        s!("combat.katana.grind_mult", F, self.combat.katana.grind_mult);
         s!("combat.katana.cancel_cost", F, self.combat.katana.cancel_cost);
         s!("combat.katana.whiff_recover", F, self.combat.katana.whiff_recover);
         s!("combat.katana.cancel", F, self.combat.katana.cancel);
+        s!("combat.katana.twin_mult", F, self.combat.katana.twin_mult);
+        s!("combat.katana.twin_window", F, self.combat.katana.twin_window);
+        s!("combat.katana.breaker_mult", F, self.combat.katana.breaker_mult);
+        s!("combat.katana.rise_mult", F, self.combat.katana.rise_mult);
+        s!("combat.katana.rise_window", F, self.combat.katana.rise_window);
+        s!("combat.katana.dash_strike_mult", F, self.combat.katana.dash_strike_mult);
+        s!("combat.katana.dash_strike_window", F, self.combat.katana.dash_strike_window);
         s!("combat.flow.tier1_moves", U, self.combat.flow.tier1_moves);
         s!("combat.flow.tier2_moves", U, self.combat.flow.tier2_moves);
         s!("combat.flow.tier3_moves", U, self.combat.flow.tier3_moves);
@@ -1240,6 +1258,9 @@ impl Balance {
         s!("combat.yumi.zoom_start", F, self.combat.power.yumi.zoom_start);
         s!("combat.yumi.focus_move_mult", F, self.combat.power.yumi.focus_move_mult);
         s!("combat.yumi.zoom_hurt_s", F, self.combat.power.yumi.zoom_hurt_s);
+        s!("combat.yumi.focus_hold_s", F, self.combat.power.yumi.focus_hold_s);
+        s!("combat.yumi.hip_damage_mult", F, self.combat.power.yumi.hip_damage_mult);
+        s!("combat.yumi.hip_reload_mult", F, self.combat.power.yumi.hip_reload_mult);
         s!("combat.yumi.speed", F, self.combat.power.yumi.speed);
         s!("combat.yumi.gravity", F, self.combat.power.yumi.gravity);
         s!("combat.yumi.range", F, self.combat.power.yumi.range);
@@ -1455,8 +1476,8 @@ impl Balance {
             e.push("combat.shuriken.energy_max must cover the dearest star variant (combat.star.*_cost)".into());
         }
         let (y, t) = (&self.combat.power.yumi, &self.combat.power.tag);
-        if y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || !(0.05..=1.0).contains(&y.focus_move_mult) || !(0.0..1.0).contains(&y.zoom_start) || !(10.0..=90.0).contains(&y.zoom_fov) || y.zoom_hurt_s < 0.0 || [y.gravity, y.radius, y.damage, y.cut_pad, y.reload_s, y.splash_radius].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) || !(0.0..=1.0).contains(&y.splash_frac) {
-            e.push("combat.yumi.*: draw_s > tap_s >= 0, speed / range > 0, move_mult and turn_mult 0.05..1, head_mult >= 1, block_drain and splash_frac 0..1, the rest >= 0".into());
+        if y.draw_s <= 0.0 || y.tap_s < 0.0 || y.tap_s >= y.draw_s || y.speed <= 0.0 || y.range <= 0.0 || !(0.05..=1.0).contains(&y.move_mult) || !(0.05..=1.0).contains(&y.turn_mult) || !(0.05..=1.0).contains(&y.focus_move_mult) || !(0.0..1.0).contains(&y.zoom_start) || !(10.0..=90.0).contains(&y.zoom_fov) || y.zoom_hurt_s < 0.0 || y.focus_hold_s < 0.0 || !(0.05..=1.0).contains(&y.hip_damage_mult) || !(0.05..=1.0).contains(&y.hip_reload_mult) || [y.gravity, y.radius, y.damage, y.cut_pad, y.reload_s, y.splash_radius].iter().any(|v| *v < 0.0) || y.head_mult < 1.0 || !(0.0..=1.0).contains(&y.block_drain) || !(0.0..=1.0).contains(&y.splash_frac) {
+            e.push("combat.yumi.*: draw_s > tap_s >= 0, speed / range > 0, move_mult and turn_mult 0.05..1, hip_damage_mult and hip_reload_mult 0.05..1, head_mult >= 1, block_drain and splash_frac 0..1, the rest >= 0".into());
         }
         if t.count == 0 || t.count > 9 || t.max_live == 0 || t.carry_s <= 0.0 || t.throw_speed <= 0.0 || t.radius <= 0.0 || t.fuse_s <= t.arm_s || t.arm_s < 0.0 || !(0.0..=1.0).contains(&t.edge_frac) || !(0.0..=1.0).contains(&t.self_mult) || [t.gravity, t.flight_s, t.damage, t.knock, t.cut_pad, t.cooldown_s, t.stick_radius, t.drop_life_s].iter().any(|v| *v < 0.0) {
             e.push("combat.tag.*: count 1..9, max_live >= 1, fuse_s > arm_s >= 0, radius / throw_speed / carry_s > 0, edge_frac and self_mult 0..1, the rest >= 0".into());

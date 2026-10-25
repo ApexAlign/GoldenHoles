@@ -1,6 +1,6 @@
-//! The yumi's focused ZOOM (docs/powerups.md, "Zoom"): client-only camera state. The FOV narrows with the draw
-//! (`power::zoom_of_draw`), look speed follows the FOV, a hit on you drops it. Nothing here goes on the wire: the walk
-//! slowdown at full draw is the sim's (`power::draw_walk_mult`).
+//! The yumi's focused ZOOM (docs/powerups.md, "Zoom"): client-only camera state. The FOV narrows with the draw only
+//! while the focus button (RMB) is held (`power::zoom_of_draw`), look speed follows the FOV, a hit on you drops it.
+//! Hip-fire never zooms. The damage / reload tradeoff is the sim's (`power::hip_*`).
 use shinobi_sim::power::{self, YumiCfg};
 
 /// Zoom rises at most this fast (1/s) so a snapped-back view eases in; it falls at once (a hit, a release).
@@ -33,8 +33,9 @@ pub struct ZoomState {
 }
 
 impl ZoomState {
-    /// One sim tick. `draw_frac` 0..=1 (0 when not drawing), `hp` the server's exact health if known.
-    pub fn tick(&mut self, dt: f32, draw_frac: f32, hp: Option<f32>, cfg: &YumiCfg) {
+    /// One sim tick. `draw_frac` 0..=1 (0 when not drawing), `zoom_held` the focus button (RMB), `hp` the server's
+    /// exact health if known.
+    pub fn tick(&mut self, dt: f32, draw_frac: f32, zoom_held: bool, hp: Option<f32>, cfg: &YumiCfg) {
         if let (Some(prev), Some(now)) = (self.last_hp, hp) {
             if now < prev - 0.05 {
                 self.hurt = cfg.zoom_hurt_s;
@@ -43,7 +44,7 @@ impl ZoomState {
         }
         self.last_hp = hp;
         self.hurt = (self.hurt - dt).max(0.0);
-        let target = if self.hurt > 0.0 { 0.0 } else { power::zoom_of_draw(draw_frac, cfg) };
+        let target = if self.hurt > 0.0 || !zoom_held { 0.0 } else { power::zoom_of_draw(draw_frac, cfg) };
         self.zoom = if target < self.zoom { target } else { (self.zoom + RISE_PER_S * dt).min(target) };
     }
 
@@ -87,26 +88,31 @@ pub fn ray_sphere_range(o: [f32; 3], d: [f32; 3], centre: [f32; 3], radius: f32,
 mod tests {
     use super::*;
 
-    fn run(z: &mut ZoomState, secs: f32, draw: f32, hp: Option<f32>) {
+    fn run(z: &mut ZoomState, secs: f32, draw: f32, held: bool, hp: Option<f32>) {
         let cfg = YumiCfg::default();
         for _ in 0..(secs * 60.0) as u32 {
-            z.tick(1.0 / 60.0, draw, hp, &cfg);
+            z.tick(1.0 / 60.0, draw, held, hp, &cfg);
         }
     }
 
     #[test]
-    fn a_tap_stays_hip_fire_and_a_full_draw_zooms_to_the_target_fov() {
+    fn only_a_focus_held_draw_zooms_to_the_target_fov() {
         let cfg = YumiCfg::default();
         let mut z = ZoomState::default();
-        run(&mut z, 0.3, cfg.tap_s / cfg.draw_s, Some(100.0));
-        assert_eq!(z.fov(90.0, &cfg), 90.0, "inside the tap: no zoom");
-        run(&mut z, 0.5, 0.6, Some(100.0));
+        run(&mut z, 1.0, 1.0, false, Some(100.0));
+        assert_eq!(z.fov(90.0, &cfg), 90.0, "hip-fire: a full draw does not zoom");
+        assert!(!z.view(90.0, true, Some(80.0), &cfg).focus);
+        run(&mut z, 0.3, cfg.tap_s / cfg.draw_s, true, Some(100.0));
+        assert_eq!(z.fov(90.0, &cfg), 90.0, "inside the tap: no zoom even focused");
+        run(&mut z, 0.5, 0.6, true, Some(100.0));
         let part = z.fov(90.0, &cfg);
         assert!(part < 90.0 && part > 30.0, "{part}");
-        run(&mut z, 1.0, 1.0, Some(100.0));
+        run(&mut z, 1.0, 1.0, true, Some(100.0));
         assert!((z.fov(90.0, &cfg) - 30.0).abs() < 1e-3);
         assert!(z.view(90.0, true, Some(80.0), &cfg).focus);
-        run(&mut z, 0.1, 0.0, Some(100.0));
+        run(&mut z, 0.1, 1.0, false, Some(100.0));
+        assert_eq!(z.zoom, 0.0, "releasing focus drops it at once");
+        run(&mut z, 0.1, 0.0, false, Some(100.0));
         assert_eq!(z.zoom, 0.0, "release drops it at once");
     }
 
@@ -114,14 +120,14 @@ mod tests {
     fn damage_drops_the_zoom_and_it_eases_back() {
         let cfg = YumiCfg::default();
         let mut z = ZoomState::default();
-        run(&mut z, 1.0, 1.0, Some(100.0));
+        run(&mut z, 1.0, 1.0, true, Some(100.0));
         assert!(z.zoom > 0.99);
-        run(&mut z, 1.0 / 60.0, 1.0, Some(70.0));
+        run(&mut z, 1.0 / 60.0, 1.0, true, Some(70.0));
         assert_eq!(z.zoom, 0.0);
         assert!(!z.view(90.0, true, None, &cfg).focus);
-        run(&mut z, 0.2, 1.0, Some(70.0));
+        run(&mut z, 0.2, 1.0, true, Some(70.0));
         assert_eq!(z.zoom, 0.0, "still flinching");
-        run(&mut z, 0.5, 1.0, Some(70.0));
+        run(&mut z, 0.5, 1.0, true, Some(70.0));
         assert!(z.zoom > 0.9, "back in: {}", z.zoom);
     }
 
@@ -131,7 +137,7 @@ mod tests {
         let mut z = ZoomState::default();
         assert_eq!(z.turn_k(false, 90.0, &cfg), 1.0);
         assert_eq!(z.turn_k(true, 90.0, &cfg), cfg.turn_mult, "hip draw: the plain bow slow-down");
-        run(&mut z, 1.5, 1.0, Some(100.0));
+        run(&mut z, 1.5, 1.0, true, Some(100.0));
         let k = z.turn_k(true, 90.0, &cfg);
         assert!((k - 15f32.to_radians().tan()).abs() < 1e-3 && k < cfg.turn_mult, "{k}");
     }

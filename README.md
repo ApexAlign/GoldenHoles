@@ -1,6 +1,6 @@
 # GoldenHoles
 
-**Golden Shinobi** — a neon, Tron-styled cyber-ninja arena shooter. Run, wall-run, slide, double-jump, grapple across the
+**Golden Shinobi** — a neon, Tron-styled cyber-ninja arena shooter. Run, wall-run, grind, double-jump, grapple across the
 map, dash-slice with a katana, throw shuriken, and pick up power weapons. Free-for-all by default, optional 8v8 team
 deathmatch, and bots to fill the empty slots. Server-authoritative, 60 Hz, over UDP. Written in Rust (Bevy for the game window).
 
@@ -288,8 +288,7 @@ Full list in [`QUICKSTART.md`](QUICKSTART.md); online play notes in [`docs/ONLIN
 | W A S D, mouse | move, aim |
 | Space | jump / double-jump |
 | Shift | dash |
-| 4 | roll |
-| C | slide |
+| C | grind (hold on the ground or through a landing) |
 | W into a wall (hold Space or W) | wall-cling / wall-run |
 | Left click | katana dash-slice (hold = heavy cut) |
 | Q | throw the selected star (standard or flash; 14 m close-range tool; hold = MARK star; R / wheel switch type) |

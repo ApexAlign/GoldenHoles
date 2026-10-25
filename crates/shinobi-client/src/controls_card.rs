@@ -13,7 +13,7 @@ pub enum Use {
     Move,
     Jump,
     Dash,
-    Slide,
+    Grind,
     Grapple,
     Build,
     Katana,
@@ -27,7 +27,7 @@ const ROWS: [(Use, &str, &str); 11] = [
     (Use::Move, "WASD", "MOVE"),
     (Use::Jump, "SPACE", "JUMP"),
     (Use::Dash, "SHIFT", "DASH"),
-    (Use::Slide, "C", "SLIDE"),
+    (Use::Grind, "C", "GRIND"),
     (Use::Grapple, "E", "GRAPPLE"),
     (Use::Build, "N M", "BUILD"),
     (Use::Katana, "LMB", "KATANA (HOLD: HEAVY)"),
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn using_every_key_finishes_the_card_early() {
         let mut c = ControlsCard::default();
-        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block, Use::Stars, Use::StarCycle] {
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Grind, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block, Use::Stars, Use::StarCycle] {
             c.mark(u);
         }
         for _ in 0..60 {
@@ -175,7 +175,7 @@ mod tests {
             }
         }
         // finish it, then F1 shows everything again at full strength, F1 again hides it
-        for u in [Use::Move, Use::Jump, Use::Dash, Use::Slide, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block, Use::Stars, Use::StarCycle] {
+        for u in [Use::Move, Use::Jump, Use::Dash, Use::Grind, Use::Grapple, Use::Build, Use::Katana, Use::Shuriken, Use::Block, Use::Stars, Use::StarCycle] {
             c.mark(u);
         }
         for _ in 0..60 {

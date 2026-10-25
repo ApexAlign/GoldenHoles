@@ -231,6 +231,10 @@ impl HudBridge {
         if let Some(sh) = view.fx.slash_hit {
             self.fx.on_hit_amount(shinobi_sim::combat::DamageKind::Slash, sh.killed, 0);
         }
+        if view.fx.slash_miss {
+            // a cut that found nothing costs the recovery: say so, so a spammed miss is never silent
+            self.fx.on_guard(4);
+        }
         for h in &view.hits {
             if h.taken && h.other == 0 {
                 // environmental damage (obstacle / void): nobody to point at, so no direction arrow
@@ -241,6 +245,9 @@ impl HudBridge {
             } else if !h.taken && h.amount == 0 && !h.kill {
                 // our own cut did nothing: we were parried
                 self.fx.on_guard(1);
+            } else if !h.taken && h.guarded {
+                // our hit landed on a raised shield: a chip, not a clean hit (no hit-confirm flash)
+                self.fx.on_guard(3);
             } else if h.taken {
                 // bearing to the attacker if we can see them, else straight ahead
                 let src = view.remotes.iter().find(|(id, _)| *id == h.other).map(|(_, s)| s.pos);
@@ -738,6 +745,7 @@ impl HudBridge {
         // katana move cues + hint ids
         if let Some(sl) = gf.slash {
             self.katana.on_slash(sl.kind);
+            self.katana.on_combo(sl.combo);
         }
         self.katana.tick(dt, gf.slice_charge);
         if self.katana.active() {
@@ -844,7 +852,26 @@ mod tests {
     }
 
     fn hit(taken: bool, other: u16) -> HitMsg {
-        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false, head: false, bonus: false }
+        HitMsg { other, amount: 30, kind: KIND_SLASH, taken, kill: false, head: false, bonus: false, guarded: false }
+    }
+
+    #[test]
+    fn a_blocked_hit_and_a_whiff_get_their_own_callouts() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        let mut blocked = hit(false, 7);
+        blocked.amount = 12;
+        blocked.guarded = true;
+        v.hits.push(blocked);
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.guard_flash.map(|f| f.0), Some(3), "our blow chipped a shield: BLOCKED, not a clean hit");
+        assert!(s.since_hit.is_none(), "and no hit confirm");
+
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.fx.slash_miss = true;
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.guard_flash.map(|f| f.0), Some(4), "a swing at nothing says WHIFF");
     }
 
     #[test]
@@ -971,7 +998,7 @@ mod tests {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
         v.hp = Some(MAX_HP * 0.1);
-        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true, head: false, bonus: false });
+        v.hits.push(HitMsg { other: 7, amount: 50, kind: KIND_SLASH, taken: false, kill: true, head: false, bonus: false, guarded: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.hit_kill && s.hp < 0.3);
         assert!(crate::hud::Hud::build(&s).iter().any(|p| matches!(p, crate::hud::Prim::Ring { .. })), "kill ring drawn");
@@ -981,7 +1008,7 @@ mod tests {
     fn hazard_damage_shows_no_direction_arrow_but_a_weapon_hit_does() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false, head: false, bonus: false });
+        v.hits.push(HitMsg { other: 0, amount: 20, kind: 3 /* environmental */, taken: true, kill: false, head: false, bonus: false, guarded: false });
         assert!(b.update(0.016, &v, &net(), false).since_damage.is_none());
         v.hits.clear();
         v.hits.push(hit(true, 5));
@@ -1275,11 +1302,11 @@ mod tests {
     fn headshot_flag_reaches_the_hud_state() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
-        v.hits.push(HitMsg { other: 7, amount: 18, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false });
+        v.hits.push(HitMsg { other: 7, amount: 18, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false, guarded: false });
         let s = b.update(0.016, &v, &net(), false);
         assert!(s.hit_head && s.hit_amount == 18);
         v.hits.clear();
-        v.hits.push(HitMsg { other: 7, amount: 12, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: false, bonus: false });
+        v.hits.push(HitMsg { other: 7, amount: 12, kind: shinobi_proto::gameplay::KIND_SHURIKEN, taken: false, kill: false, head: false, bonus: false, guarded: false });
         assert!(!b.update(0.016, &v, &net(), false).hit_head, "a body hit replaces the headshot marker");
     }
 
@@ -1326,7 +1353,7 @@ mod tests {
             NetEvent::Kill { killer: 7, victim: 8, kind: KIND_SHURIKEN, tick: 2 },
             NetEvent::Kill { killer: 8, victim: 7, kind: KIND_SLASH, tick: 3 },
         ];
-        v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false });
+        v.hits.push(HitMsg { other: 8, amount: 30, kind: KIND_SHURIKEN, taken: false, kill: false, head: true, bonus: false, guarded: false });
         v.board = Some(Board { phase: PHASE_LIVE, ticks_left: None, map: 0, winner: 0, rows: vec![] , bounty: 0, bounty_live: false });
         let s = b.update(0.016, &v, &net(), false);
         assert_eq!(s.radar_pickups.len(), 1, "only the pickup inside radar range");

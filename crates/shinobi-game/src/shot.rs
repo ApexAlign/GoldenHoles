@@ -299,7 +299,7 @@ fn inject_fx(mut commands: Commands, mut view: ResMut<crate::net::ViewRes>, base
             "hits" | "hitkill" => {
                 use shinobi_proto::gameplay::{HitMsg, KIND_SHURIKEN, KIND_SLASH};
                 if frame == 112 {
-                    let m = |other, amount, kind, taken, kill, head, bonus| HitMsg { other, amount, kind, taken, kill, head, bonus };
+                    let m = |other, amount, kind, taken, kill, head, bonus| HitMsg { other, amount, kind, taken, kill, head, bonus, guarded: false };
                     v.hits.push(m(2, 30, KIND_SLASH, false, false, false, false));
                     for _ in 0..3 {
                         v.hits.push(m(3, 12, KIND_SHURIKEN, false, false, false, false));

@@ -4,7 +4,7 @@ use rapier3d::prelude::*;
 use super::{
     solid_groups, TARGETS,
     weapon::{FireCtx, Trigger, Weapon},
-    CombatEvent, DamageKind, SlashKind, GROUP_MELEE,
+    CombatEvent, DamageKind, KatanaCombo, SlashKind, GROUP_MELEE,
 };
 use crate::character::Cfg;
 
@@ -74,11 +74,25 @@ pub struct KatanaCfg {
     pub hook_air_window: f32,
     pub walljump_air_mult: f32,
     pub walljump_air_window: f32,
+    /// Damage multiplier of any cut made while grinding (landed from a jump with jump held, `CharacterSystem::grinding`).
+    pub grind_mult: f32,
     pub cancel_cost: f32,
     /// 1 = cancels on, 0 = off.
     pub cancel: f32,
     /// A swing that hits nothing locks the blade out for at least this many seconds (a whiff is punished; 0 = off).
     pub whiff_recover: f32,
+    /// Named combos (docs/melee.md "Combos"); a multiplier of 1 (or a window of 0) turns one off.
+    /// Twin Fang: a heavy released within `twin_window` s of a heavy that connected.
+    pub twin_mult: f32,
+    pub twin_window: f32,
+    /// Breaker: a heavy that caps a streak of at least two connected cuts (cut, cut, hold).
+    pub breaker_mult: f32,
+    /// Rising Strike: an air cut within `rise_window` s of a heavy that connected (the heavy launches, you follow up).
+    pub rise_mult: f32,
+    pub rise_window: f32,
+    /// Dash Strike: a plain cut within `dash_strike_window` s of a dash you made yourself.
+    pub dash_strike_mult: f32,
+    pub dash_strike_window: f32,
 }
 
 /// Extra strike reach per m/s of speed at the moment of the swing (a 40 m/s reel reaches 6 m further).
@@ -142,9 +156,17 @@ impl KatanaCfg {
             hook_air_window: 0.0,
             walljump_air_mult: 1.0,
             walljump_air_window: 0.0,
+            grind_mult: 1.0,
             cancel_cost: 0.0,
             cancel: 0.0,
             whiff_recover: 0.0,
+            twin_mult: 1.0,
+            twin_window: 0.0,
+            breaker_mult: 1.0,
+            rise_mult: 1.0,
+            rise_window: 0.0,
+            dash_strike_mult: 1.0,
+            dash_strike_window: 0.0,
         }
     }
 }
@@ -187,12 +209,18 @@ fn cone_hits(world: &crate::character::PhysicsWorld, eye: Vector<Real>, dir: Vec
 /// slash launch applies) turn the tick's input into a dash / strike launch along `dir`. Returns `Some(lunged)` when a
 /// swing happened.
 ///
+/// `pressed` is the press EDGE (the button went down this tick), exactly like `Katana::gate`: a held button never
+/// repeats. `buf` mirrors the katana's press buffer (`PRESS_BUFFER_S`): a press made while the blade recovers is kept
+/// and fires the tick it is ready.
+///
 /// Known divergence: `Katana::fire` cuts in place when a target is already inside blade reach (it must not dash
 /// through them); that needs the enemy set, which the client does not have, so it is corrected by reconciliation.
 /// `tests::predict_slice_matches_the_real_katana` keeps the two in step.
+#[allow(clippy::too_many_arguments)]
 pub fn predict_slice(
     cooldown: f32,
     cd_left: &mut f32,
+    buf: &mut f32,
     dt: f32,
     pressed: bool,
     dash_ready: bool,
@@ -201,7 +229,13 @@ pub fn predict_slice(
     input: &mut crate::character::PlayerInput,
 ) -> Option<bool> {
     *cd_left = (*cd_left - dt).max(0.0);
-    if pressed && *cd_left <= 0.0 {
+    *buf = (*buf - dt).max(0.0);
+    let ready = *cd_left <= 0.0;
+    if pressed && !ready {
+        *buf = PRESS_BUFFER_S;
+    }
+    if ready && (pressed || *buf > 0.0) {
+        *buf = 0.0;
         let lunge = dash_ready || strike.is_some();
         if strike.is_some() {
             input.strike = true;
@@ -248,6 +282,9 @@ pub const HEAVY_MIN_S: f32 = 0.5;
 pub const HEAVY_FULL_S: f32 = 0.9;
 /// A hold shorter than this is a click, not a charge (the HUD ring stays away).
 pub const CHARGE_SHOW_S: f32 = 0.15;
+/// A press (or a heavy release) made this close before the blade is ready is kept and fires the tick it is: a click a
+/// hair early is never eaten. Code constant for the same reason as `HEAVY_MIN_S` (and it travels in `OwnState`).
+pub const PRESS_BUFFER_S: f32 = 0.2;
 
 /// The move one katana trigger pull turns into (decided in `Katana::fire`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,11 +319,32 @@ pub struct Katana {
     /// Connected wall-run slashes in a row, and `now` of the last one: at `wall_chain_max` the next is the wall-kick.
     wall_chain: u32,
     last_wall: f32,
+    /// Seconds a too-early press (or heavy release) stays queued, and the charge of a queued heavy release.
+    buffered: f32,
+    buffered_heavy: Option<f32>,
+    /// `now` of the last heavy cut that connected (Twin Fang, Rising Strike).
+    last_heavy_hit: f32,
 }
 
 impl Katana {
     pub fn new(cfg: KatanaCfg) -> Self {
-        Self { cfg, flip: false, combo: 0, last_swing: f32::NEG_INFINITY, prev: false, held: 0.0, heavy: None, recover: cfg.cooldown, streak: 0, since_swing: 99.0, wall_chain: 0, last_wall: f32::NEG_INFINITY }
+        Self {
+            cfg,
+            flip: false,
+            combo: 0,
+            last_swing: f32::NEG_INFINITY,
+            prev: false,
+            held: 0.0,
+            heavy: None,
+            recover: cfg.cooldown,
+            streak: 0,
+            since_swing: 99.0,
+            wall_chain: 0,
+            last_wall: f32::NEG_INFINITY,
+            buffered: 0.0,
+            buffered_heavy: None,
+            last_heavy_hit: f32::NEG_INFINITY,
+        }
     }
 }
 
@@ -310,7 +368,8 @@ impl Weapon for Katana {
     }
 
     /// Press = a cut right now (as ever). Keep holding after it and the blade charges; releasing after `HEAVY_MIN_S`
-    /// throws the heavy cut. A held button no longer auto-repeats: chain cuts by clicking.
+    /// throws the heavy cut. A held button no longer auto-repeats: chain cuts by clicking. A press or a release that
+    /// comes up to `PRESS_BUFFER_S` early is queued and fires the tick the blade is ready (`predict_slice` mirrors it).
     fn gate(&mut self, pressed: bool, dt: f32, ready: bool) -> bool {
         let edge = pressed && !self.prev;
         let release = !pressed && self.prev;
@@ -324,11 +383,35 @@ impl Weapon for Katana {
         if !pressed {
             self.held = 0.0;
         }
-        if edge && ready {
+        self.buffered = (self.buffered - dt).max(0.0);
+        if self.buffered <= 0.0 {
+            self.buffered_heavy = None;
+        }
+        let heavy = (release && held >= HEAVY_MIN_S).then(|| ((held - HEAVY_MIN_S) / (HEAVY_FULL_S - HEAVY_MIN_S)).clamp(0.0, 1.0));
+        if !ready {
+            if edge {
+                self.buffered = PRESS_BUFFER_S;
+                self.buffered_heavy = None;
+            } else if heavy.is_some() {
+                self.buffered = PRESS_BUFFER_S;
+                self.buffered_heavy = heavy;
+            }
+            return false;
+        }
+        if edge {
+            self.buffered = 0.0;
+            self.buffered_heavy = None;
             return true;
         }
-        if release && held >= HEAVY_MIN_S && ready {
-            self.heavy = Some(((held - HEAVY_MIN_S) / (HEAVY_FULL_S - HEAVY_MIN_S)).clamp(0.0, 1.0));
+        if heavy.is_some() {
+            self.buffered = 0.0;
+            self.buffered_heavy = None;
+            self.heavy = heavy;
+            return true;
+        }
+        if self.buffered > 0.0 {
+            self.buffered = 0.0;
+            self.heavy = self.buffered_heavy.take();
             return true;
         }
         false
@@ -371,6 +454,20 @@ impl Weapon for Katana {
         self.prev = false;
         self.held = 0.0;
         self.heavy = None;
+        self.buffered = 0.0;
+        self.buffered_heavy = None;
+        self.last_heavy_hit = f32::NEG_INFINITY;
+    }
+
+    fn buffered(&self) -> f32 {
+        self.buffered
+    }
+
+    fn set_buffered(&mut self, v: f32) {
+        self.buffered = v;
+        if v <= 0.0 {
+            self.buffered_heavy = None;
+        }
     }
 
     fn fire(&mut self, ctx: &mut FireCtx) -> bool {
@@ -447,6 +544,35 @@ impl Weapon for Katana {
         }
         if wallkick {
             move_mult *= c.wallkick_mult;
+        }
+        // grind: the momentum of the landing goes into the blade (the whirl is flat damage and ignores multipliers)
+        if ctx.ch.grinding() && !matches!(mode, Mode::Whirl) {
+            move_mult *= c.grind_mult;
+        }
+        // named combos (docs/melee.md "Combos"): the move you chain into hits harder; the name rides on the Slash event
+        // (HUD callout, announcer) when the cut connects
+        let since_heavy = ctx.now - self.last_heavy_hit;
+        let mut named = if finisher { KatanaCombo::Finisher } else if wallkick { KatanaCombo::WallKick } else { KatanaCombo::None };
+        match mode {
+            Mode::Heavy(_) if c.twin_window > 0.0 && since_heavy <= c.twin_window => {
+                move_mult *= c.twin_mult;
+                named = KatanaCombo::TwinFang;
+            }
+            Mode::Heavy(_) if c.breaker_mult > 1.0 && self.streak >= 2 => {
+                move_mult *= c.breaker_mult;
+                named = KatanaCombo::Breaker;
+            }
+            Mode::Air if c.rise_window > 0.0 && since_heavy <= c.rise_window => {
+                move_mult *= c.rise_mult;
+                named = KatanaCombo::RisingStrike;
+            }
+            Mode::Light if c.dash_strike_window > 0.0 && ctx.ch.dash_age <= c.dash_strike_window && ctx.ch.dash_age > 1e-6 => {
+                move_mult *= c.dash_strike_mult;
+                if named == KatanaCombo::None {
+                    named = KatanaCombo::DashStrike;
+                }
+            }
+            _ => {}
         }
         // combo counter: every connected cut in the streak quickens the recovery; the damage bonus starts after the
         // third (the finisher): a combo that carries on keeps climbing
@@ -650,6 +776,13 @@ impl Weapon for Katana {
         // skill counters: a cut that found nothing (or only the rope) breaks the streak and the wall chain
         let connected = !hits.is_empty();
         self.streak = if connected { self.streak + 1 } else { 0 };
+        if connected && matches!(mode, Mode::Heavy(_)) {
+            // a Twin Fang closes the chain: the next heavy starts a new one (no heavy, heavy, heavy, ... spam bonus)
+            self.last_heavy_hit = if named == KatanaCombo::TwinFang { f32::NEG_INFINITY } else { ctx.now };
+        }
+        if !connected {
+            named = KatanaCombo::None;
+        }
         // commit: a whiffed cut cannot be followed up at once (a cancel into dash / hook / wall jump still frees it)
         if !connected {
             self.recover = self.recover.max(c.whiff_recover);
@@ -685,6 +818,7 @@ impl Weapon for Katana {
             half_height: c.half_height,
             damage: amount,
             kind,
+            combo: named,
         });
         true
     }
@@ -727,6 +861,8 @@ mod tests {
         let mut combat = CombatSystem::ninja(&cfg);
         let k = KatanaCfg::for_character(&cfg);
         let mut cd = 0.0f32;
+        let mut buf = 0.0f32;
+        let mut prev_slice = false;
         let mut now = 0.0;
         let mut swings = (0, 0);
         for t in 0..2000u32 {
@@ -746,11 +882,14 @@ mod tests {
             });
 
             let mut pred = PlayerInput { dash_pressed: dash, ..Default::default() };
-            let got = predict_slice(k.cooldown, &mut cd, DT, slice, ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut pred);
+            let edge = slice && !prev_slice;
+            prev_slice = slice;
+            let got = predict_slice(k.cooldown, &mut cd, &mut buf, DT, edge, ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut pred);
 
             assert_eq!(got, real_slash, "tick {t}: swing/lunge decision");
             assert_eq!((pred.dash_pressed, pred.move_dir), (real.dash_pressed, real.move_dir), "tick {t}: input");
             assert!((cd - combat.slice_cooldown_left()).abs() < 1e-6, "tick {t}: cooldown {cd} vs {}", combat.slice_cooldown_left());
+            assert!((buf - combat.slice_buffer_left()).abs() < 1e-6, "tick {t}: press buffer {buf} vs {}", combat.slice_buffer_left());
             if let Some(l) = got {
                 swings.0 += 1;
                 swings.1 += l as u32;
@@ -901,6 +1040,121 @@ mod tests {
         }
     }
 
+    impl Rig {
+        /// Wait out the recovery, press, hold to a full charge and release: every event of the press and the heavy.
+        fn heavy(&mut self) -> Vec<CombatEvent> {
+            while self.combat.slice_cooldown_left() > 0.0 {
+                self.tick(false, PlayerInput::default());
+            }
+            self.tick(false, PlayerInput::default());
+            let mut ev = Vec::new();
+            for _ in 0..((HEAVY_FULL_S / DT) as usize + 2) {
+                ev.extend(self.tick(true, PlayerInput::default()));
+            }
+            ev.extend(self.tick(false, PlayerInput::default()));
+            ev
+        }
+
+        /// Like `cut`, but the connected Slash's damage and named combo.
+        fn cut_combo(&mut self) -> Option<(f32, KatanaCombo)> {
+            while self.combat.slice_cooldown_left() > 0.0 {
+                self.tick(false, PlayerInput::default());
+            }
+            self.tick(false, PlayerInput::default());
+            slash_of(&self.tick(true, PlayerInput::default()), None)
+        }
+    }
+
+    /// The (damage, combo) of the last connecting Slash in `ev` (of `kind`, when given).
+    fn slash_of(ev: &[CombatEvent], kind: Option<SlashKind>) -> Option<(f32, KatanaCombo)> {
+        ev.iter().rev().find_map(|e| match e {
+            CombatEvent::Slash { hits, damage, kind: k, combo, .. } if *hits > 0 && kind.map_or(true, |w| w == *k) => Some((*damage, *combo)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_click_a_little_early_is_queued_not_eaten() {
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        while r.combat.slice_cooldown_left() > 0.1 {
+            r.tick(false, PlayerInput::default());
+        }
+        let early = r.tick(true, PlayerInput::default());
+        assert!(!early.iter().any(|e| matches!(e, CombatEvent::Slash { .. })), "still recovering: nothing yet");
+        assert!(r.combat.slice_buffer_left() > 0.0, "the press is queued");
+        let mut fired = None;
+        for i in 0..20 {
+            if r.tick(false, PlayerInput::default()).iter().any(|e| matches!(e, CombatEvent::Slash { .. })) {
+                fired = Some(i);
+                break;
+            }
+        }
+        let i = fired.expect("the queued press cuts once the blade is ready");
+        assert!(i <= 7, "on the tick the blade came back, not later: {i}");
+        // a press long before the blade is ready is not kept (no surprise cut a second later)
+        let mut r = Rig::new();
+        r.heavy();
+        r.tick(false, PlayerInput::default());
+        assert!(r.combat.slice_cooldown_left() > PRESS_BUFFER_S + 0.1);
+        r.tick(true, PlayerInput::default());
+        let mut late = false;
+        while r.combat.slice_cooldown_left() > 0.0 || r.combat.slice_buffer_left() > 0.0 {
+            late |= r.tick(false, PlayerInput::default()).iter().any(|e| matches!(e, CombatEvent::Slash { .. }));
+        }
+        assert!(!late, "a press far too early expires");
+    }
+
+    #[test]
+    fn heavy_into_heavy_is_the_twin_fang() {
+        let mut r = Rig::new();
+        let (first, c1) = slash_of(&r.heavy(), Some(SlashKind::Heavy)).expect("heavy connects");
+        assert_eq!(c1, KatanaCombo::None);
+        let (second, c2) = slash_of(&r.heavy(), Some(SlashKind::Heavy)).expect("second heavy connects");
+        assert_eq!(c2, KatanaCombo::TwinFang);
+        assert!(second > first * 1.3, "twin fang hits harder: {first} -> {second}");
+        // the chain closes on the fang: a third heavy is a plain one again (or a Breaker off the cuts before it)
+        let (_, c3) = slash_of(&r.heavy(), Some(SlashKind::Heavy)).unwrap();
+        assert_ne!(c3, KatanaCombo::TwinFang);
+    }
+
+    #[test]
+    fn cut_cut_heavy_is_the_breaker() {
+        let mut r = Rig::new();
+        r.cut().unwrap();
+        let (dmg, c) = slash_of(&r.heavy(), Some(SlashKind::Heavy)).unwrap();
+        assert_eq!(c, KatanaCombo::Breaker, "a heavy capping two connected cuts");
+        assert!(dmg > 20.0 * 1.8 * 1.25, "breaker: {dmg}");
+    }
+
+    #[test]
+    fn a_heavy_launch_into_an_air_cut_is_the_rising_strike() {
+        let mut r = Rig::new();
+        r.heavy();
+        r.ch.state = crate::character::MoveState::Airborne;
+        let (dmg, c) = r.cut_combo().unwrap();
+        assert_eq!(c, KatanaCombo::RisingStrike);
+        assert!(dmg >= 25.0 * 1.35 - 1e-3, "air cut x rising strike: {dmg}");
+        // too late: just an air cut
+        let mut r = Rig::new();
+        r.heavy();
+        r.idle(1.6);
+        r.ch.state = crate::character::MoveState::Airborne;
+        assert_eq!(r.cut_combo().unwrap().1, KatanaCombo::None);
+    }
+
+    #[test]
+    fn a_cut_straight_out_of_a_dash_is_the_dash_strike() {
+        let mut r = Rig::new();
+        r.ch.dash_age = 0.1;
+        let (dmg, c) = r.cut_combo().unwrap();
+        assert_eq!(c, KatanaCombo::DashStrike);
+        assert!((dmg - 20.0 * 1.2).abs() < 1e-3, "{dmg}");
+        let mut r = Rig::new();
+        r.ch.dash_age = 0.6;
+        assert_eq!(r.cut_combo().unwrap(), (20.0, KatanaCombo::None), "the dash was too long ago");
+    }
+
     fn wall() -> crate::character::MoveState {
         crate::character::MoveState::WallRun { normal: vector![0.0, 0.0, 1.0], tangent: vector![1.0, 0.0, 0.0], time_left: 1.0 }
     }
@@ -1007,6 +1261,19 @@ mod tests {
         assert!((air(0.5, 9.0) - 25.0 * 1.3).abs() < 1e-3, "hook -> air-slash");
         assert!((air(9.0, 0.5) - 25.0 * 1.25).abs() < 1e-3, "wall-jump -> air-slash");
         assert!((air(1.5, 9.0) - base).abs() < 1e-3, "the hook window is over");
+    }
+
+    #[test]
+    fn a_cut_made_while_grinding_hits_harder() {
+        let cut = |grind: bool| {
+            let mut r = Rig::new();
+            if grind {
+                r.ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+            }
+            r.cut().unwrap()
+        };
+        let base = cut(false);
+        assert!((cut(true) - base * 1.4).abs() < 1e-3, "grind cut {} vs plain {base}", cut(true));
     }
 
     #[test]

@@ -105,7 +105,7 @@ fn a_block_raised_just_before_the_cut_is_a_parry_that_staggers_the_attacker() {
     // B raises the shield on tick 29, one tick before A cuts (tick 30), and holds: well inside the parry window
     let (loss, ev) = a_cuts(|t| PlayerIntent { block: t >= 29, ..idle(0, B_YAW) });
     assert!(loss < 0.01, "a parry negates the cut ({loss})");
-    assert!(ev.iter().any(|e| matches!(e, PvpEvent::Hit { attacker: A, victim: B, amount, .. } if *amount == 0.0)), "the parried hit is still reported: {ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, PvpEvent::Hit { attacker: A, victim: B, amount, guarded, point: [x, y, z], .. } if *amount == 0.0 && *guarded && (*x != 0.0 || *y != 0.0 || *z != 0.0))), "the parried hit is still reported with its guard flag and point: {ev:?}");
 
     // (B waits until the shield has been down a while: a cut right after lowering it is a whirl cut, see katana_moves.rs)
     // A is now staggered and open: B's counter-cut deals the bonus (20 x 1.5 = 30) and A cannot cut back meanwhile

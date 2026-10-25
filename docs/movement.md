@@ -39,10 +39,12 @@ The table below is the older round (5.4 m/s era).
 - **Momentum.** In the air, speed above a run, or any speed with no stick, decays only at `air_drag` m/s^2.
   The stick steers sideways and can brake, but never adds forward speed past the carry. Under run speed with the stick
   held it accelerates as before.
-- **Double jump** (at the apex, `peak_window`): momentum turns to the stick and gets `double_jump_carry` on top
+- **Double jump** (once per air time, any moment while airborne: rising, at the apex or falling; the highest reach is from the apex): momentum turns to the stick and gets `double_jump_carry` on top
   (at least run speed).
 - **Wall-run exit** keeps `wall_jump_keep` (1.0) of the wall-run speed along the wall, plus `wall_jump_push` away.
 - **Coyote / buffer:** 0.14 s / 0.15 s.
+- **Grind:** hold C on the ground or through a landing and you keep your speed (docs/grind.md); the katana hits harder
+  meanwhile. The crouch slide and the ground roll are gone: C is the grind.
 
 ## Knobs (all in `Cfg`, `character.rs`)
 `run_speed`, `gravity`, `terminal`, `jump_speed`, `double_jump_speed`, `rise_hold_mult`, `rise_cut_mult`,

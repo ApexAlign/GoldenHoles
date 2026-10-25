@@ -386,6 +386,8 @@ def main():
         return
     write(build(112.0), os.path.join(root, "ffa.lvl"))
     write(build(168.0), os.path.join(root, "ffa_xl.lvl"))
+    import lvl_env
+    lvl_env.main([os.path.join(root, "ffa.lvl"), os.path.join(root, "ffa_xl.lvl")])
 
 
 main()

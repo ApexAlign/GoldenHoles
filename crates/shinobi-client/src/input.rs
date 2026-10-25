@@ -183,6 +183,8 @@ pub fn build_intent(tick: u32, stick: (f32, f32), aim: &Aim, buttons: Buttons) -
         star: 0,
         draw: false,
         cloak: false,
+        grind: false,
+        zoom: false,
     }
 }
 

@@ -30,6 +30,7 @@ mod destructible_audio;
 mod mixer;
 mod hit_audio;
 mod team;
+mod gore;
 mod grid;
 mod hud_view;
 mod mobile;
@@ -189,7 +190,7 @@ fn main() {
     if let Some(f) = opts.scale {
         app.insert_resource(play::ForcedScale(f));
     }
-    // profiling aid: SHINOBI_DISABLE=sky,hud,vm,crt,fx (comma list) leaves those plugins out to find what a frame costs
+    // profiling aid: SHINOBI_DISABLE=sky,hud,vm,crt,fx,gore (comma list) leaves those plugins out to find what a frame costs
     let disabled = std::env::var("SHINOBI_DISABLE").unwrap_or_default();
     let off = |n: &str| disabled.split(',').any(|d| d.trim() == n);
     // window system: `--x11` forces X11/XWayland even when a Wayland session is available (winit's own switch)
@@ -238,6 +239,9 @@ fn main() {
     app.add_plugins((crate::storm_fx::StormFxPlugin, crate::storm_audio::StormAudioPlugin));
     if !off("fx") {
         app.add_plugins((crate::discs::DiscPlugin, crate::impacts::ImpactPlugin, crate::rope::RopePlugin, crate::blocks::BlocksPlugin, crate::lock::LockPlugin, crate::death::DeathFxPlugin, crate::hit_feedback::HitFeedbackPlugin, crate::hit_indicator::HitIndicatorPlugin, crate::star_fx::StarFxPlugin, crate::power_fx::PowerFxPlugin));
+    }
+    if !off("gore") {
+        app.add_plugins(crate::gore::GorePlugin);
     }
     if !off("hud") {
         app.add_plugins(hud_view::HudPlugin);

@@ -10,7 +10,7 @@ overrides them). Zero turns a heightener off; the default `Balance` has them all
 | LMB | katana dash-slice (the lock triangle aims it); keep it down after a cut to charge the heavy cut |
 | Q | shuriken (the poke); R / wheel switch the star type |
 | RMB / Ctrl / middle or back mouse (right bumper on a pad) | hold: block; a timed raise is the parry |
-| 1 / 2 / 4 | katana (spawn weapon) / bow / roll |
+| 1 / 2 | katana (spawn weapon) / bow |
 
 ## Accuracy
 
@@ -100,6 +100,30 @@ wire-visible effect is the damage number and the swing cooldown that already tra
 * **Cancels** (`cancel` = 1): a dash, a hook or a wall jump started while the blade recovers frees it at once so the next cut can follow; it costs
   `cancel_cost` star charges (refused while the pool is locked or short; no pool = free).
 
+## Combos (named; `combat.katana.*`, on in `Balance::demo`)
+
+A cut that completes one of these flashes its name over the lock triangle (`KatanaFx::on_combo`) and carries it on
+`CombatEvent::Slash { combo }` (`KatanaCombo`), ready for an announcer line. Damage only; nothing changes timing.
+
+| Combo | Input | Demo | Keys |
+|---|---|---|---|
+| FINISHER | the third connected cut | x1.5, +0.6 m | `finisher_mult`, `finisher_reach` |
+| WALL KICK | the 4th chained wall-run slash | x1.6, +0.8 m | `wallkick_*` |
+| TWIN FANG | heavy, then another heavy within 2.4 s of the first one connecting | x1.35 (closes the chain) | `twin_mult`, `twin_window` |
+| BREAKER | cut, cut, heavy (a heavy capping 2+ connected cuts) | x1.3 | `breaker_mult` |
+| RISING STRIKE | a connected heavy (it launches), then an air cut within 1.4 s | x1.35 on the air cut | `rise_mult`, `rise_window` |
+| DASH STRIKE | a cut within 0.3 s of your own dash (a dash-cancel out of a cut counts) | x1.2 | `dash_strike_mult`, `dash_strike_window` |
+
+They stack with momentum, grind, flow and the combo counter like every other multiplier.
+
+## Press buffer (no eaten clicks)
+
+A katana press (or a heavy release) made up to `katana::PRESS_BUFFER_S` (0.2 s) before the blade has recovered is
+queued and fires the tick it is ready; earlier than that it is dropped (no surprise cut a second later). The queue
+travels in `OwnState` (8th timer) so the client's lunge prediction replays it exactly. The replay's `predict_slice`
+also cuts on the press EDGE now, like the real katana: before, a held button (charging a heavy) made the replay predict
+a dash lunge every swing period that the server never did, which read as rubber-banding while charging.
+
 ## Skill melee: the timed block (no turtling, no mashing)
 
 Parry is a TIMED BLOCK on the existing block button; there is no new key. The demo numbers (`Balance::demo().guard`, `block.rs`):
@@ -149,9 +173,9 @@ sustained advantage — the moment it is used for anything, it is gone.
 one-hit kill, same pattern as an execute. It only applies to a clean hit (`block::Guard::None`) — a block or a parry
 still works exactly as it would against an uncloaked attacker.
 
-**Visual (client-only, no gameplay effect):** not full invisibility. A cloaked player's distance aids (the head gem
-and the beacon) are hidden outright, and the glow aura shrinks to a faint flicker (`play.rs::sync_remotes`) — easy to
-miss at range, still a silhouette up close. The predator lock-on also will not auto-acquire a cloaked foe
+**Visual (client-only, no gameplay effect):** not full invisibility. A cloaked player's glow aura shrinks to a faint
+flicker (`play.rs::sync_remotes`) — easy to miss at range, still a silhouette up close. There are no head gems or
+beacon columns above players any more, so at range everyone reads by the bright body core, the black rim and the aura. The predator lock-on also will not auto-acquire a cloaked foe
 (`CombatSystem::hidden`), though a manual aim that finds them still hits normally.
 
 **Noise:** a cloaked player's footsteps are a tell only while loud — sprinting, dashing, or the grapple attached

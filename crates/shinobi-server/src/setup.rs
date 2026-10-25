@@ -136,11 +136,11 @@ mod tests {
         let f = Setup::standard().with_balance_file(&root.join("fortress.cfg")).unwrap().balance;
         assert_eq!((f.destruct.hp_mult, f.destruct.rez_s, f.destruct.chip_mult), (2.5, 20.0, 0.5));
         let st = Setup::standard().with_balance_file(&root.join("storm.cfg")).unwrap().balance;
-        assert!(st.env.quake > 0.5 && st.env.lightning < 0.5, "the storm preset is quakes only (lightning was not fun)");
+        assert!(st.env.lightning < 0.5, "lightning is off in the storm preset (it was not fun)");
         assert_eq!(st.player, demo.player);
         let mut srv_s = Server::new(Cfg::default());
         srv_s.set_balance(st).unwrap();
-        assert!(srv_s.env.cfg.quake && !srv_s.env.cfg.lightning);
+        assert!(!srv_s.env.cfg.lightning);
         // set_balance carries them into the break rules
         let mut srv = Server::new(Cfg::default());
         srv.set_balance(d).unwrap();

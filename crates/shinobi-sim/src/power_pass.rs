@@ -30,6 +30,9 @@ pub struct Arrow {
     pub age: f32,
     /// Turned around by a parry: the original shooter is its target now.
     pub reflected: bool,
+    /// Damage scale at launch: 1.0 for a focused (RMB) shot, `combat.yumi.hip_damage_mult` for hip-fire. A parried
+    /// arrow keeps it.
+    pub damage_mult: f32,
 }
 
 /// A fuda tag: flying, then stuck to a surface or to a player.
@@ -206,10 +209,11 @@ impl Server {
         let mut detonate: Vec<u16> = Vec::new();
         for l in launches {
             match l.ev {
-                PowerEvent::Loose => {
+                PowerEvent::Loose { focused } => {
                     let uid = self.next_uid();
                     let pos = add(l.eye, scale(l.dir, 0.6));
-                    self.arrows.push(Arrow { owner: l.owner, uid, pos, vel: scale(l.dir, yc.speed), origin: l.eye, age: 0.0, reflected: false });
+                    let damage_mult = if focused { 1.0 } else { yc.hip_damage_mult };
+                    self.arrows.push(Arrow { owner: l.owner, uid, pos, vel: scale(l.dir, yc.speed), origin: l.eye, age: 0.0, reflected: false, damage_mult });
                     fx.push((l.owner, CombatEvent::PowerFx { what: FX_LOOSE, pos: pt(l.eye) }));
                 }
                 PowerEvent::TagThrow => {
@@ -397,11 +401,11 @@ impl Server {
                 fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_WALL, pos: pt(p) }));
                 // an arrow into a destructible box chips it (about 0.6 x an arrow's damage after `blast_mult`)
                 if !self.breaks.is_empty() {
-                    let chip = yc.damage * 0.12 * self.breaks.cfg.chip_mult;
+                    let chip = yc.damage * a.damage_mult * 0.12 * self.breaks.cfg.chip_mult;
                     self.breaks.blast(&mut self.world, p, 0.8, |_| chip, tick, &mut self.break_events);
                 }
                 // the thud lands close enough to someone else to still shake them: a small AOE at the impact point
-                self.arrow_wall_splash(p, a.owner, a.origin, oteam, tick, &yc, &bcfg, hits, &mut fx);
+                self.arrow_wall_splash(p, a.owner, a.origin, a.damage_mult, oteam, tick, &yc, &bcfg, hits, &mut fx);
                 self.arrows.remove(i);
                 continue;
             }
@@ -443,13 +447,13 @@ impl Server {
                             v.blk.break_guard(tick, &bcfg);
                             v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
                         }
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: yc.damage * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: yc.damage * a.damage_mult * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false, point: hitp, guarded: true });
                         fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(hitp) }));
                     }
                     crate::block::Guard::None => {
                         let head = hitp[1] >= vpos[1] + self.balance.combat.head_min_height;
-                        let amount = yc.damage * if head { yc.head_mult } else { 1.0 };
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head, stealth: false });
+                        let amount = yc.damage * a.damage_mult * if head { yc.head_mult } else { 1.0 };
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head, stealth: false, point: hitp, guarded: false });
                         fx.push((a.owner, CombatEvent::PowerFx { what: if head { FX_ARROW_HEAD } else { FX_ARROW_HIT }, pos: pt(hitp) }));
                     }
                 }
@@ -463,7 +467,7 @@ impl Server {
                 let vpos = q.pos(&self.world);
                 let guard = crate::block::guard_vs(&q.blk, dq_yaw(q.yaw), vpos, a.origin, tick, &bcfg);
                 let vid = q.id;
-                let amount_base = arrow_splash_damage(&yc, beyond);
+                let amount_base = arrow_splash_damage(&yc, beyond) * a.damage_mult;
                 match guard {
                     crate::block::Guard::Parried => {
                         self.players[j].blk.mark_used();
@@ -495,11 +499,11 @@ impl Server {
                             v.blk.break_guard(tick, &bcfg);
                             v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
                         }
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false, point: hitp, guarded: true });
                         fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(hitp) }));
                     }
                     crate::block::Guard::None => {
-                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                        hits.push(PvpHit { attacker: a.owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false, point: hitp, guarded: false });
                         fx.push((a.owner, CombatEvent::PowerFx { what: FX_ARROW_SPLASH, pos: pt(hitp) }));
                     }
                 }
@@ -559,7 +563,7 @@ impl Server {
             let k = if me { tc.self_mult } else { 1.0 };
             let amount = blast_damage(tc, d) * k;
             if amount > 0.0 {
-                hits.push(PvpHit { attacker: t.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Tag), head: false, stealth: false });
+                hits.push(PvpHit { attacker: t.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Tag), head: false, stealth: false, point: qpos, guarded: false });
             }
             let push = blast_push(tc, centre, owner_pos, qpos);
             let v = &mut self.players[j];
@@ -583,7 +587,7 @@ impl Server {
     /// `blast` loop but on a point, not a flying tag, and routed through the same guard check a direct hit uses:
     /// body-only, no reflect on a parry (the arrow that caused it is already spent).
     #[allow(clippy::too_many_arguments)]
-    fn arrow_wall_splash(&mut self, p: V3, owner: u16, origin: V3, oteam: u8, tick: u32, yc: &YumiCfg, bcfg: &crate::block::BlockCfg, hits: &mut Vec<PvpHit>, fx: &mut Vec<(u16, CombatEvent)>) {
+    fn arrow_wall_splash(&mut self, p: V3, owner: u16, origin: V3, damage_mult: f32, oteam: u8, tick: u32, yc: &YumiCfg, bcfg: &crate::block::BlockCfg, hits: &mut Vec<PvpHit>, fx: &mut Vec<(u16, CombatEvent)>) {
         let hh = self.cfg().half_height;
         let inner = self.cfg().radius + yc.radius;
         for j in 0..self.players.len() {
@@ -598,7 +602,7 @@ impl Server {
             if d <= inner || d > inner + yc.splash_radius {
                 continue; // inside the direct band (handled elsewhere) or past the splash band: nothing here
             }
-            let amount_base = arrow_splash_damage(yc, d - inner);
+            let amount_base = arrow_splash_damage(yc, d - inner) * damage_mult;
             if amount_base <= 0.0 {
                 continue;
             }
@@ -618,11 +622,11 @@ impl Server {
                         v.blk.break_guard(tick, bcfg);
                         v.blk.stagger_until = tick + bcfg.break_stagger_ticks;
                     }
-                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base * bcfg.front_mult, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false, point: p, guarded: true });
                     fx.push((owner, CombatEvent::PowerFx { what: FX_ARROW_BLOCKED, pos: pt(p) }));
                 }
                 crate::block::Guard::None => {
-                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false });
+                    hits.push(PvpHit { attacker: owner, victim: j, amount: amount_base, cause: Cause::Weapon(DamageKind::Arrow), head: false, stealth: false, point: p, guarded: false });
                     fx.push((owner, CombatEvent::PowerFx { what: FX_ARROW_SPLASH, pos: pt(p) }));
                 }
             }

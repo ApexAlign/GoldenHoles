@@ -64,8 +64,8 @@ Residual by design: frame drawn `alpha` into a tick shows the eye up to one tick
   Damage 0. The victim moves by ordinary reconciliation. The rope kind (`rope_player`) is not on the wire: set at the fire,
   re-derived after a reconcile restore.
 - **Momentum**: `grapple_cd` is 0.4 s after any clean release (miss cooldown unchanged, 0.15 s) so hooks chain. A launching
-  release (jump, dash / jump held, anchor lost) adds `grapple_sling` (25 %) of the speed along the velocity, capped at
-  `grapple_sling_cap` 8 m/s, only above 6 m/s; jump-while-hooked still adds `grapple_jump_boost`.
+  release (jump, dash / jump held, anchor lost) adds `grapple_sling` (32 %) of the speed along the velocity, capped at
+  `grapple_sling_cap` 10 m/s, only above 6 m/s; jump-while-hooked still adds `grapple_jump_boost` (7.5 m/s up; a grounded hook kicks `grapple_lift` 5 m/s up).
 - **Destruction**: a geometry anchor that vanishes (box broke, evicted) releases with the slingshot momentum; the rope is gone, so
   a box that re-forms later cannot catch it (anchors are never re-acquired). Only a player rope re-anchors onto a player.
 - **Range**: `grapple_range` is already 1000 m (docs/traversal_melee.md; DEMO.md's "40 m" is stale); `grapple_speed_per_m`

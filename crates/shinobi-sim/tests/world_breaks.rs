@@ -197,7 +197,7 @@ fn arrows_chip_a_box_they_hit_and_a_few_break_it() {
     let mut shots = 0;
     for _ in 0..8 {
         shots += 1;
-        s.arrows.push(Arrow { owner: A, uid: shots, pos: [0.0, 1.5, -2.0], vel: [0.0, 0.0, -60.0], origin: [0.0, 1.5, -2.0], age: 0.0, reflected: false });
+        s.arrows.push(Arrow { owner: A, uid: shots, pos: [0.0, 1.5, -2.0], vel: [0.0, 0.0, -60.0], origin: [0.0, 1.5, -2.0], age: 0.0, reflected: false, damage_mult: 1.0 });
         for _ in 0..40 {
             feed(&mut s, idle(0.0), idle(B_YAW));
             breaks_seen(&s, &mut ev);

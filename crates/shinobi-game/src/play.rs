@@ -39,12 +39,8 @@ struct RemoteEnt {
     /// Black back-face hulls, one per body part: a dark rim that separates the bright body from any background.
     outlines: [Entity; PARTS],
     colour: Option<u32>,
-    /// Distance beacon: a faint light column above the player so far-away players still read.
-    beacon: Entity,
     /// Soft additive glow ellipsoid around the body (depth-tested: only visible when the player is in view).
     aura: Entity,
-    /// Spinning gem above the head within `GEM_MAX_DIST`: marks "a player is here" at mid range.
-    gem: Entity,
     /// The block shield: a big glowing framed panel held out in front of the body while `FX_BLOCK` is set (root of
     /// the panel and its four frame bars).
     shield: Entity,
@@ -61,7 +57,7 @@ struct RemoteEnt {
 /// Height of the kill plane on the FFA maps (`levels/ffa.lvl`), where the void grid is drawn.
 const VOID_Y: f32 = -20.0;
 
-/// Body materials per quantised player colour (and the additive beacon variant).
+/// Body, additive glow and shield materials per quantised player colour.
 #[derive(Resource, Default)]
 struct BodyMats(
     std::collections::HashMap<u32, Handle<StandardMaterial>>,
@@ -97,28 +93,25 @@ pub fn size_boost(dist: f32) -> (f32, f32) {
     (w, 1.0 + (w - 1.0) * 0.33)
 }
 
-/// Head gem range (m).
-const GEM_MAX_DIST: f32 = 110.0;
-
 /// Aura width multiplier: grows with distance so the glow stays a few pixels wider than the body at 30-60 m.
 pub fn aura_scale(dist: f32) -> f32 {
     1.0 + (dist / 25.0).min(3.0)
 }
 
-/// Beacons appear beyond this distance (m); width grows with distance so the column stays about the same on screen.
-const BEACON_MIN_DIST: f32 = 18.0;
-
-pub fn beacon_width(dist: f32) -> f32 {
-    0.08 + 0.012 * dist
-}
-
-/// Head-gem edge length (m): about 4-5 px on screen from 10 m out to the gem's max range.
-pub fn gem_size(dist: f32) -> f32 {
-    0.14 + 0.016 * dist
-}
-
 #[derive(Resource, Default)]
-struct Remotes(HashMap<u16, RemoteEnt>);
+pub(crate) struct Remotes(HashMap<u16, RemoteEnt>);
+
+impl Remotes {
+    /// Mutable rig for gore (dismemberment). `None` while the player has no close-range body yet.
+    pub(crate) fn rig_mut(&mut self, id: u16) -> Option<&mut crate::character_look::Rig> {
+        self.0.get_mut(&id).map(|e| &mut e.rig)
+    }
+
+    /// Root entity of a remote body, for attaching world-space wound decals.
+    pub(crate) fn root(&self, id: u16) -> Option<Entity> {
+        self.0.get(&id).map(|e| e.root)
+    }
+}
 
 /// Cosmetic screen-FX driver. Milestone 1 has no server events or prediction, so dash/slash are inferred
 /// from the local buttons (edge flags are consumed by `update_crt`). Replace with CombatEvent/CharacterSystem
@@ -151,6 +144,7 @@ pub struct ShotImage(pub Handle<Image>);
 #[derive(Resource)]
 struct Look {
     cube: Handle<Mesh>,
+    rig: crate::character_look::RigMeshes,
     sphere: Handle<Mesh>,
     hostile: Handle<StandardMaterial>,
     /// Opaque black, front faces culled: drawn on slightly larger copies of the body parts as a rim.
@@ -274,8 +268,10 @@ pub fn setup(
         unlit: true,
         ..default()
     };
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     commands.insert_resource(Look {
-        cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        cube: cube.clone(),
+        rig: crate::character_look::RigMeshes::new(&mut meshes, cube),
         sphere: meshes.add(Sphere::new(0.5)),
         hostile: mats.add(unlit(pal.magenta)),
         outline: mats.add(StandardMaterial {
@@ -286,10 +282,22 @@ pub fn setup(
         }),
     });
 
+    // Close-range body shell lighting: a cool key and a warm rim. No shadows (they would change the whole level's
+    // contrast and cost); the unlit arena and neon trim are unaffected.
+    commands.spawn((
+        DirectionalLight { color: Color::srgb(0.62, 0.78, 1.0), illuminance: 1_050.0, shadow_maps_enabled: false, ..default() },
+        Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, -0.35, 0.45, 0.0)),
+    ));
+    commands.spawn((
+        DirectionalLight { color: Color::srgb(1.0, 0.42, 0.26), illuminance: 420.0, shadow_maps_enabled: false, ..default() },
+        Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 2.7, -0.5, 0.0)),
+    ));
+
     // camera: LUT-free tonemapping (tonemapping_luts feature is not enabled), 90 deg vertical FOV, bloom
     let q = quality.0;
     let mut cam = commands.spawn((
         Camera3d::default(),
+        AmbientLight { color: Color::srgb(0.48, 0.62, 0.92), brightness: 160.0, ..default() },
         Hdr,
         Tonemapping::None,
         Projection::Perspective(PerspectiveProjection { fov: 90f32.to_radians(), far: 4000.0, ..default() }), // far plane well past the 1000 m hook
@@ -352,9 +360,8 @@ fn action_events(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) 
     for ((p, r), a) in [
         (k(KeyCode::Space), Action::Jump),
         (k(KeyCode::ShiftLeft), Action::Dash),
-        (k(KeyCode::Digit4), Action::Roll),
         (k(KeyCode::KeyQ), Action::Fire), // throw the selected star (hold = MARK star); R / wheel switch the type
-        (k(KeyCode::KeyC), Action::Slide),
+        (k(KeyCode::KeyC), Action::Grind), // grind (hold on the ground or through a landing; docs/grind.md)
         (k(KeyCode::KeyE), Action::Grapple), // wrist grapple (docs/grapple.md); E again releases
         (k(KeyCode::KeyW), Action::Cling), // pressing into a wall; the server validates actual contact
         (k(KeyCode::KeyF), Action::Cloak), // stealth cloak (hold): a faint shimmer, not full invisibility
@@ -672,14 +679,8 @@ fn sync_remotes(
                     .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.outline.clone()), Transform::default(), ChildOf(root)))
                     .id()
             });
-            let beacon = commands
-                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
-                .id();
             let aura = commands
                 .spawn((Mesh3d(look.sphere.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(root)))
-                .id();
-            let gem = commands
-                .spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), Visibility::Hidden, ChildOf(root)))
                 .id();
             let shield = commands.spawn((Transform::default(), Visibility::Hidden, ChildOf(root))).id();
             let shield_panel = commands
@@ -688,15 +689,15 @@ fn sync_remotes(
             let shield_bars = std::array::from_fn(|_| {
                 commands.spawn((Mesh3d(look.cube.clone()), MeshMaterial3d(look.hostile.clone()), Transform::default(), ChildOf(shield))).id()
             });
-            let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.cube, None);
-            RemoteEnt { root, parts, outlines, colour: None, beacon, aura, gem, shield, shield_panel, shield_bars, rig, spec: None, flashing: false }
+            let rig = crate::character_look::Rig::spawn(&mut commands, root, &look.rig, None);
+            RemoteEnt { root, parts, outlines, colour: None, aura, shield, shield_panel, shield_bars, rig, spec: None, flashing: false }
         });
         // custom look (replicated by the server): rebuild the rig when it arrives or changes, then re-skin below
         let want = s.game.net.look_of(*id).filter(|c| !c.is_default());
         if want != ent.spec.as_ref() {
             ent.rig.despawn(&mut commands);
             ent.spec = want.cloned();
-            ent.rig = crate::character_look::Rig::spawn(&mut commands, ent.root, &look.cube, ent.spec.as_ref());
+            ent.rig = crate::character_look::Rig::spawn(&mut commands, ent.root, &look.rig, ent.spec.as_ref());
             ent.colour = None;
             ent.flashing = false;
         }
@@ -732,8 +733,6 @@ fn sync_remotes(
                     ..default()
                 })
             }).clone();
-            commands.entity(ent.beacon).insert(MeshMaterial3d(bm.clone()));
-            commands.entity(ent.gem).insert(MeshMaterial3d(bm.clone()));
             let am = body_mats.2.entry(k).or_insert_with(|| {
                 mats.add(StandardMaterial {
                     base_color: Color::linear_rgb(hue[0] * 0.38, hue[1] * 0.38, hue[2] * 0.38),
@@ -764,24 +763,21 @@ fn sync_remotes(
             }
             ent.rig.flash(&mut commands, &hitfx.white);
         }
-        // stealth cloak (cloak.rs, docs/melee.md "Cloak"): not literal invisibility, but the range-readability aids
-        // (beacon, head gem) are the first thing to go, and the glow shrinks to almost nothing, so a cloaked player
-        // reads as a faint, flickering outline up close and is much easier to miss at any distance.
+        // stealth cloak (cloak.rs, docs/melee.md "Cloak"): not literal invisibility, but the glow shrinks to almost
+        // nothing, so a cloaked player reads as a faint, flickering outline and is much easier to miss at any distance.
         let cloaked = s.game.net.is_cloaked(*id);
-        // distance beacon: a light column above the head once the player is far enough to be a few pixels
         let dist = Vec3::from(v.eye).distance(Vec3::from(d.pos));
-        if let Ok(mut bt) = tf.get_mut(ent.beacon) {
-            let w = beacon_width(dist);
-            bt.translation = Vec3::new(0.0, 4.2, 0.0);
-            bt.scale = Vec3::new(w, 6.5, w);
-        }
         // aura: soft glow ellipsoid hugging the body, wider with distance (dimmed to a sliver while cloaked)
         if let Ok(mut at) = tf.get_mut(ent.aura) {
-            // hugging the body (a rim of colour, not a ghost blob over it); the black outline and bright core carry the read
+            // Hugging the body only at range: up close the lit body shell and its black core LOD would be muddied
+            // by an additive halo over the anatomy.
             let shimmer = if cloaked { 0.1 + 0.05 * (t * 9.0).sin().abs() } else { 1.0 };
             let w = 0.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.6) * shimmer;
             at.translation = Vec3::ZERO;
             at.scale = Vec3::new(w, 1.8 * (1.0 + (aura_scale(dist) - 1.0) * 0.25) * shimmer, w);
+        }
+        if let Ok(mut av) = vis.get_mut(ent.aura) {
+            av.set_if_neq(if dist >= crate::character_look::DARK_MAX { Visibility::Inherited } else { Visibility::Hidden });
         }
         // block shield: a glowing panel held out in front (local -Z is the facing), shown while the player guards
         // a big framed panel (bigger with distance so it still reads): that is the whole "block pose" of a remote player
@@ -808,19 +804,6 @@ fn sync_remotes(
         if let Ok(mut sv) = vis.get_mut(ent.shield) {
             sv.set_if_neq(if st.fx & shinobi_proto::snapshot::FX_BLOCK != 0 { Visibility::Inherited } else { Visibility::Hidden });
         }
-        // head gem: a spinning diamond above the head at mid range
-        if let Ok(mut gt) = tf.get_mut(ent.gem) {
-            gt.translation = Vec3::new(0.0, 1.25 + 0.012 * dist + 0.05 * (t * 3.0).sin(), 0.0);
-            gt.rotation = Quat::from_euler(EulerRot::YXZ, t * 2.4, 0.6, 0.78);
-            gt.scale = Vec3::splat(gem_size(dist));
-        }
-        if let Ok(mut gv) = vis.get_mut(ent.gem) {
-            gv.set_if_neq(if !cloaked && dist > 3.0 && dist < GEM_MAX_DIST { Visibility::Inherited } else { Visibility::Hidden });
-        }
-        if let Ok(mut bv) = vis.get_mut(ent.beacon) {
-            bv.set_if_neq(if !cloaked && dist > BEACON_MIN_DIST { Visibility::Inherited } else { Visibility::Hidden });
-        }
-
         if let Ok(mut r) = tf.get_mut(ent.root) {
             r.translation = Vec3::from(d.pos) + hitfx.shake(*id) + Vec3::Y * ent.rig.foot_lift();
             r.scale = ent.rig.root_scale();
@@ -839,6 +822,18 @@ fn sync_remotes(
                 ot.translation = Vec3::from(p.offset);
                 ot.rotation = Quat::from_rotation_x(p.pitch);
                 ot.scale = (half + Vec3::splat(grow)) * 2.0;
+            }
+        }
+        // Close range shows the anatomical body; the unlit four-box core takes over only past the body LOD range
+        // (the shell itself hides at `character_look::DARK_MAX`). A decapitated rig must not keep a core head either.
+        let core_far = dist >= crate::character_look::DARK_MAX;
+        let head_gone = ent.rig.is_severed(crate::character_look::Limb::Head);
+        for (i, (e, o)) in ent.parts.iter().zip(ent.outlines.iter()).enumerate() {
+            let show = core_far && !(head_gone && i == 2);
+            for x in [*e, *o] {
+                if let Ok(mut v) = vis.get_mut(x) {
+                    v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+                }
             }
         }
         let vel = Vec3::new(st.vel[0] as f32, st.vel[1] as f32, st.vel[2] as f32) / 64.0;
@@ -962,7 +957,7 @@ mod district_tests {
 }
 
 #[cfg(test)]
-mod beacon_tests {
+mod readability_tests {
     use super::*;
 
     #[test]
@@ -992,20 +987,6 @@ mod beacon_tests {
         assert!(outline_grow(60.0) > outline_grow(5.0));
     }
 
-    #[test]
-    fn far_markers_keep_a_screen_size() {
-        // px per metre at 540 px / 90 deg = 270 / dist: marker width in px stays >= 3 out to the gem's range
-        for d in [20.0f32, 60.0, 110.0] {
-            assert!(gem_size(d) * 270.0 / d >= 3.0, "gem at {d} m");
-            assert!(beacon_width(d) * 270.0 / d >= 3.0, "beacon at {d} m");
-        }
-    }
-
-    #[test]
-    fn beacon_widens_with_distance() {
-        assert!(beacon_width(60.0) > beacon_width(20.0));
-        assert!(beacon_width(0.0) > 0.0);
-    }
 }
 
 #[cfg(test)]
@@ -1046,11 +1027,11 @@ mod binding_tests {
             assert_eq!(down, vec![ButtonEvent { action: Action::Block, down: true }], "{code:?} {btn:?} press");
             assert_eq!(up, vec![ButtonEvent { action: Action::Block, down: false }], "{code:?} {btn:?} release");
         }
-        // F and V no longer block; Q throws a star, 4 rolls, LMB slices. F is now the stealth cloak; V stays unbound.
-        assert!(events_for_press(Some(KeyCode::KeyV), None).0.is_empty(), "KeyV is unbound");
+        // F is the cloak, C grinds; neither blocks. Q throws a star, 4 no longer rolls, LMB slices.
+        assert_eq!(events_for_press(Some(KeyCode::KeyC), None).0, vec![ButtonEvent { action: Action::Grind, down: true }]);
         assert_eq!(events_for_press(Some(KeyCode::KeyF), None).0, vec![ButtonEvent { action: Action::Cloak, down: true }]);
         assert_eq!(events_for_press(Some(KeyCode::KeyQ), None).0, vec![ButtonEvent { action: Action::Fire, down: true }]);
-        assert_eq!(events_for_press(Some(KeyCode::Digit4), None).0, vec![ButtonEvent { action: Action::Roll, down: true }]);
+        assert!(events_for_press(Some(KeyCode::Digit4), None).0.is_empty(), "the roll is gone");
         // and the attack buttons are untouched
         let (d, _) = events_for_press(None, Some(MouseButton::Left));
         assert_eq!(d, vec![ButtonEvent { action: Action::Slice, down: true }]);

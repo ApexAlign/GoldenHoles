@@ -82,6 +82,8 @@ pub enum Action {
     /// Stealth cloak (cloak.rs, docs/melee.md "Cloak"): held. A faint, flickering shimmer in place of full
     /// invisibility; attacking or taking a hit breaks it.
     Cloak,
+    /// Grind (`C`, docs/grind.md): held. Holding it with speed in hand keeps the momentum; releasing ends it.
+    Grind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -359,10 +361,15 @@ impl Predicted {
 /// from the (restored or live) cooldown mirror in `ch`. Shared by the catch-up and the replay hook.
 fn lunge_input(katana: &KatanaCfg, walk_mult: f32, it: &PlayerIntent, ch: &mut CharacterSystem) -> PlayerInput {
     let mut input = to_player_input_scaled(it, walk_mult);
-    let mut cd = ch.slice_cooldown();
+    let (mut cd, mut buf) = (ch.slice_cooldown(), ch.slice_buffer());
     let aim = CombatAim { origin: vector![0.0, 0.0, 0.0], yaw: dq_yaw(it.aim_yaw), pitch: 0.0 };
-    predict_slice(katana.cooldown, &mut cd, TICK_DT, it.buttons.has(Buttons::SLICE), ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut input);
+    // the katana cuts on the press edge only (a held button charges a heavy, it never repeats): replay the same edge
+    let slice = it.buttons.has(Buttons::SLICE);
+    let edge = slice && !ch.slice_prev;
+    ch.slice_prev = slice;
+    predict_slice(katana.cooldown, &mut cd, &mut buf, TICK_DT, edge, ch.dash_ready(), ch.strike_kind(), aim.flat_forward(), &mut input);
     ch.set_slice_cooldown(cd);
+    ch.set_slice_buffer(buf);
     input
 }
 
@@ -384,6 +391,8 @@ pub struct PredictedSlash {
     pub flip: bool,
     /// Which katana move this was (light / heavy / air / whirl / counter).
     pub kind: shinobi_sim::combat::SlashKind,
+    /// The named combo it completed, if it connected (`KatanaCombo::None` otherwise).
+    pub combo: shinobi_sim::combat::KatanaCombo,
 }
 
 /// A predicted katana hit.
@@ -402,6 +411,8 @@ pub struct LocalFx {
     pub dashing: bool,
     pub rolling: bool,
     pub sliding: bool,
+    /// Grinding right now (see `Cfg::grind_*`), for the scrape sound and the speed FX.
+    pub grinding: bool,
     /// Horizontal speed, m/s.
     pub speed: f32,
     pub dash_ready: bool,
@@ -427,6 +438,8 @@ pub struct LocalFx {
     pub dash_started: bool,
     pub dash_ended: bool,
     pub slide_started: bool,
+    /// A grind began this interval (landed from a jump with jump held).
+    pub grind_started: bool,
     /// Fall speed (m/s) of the hardest landing in the interval; 0 = none. Drives landing audio / dust.
     pub landing_speed: f32,
     /// The server moved the local player by more than the smoothing limit (respawn, match-start reset): the
@@ -657,6 +670,8 @@ pub struct ClientGame {
     /// The block key is down (raw), and whether the shield is actually up this tick (not while dead).
     block_held: bool,
     blocking: bool,
+    /// The grind key is down (raw, held): sent as `PlayerIntent.grind` (docs/grind.md).
+    grind_held: bool,
     /// The cloak key is down (raw, held like `block_held`); `cloak.rs` on the server decides whether it is actually
     /// active (duration, cooldown).
     cloak_held: bool,
@@ -767,6 +782,7 @@ impl ClientGame {
             block_held: false,
             cloak_held: false,
             blocking: false,
+            grind_held: false,
             fire_hold: None,
             fire_release: None,
             star_est: None,
@@ -829,7 +845,6 @@ impl ClientGame {
             match e.action {
                 Action::Jump => self.controls.mark(Use::Jump),
                 Action::Dash => self.controls.mark(Use::Dash),
-                Action::Slide => self.controls.mark(Use::Slide),
                 Action::Grapple => self.controls.mark(Use::Grapple),
                 Action::BuildFloor | Action::BuildWall => self.controls.mark(Use::Build),
                 Action::Slice => self.controls.mark(Use::Katana),
@@ -838,6 +853,7 @@ impl ClientGame {
                     self.controls.mark(Use::Stars);
                 }
                 Action::Block => self.controls.mark(Use::Block),
+                Action::Grind => self.controls.mark(Use::Grind),
                 Action::StarNext | Action::StarPrev => self.controls.mark(Use::StarCycle),
                 _ => {}
             }
@@ -871,6 +887,7 @@ impl ClientGame {
             Action::Grapple => self.zip_edge |= e.down, // latched until the next sim tick, so a sub-tick tap is not lost
             Action::Block => self.block_held = e.down,
             Action::Cloak => self.cloak_held = e.down,
+            Action::Grind => self.grind_held = e.down,
             Action::StarNext if e.down => {
                 self.star_sel = self.star_sel.next();
                 self.star_cycled = true;
@@ -985,6 +1002,7 @@ impl ClientGame {
             pred.hist.clear();
             pred.hist.push_back((pred.sim_local + 1.0, p));
             pred.combat.set_slice_cooldown_left(pred.ch.slice_cooldown());
+            pred.combat.set_slice_buffer_left(pred.ch.slice_buffer());
             // a jump the reconciler refused to smooth (offset reset) is a server teleport: respawn, match start
             let jump = (0..3).map(|i| (rendered[i] - p[i]).powi(2)).sum::<f32>().sqrt();
             if jump > self.reconciler.snap_dist {
@@ -1052,6 +1070,7 @@ impl ClientGame {
             self.reconciler.record(it, pos);
         }
         p.combat.set_slice_cooldown_left(p.ch.slice_cooldown());
+        p.combat.set_slice_buffer_left(p.ch.slice_buffer());
         p.prev_pos = p.pos;
         self.pred = Some(p);
     }
@@ -1098,8 +1117,11 @@ impl ClientGame {
         }
         let aim_before = (self.aim.yaw, self.aim.pitch);
         let (dx, dy) = frame.look;
-        // block: the view is frozen where it was when the shield went up (the server applies no other aim while it is up)
-        let blocking = self.block_held && self.death.is_none();
+        // block: the view is frozen where it was when the shield went up (the server applies no other aim while it is up).
+        // With the yumi up the same button is the focus (zoom) instead: no shield while the bow is equipped.
+        let bow = self.bow_up && self.power.kind == PowerKind::Yumi;
+        let zoom_held = self.block_held && bow;
+        let blocking = self.block_held && !bow && self.death.is_none();
         // a drawn bow slows the turn (docs/powerups.md: `combat.yumi.turn_mult`)
         // and a zoomed bow turns with the FOV (`zoom.rs`): the same angular speed per screen pixel
         let turn_k = self.zoom.turn_k(self.power.drawing, self.camera.cfg.base_fov, &PowerCfg::default().yumi);
@@ -1263,6 +1285,8 @@ impl ClientGame {
         let mut intent = if dead { build_intent(tick, (0.0, 0.0), &self.aim, Buttons::default()) } else { build_intent(tick, stick, &self.aim, held) };
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
         intent.block = blocking;
+        intent.zoom = zoom_held && !dead;
+        intent.grind = self.grind_held && !blocking && !dead;
         intent.cloak = self.cloak_held && !blocking && !dead;
         intent.mark = mark_now;
         // the throwable a plain press sends rides with the FIRE edge (a MARK star ignores it)
@@ -1271,7 +1295,7 @@ impl ClientGame {
             self.star_throws += 1;
         }
         // the bow: with it up, the held slice button is the draw (the server slows the walk by it while the bow is in hand)
-        intent.draw = self.bow_up && self.bow_hold && self.power.kind == PowerKind::Yumi && !blocking && !dead;
+        intent.draw = bow && self.bow_hold && !dead;
         // the weapon's own state machine, with exactly the inputs the server gives its copy
         let walk_pre = self.walk_mult(); // the server builds this tick's walk from the state BEFORE the weapon steps
         if dead {
@@ -1279,7 +1303,7 @@ impl ClientGame {
         } else {
             let mut pev = Vec::new();
             let armed = snap_armed;
-            self.power.update(TICK_DT, &PowerInput { draw: intent.draw, fire: intent.buttons.has(Buttons::FIRE), live_tags, armed_tags: armed, can_act: !blocking }, &PowerCfg::default(), &mut pev);
+            self.power.update(TICK_DT, &PowerInput { draw: intent.draw, zoom: intent.zoom, fire: intent.buttons.has(Buttons::FIRE), live_tags, armed_tags: armed, can_act: !blocking }, &PowerCfg::default(), &mut pev);
             for e in pev {
                 if e == PowerEvent::TagThrow {
                     self.tag_throws.push(tick);
@@ -1292,7 +1316,7 @@ impl ClientGame {
             let cfg = PowerCfg::default();
             let hp = self.net.hp();
             let df = self.power.draw_frac(&cfg);
-            self.zoom.tick(TICK_DT, df, hp, &cfg.yumi);
+            self.zoom.tick(TICK_DT, df, zoom_held, hp, &cfg.yumi);
             if dead {
                 self.zoom = Default::default();
             }
@@ -1387,6 +1411,7 @@ impl ClientGame {
                     &mut ev,
                 );
                 p.ch.set_slice_cooldown(p.combat.slice_cooldown_left()); // same mirror the server publishes
+                p.ch.set_slice_buffer(p.combat.slice_buffer_left());
                 if let Some(edge) = p.combat.lock_edge {
                     self.lock_edges.push(edge);
                 }
@@ -1411,8 +1436,8 @@ impl ClientGame {
                 self.throw_cd_left = (self.throw_cd_left - TICK_DT).max(0.0);
                 for e in ev {
                     match e {
-                        CombatEvent::Slash { flip, dir, lunge, kind, .. } => {
-                            self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip, kind });
+                        CombatEvent::Slash { flip, dir, lunge, kind, combo, .. } => {
+                            self.fx_edges.slash = Some(PredictedSlash { lunge, dir: [dir.x, dir.y, dir.z], flip, kind, combo });
                             self.last_slash_dir = Some([dir.x, dir.y, dir.z]);
                         }
                         CombatEvent::ShurikenThrown { dir, .. } => {
@@ -1449,6 +1474,7 @@ impl ClientGame {
                 edges.wall_run_started |= !prev.wall_running && flags.wall_running;
                 edges.dash_started |= !prev.dashing && flags.dashing;
                 edges.slide_started |= !prev.sliding && flags.sliding;
+                edges.grind_started |= p.ch.grind_started;
                 let landed_speed = if !prev.grounded && flags.grounded { (-vy_before).max(0.0) } else { 0.0 };
                 let dash_ended = prev.dashing && !flags.dashing;
                 edges.landing_speed = edges.landing_speed.max(landed_speed);
@@ -1532,6 +1558,7 @@ impl ClientGame {
             fx.dashing = p.ch.evading().is_some();
             fx.rolling = p.ch.evading() == Some(true);
             fx.sliding = p.ch.sliding();
+            fx.grinding = p.ch.grinding();
             fx.speed = (p.ch.vel.x * p.ch.vel.x + p.ch.vel.z * p.ch.vel.z).sqrt();
             fx.dash_ready = p.ch.dash_ready();
             fx.grappling = p.ch.grapple.is_some();

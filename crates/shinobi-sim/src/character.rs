@@ -24,7 +24,6 @@ pub struct Cfg {
     pub ground_stick: f32,
     pub jump_speed: f32,
     pub double_jump_speed: f32,
-    pub peak_window: f32,
     /// Gravity multiplier while rising with jump held (hold-to-extend: a held jump goes higher and floats).
     pub rise_hold_mult: f32,
     /// Gravity multiplier while rising with jump released (a tap is a short hop).
@@ -177,6 +176,20 @@ pub struct Cfg {
     /// velocity (capped at `grapple_sling_cap` m/s; only above 6 m/s).
     pub grapple_sling: f32,
     pub grapple_sling_cap: f32,
+    /// GRIND (docs/grind.md): hold the grind button (`C`) while on the ground and moving at least `grind_min_speed`, or
+    /// land from a jump or fall with it held, and the ground does not stop you: the horizontal speed is kept, plus
+    /// `grind_fall_gain` x the fall speed and `grind_boost`
+    /// (capped at `grind_max_speed`, a speed already above the cap is kept). The grind then bleeds `grind_friction` m/s^2,
+    /// the stick steers it at `grind_turn` rad/s, and it ends when the button is released, below `grind_end_speed`, on
+    /// a roll, or on leaving the ground. Jumping out of it keeps the speed; pressing into a wall while grinding hands
+    /// over to the wall-run.
+    pub grind_min_speed: f32,
+    pub grind_end_speed: f32,
+    pub grind_fall_gain: f32,
+    pub grind_boost: f32,
+    pub grind_max_speed: f32,
+    pub grind_friction: f32,
+    pub grind_turn: f32,
 }
 
 impl Cfg {
@@ -217,7 +230,6 @@ impl Default for Cfg {
             ground_stick: -2.0,
             jump_speed: 11.0,
             double_jump_speed: 8.4,
-            peak_window: 3.0,
             rise_hold_mult: 0.75,
             rise_cut_mult: 1.25,
             fall_glide_mult: 0.6,
@@ -262,8 +274,8 @@ impl Default for Cfg {
             grapple_cd: 0.4,
             grapple_arrive: 1.3,
             grapple_max_time: 10.0,
-            grapple_jump_boost: 5.0,
-            grapple_lift: 3.0,
+            grapple_jump_boost: 7.5,
+            grapple_lift: 5.0,
             grapple_steer: 1.0,
             grapple_miss_cd: 0.15,
             grapple_max_speed: 20.0,
@@ -308,8 +320,15 @@ impl Default for Cfg {
             grapple_stagger: 0.4,
             grapple_player_cd: 3.0,
             grapple_shield_drain: 0.4,
-            grapple_sling: 0.25,
-            grapple_sling_cap: 8.0,
+            grapple_sling: 0.32,
+            grapple_sling_cap: 10.0,
+            grind_min_speed: 6.0,
+            grind_end_speed: 4.5,
+            grind_fall_gain: 0.3,
+            grind_boost: 1.0,
+            grind_max_speed: 15.0,
+            grind_friction: 2.5,
+            grind_turn: 3.0,
         }
     }
 }
@@ -319,6 +338,8 @@ pub struct PlayerInput {
     pub move_dir: Vector<Real>, // world space, y ignored, len <= 1
     pub jump_pressed: bool,
     pub jump_held: bool,
+    /// Held: the grind button (`C`, docs/grind.md). Holding it on the ground keeps the momentum; jump is separate.
+    pub grind_held: bool,
     pub dash_pressed: bool,
     pub roll_pressed: bool,
     /// Held: explicit wall grab. Entering/sustaining a wall-run needs `jump_held || wall_cling`.
@@ -370,6 +391,14 @@ pub struct SlideState {
     pub time: f32,
 }
 
+/// A grind in progress (ground only): heading, current speed and seconds so far. Same shape as `SlideState`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct GrindState {
+    pub dir: Vector<Real>,
+    pub speed: f32,
+    pub time: f32,
+}
+
 /// Wrist-grapple rope. `len` only ever shortens; `time` is the attached time in seconds.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GrappleState {
@@ -411,6 +440,9 @@ pub struct CharacterSnapshot {
     pub slice_cd: f32,
     pub grapple: Option<GrappleState>,
     pub grapple_cd: f32,
+    pub grind: Option<GrindState>,
+    /// Katana press buffer mirror (seconds left, `katana::PRESS_BUFFER_S` at most).
+    pub slice_buf: f32,
 }
 
 pub struct PhysicsWorld {
@@ -433,19 +465,30 @@ pub struct CharacterSystem {
     double_used: bool,
     /// Edge flag: true only for the update() tick in which a double jump fired.
     pub double_jumped: bool,
+    /// Edge flag: true only for the update() tick in which a grind began (audio / FX).
+    pub grind_started: bool,
     coyote: f32,
     jump_buf: f32,
     dash_cd: f32,
     wall_cd: f32,
     slide: Option<SlideState>,
     slide_cd: f32,
+    grind: Option<GrindState>,
     /// Katana cooldown mirror (seconds), written by whoever runs combat after each combat tick.
     slice_cd: f32,
+    /// Katana press buffer mirror (seconds), written next to `slice_cd`.
+    slice_buf: f32,
+    /// The katana button as it was last tick, for the press edge of the client's replay (`predict_slice`). Not on the
+    /// wire: the replay seeds it from the acked intent.
+    pub slice_prev: bool,
     pub grapple: Option<GrappleState>,
     grapple_cd: f32,
     /// What the rope is on: `Some(true)` a player, `Some(false)` geometry, `None` unknown (after a reconcile restore;
     /// re-derived on the next tick). Not on the wire.
     rope_player: Option<bool>,
+    /// The grind button as it was last tick, for the press edge that cuts a rope (`update`). Not on the wire: the
+    /// client's replay seeds it from the acked intent (`reconcile::apply_replay`).
+    pub grind_prev: bool,
     /// Edge: what the grapple did in the last `update`.
     pub grapple_event: GrappleEvent,
     /// Seconds since the rope last let go / since the last wall jump (large = long ago). Katana air-cut bonuses read them
@@ -512,16 +555,21 @@ impl CharacterSystem {
             was_grounded: false,
             double_used: false,
             double_jumped: false,
+            grind_started: false,
             coyote: 0.0,
             jump_buf: 0.0,
             dash_cd: 0.0,
             wall_cd: 0.0,
             slide: None,
             slide_cd: 0.0,
+            grind: None,
             slice_cd: 0.0,
+            slice_buf: 0.0,
+            slice_prev: false,
             grapple: None,
             grapple_cd: 0.0,
             rope_player: None,
+            grind_prev: false,
             grapple_event: GrappleEvent::None,
             hook_age: 99.0,
             walljump_age: 99.0,
@@ -538,6 +586,14 @@ impl CharacterSystem {
         self.slice_cd = v;
     }
 
+    pub fn slice_buffer(&self) -> f32 {
+        self.slice_buf
+    }
+
+    pub fn set_slice_buffer(&mut self, v: f32) {
+        self.slice_buf = v;
+    }
+
     /// Eye height above the capsule centre right now: `eye_above_center`, lowered by `slide_eye_drop` in a slide.
     /// Shots, slashes and grapple aim start here, so they leave from where the camera is.
     pub fn eye_above(&self) -> f32 {
@@ -546,6 +602,21 @@ impl CharacterSystem {
 
     pub fn sliding(&self) -> bool {
         self.slide.is_some()
+    }
+
+    /// Grinding right now (landed with the grind button held and kept the speed): the katana hits harder (`grind_mult`).
+    pub fn grinding(&self) -> bool {
+        self.grind.is_some()
+    }
+
+    /// Begin a grind heading `dir` (flat) at `speed` (tests, scripted scenes); the sim starts them itself on a landing.
+    pub fn start_grind(&mut self, dir: Vector<Real>, speed: f32) {
+        self.grind = Some(GrindState { dir: flat_norm(dir), speed, time: 0.0 });
+    }
+
+    /// Current grind speed (m/s), 0 when not grinding.
+    pub fn grind_speed(&self) -> f32 {
+        self.grind.map_or(0.0, |g| g.speed)
     }
 
     pub fn invulnerable(&self) -> bool {
@@ -567,6 +638,7 @@ impl CharacterSystem {
     pub fn knock_off(&mut self, dir: Vector<Real>, speed: f32) {
         let d = flat_norm(dir);
         self.vel = Vector::new(d.x * speed, 4.0, d.z * speed);
+        self.grind = None;
         if matches!(self.state, MoveState::WallRun { .. }) {
             self.state = MoveState::Airborne;
         }
@@ -586,6 +658,7 @@ impl CharacterSystem {
         self.vel = Vector::new(d.x * speed, d.y * speed * 0.5 + 1.5, d.z * speed);
         self.state = MoveState::Airborne;
         self.slide = None;
+        self.grind = None;
         self.coyote = 0.0;
         self.wall_cd = 0.3;
         if self.grapple.is_some() {
@@ -608,6 +681,7 @@ impl CharacterSystem {
             self.state = MoveState::Airborne;
         }
         self.slide = None;
+        self.grind = None;
         self.state = MoveState::Airborne; // the hop lifts them off the floor (ground friction would eat the pull)
         self.coyote = 0.0;
         self.wall_cd = 0.4;
@@ -670,6 +744,8 @@ impl CharacterSystem {
             slice_cd: self.slice_cd,
             grapple: self.grapple,
             grapple_cd: self.grapple_cd,
+            grind: self.grind,
+            slice_buf: self.slice_buf,
         }
     }
 
@@ -692,9 +768,12 @@ impl CharacterSystem {
         self.slice_cd = s.slice_cd;
         self.grapple = s.grapple;
         self.grapple_cd = s.grapple_cd;
+        self.grind = s.grind;
+        self.slice_buf = s.slice_buf;
         self.rope_player = None;
         self.grapple_event = GrappleEvent::None;
         self.double_jumped = false;
+        self.grind_started = false;
     }
 
     /// Restore from the exact server blob (`own.pos` is the authoritative position).
@@ -741,6 +820,7 @@ impl CharacterSystem {
         let pos = *w.bodies[self.body].translation();
 
         self.double_jumped = false;
+        self.grind_started = false;
         self.grapple_event = GrappleEvent::None;
         // timers + input buffer
         self.coyote = (self.coyote - dt).max(0.0);
@@ -763,6 +843,14 @@ impl CharacterSystem {
         }
         let grounded_state = self.state == MoveState::Grounded;
         let mut jumped = false;
+        let grind_press = input.grind_held && !self.grind_prev;
+        self.grind_prev = input.grind_held;
+
+        // ---- grind cuts the rope: pressing the grind button on a rope lets go (momentum kept) so the landing grinds
+        // (docs/grind.md); no separate hook press needed. A touchdown with it held does the same (see the landing). ----
+        if self.grapple.is_some() && grind_press {
+            self.grapple_release();
+        }
 
         // ---- wrist grapple: fire / release ----
         if self.grapple.is_some() {
@@ -874,6 +962,52 @@ impl CharacterSystem {
             }
         }
         if !matches!(self.state, MoveState::WallRun { .. }) {
+            // ---- grind: keeps the landing's momentum while the grind button is held (see `Cfg::grind_*`) ----
+            if let Some(mut g) = self.grind {
+                g.speed -= cfg.grind_friction * dt;
+                g.time += dt;
+                // the stick steers the heading (no stick = straight on)
+                if dir_in.norm_squared() > 0.0 {
+                    let (cur, want) = (libm::atan2f(g.dir.z, g.dir.x), libm::atan2f(dir_in.z, dir_in.x)); // libm: client prediction must equal the server
+                    let mut d = want - cur;
+                    while d > std::f32::consts::PI {
+                        d -= std::f32::consts::TAU;
+                    }
+                    while d < -std::f32::consts::PI {
+                        d += std::f32::consts::TAU;
+                    }
+                    let a = cur + d.clamp(-cfg.grind_turn * dt, cfg.grind_turn * dt);
+                    g.dir = Vector::new(libm::cosf(a), 0.0, libm::sinf(a));
+                }
+                let rolling = self.evasion.map_or(false, |e| e.roll);
+                if !input.grind_held
+                    || !grounded_state
+                    || g.speed < cfg.grind_end_speed
+                    || rolling
+                    || self.grapple.is_some()
+                {
+                    self.grind = None;
+                } else {
+                    self.grind = Some(g);
+                }
+            }
+            // holding the grind button on the ground starts one too, no fall needed (C is the grind, not a slide)
+            if self.grind.is_none()
+                && input.grind_held
+                && grounded_state
+                && self.slide.is_none()
+                && self.evasion.is_none()
+                && self.grapple.is_none()
+            {
+                let h = flat(self.vel);
+                let speed = h.norm();
+                if speed >= cfg.grind_min_speed {
+                    let sp = if speed >= cfg.grind_max_speed { speed } else { (speed + cfg.grind_boost).min(cfg.grind_max_speed) };
+                    self.grind = Some(GrindState { dir: h / speed, speed: sp, time: 0.0 });
+                    self.grind_started = true;
+                }
+            }
+
             // ---- slide: boost, friction decay, ends on release / low speed / leaving the ground ----
             if let Some(mut sl) = self.slide {
                 sl.speed -= cfg.slide_friction * dt;
@@ -891,6 +1025,7 @@ impl CharacterSystem {
                 }
             } else if input.slide
                 && grounded_state
+                && self.grind.is_none()
                 && self.slide_cd <= 0.0
                 && self.evasion.is_none()
                 && flat(self.vel).norm() >= cfg.slide_start_speed
@@ -901,6 +1036,9 @@ impl CharacterSystem {
             if let Some(sl) = self.slide {
                 self.vel.x = sl.dir.x * sl.speed;
                 self.vel.z = sl.dir.z * sl.speed;
+            } else if let Some(g) = self.grind {
+                self.vel.x = g.dir.x * g.speed;
+                self.vel.z = g.dir.z * g.speed;
             } else {
                 // horizontal accel: weighty on the ground (ramp up, hard brake on release / reversal), steering-only in the air
                 // flow (`combat::flow`) adds a small fraction back on top of a drawn yumi's walk-slow, never below the plain run
@@ -953,7 +1091,7 @@ impl CharacterSystem {
                 self.vel.z = nh.z;
             }
 
-            // jumps: ground/coyote, then double jump at apex
+            // jumps: ground/coyote, then one double jump any time in the air (rising, apex or falling)
             if self.jump_buf > 0.0 {
                 if self.coyote > 0.0 {
                     self.vel.y = cfg.jump_speed;
@@ -961,10 +1099,7 @@ impl CharacterSystem {
                     self.coyote = 0.0;
                     self.jump_buf = 0.0;
                     jumped = true;
-                } else if !grounded_state
-                    && !self.double_used
-                    && self.vel.y.abs() <= cfg.peak_window
-                {
+                } else if !grounded_state && !self.double_used {
                     self.vel.y = cfg.double_jump_speed;
                     // redirect: the momentum turns to where the stick points, and gets a push
                     self.carry_horizontal(&cfg, dir_in, true, cfg.double_jump_carry);
@@ -976,6 +1111,9 @@ impl CharacterSystem {
             }
             if jumped && self.slide.take().is_some() {
                 self.slide_cd = cfg.slide_cd; // jump out of a slide keeps its speed into the air
+            }
+            if jumped {
+                self.grind = None; // ...and so does a jump out of a grind (the speed is already in `vel`)
             }
             // gravity
             if grounded_state && !jumped {
@@ -995,7 +1133,7 @@ impl CharacterSystem {
             }
 
             // wall-run entry: airborne + jump held + a wall beside you (run along it) or in front (run up it)
-            if !grounded_state && (input.jump_held || input.wall_cling) && self.wall_cd <= 0.0 && self.evasion.is_none() {
+            if (!grounded_state || self.grind.is_some()) && (input.jump_held || input.wall_cling) && self.wall_cd <= 0.0 && self.evasion.is_none() {
                 let fwd = if dir_in.norm_squared() > 0.0 { dir_in } else { flat_norm(self.vel) };
                 let mut entered = false;
                 if flat(self.vel).norm() >= cfg.wall_min_speed {
@@ -1004,6 +1142,7 @@ impl CharacterSystem {
                         // snap to the run along the wall; a rising entry keeps (most of) its climb, a fall is eased
                         self.vel = t * cfg.wall_speed + up * (self.vel.y.max(-2.0) * 0.6) - n * cfg.wall_stick;
                         entered = true;
+                        self.grind = None;
                         self.wallrun_age = 0.0; // a fresh wall-run entry is a flow move (`combat::flow`)
                     }
                 }
@@ -1017,6 +1156,8 @@ impl CharacterSystem {
                             let t = if side < 0.0 { -t } else { t };
                             self.state = MoveState::WallRun { normal: n, tangent: t, time_left: cfg.wall_max_time };
                             self.vel = t * side.abs() + up * self.vel.y.max(cfg.wall_up_enter) - n * cfg.wall_stick;
+                            self.grind = None;
+                            self.grind = None;
                             self.wallrun_age = 0.0; // a fresh wall-run entry is a flow move (`combat::flow`)
                         }
                     }
@@ -1027,7 +1168,7 @@ impl CharacterSystem {
         // ---- evasion override ----
         if let Some(mut e) = self.evasion {
             let f = e.left / e.total;
-            let spd = if e.roll { cfg.roll_speed } else { cfg.dash_speed * (0.4 + 0.6 * f) };
+            let spd = if e.roll { cfg.roll_speed } else { (cfg.dash_speed * (0.4 + 0.6 * f)).max(self.grind_speed()) };
             self.vel.x = e.dir.x * spd;
             self.vel.z = e.dir.z * spd;
             if !e.roll {
@@ -1162,6 +1303,25 @@ impl CharacterSystem {
                     new_pos.y -= gap;
                     grounded = true;
                 }
+            }
+        }
+
+        // ---- grind: a landing with the grind button held and speed in hand starts one; a grind that hit a wall is over ----
+        if self.grind.is_some() && flat(desired).norm() > 0.05 && flat(mv.translation).norm() < flat(desired).norm() * 0.4 {
+            self.grind = None;
+        }
+        if grounded && !grounded_state && input.grind_held && self.grapple.is_some() && flat(self.vel).norm() >= cfg.grind_min_speed {
+            self.grapple_release(); // swung into the floor with the grind held: the rope goes, the grind takes the speed
+        }
+        if grounded && !grounded_state && input.grind_held && self.grind.is_none() && self.slide.is_none() && self.evasion.is_none() && self.grapple.is_none() && !matches!(self.state, MoveState::WallRun { .. }) {
+            let h = flat(self.vel);
+            let speed = h.norm();
+            if speed >= cfg.grind_min_speed {
+                let fall = (-self.vel.y).max(0.0);
+                let gained = speed + cfg.grind_fall_gain * fall + cfg.grind_boost;
+                let sp = if speed >= cfg.grind_max_speed { speed } else { gained.min(cfg.grind_max_speed) };
+                self.grind = Some(GrindState { dir: h / speed, speed: sp, time: 0.0 });
+                self.grind_started = true;
             }
         }
 
@@ -1995,6 +2155,244 @@ mod tests {
     }
 
     #[test]
+    fn the_double_jump_works_while_still_rising_and_while_falling_but_only_once() {
+        for (wait, label) in [(4usize, "rising"), (45, "falling")] {
+            let mut w = world();
+            floor(&mut w);
+            let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+            let mut now = 0.0;
+            settle(&mut ch, &mut w, &mut now);
+            let hold = PlayerInput { jump_held: true, ..Default::default() };
+            tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, jump_held: true, ..Default::default() }, &mut now);
+            for _ in 0..wait {
+                tick(&mut ch, &mut w, &hold, &mut now);
+            }
+            assert_eq!(ch.vel.y > 3.0, label == "rising", "{label}: vy {}", ch.vel.y);
+            tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, jump_held: true, ..Default::default() }, &mut now);
+            assert!(ch.double_used && ch.vel.y > 7.0, "{label}: a double jump fired (vy {})", ch.vel.y);
+            for _ in 0..6 {
+                tick(&mut ch, &mut w, &hold, &mut now);
+            }
+            let vy = ch.vel.y;
+            tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, jump_held: true, ..Default::default() }, &mut now);
+            assert!(ch.vel.y < vy, "{label}: no third jump (vy {vy} -> {})", ch.vel.y);
+        }
+    }
+
+    // ---- grind: landing with the grind button held keeps the momentum ----
+
+    /// Run -Z, jump (held or not) and fly until landing; returns the tick on which the character touched down.
+    fn jump_and_land(ch: &mut CharacterSystem, w: &mut PhysicsWorld, now: &mut f32, grind_on_landing: bool) {
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        for _ in 0..30 {
+            tick(ch, w, &run, now);
+        }
+        tick(ch, w, &PlayerInput { jump_pressed: true, jump_held: true, grind_held: grind_on_landing, ..run }, now);
+        for _ in 0..200 {
+            let rise = ch.state != MoveState::Airborne || ch.vel.y > 0.0;
+            tick(ch, w, &PlayerInput { jump_held: rise, grind_held: grind_on_landing, ..run }, now);
+            if ch.state == MoveState::Grounded {
+                return;
+            }
+        }
+        panic!("never landed");
+    }
+
+    #[test]
+    fn landing_with_grind_held_starts_a_grind_that_keeps_and_adds_momentum() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        jump_and_land(&mut ch, &mut w, &mut now, true);
+        assert!(ch.grinding(), "held through the landing: grinding");
+        assert!(ch.grind_started, "the start edge fired on the landing tick");
+        let cfg = Cfg::default();
+        assert!(ch.grind_speed() > cfg.run_speed + 2.0, "faster than a run: {}", ch.grind_speed());
+        assert!(ch.grind_speed() <= cfg.grind_max_speed + 1e-3);
+        // the speed is real: the next ticks cover ground at grind speed, not run speed
+        let z0 = w.bodies[ch.body].translation().z;
+        let hold = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], grind_held: true, ..Default::default() };
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+        }
+        let dz = z0 - w.bodies[ch.body].translation().z;
+        assert!(dz > cfg.run_speed * 0.5 * 1.1, "half a second of grind covers more than a run: {dz}");
+        assert_eq!(ch.state, MoveState::Grounded);
+    }
+
+    #[test]
+    fn holding_grind_on_the_ground_starts_one_without_falling() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        assert!(!ch.grinding(), "no button, no grind");
+        tick(&mut ch, &mut w, &PlayerInput { grind_held: true, ..run }, &mut now);
+        assert!(ch.grinding() && ch.grind_started, "holding the button on the ground starts a grind (no fall needed)");
+        assert!(ch.grind_speed() >= Cfg::default().run_speed, "and it keeps the run's momentum: {}", ch.grind_speed());
+        tick(&mut ch, &mut w, &PlayerInput { grind_held: false, ..run }, &mut now);
+        assert!(!ch.grinding(), "release still ends it");
+    }
+
+    #[test]
+    fn without_grind_held_the_landing_is_an_ordinary_landing() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        jump_and_land(&mut ch, &mut w, &mut now, false);
+        assert!(!ch.grinding() && !ch.grind_started);
+    }
+
+    #[test]
+    fn standing_still_or_slow_never_grinds() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 3.0, 0.0]);
+        let mut now = 0.0;
+        for _ in 0..90 {
+            tick(&mut ch, &mut w, &PlayerInput { grind_held: true, ..Default::default() }, &mut now);
+        }
+        assert_eq!(ch.state, MoveState::Grounded);
+        assert!(!ch.grinding(), "a drop with no speed is just a drop");
+    }
+
+    #[test]
+    fn a_grind_ends_on_release_and_when_it_slows() {
+        let hold = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], grind_held: true, ..Default::default() };
+        let scene = || {
+            let mut w = world();
+            floor(&mut w);
+            let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+            ch.state = MoveState::Grounded;
+            ch.was_grounded = true;
+            ch.coyote = 0.14;
+            ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+            (w, ch)
+        };
+        // release
+        let (mut w, mut ch) = scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &hold, &mut now);
+        assert!(ch.grinding());
+        tick(&mut ch, &mut w, &PlayerInput { grind_held: false, ..hold }, &mut now);
+        assert!(!ch.grinding(), "release ends it");
+        // friction: it runs until the speed is gone, then holding on does not restart it
+        let (mut w, mut ch) = scene();
+        let cfg = Cfg::default();
+        let mut ticks = 0;
+        while ch.grinding() && ticks < 1000 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+            ticks += 1;
+        }
+        assert!(ticks > 30, "not instant: {ticks}");
+        assert!(ch.grind_speed() == 0.0 || ch.grind.is_none());
+        let z = w.bodies[ch.body].translation().z;
+        let stand = PlayerInput { grind_held: true, ..Default::default() }; // no stick: the run cannot rebuild speed
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &stand, &mut now);
+        }
+        assert!(!ch.grinding(), "a dead grind does not restart from a standstill");
+        assert!((w.bodies[ch.body].translation().z - z).abs() < 1.0, "and the player is not moving fast");
+    }
+
+    #[test]
+    fn jumping_out_of_a_grind_keeps_the_speed_in_the_air() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+        let hold = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], grind_held: true, ..Default::default() };
+        tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, ..hold }, &mut now);
+        assert!(!ch.grinding(), "the jump ends the grind");
+        assert!(ch.vel.y > 5.0, "and it is a real jump: {}", ch.vel.y);
+        assert!(flat(ch.vel).norm() > 13.0, "carrying the grind speed: {}", flat(ch.vel).norm());
+    }
+
+    #[test]
+    fn the_stick_steers_a_grind_at_a_limited_rate() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+        let right = PlayerInput { move_dir: vector![1.0, 0.0, 0.0], grind_held: true, ..Default::default() };
+        tick(&mut ch, &mut w, &right, &mut now);
+        let v = flat(ch.vel);
+        assert!(v.x > 0.0 && v.z < 0.0, "turning, not snapping: {v:?}");
+        assert!(v.x.abs() < v.z.abs() * 0.2, "one tick turns only a few degrees: {v:?}");
+        for _ in 0..40 {
+            tick(&mut ch, &mut w, &right, &mut now);
+        }
+        assert!(ch.grinding());
+        assert!(flat(ch.vel).x > flat(ch.vel).z.abs() * 3.0, "given time the heading follows the stick: {:?}", ch.vel);
+    }
+
+    #[test]
+    fn a_grind_into_a_wall_climbs_it() {
+        let mut w = world();
+        floor(&mut w);
+        boxc(&mut w, [0.0, 10.0, -6.0], [20.0, 10.0, 1.0]); // wall face at z = -5
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+        let hold = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], wall_cling: true, grind_held: true, ..Default::default() };
+        let mut climbed = false;
+        for _ in 0..90 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+            if matches!(ch.state, MoveState::WallRun { .. }) {
+                climbed = true;
+                break;
+            }
+        }
+        assert!(climbed, "grind hands over to the wall-run at a face");
+        assert!(!ch.grinding());
+    }
+
+    #[test]
+    fn grind_state_survives_a_snapshot_and_the_wire_form() {
+        let mut w = world();
+        floor(&mut w);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        ch.start_grind(vector![0.0, 0.0, -1.0], 14.0);
+        let hold = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], grind_held: true, ..Default::default() };
+        for _ in 0..10 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+        }
+        let snap = ch.snapshot(&w);
+        let own = crate::own_state::OwnState::from_snapshot(&snap);
+        let back = own.to_snapshot(snap.pos, &ch.cfg);
+        assert_eq!(back.grind, snap.grind, "grind round-trips through OwnState bit-exactly");
+        // replaying from the restored state reproduces the run
+        let mut a = (w.bodies[ch.body].translation().z, ch.grind_speed());
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+        }
+        a = (w.bodies[ch.body].translation().z - a.0, ch.grind_speed());
+        ch.restore(&mut w, &back);
+        let mut b = (w.bodies[ch.body].translation().z, 0.0);
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+        }
+        b = (w.bodies[ch.body].translation().z - b.0, ch.grind_speed());
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn jump_buffer_fires_on_landing() {
         let mut w = world();
         floor(&mut w);
@@ -2211,6 +2609,65 @@ mod tests {
         assert!(p.z < -20.0, "was pulled most of the way to the wall: z = {}", p.z);
         // soft arrival (traversal round): the rope's end bleeds the speed instead of launching past the anchor
         assert!(ch.vel.norm() < 8.0, "soft arrival: speed {:?}", ch.vel);
+    }
+
+    #[test]
+    fn pressing_grind_on_a_rope_cuts_it_and_keeps_the_swing_speed() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        tick(&mut ch, &mut w, &fire([0.0, 0.3, -1.0]), &mut now);
+        assert!(ch.grapple.is_some(), "hooked");
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &PlayerInput::default(), &mut now);
+        }
+        let before = ch.vel.norm();
+        assert!(ch.grapple.is_some() && before > 5.0, "reeling: {before}");
+        tick(&mut ch, &mut w, &PlayerInput { grind_held: true, ..Default::default() }, &mut now);
+        assert!(ch.grapple.is_none(), "the grind press cut the rope");
+        assert_eq!(ch.grapple_event, GrappleEvent::Released);
+        assert!(ch.vel.norm() > before * 0.9, "momentum kept: {} -> {}", before, ch.vel.norm());
+    }
+
+    #[test]
+    fn grind_held_before_the_hook_does_not_cut_it_in_the_air() {
+        let (mut w, mut ch) = grapple_scene();
+        let mut now = 0.0;
+        let held = PlayerInput { grind_held: true, ..Default::default() };
+        tick(&mut ch, &mut w, &held, &mut now);
+        tick(&mut ch, &mut w, &PlayerInput { grapple_aim: Some(vector![0.0, 0.3, -1.0]), ..held }, &mut now);
+        for _ in 0..20 {
+            tick(&mut ch, &mut w, &held, &mut now);
+        }
+        assert!(ch.grapple.is_some(), "only a fresh press cuts; a held button never kills a rope mid-air");
+    }
+
+    #[test]
+    fn swinging_into_the_floor_with_grind_held_drops_the_rope_and_grinds() {
+        let mut w = world();
+        floor(&mut w);
+        boxc(&mut w, [0.0, 10.0, -40.0], [30.0, 40.0, 11.0]);
+        let mut ch = player(&mut w, [0.0, 0.81, 0.0]);
+        let mut now = 0.0;
+        settle(&mut ch, &mut w, &mut now);
+        let run = PlayerInput { move_dir: vector![0.0, 0.0, -1.0], ..Default::default() };
+        for _ in 0..30 {
+            tick(&mut ch, &mut w, &run, &mut now);
+        }
+        tick(&mut ch, &mut w, &PlayerInput { jump_pressed: true, jump_held: true, ..run }, &mut now);
+        tick(&mut ch, &mut w, &PlayerInput { grapple_aim: Some(vector![0.0, 0.05, -1.0]), ..run }, &mut now);
+        assert!(ch.grapple.is_some(), "hooked mid-hop");
+        let hold = PlayerInput { grind_held: true, ..run };
+        tick(&mut ch, &mut w, &hold, &mut now); // a press: cuts at once
+        assert!(ch.grapple.is_none());
+        let mut grinding = false;
+        for _ in 0..120 {
+            tick(&mut ch, &mut w, &hold, &mut now);
+            if ch.grinding() {
+                grinding = true;
+                break;
+            }
+        }
+        assert!(grinding, "landed into a grind with no hook key pressed");
     }
 
     #[test]

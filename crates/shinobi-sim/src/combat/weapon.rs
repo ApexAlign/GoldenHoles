@@ -56,6 +56,12 @@ pub trait Weapon: Send + Sync {
     fn gate(&mut self, pressed: bool, _dt: f32, ready: bool) -> bool {
         pressed && ready
     }
+    /// Seconds left on a queued (too early) press; 0 for weapons without a press buffer.
+    fn buffered(&self) -> f32 {
+        0.0
+    }
+    /// Overwrite the queued press (client replay restores it from the server's own-state).
+    fn set_buffered(&mut self, _v: f32) {}
     /// 0..1 charge of a held trigger (HUD ring); 0 for weapons that do not charge.
     fn charge(&self) -> f32 {
         0.0
@@ -161,6 +167,18 @@ impl Loadout {
         }
         self.slots[ki].cooldown_left = 0.0;
         true
+    }
+
+    /// Queued press (seconds left) of the first weapon on `t`.
+    pub fn buffered(&self, t: Trigger) -> f32 {
+        self.slots.iter().find(|s| s.weapon.trigger() == t).map_or(0.0, |s| s.weapon.buffered())
+    }
+
+    /// Overwrite the queued press of every weapon on `t`.
+    pub fn set_buffered(&mut self, t: Trigger, v: f32) {
+        for s in self.slots.iter_mut().filter(|s| s.weapon.trigger() == t) {
+            s.weapon.set_buffered(v);
+        }
     }
 
     /// Charge (0..1) of the first weapon on `t`.

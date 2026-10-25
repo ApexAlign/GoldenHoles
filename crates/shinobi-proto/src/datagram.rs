@@ -12,8 +12,14 @@
 //! * HELLO with another VERSION gets `KICK(BadVersion)`; known peers re-sending HELLO get `WELCOME` again.
 //! * v19: character wire grew to 41 bytes (spec v1.1: ears, expression, horns, nose, tail, shoulders).
 //! * v20: destructible level boxes: NetEvent::WorldBreak / WorldRez / WorldCrack (ids 27-29) and `dbox` level lines.
-//! * v21: environmental events: NetEvent::EnvFx (id 31): quakes and lightning (`env_events.rs`).
+//! * v21: environmental events: NetEvent::EnvFx (id 31): lightning (`env_events.rs`; quake cues 0-2 removed later).
 //! * v23: barrels and canisters are gone (star kinds 1 and 3 read as a standard star, `StarFx` what is only 3 = flash burst, hit kind 5 is retired, no stuck-star snapshot entities); the yumi is every player's own primary bow (own-state `power_kind` is 1 unless a fuda tag bag is in hand, `power_ammo` 1, `power_left_q` 0; the reload runs client-side from the loose, 1.1 s); stars end at 14 m.
+//! * v26: reliable event tags are 6 bits (was 5) and `NetEvent::InjuryFx` (event 32) carries the authoritative hurt
+//!   region, quantised point, damage and blocked/sever flags so clients can draw directed blood and dismemberment.
+//! * v27: each owner-only hit carries a `guarded` bit (blocked / parried) after `bonus`, for block feedback.
+//! * v28: `OwnState` gained a `has_grind` flag bit and an optional grind block (the jump-landing GRIND, docs/grind.md).
+//! * v29: `PlayerIntent` gained two held bits: `grind` (`C`, the grind is no longer read off jump-held, so jumping and
+//!   grinding no longer collide) and `zoom` (RMB with the bow up: focused/sniper shots; hip-fire is weaker and reloads faster).
 //! * v25: `WELCOME` carries the server's level and balance fingerprints (u64 each) so a client predicting on a
 //!   different `--level` / `--balance` can flag the mismatch instead of drifting silently.
 //! * v24: BOUNTY system (docs/bounty.md): the periodic `board` section gained `bounty: u16` (0 = none, else the
@@ -35,7 +41,8 @@
 //!   `bit has_state` then, if set, `varint acked_intent_tick` + `OwnState` (sim `own_state.rs`, exact f32);
 //!   then always (when own_len > 0): `varint hp_x10` (exact health x10, 0 = dead), `u4 n_hits` (max 15), then n x
 //!   `varint other_id` (u16; 0 = none/hazard) | `u8 amount` (damage, clamped) | `u3 kind` | `bit taken`
-//!   (0 = you dealt it -> hit marker, 1 = you took it -> damage direction) | `bit kill`.
+//!   (0 = you dealt it -> hit marker, 1 = you took it -> damage direction) | `bit kill` | `bit head` | `bit bonus` |
+//!   `bit guarded` (v27: blocked / parried).
 //!   Hits are UNRELIABLE and capped (15 newest per datagram): loss only costs a marker. Dead players get
 //!   `has_state = 0` (extras only). `kind`: 0 shuriken, 1 slash, 2 grid beam, 3 obstacle, 4 light wall.
 //! * `board`: periodic scoreboard (every 60 ticks, on phase change, and on a bounty transition), same for all
@@ -60,7 +67,10 @@ use super::bits::{DecodeError, DecodeResult};
 pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 3: cookie handshake, snapshot datagram with own/board sections, gameplay events. See the module doc.
 /// 25: `Welcome` carries the server's level and balance fingerprints (prediction-config parity).
-pub const VERSION: u8 = 25;
+/// 26: 6-bit reliable event tags; `InjuryFx` (tag 32) carries the hurt region/point for client gore.
+/// 27: `HitMsg.guarded` (one more bit per hit): the victim's guard blocked or parried it.
+/// 28: `OwnState` carries the grind state (one flag bit + an optional 104-bit block).
+pub const VERSION: u8 = 29;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;

@@ -9,22 +9,24 @@ long as the bag lasts. Numbers live in Balance `combat.yumi.*` / `combat.tag.*` 
 |---|---|---|
 | Pickup | none: everyone has it from spawn (`yumi` lines in level files are ignored) | pedestals where routes meet, 45 s respawn |
 | Load / carry | one arrow, never lost | 2 tags, 60 s (`count`, `carry_s`) |
-| Use | press **2** to raise the bow (**1** puts it away; the katana puts itself away with it — no blade shows while the bow is out), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). After a shot the bow **reloads for 1.1 s** (`reload_s`; the HUD reload bar under the crosshair). | **press** Q: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
-| While in use | walk -25 % (`move_mult`), -40 % at full draw (`focus_move_mult` 0.6), look speed x0.5 (`turn_mult`) and scaled with the zoom FOV, no stars while drawing; draw ring + reload bar on the HUD | no stars while tags are in hand or still ticking |
-| Damage | 80 body, x1.5 head = 120, so **a full-draw headshot kills** (`damage`, `head_mult`), 280 m/s, 4 m/s^2 drop, 250 m range, no damage falloff. **Splash** (near-miss forgiveness, not a second blast weapon): within `splash_radius` **1.2 m** beyond the direct-hit band -- a flight graze, or embedded in a wall right next to someone -- still does a little: body-only (no head bonus), falling off linearly from `splash_frac` **40 %** of a direct hit at the inner edge to 0 at the outer edge (`arrow_splash_damage`, the same falloff shape as the tag's blast with `splash_frac` standing in for `edge_frac`) | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
+| Use | press **2** to raise the bow (**1** puts it away; the katana puts itself away with it — no blade shows while the bow is out), then **hold left click** 0.6 s (`draw_s`), release to loose. Letting go early cancels (no reload). **Hold RMB too while drawing to zoom**: that is the focused/sniper shot; a plain left-click draw is hip-fire. After a shot the bow reloads for 1.1 s focused / **0.825 s hip-fire** (`reload_s` x `hip_reload_mult` 0.75; the HUD reload bar under the crosshair). **No shield while the bow is up**: RMB is the focus, not the block; press **1** to take the katana out and block. | **press** Q: throws a tag (0.4 s gap). With the hands empty a press sets off your armed tags. At most 2 live (`max_live`). |
+| While in use | walk -25 % (`move_mult`), -40 % at full draw (`focus_move_mult` 0.6), look speed x0.5 (`turn_mult`) and scaled with the focus FOV, no stars while drawing; draw ring + reload bar on the HUD | no stars while tags are in hand or still ticking |
+| Damage | focused (RMB held for `focus_hold_s` 0.3 s of the draw): 80 body, x1.5 head = 120, so **a focused full-draw headshot kills** (`damage`, `head_mult`). Hip-fire: x`hip_damage_mult` 0.8 = 64 body / 96 head (a headshot no longer one-shots: zoom is the skill gap). 280 m/s, 4 m/s^2 drop, 250 m range, no damage falloff. **Splash** (near-miss forgiveness, not a second blast weapon): within `splash_radius` **1.2 m** beyond the direct-hit band -- a flight graze, or embedded in a wall right next to someone -- still does a little: body-only (no head bonus), falling off linearly from `splash_frac` **40 %** of a direct hit at the inner edge to 0 at the outer edge (`arrow_splash_damage`, the same falloff shape as the tag's blast with `splash_frac` standing in for `edge_frac`) | blast 4 m (`radius`): 50 at the heart, 40 % at the edge (`damage`, `edge_frac`), thrower takes 30 % (`self_mult`), teammates 0 |
 | Knock | none, including on a splash hit (it is a forgiveness band, not the tag's launch) | 14 m/s radial launch + hop (`knock`): ring-out credit, wall-splat window like a katana hit |
-| Counters | **block**: damage x guard `front_mult`, guard loses 70 % (`block_drain`); a splash hit is blocked the same way but for proportionally less (`block_drain * splash_frac`). **Parry** (shield raised within the parry window): no damage, the arrow turns around toward the shooter and flies back at full speed (it can hurt them, and be parried again) -- a splash hit still in flight parries the same way (it is the same live arrow); a splash hit from a wall thud has no arrow left to turn around, so a parry there just absorbs it. **Katana** crossing the arrow cuts it out of the air (no splash triggers). | **Katana** swing (anyone but the owner) crossing the tag cuts it off, no blast. Not blockable or parryable (it is an area effect). |
+| Counters | **block** (katana in hand; the bow cannot raise a shield): damage x guard `front_mult`, guard loses 70 % (`block_drain`); a splash hit is blocked the same way but for proportionally less (`block_drain * splash_frac`). **Parry** (shield raised within the parry window): no damage, the arrow turns around toward the shooter and flies back at full speed (it can hurt them, and be parried again) -- a splash hit still in flight parries the same way (it is the same live arrow); a splash hit from a wall thud has no arrow left to turn around, so a parry there just absorbs it. **Katana** crossing the arrow cuts it out of the air (no splash triggers). | **Katana** swing (anyone but the owner) crossing the tag cuts it off, no blast. Not blockable or parryable (it is an area effect). |
 | Telegraph | a drawn bow shows to everyone as a bow with its string back and a faint laser line along the aim; the line glints bright (and the screen frame pulses, "BOW DRAWN ON YOU") when it points at your head | a paper tag with a countdown ring of 12 pips; one stuck on **you** shows "TAG ON YOU 1.3" on the HUD and beeps faster; armed tags blink red |
 
 Dying drops a tag bag where you fell (25 s, whatever was left) for anyone not holding one; the bow does not drop. A taken pedestal
 call-out goes to the whole server. A spent or expired tag bag hands the bow back. Pedestals ignore players already holding a bag.
 
 ## Zoom (sniping)
-Drawing the bow narrows the view toward a focused shot. Client-only camera (`shinobi-client/src/zoom.rs`, numbers in `YumiCfg`, helpers
-in `power.rs`); the only sim part is the walk speed.
+Holding **RMB while drawing** narrows the view toward a focused shot; a draw without it is hip-fire. Client-only camera
+(`shinobi-client/src/zoom.rs`, numbers in `YumiCfg`, helpers in `power.rs`); the sim mirrors the damage / reload tradeoff.
 * **Ramp.** Nothing happens until the draw passes `zoom_start` (25 % of the draw = the 0.15 s tap), then the vertical FOV eases (smoothstep) from your base FOV
-  (90 by default) to `zoom_fov` = **30 deg** at full draw. A quick release or a tap stays hip-fire. Releasing drops the zoom at once; it
-  rises at most 5/s.
+  (90 by default) to `zoom_fov` = **30 deg** at full draw. Releasing RMB drops the zoom at once; it rises at most 5/s.
+* **Focus gate.** A shot counts as focused only after RMB has been held for `focus_hold_s` **0.3 s** during the draw (a quick RMB tap at
+  the end does not buy full damage). Focused = full damage and the 1.1 s reload; hip-fire = `hip_damage_mult` 0.8 damage and `hip_reload_mult` 0.75 reload.
+* **No shield.** While the yumi is up, RMB is the focus and the shield is disabled (the HUD guard ring stays off); the katana must be out to block.
 * **Focus** (full draw, not flinching): the reticle ring is at its tightest and gold, four hairlines reach in, the ring sway stops.
 * **Costs.** Look speed = min(`turn_mult`, tan(fov/2) / tan(base/2)) (30 deg: x0.27, the same angular speed per screen pixel). Walk drops to
   `focus_move_mult` 0.6 at full draw (0.75 before; the server steps `PowerState` and the client predicts with the same `draw_walk_mult`, replays use the
@@ -36,7 +38,7 @@ in `power.rs`); the only sim part is the walk speed.
 * **Sniping numbers.** Range 250 m (the FFA maps are 224 x 224 / 336 x 336 m, the isles / sky maps ~230 m: diagonals are 300 to 475 m, so 250 m covers
   most sightlines without making the whole map a shooting range). 280 m/s and 4 m/s^2 (speed raised again from 180: a sniping weapon has to be
   near-flat to be worth lining up): at 200 m the arrow is in the air 0.71 s and falls 1.0 m (the drop tick shows it), a runner (9.5 m/s) moves 7 m
-  meanwhile, barely a lead at all. Damage does not fall off: a full-draw headshot still kills at any range. The lock-on bracket's gold "fire ready"
+  meanwhile, barely a lead at all. Damage does not fall off: a focused full-draw headshot still kills at any range (a hip-fire one does not). The lock-on bracket's gold "fire ready"
   state is range-independent for this reason: it checks a fixed metre-drift window against the target's lateral speed and the arrow's actual flight
   time, so a correctly read lock stays trustworthy at long range, not just up close.
 * Review frames: `docs/screens/bow_zoom_{hip,half,full}.png` (`SHOT_FX=bowzoom:D,lineup` with `SHOT_LINE=80 SHOT_LINE_PICK=1`, D = draw 0 / 0.65 / 1).
@@ -58,9 +60,11 @@ in `power.rs`); the only sim part is the walk speed.
   a point, not a flying tag, and with no line-of-sight check -- the band is small enough that it is always effectively adjacent).
 * Match start / respawn gives you a loaded bow (and drops nothing but a tag bag). Intermission clears every arrow and tag.
 
-## Netcode (protocol v23)
+## Netcode (protocol v29)
 * `PlayerIntent.draw`: the bow's draw button held (one bit; the client sends it while the bow is up and left click is held). The server also
   needs the bow in the hands (no tag bag): a stray bit does nothing. The walk slowdown is a function of that bit alone (`PlayerInput.walk_slow`), so reconciliation replays reproduce it.
+* `PlayerIntent.zoom` (v29): the focus button (RMB) held with the bow up. `PowerState` accumulates it during the draw and stamps the loose:
+  focused or hip-fire damage / reload, carried on `PowerEvent::Loose { focused }` and the arrow's `damage_mult`.
 * `PowerState` (`power.rs`) is the carried state machine (draw timer, reload, tag ammo, tag carry timer). Its default is the loaded bow. Server and client predictor
   step the **same code** with the same inputs (`tests/power_parity.rs`); the owner block carries (kind, ammo, carry quarter-seconds)
   and the client re-syncs when kind / ammo change, never on a stale repeat (the bow reports kind 1, ammo 1; the reload runs from the loose on

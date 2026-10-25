@@ -1,5 +1,4 @@
-//! Sound for quakes and lightning, from the events `storm_fx` drains (`StormFeed`). QUAKE: a low rumble that swells through
-//! the warning and keeps rolling while it shakes, rattles, a settle thud at the end. LIGHTNING: a rising positional whine
+//! Sound for lightning, from the events `storm_fx` drains (`StormFeed`). A rising positional whine
 //! on each marked bolt (faster, higher, louder as the strike nears); on the strike a thunder crack + rolling rumble that
 //! arrives later the farther away it is (dark and muffled when far), and ringing ears (the world dips) within 8 m.
 //! Cues go out through `audio::ExtraCues` / `audio::ExtraMuffle`. The decisions are pure and tested here.
@@ -11,7 +10,7 @@ use shinobi_client::netclient::EnvFx;
 
 use crate::audio::{Cue, ExtraCues, ExtraMuffle};
 use crate::net::ViewRes;
-use crate::storm_fx::{whine_look, Quake, StormFeed, StormSet};
+use crate::storm_fx::{whine_look, StormFeed, StormSet};
 use crate::synth::Sound;
 
 /// Game-scaled speed of sound (m/s): thunder trails the flash noticeably but never by more than `MAX_DELAY`.
@@ -46,26 +45,6 @@ pub fn muffle_for(dist: f32) -> Option<(f32, f32)> {
     Some((1.8 + 1.4 * k, 0.55 + 0.45 * k))
 }
 
-/// Rumble retrigger for the quake state: `(gap s, volume, speed)`; none when idle. Swells through the warning.
-pub fn rumble_look(q: Quake) -> Option<(f32, f32, f32)> {
-    match q {
-        Quake::Idle => None,
-        Quake::Warn { t, total } => {
-            let u = (t / total.max(0.1)).clamp(0.0, 1.0);
-            Some((1.0, 0.15 + 0.55 * u * u, 0.8 + 0.25 * u))
-        }
-        Quake::Active { .. } => Some((1.1, 0.35 + 0.6 * q.amp(), 0.95)),
-    }
-}
-
-/// Rattle gap (s) and volume at shake strength `amp`; none while the shaking has all but faded.
-pub fn rattle_look(amp: f32) -> Option<(f32, f32)> {
-    if amp < 0.15 {
-        return None;
-    }
-    Some((0.7 - 0.35 * amp.clamp(0.0, 1.0), 0.25 + 0.5 * amp.clamp(0.0, 1.0)))
-}
-
 struct Mark {
     id: u8,
     pos: [f32; 3],
@@ -76,13 +55,9 @@ struct Mark {
 
 #[derive(Resource, Default)]
 struct StormAudio {
-    quake: Quake,
     marks: Vec<Mark>,
     /// (seconds from now, sound, volume, position) still to play.
     due: Vec<(f32, Sound, f32, [f32; 3])>,
-    rumble_in: f32,
-    rattle_in: f32,
-    n: u32,
 }
 
 pub struct StormAudioPlugin;
@@ -102,21 +77,6 @@ fn storm_sfx(time: Res<Time>, view: Res<ViewRes>, feed: Res<StormFeed>, mut st: 
     let eye = view.0.eye;
     for ev in feed.events.iter().copied() {
         match ev {
-            EnvFx::QuakeWarn { warn_s } => {
-                st.quake = Quake::Warn { t: 0.0, total: warn_s.max(0.1) };
-                st.rumble_in = 0.0;
-            }
-            EnvFx::QuakeStart { dur_s } => {
-                st.quake = Quake::Active { t: 0.0, dur: dur_s.max(0.5) };
-                st.rumble_in = 0.0;
-                st.rattle_in = 0.1;
-            }
-            EnvFx::QuakeEnd => {
-                if !matches!(st.quake, Quake::Warn { .. }) {
-                    out.push(Cue::at(Sound::QuakeThud, eye, 0.95).ranged(1000.0));
-                }
-                st.quake = Quake::Idle;
-            }
             EnvFx::BoltMark { id, pos, warn_s } => {
                 st.marks.retain(|m| m.id != id);
                 st.marks.push(Mark { id, pos, left: warn_s.max(0.1), warn: warn_s.max(0.1), next: 0.0 });
@@ -130,29 +90,6 @@ fn storm_sfx(time: Res<Time>, view: Res<ViewRes>, feed: Res<StormFeed>, mut st: 
                     st.due.push((0.12, Sound::EarRing, 0.5, eye));
                     muffle.0 = muffle_for(d);
                 }
-            }
-        }
-    }
-
-    // quake: rumble + rattle
-    st.quake.tick(dt);
-    let q = st.quake;
-    if let Some((gap, vol, speed)) = rumble_look(q) {
-        st.rumble_in -= dt;
-        if st.rumble_in <= 0.0 {
-            st.rumble_in = gap;
-            out.push(Cue::at(Sound::QuakeRumble, eye, vol).pitched(speed).ranged(1000.0));
-        }
-    }
-    if matches!(q, Quake::Active { .. }) {
-        if let Some((gap, vol)) = rattle_look(q.amp()) {
-            st.rattle_in -= dt;
-            if st.rattle_in <= 0.0 {
-                st.n = st.n.wrapping_add(1);
-                let jitter = 0.8 + 0.4 * ((st.n.wrapping_mul(2_654_435_761) >> 16) & 0xFF) as f32 / 255.0;
-                st.rattle_in = gap * jitter;
-                let speed = 0.9 + 0.2 * ((st.n.wrapping_mul(40_503) >> 8) & 0xFF) as f32 / 255.0;
-                out.push(Cue::at(Sound::QuakeRattle, eye, vol).pitched(speed).ranged(1000.0));
             }
         }
     }
@@ -210,26 +147,5 @@ mod tests {
         let (fs, fi) = muffle_for(7.5).unwrap();
         assert!(ns > fs && ni > fi);
         assert!(ni <= 1.0 && ns < 4.0);
-    }
-
-    #[test]
-    fn rumble_swells_through_the_warning_and_rolls_while_shaking() {
-        assert!(rumble_look(Quake::Idle).is_none());
-        let v = |t| rumble_look(Quake::Warn { t, total: 2.0 }).unwrap();
-        assert!(v(0.0).1 < v(1.0).1 && v(1.0).1 < v(2.0).1);
-        assert!(v(0.0).2 < v(2.0).2, "pitch rises with it");
-        let a = rumble_look(Quake::Active { t: 2.0, dur: 4.0 }).unwrap();
-        assert!(a.1 > v(2.0).1);
-        let end = rumble_look(Quake::Active { t: 3.95, dur: 4.0 }).unwrap();
-        assert!(end.1 < a.1, "dies away with the shaking");
-        assert!(a.1 <= 1.0);
-    }
-
-    #[test]
-    fn rattles_come_faster_and_louder_when_it_shakes_harder() {
-        assert!(rattle_look(0.05).is_none());
-        let (g1, v1) = rattle_look(0.3).unwrap();
-        let (g2, v2) = rattle_look(1.0).unwrap();
-        assert!(g2 < g1 && v2 > v1 && v2 <= 1.0);
     }
 }

@@ -75,6 +75,10 @@ fn idle(yaw: f32) -> PlayerIntent {
 }
 
 fn drawing(yaw: f32, pitch: f32) -> PlayerIntent {
+    PlayerIntent { draw: true, zoom: true, aim_yaw: q_yaw(yaw), aim_pitch: q_pitch(pitch), ..Default::default() }
+}
+
+fn hip_drawing(yaw: f32, pitch: f32) -> PlayerIntent {
     PlayerIntent { draw: true, aim_yaw: q_yaw(yaw), aim_pitch: q_pitch(pitch), ..Default::default() }
 }
 
@@ -125,9 +129,19 @@ fn give(s: &mut Server, id: u16, kind: PowerKind, ammo: u8) {
 
 /// A draws for `ticks` (aim `pitch`), releases, and the PvP events of the shot plus `settle` ticks come back.
 fn shoot(s: &mut Server, ticks: u32, pitch: f32, settle: u32) -> Vec<PvpEvent> {
+    shoot_with(s, ticks, pitch, settle, true)
+}
+
+/// The same draw without the focus button: a hip-fire shot.
+fn hip_shoot(s: &mut Server, ticks: u32, pitch: f32, settle: u32) -> Vec<PvpEvent> {
+    shoot_with(s, ticks, pitch, settle, false)
+}
+
+fn shoot_with(s: &mut Server, ticks: u32, pitch: f32, settle: u32, focused: bool) -> Vec<PvpEvent> {
     let mut ev = Vec::new();
     for _ in 0..ticks {
-        ev.extend(feed(s, drawing(0.0, pitch), idle(B_YAW)));
+        let it = if focused { drawing(0.0, pitch) } else { hip_drawing(0.0, pitch) };
+        ev.extend(feed(s, it, idle(B_YAW)));
     }
     // the release tick keeps the aim of the draw (the arrow leaves along the live aim)
     ev.extend(feed(s, PlayerIntent { aim_pitch: q_pitch(pitch), ..idle(0.0) }, idle(B_YAW)));
@@ -180,6 +194,24 @@ fn a_full_draw_looses_an_arrow_for_80_body_or_120_head() {
             assert_eq!(amount, if head { 120.0 } else { 80.0 }, "80 body / x1.5 head");
             hit_kinds.push(head);
         }
+    }
+    assert!(hit_kinds.iter().any(|h| *h) && hit_kinds.iter().any(|h| !*h), "across the aims there is a head and a body hit: {hit_kinds:?}");
+}
+
+#[test]
+fn hip_fire_hits_for_64_body_or_96_head_and_reloads_sooner() {
+    let mut hit_kinds = Vec::new();
+    for pitch in [-0.03, -0.01, 0.0, 0.006, 0.012, 0.018] {
+        let mut s = server(-30.0);
+        give(&mut s, A, PowerKind::Yumi, 0);
+        let hits = arrow_hits(&hip_shoot(&mut s, 40, pitch, 40));
+        for (amount, head) in hits {
+            assert_eq!(amount, if head { 96.0 } else { 64.0 }, "hip-fire: 64 body / x1.5 head");
+            hit_kinds.push(head);
+        }
+        let cfg = s.balance.combat.power.yumi;
+        let left = player(&mut s, A).power.cooldown;
+        assert!((left - (cfg.reload_s * cfg.hip_reload_mult - 40.0 / 60.0)).abs() < 0.02, "hip-fire reload: {left}");
     }
     assert!(hit_kinds.iter().any(|h| *h) && hit_kinds.iter().any(|h| !*h), "across the aims there is a head and a body hit: {hit_kinds:?}");
 }

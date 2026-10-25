@@ -55,7 +55,7 @@ After freeze only: bugs, polish of IN items, tests. No new systems without Engin
 
 ## Demo-ready checklist (Engine runs it; each owner reports status)
 1. `scripts/check.sh` green on golden-shinobi-main (workspace tests + game compile). 2. `BOTS=5 ./demo.sh` boots into the FFA
-map, bots fight, a match ends, the next starts. 3. Controls work: WASD, jump, dash/roll/slide, wall-run, E grapple,
+map, bots fight, a match ends, the next starts. 3. Controls work: WASD, jump, dash/grind, wall-run, E grapple,
 N/M build, LMB katana, Q shuriken, RMB block. 4. Lock-on triangle shows and assists. 5. Hit/kill/damage feedback on every
 weapon, HUD panels live. 6. Grapple + build stay in sync at 5% loss (e2e tests). 7. Release soak at 16 players: p99
 tick < 5 ms. 8. QUICKSTART has the demo commands; a tag `demo-v0.1` is pushed by Engine when 1-7 pass.

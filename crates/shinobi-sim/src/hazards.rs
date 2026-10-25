@@ -120,7 +120,7 @@ impl Hazards {
             let src = HazardSource::Obstacle(o.id);
             for &(i, ref bpos) in &bodies {
                 if touching(&pos, &shape, bpos, &capsule) {
-                    out.push((i, src, PvpHit { attacker: NO_ATTACKER, victim: i, amount: c.obstacle_damage, cause: Cause::Hazard(src), head: false, stealth: false }));
+                    out.push((i, src, PvpHit { attacker: NO_ATTACKER, victim: i, amount: c.obstacle_damage, cause: Cause::Hazard(src), head: false, stealth: false, point: [0.0; 3], guarded: false }));
                 }
             }
         }
@@ -145,7 +145,7 @@ impl Hazards {
                     continue;
                 }
                 let attacker = players.iter().find(|p| p.id as u8 == w.owner).map_or(NO_ATTACKER, |p| p.id);
-                out.push((i, src, PvpHit { attacker, victim: i, amount: c.wall_damage, cause: Cause::Hazard(src), head: false, stealth: false }));
+                out.push((i, src, PvpHit { attacker, victim: i, amount: c.wall_damage, cause: Cause::Hazard(src), head: false, stealth: false, point: [0.0; 3], guarded: false }));
             }
             // non-player targets
             let filter = QueryFilter::default().groups(InteractionGroups::new(GROUP_TRAIL, GROUP_ENEMY));

@@ -83,3 +83,44 @@ pickup -22 4.6 -37 30    # ledge A top step
 pickup 22 4.6 37 30      # ledge B top step
 pickup -30 1 14 15       # open flank
 pickup 30 1 -14 15       # open flank
+
+# === ENVIRONMENT PASS (scripts/lvl_env.py; regenerating from the generator drops it: run this again) ===
+# Melee furniture: break-cover, splat-walls, splat-alleys, monoliths. Clearance >= 3.7 m, spawns/pickups >= 3.5 m.
+# --- break-cover x1 ---
+dbox 24.7752 1.75 -15.1234  1.4895 1.75 1.4495  0 177.7636
+# --- break-cover x2 ---
+dbox -9.0343 1.75 31.0326  1.3453 1.75 1.6181  0 142.1233
+# --- splat-wall x1 ---
+box -4.6792 2.3394 -30.3311  0.35 2.3394 2.062
+# --- break-cover x3 ---
+dbox 6.572 1.75 26.6782  1.5981 1.75 1.3446  0 134.3573
+# --- break-cover x4 ---
+dbox 30.6998 1.75 -20.741  1.5012 1.75 1.3499  0 138.6298
+# --- break-cover x5 ---
+dbox -21.6754 1.75 17.0204  1.3008 1.75 1.6307  0 139.7426
+# --- break-cover x6 ---
+dbox 8.1332 1.75 -32.14  1.3086 1.75 1.4988  0 179.0094
+# --- monolith x1 ---
+box 31.0608 3.4856 26.2406  1.1918 3.4856 1.5771
+# --- splat-wall x2 ---
+box -24.5427 2.1744 17.121  0.35 2.1744 2.4252
+# --- splat-wall x3 ---
+box 19.5444 2.3456 -17.4161  2.1958 2.3456 0.35
+# --- splat-wall x4 ---
+box 25.102 2.041 -33.2515  2.0431 2.041 0.35
+# --- splat-wall x5 ---
+box -16.535 2.3019 32.9979  3.1299 2.3019 0.35
+# --- splat-wall x6 ---
+box 5.6898 2.0721 33.301  2.9181 2.0721 0.35
+# --- monolith x2 ---
+box -32.1597 4.4363 -25.3952  1.5754 4.4363 1.1683
+# --- break-cover x7 ---
+dbox -20.9275 1.75 12.4094  1.4569 1.75 1.3178  0 164.2784
+# --- monolith x3 ---
+box -30.8287 3.5764 19.2553  1.2865 3.5764 1.446
+# --- splat-wall x7 ---
+box -8.3493 2.1885 -28.1135  0.35 2.1885 2.0552
+# --- splat-wall x8 ---
+box -25.2891 2.2159 32.5446  2.7178 2.2159 0.35
+# --- break-cover x8 ---
+dbox -16.5317 1.75 18.294  1.5869 1.75 1.3302  0 177.8898

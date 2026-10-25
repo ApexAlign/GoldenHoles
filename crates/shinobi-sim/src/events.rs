@@ -1,6 +1,6 @@
 //! Reliable-over-unreliable event stream for structural state (walls, obstacles) and low-rate gameplay events
 //! (kills, respawns, match flow, pickups). High-rate hits are NOT here: they ride the unreliable own block.
-//! Wire tag is 4 bits (v3).
+//! Wire tag is 6 bits (v26).
 //! Server re-sends every unacked event in each snapshot datagram, oldest first, within a byte budget.
 //! Client applies strictly in sequence order and acks the highest contiguous seq.
 
@@ -9,6 +9,19 @@ use std::collections::VecDeque;
 use shinobi_proto::bits::{BitReader, BitWriter, DecodeError, DecodeResult};
 use super::obstacle::{MotionPath, ObstacleDesc, ObstacleId};
 use super::walls::{WallId, WallSpawn};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum InjuryRegion {
+    Torso = 0,
+    Head = 1,
+    Neck = 2,
+    ArmL = 3,
+    ArmR = 4,
+    LegL = 5,
+    LegR = 6,
+    Pelvis = 7,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NetEvent {
@@ -76,19 +89,28 @@ pub enum NetEvent {
     /// Box `idx` took damage and stands: `hp_q` remaining in 1/255ths (cracks).
     WorldCrack { idx: u16, hp_q: u8 },
     /// Environmental event (`env_events.rs`): `what` = `ENV_*`, `id` names a lightning bolt (mark and strike share it), `pos`
-    /// the bolt's strike point (quantized like every position; zero for quakes), `aux` ticks: warning / shaking length.
+    /// the bolt's strike point (quantized like every position), `aux` ticks: warning length.
     EnvFx { what: u8, id: u8, pos: [i32; 3], aux: u16 },
     /// `player`'s stealth cloak (`cloak.rs`, docs/melee.md "Cloak") came up (`on` true) or ended / broke (`on` false).
     /// Rare (a few per minute per player), so a reliable event rather than a per-snapshot flag; every client can see
     /// the shimmer regardless of distance, so this is fair game to read.
     CloakFx { tick: u32, player: u16, on: bool },
+    /// Directed injury/gore: broadcast to all for client-side blood, wounds, limbing and dismemberment.
+    InjuryFx {
+        tick: u32,
+        attacker: u16,
+        victim: u16,
+        damage_q: u8,
+        kind: u8,
+        region: u8,
+        point: [i32; 3],
+        blocked: bool,
+        sever: u8,
+    },
 }
 
 /// `NetEvent::EnvFx::what`.
-pub const ENV_QUAKE_WARN: u8 = 0;
-pub const ENV_QUAKE_START: u8 = 1;
-pub const ENV_QUAKE_END: u8 = 2;
-pub const ENV_BOLT_MARK: u8 = 3;
+pub const ENV_BOLT_MARK: u8 = 3; // (0..=2 were the quake cues, removed; ids are not reused)
 pub const ENV_BOLT_STRIKE: u8 = 4;
 
 /// `NetEvent::StarFx::what`.
@@ -126,7 +148,7 @@ impl NetEvent {
     pub fn write(&self, w: &mut BitWriter) {
         match self {
             Self::WallSpawn(s) => {
-                w.write_bits(0, 5);
+                w.write_bits(0, 6);
                 w.write_varint(s.id);
                 w.write_bits(s.owner as u32, 8);
                 w.write_varint(s.spawn_tick);
@@ -134,12 +156,12 @@ impl NetEvent {
                 write_v3(w, s.b, s.a); // segments are short: delta from `a`
             }
             Self::WallKill { id, tick } => {
-                w.write_bits(1, 5);
+                w.write_bits(1, 6);
                 w.write_varint(*id);
                 w.write_varint(*tick);
             }
             Self::ObstacleSpawn(d) => {
-                w.write_bits(2, 5);
+                w.write_bits(2, 6);
                 w.write_bits(d.id as u32, 16);
                 w.write_bits(d.kind as u32, 8);
                 w.write_varint(d.start_tick);
@@ -162,82 +184,82 @@ impl NetEvent {
                 }
             }
             Self::ObstacleDespawn { id, tick } => {
-                w.write_bits(3, 5);
+                w.write_bits(3, 6);
                 w.write_bits(*id as u32, 16);
                 w.write_varint(*tick);
             }
             Self::Kill { tick, killer, victim, kind } => {
-                w.write_bits(4, 5);
+                w.write_bits(4, 6);
                 w.write_varint(*tick);
                 w.write_bits(*killer as u32, 16);
                 w.write_bits(*victim as u32, 16);
                 w.write_bits(*kind as u32 & 7, 3);
             }
             Self::Respawn { tick, player } => {
-                w.write_bits(5, 5);
+                w.write_bits(5, 6);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
             }
             Self::MatchCountdown { tick, phase, seconds } => {
-                w.write_bits(6, 5);
+                w.write_bits(6, 6);
                 w.write_varint(*tick);
                 w.write_bits(*phase as u32 & 3, 2);
                 w.write_bits(*seconds as u32, 8);
             }
             Self::MatchStart { tick, map } => {
-                w.write_bits(7, 5);
+                w.write_bits(7, 6);
                 w.write_varint(*tick);
                 w.write_varint(*map);
             }
             Self::MatchEnd { tick, winner, reason } => {
-                w.write_bits(8, 5);
+                w.write_bits(8, 6);
                 w.write_varint(*tick);
                 w.write_bits(*winner as u32, 16);
                 w.write_bits(*reason as u32 & 3, 2);
             }
             Self::MapChange { tick, map } => {
-                w.write_bits(9, 5);
+                w.write_bits(9, 6);
                 w.write_varint(*tick);
                 w.write_varint(*map);
             }
             Self::PickupSpawned { tick, id, pos, kind } => {
-                w.write_bits(10, 5);
+                w.write_bits(10, 6);
                 w.write_varint(*tick);
                 w.write_varint(*id);
                 write_v3(w, *pos, [0; 3]);
                 w.write_bits(*kind as u32, 8);
             }
             Self::PickupTaken { tick, id, player } => {
-                w.write_bits(11, 5);
+                w.write_bits(11, 6);
                 w.write_varint(*tick);
                 w.write_varint(*id);
                 w.write_bits(*player as u32, 16);
             }
             Self::RopeAttach { tick, player, anchor } => {
-                w.write_bits(12, 5);
+                w.write_bits(12, 6);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
                 write_v3(w, *anchor, [0; 3]);
             }
             Self::RopeRelease { tick, player } => {
-                w.write_bits(13, 5);
+                w.write_bits(13, 6);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
             }
             Self::TeamAssign { player, team } => {
-                w.write_bits(14, 5);
+                w.write_bits(14, 6);
                 w.write_bits(*player as u32, 16);
                 w.write_bits(*team as u32 & 3, 2);
             }
             Self::TeamScore { tick, score, result } => {
-                w.write_bits(15, 5);
+                w.write_bits(15, 6);
                 w.write_varint(*tick);
                 w.write_varint(score[0] as u32);
                 w.write_varint(score[1] as u32);
                 w.write_bits(*result as u32 & 7, 3);
             }
             Self::BlockPlaced { owner, cell, kind, axis, scale_q } => {
-                w.write_bits(16, 5);
+                w.write_bits(16, 6);
                 w.write_bits(*owner as u32, 16);
                 write_v3(w, *cell, [0; 3]);
                 w.write_bits(*kind as u32 & 3, 2);
@@ -245,95 +267,107 @@ impl NetEvent {
                 w.write_bits(*scale_q as u32, 8);
             }
             Self::MatchRules { frag_limit, team_frag_limit, time_limit_secs, respawn_ticks } => {
-                w.write_bits(22, 5);
+                w.write_bits(22, 6);
                 w.write_varint(*frag_limit as u32);
                 w.write_varint(*team_frag_limit as u32);
                 w.write_varint(*time_limit_secs as u32);
                 w.write_varint(*respawn_ticks as u32);
             }
             Self::BlockRules(r) => {
-                w.write_bits(20, 5);
+                w.write_bits(20, 6);
                 for v in [r.thickness_mm, r.range_dm, r.cooldown_ticks, r.scale_per_kill_milli, r.scale_cap_centi, r.max_per_owner] {
                     w.write_varint(v as u32);
                 }
             }
             Self::BlockDerez { cell } => {
-                w.write_bits(19, 5);
+                w.write_bits(19, 6);
                 write_v3(w, *cell, [0; 3]);
             }
             Self::BlockRemoved { cell } => {
-                w.write_bits(17, 5);
+                w.write_bits(17, 6);
                 write_v3(w, *cell, [0; 3]);
             }
             Self::BlockDamaged { cell, hp_q } => {
-                w.write_bits(21, 5);
+                w.write_bits(21, 6);
                 write_v3(w, *cell, [0; 3]);
                 w.write_bits(*hp_q as u32, 8);
             }
             Self::BlockRefused { why } => {
-                w.write_bits(18, 5);
+                w.write_bits(18, 6);
                 w.write_bits(*why as u32 & 3, 2);
             }
             Self::StarFx { tick, what, owner, pos } => {
-                w.write_bits(23, 5);
+                w.write_bits(23, 6);
                 w.write_varint(*tick);
                 w.write_bits(*what as u32 & 7, 3);
                 w.write_bits(*owner as u32, 16);
                 write_v3(w, *pos, [0; 3]);
             }
             Self::StarBlind { tick, victim, strength_q, ticks } => {
-                w.write_bits(24, 5);
+                w.write_bits(24, 6);
                 w.write_varint(*tick);
                 w.write_bits(*victim as u32, 16);
                 w.write_bits(*strength_q as u32, 8);
                 w.write_bits(*ticks as u32, 16);
             }
             Self::CharacterLook { player, wire } => {
-                w.write_bits(25, 5);
+                w.write_bits(25, 6);
                 w.write_bits(*player as u32, 16);
                 for b in wire {
                     w.write_bits(*b as u32, 8);
                 }
             }
             Self::PowerFx { tick, what, owner, pos } => {
-                w.write_bits(26, 5);
+                w.write_bits(26, 6);
                 w.write_varint(*tick);
                 w.write_bits(*what as u32 & 31, 5);
                 w.write_bits(*owner as u32, 16);
                 write_v3(w, *pos, [0; 3]);
             }
             Self::WorldBreak { idx, cascade } => {
-                w.write_bits(27, 5);
+                w.write_bits(27, 6);
                 w.write_bits(*idx as u32, 16);
                 w.write_bits(*cascade as u32, 1);
             }
             Self::WorldRez { idx } => {
-                w.write_bits(28, 5);
+                w.write_bits(28, 6);
                 w.write_bits(*idx as u32, 16);
             }
             Self::WorldCrack { idx, hp_q } => {
-                w.write_bits(29, 5);
+                w.write_bits(29, 6);
                 w.write_bits(*idx as u32, 16);
                 w.write_bits(*hp_q as u32, 8);
             }
             Self::EnvFx { what, id, pos, aux } => {
-                w.write_bits(31, 5);
+                w.write_bits(31, 6);
                 w.write_bits(*what as u32 & 7, 3);
                 w.write_bits(*id as u32, 8);
                 write_v3(w, *pos, [0; 3]);
                 w.write_bits(*aux as u32, 16);
             }
             Self::CloakFx { tick, player, on } => {
-                w.write_bits(30, 5);
+                w.write_bits(30, 6);
                 w.write_varint(*tick);
                 w.write_bits(*player as u32, 16);
                 w.write_bool(*on);
+            }
+            Self::InjuryFx { tick, attacker, victim, damage_q, kind, region, point, blocked, sever } => {
+                w.write_bits(32, 6);
+                w.write_varint(*tick);
+                w.write_bits(*attacker as u32, 16);
+                w.write_bits(*victim as u32, 16);
+                w.write_bits(*damage_q as u32, 8);
+                w.write_bits(*kind as u32 & 15, 4);
+                w.write_bits(*region as u32 & 7, 3);
+                write_v3(w, *point, [0; 3]);
+                w.write_bool(*blocked);
+                w.write_bits(*sever as u32 & 15, 4);
             }
         }
     }
 
     pub fn read(r: &mut BitReader) -> DecodeResult<Self> {
-        Ok(match r.read_bits(5)? {
+        Ok(match r.read_bits(6)? {
             0 => {
                 let id = r.read_varint()?;
                 let owner = r.read_bits(8)? as u8;
@@ -443,6 +477,17 @@ impl NetEvent {
             29 => Self::WorldCrack { idx: r.read_bits(16)? as u16, hp_q: r.read_bits(8)? as u8 },
             31 => Self::EnvFx { what: r.read_bits(3)? as u8, id: r.read_bits(8)? as u8, pos: read_v3(r, [0; 3])?, aux: r.read_bits(16)? as u16 },
             30 => Self::CloakFx { tick: r.read_varint()?, player: r.read_bits(16)? as u16, on: r.read_bool()? },
+            32 => Self::InjuryFx {
+                tick: r.read_varint()?,
+                attacker: r.read_bits(16)? as u16,
+                victim: r.read_bits(16)? as u16,
+                damage_q: r.read_bits(8)? as u8,
+                kind: r.read_bits(4)? as u8,
+                region: r.read_bits(3)? as u8,
+                point: read_v3(r, [0; 3])?,
+                blocked: r.read_bool()?,
+                sever: r.read_bits(4)? as u8,
+            },
             _ => return Err(DecodeError::Malformed),
         })
     }
@@ -649,6 +694,28 @@ mod tests {
             NetEvent::MapChange { tick: 100_500, map: 3 },
             NetEvent::PickupSpawned { tick: 8, id: 70_000, pos: [-512, 384, 2048], kind: 0 },
             NetEvent::PickupTaken { tick: 9, id: 70_000, player: 5 },
+            NetEvent::InjuryFx {
+                tick: 9_001,
+                attacker: 7,
+                victim: 12,
+                damage_q: 34,
+                kind: shinobi_proto::gameplay::KIND_SLASH,
+                region: InjuryRegion::ArmL as u8,
+                point: [-20_000, 5_120, 33_333],
+                blocked: false,
+                sever: 0,
+            },
+            NetEvent::InjuryFx {
+                tick: 1,
+                attacker: 0,
+                victim: 65_535,
+                damage_q: 255,
+                kind: shinobi_proto::gameplay::KIND_TAG,
+                region: InjuryRegion::Head as u8,
+                point: [0, 0, 0],
+                blocked: true,
+                sever: 3,
+            },
         ];
         for ev in evs {
             let mut w = BitWriter::new();
@@ -656,14 +723,14 @@ mod tests {
             let b = w.finish();
             assert_eq!(NetEvent::read(&mut BitReader::new(&b)).unwrap(), ev, "{ev:?}");
         }
-        // tag 31 does not exist (garbage must not decode as an event)
+        // tag 63 does not exist (garbage must not decode as an event)
         let mut w = BitWriter::new();
-        w.write_bits(31, 5);
+        w.write_bits(63, 6);
         let b = w.finish();
         assert!(NetEvent::read(&mut BitReader::new(&b)).is_err());
         // match countdown with an impossible phase is rejected
         let mut w = BitWriter::new();
-        w.write_bits(6, 5);
+        w.write_bits(6, 6);
         w.write_varint(1);
         w.write_bits(3, 2);
         w.write_bits(5, 8);
@@ -682,7 +749,7 @@ mod tests {
             NetEvent::WorldBreak { idx: 0, cascade: false },
             NetEvent::WorldRez { idx: 300 },
             NetEvent::WorldCrack { idx: 12, hp_q: 77 },
-            NetEvent::EnvFx { what: ENV_QUAKE_WARN, id: 0, pos: [0, 0, 0], aux: 150 },
+            NetEvent::EnvFx { what: ENV_BOLT_MARK, id: 0, pos: [0, 0, 0], aux: 150 },
             NetEvent::EnvFx { what: ENV_BOLT_MARK, id: 255, pos: [-20_000, 512, 33_333], aux: 120 },
             NetEvent::EnvFx { what: ENV_BOLT_STRIKE, id: 9, pos: [1, -2, 3], aux: 0 },
             NetEvent::CloakFx { tick: 70_004, player: 6, on: true },
