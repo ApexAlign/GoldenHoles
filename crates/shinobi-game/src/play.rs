@@ -175,6 +175,7 @@ pub fn setup(
     mut commands: Commands,
     quality: Res<crate::mobile::QualityRes>,
     level: Option<Res<crate::net::LevelRes>>,
+    features: Option<Res<crate::net::FeaturesRes>>,
     forced: Option<Res<ForcedScale>>,
     windows: Query<&Window>,
     shot: Option<Res<ShotRequest>>,
@@ -198,11 +199,14 @@ pub fn setup(
         });
     // floating-structure maps (ffa_sky): no floor box and nothing reaches down near y = 0, so there is NO ground to draw
     let floating = big_floor.is_none() && level.as_ref().map_or(false, |l| shinobi_sim::level::is_floating(&l.0));
+    // bottomless tube/ring maps (De-Frag, Vector): the sim has no ground there, so drawing the y = 0 plane would show a
+    // solid floor players fall straight through; draw only the void plane
+    let bottomless = big_floor.is_none() && features.as_ref().map_or(false, |f| !f.0.shapes.is_empty());
     let fog = crate::grid::FogFar::for_floor(big_floor.map(|(_, h)| h));
     commands.insert_resource(fog);
     let (floor_c, floor_h) = big_floor.unwrap_or(([0.0, 0.0], [200.0, 200.0]));
     let grid_mat = grids.add(GridFloor::from_client(&GridData::tron(&pal), fog.0));
-    if !floating {
+    if !floating && !bottomless {
         commands.spawn((
             Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(floor_h[0], floor_h[1])))),
             MeshMaterial3d(grid_mat.clone()),
@@ -211,7 +215,7 @@ pub fn setup(
     }
     // open-void maps: the kill plane drawn as a faint red grid far below the edges, so the world visibly ENDS
     // (players can see how far the drop is) instead of the floor seeming to run on into the sky
-    if big_floor.is_some() || floating {
+    if big_floor.is_some() || floating || bottomless {
         let mut vd = GridData::tron(&pal);
         vd.base = [0.012, 0.0, 0.02, 1.0];
         vd.glow = [pal.magenta.0 * 0.9, pal.magenta.1 * 0.12, pal.magenta.2 * 0.3, 1.0];
