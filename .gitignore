@@ -7,3 +7,6 @@ target/
 playtest/
 __pycache__/
 *.pyc
+
+# agent handoff logs (generated; commit only reviewed evidence)
+docs/handoffs/*/logs/

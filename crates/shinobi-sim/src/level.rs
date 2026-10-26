@@ -1,6 +1,8 @@
 //! Static level description shared by the authoritative server and the client predictor, so both build the
 //! exact same colliders in the exact same order. Primitive cuboids only (never render meshes).
 
+use std::collections::BTreeMap;
+
 use crate::character::PhysicsWorld;
 use crate::combat::GROUP_WORLD;
 use crate::rapier3d::prelude::*;
@@ -171,15 +173,354 @@ pub struct PickupPoint {
     pub kind: crate::power::PowerKind,
 }
 
+/// Additive level behaviour data (`zone`, `mover`, `hazard`). Kept off `LevelDesc` so the static geometry shape and
+/// its existing literals stay untouched.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct LevelFeatures {
+    pub zones: Vec<ZoneDef>,
+    pub movers: Vec<MoverDef>,
+    pub hazards: Vec<HazardDef>,
+    /// `tube` / `ring` lines: static round geometry built from yawed segments (`ShapeDef::segments`).
+    pub shapes: Vec<ShapeDef>,
+}
+
+/// Round static geometry. `Tube`: a hollow vertical cylinder whose inner wall is at `radius` (wall-runnable inside and
+/// out). `Ring`: a flat horizontal annulus whose centre line is at `radius` with radial `width`. Both are built from
+/// `segments` straight cuboids rotated about Y, in a fixed order, so server, client and renderer agree exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShapeKind {
+    Tube,
+    Ring,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct ShapeDef {
+    pub kind: ShapeKind,
+    pub center: [f32; 3],
+    pub radius: f32,
+    /// Tube: wall height. Ring: radial width.
+    pub extent: f32,
+    pub thickness: f32,
+    pub segments: u32,
+    pub tag: String,
+    pub tuning: BTreeMap<String, f32>,
+}
+
+/// One straight piece of a `ShapeDef`: a cuboid at `center` with `half` extents in its local frame, rotated by `yaw`
+/// radians about +Y (local +X points radially outward).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ShapeSegment {
+    pub center: [f32; 3],
+    pub half: [f32; 3],
+    pub yaw: f32,
+}
+
+pub const MAX_SHAPE_SEGMENTS: u32 = 256;
+
+impl ShapeDef {
+    pub fn token(&self) -> &'static str {
+        match self.kind {
+            ShapeKind::Tube => "tube",
+            ShapeKind::Ring => "ring",
+        }
+    }
+
+    pub fn segments(&self) -> Vec<ShapeSegment> {
+        let n = self.segments.clamp(3, MAX_SHAPE_SEGMENTS);
+        let step = 2.0 * core::f32::consts::PI / n as f32;
+        let tan_half = libm::tanf(step * 0.5);
+        let (mid, outer, half_y, half_x) = match self.kind {
+            ShapeKind::Tube => (self.radius + self.thickness * 0.5, self.radius + self.thickness, self.extent * 0.5, self.thickness * 0.5),
+            ShapeKind::Ring => (self.radius, self.radius + self.extent * 0.5, self.thickness * 0.5, self.extent * 0.5),
+        };
+        // a door: `door_count` segments from `door_start` (tuning) are left out, e.g. a tube entry at one layer
+        let door_start = self.tuning.get("door_start").map_or(0, |v| v.max(0.0) as u32);
+        let door_count = self.tuning.get("door_count").map_or(0, |v| v.max(0.0) as u32);
+        let in_door = |i: u32| door_count > 0 && (i + n - door_start % n) % n < door_count;
+        (0..n)
+            .filter(|i| !in_door(*i))
+            .map(|i| {
+                let a = step * i as f32;
+                ShapeSegment {
+                    center: [self.center[0] + mid * libm::cosf(a), self.center[1], self.center[2] + mid * libm::sinf(a)],
+                    half: [half_x, half_y, outer * tan_half],
+                    yaw: -a,
+                }
+            })
+            .collect()
+    }
+}
+
+impl LevelFeatures {
+    pub fn is_empty(&self) -> bool {
+        self.zones.is_empty() && self.movers.is_empty() && self.hazards.is_empty() && self.shapes.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.zones.len() + self.movers.len() + self.hazards.len() + self.shapes.len()
+    }
+
+    /// Stable fingerprint of every feature field: zones, movers and hazards in file order, each with its tag and
+    /// tuning entries (`BTreeMap` order is sorted, so it is deterministic). Pickups are server-only and excluded.
+    pub fn fingerprint(&self) -> u64 {
+        use crate::hash::{mix, mix_f32, mix_u64, OFFSET};
+        let mut h = mix_u64(OFFSET, self.zones.len() as u64);
+        for z in &self.zones {
+            for v in z.center.iter().chain(z.half.iter()) {
+                h = mix_f32(h, *v);
+            }
+            h = mix(h, z.tag.as_bytes());
+            h = mix_u64(h, z.tuning.len() as u64);
+            for (k, v) in &z.tuning {
+                h = mix(h, k.as_bytes());
+                h = mix_f32(h, *v);
+            }
+        }
+        h = mix_u64(h, self.movers.len() as u64);
+        for m in &self.movers {
+            for v in m.center.iter().chain(m.half.iter()) {
+                h = mix_f32(h, *v);
+            }
+            h = mix_u64(h, m.axis.index() as u64);
+            h = mix_f32(h, m.distance);
+            h = mix_u64(h, m.period_ticks as u64);
+            h = mix_u64(h, m.solid as u64);
+            h = mix(h, m.tag.as_bytes());
+            h = mix_u64(h, m.tuning.len() as u64);
+            for (k, v) in &m.tuning {
+                h = mix(h, k.as_bytes());
+                h = mix_f32(h, *v);
+            }
+        }
+        h = mix_u64(h, self.hazards.len() as u64);
+        for hz in &self.hazards {
+            for v in hz.center.iter().chain(hz.half.iter()) {
+                h = mix_f32(h, *v);
+            }
+            h = mix_u64(h, hz.period_ticks as u64);
+            h = mix_u64(h, hz.telegraph_ticks as u64);
+            h = mix_f32(h, hz.damage);
+            h = mix(h, hz.tag.as_bytes());
+            h = mix_u64(h, hz.tuning.len() as u64);
+            for (k, v) in &hz.tuning {
+                h = mix(h, k.as_bytes());
+                h = mix_f32(h, *v);
+            }
+        }
+        // shapes only enter the hash when present, so files without them keep their pinned fingerprints
+        if !self.shapes.is_empty() {
+            h = mix_u64(h, self.shapes.len() as u64);
+            for sh in &self.shapes {
+                h = mix_u64(h, sh.kind as u64);
+                for v in sh.center.iter().chain([sh.radius, sh.extent, sh.thickness].iter()) {
+                    h = mix_f32(h, *v);
+                }
+                h = mix_u64(h, sh.segments as u64);
+                h = mix(h, sh.tag.as_bytes());
+                h = mix_u64(h, sh.tuning.len() as u64);
+                for (k, v) in &sh.tuning {
+                    h = mix(h, k.as_bytes());
+                    h = mix_f32(h, *v);
+                }
+            }
+        }
+        h
+    }
+}
+
+/// Axis-aligned trigger volume. `tag` names its gameplay role; numeric `tuning` is free-form
+/// (`cooldown_ticks` is read by the runtime).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ZoneDef {
+    pub center: [f32; 3],
+    pub half: [f32; 3],
+    pub tag: String,
+    pub tuning: BTreeMap<String, f32>,
+}
+
+/// A `speed_lane` zone's wall-run tuning, resolved for one player position. `inside` distinguishes the authored
+/// AABB (boost) from the short post-exit band along the same tagged wall face (decay only).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SpeedLane {
+    pub wall_run_m: f32,
+    pub mult: f32,
+    pub cap: f32,
+    pub decay: f32,
+    pub inside: bool,
+    /// 0 at the nearest authored lane end, 1 after `wall_run_m` metres inward.
+    pub ramp: f32,
+}
+
+impl SpeedLane {
+    pub const TAG: &'static str = "speed_lane";
+
+    /// Wall-run speed multiplier for this tick: `1 + (mult - 1) * ramp`, hard-clamped to `cap`. Unit outside the
+    /// authored AABB (the post-exit band only decays carried speed).
+    pub fn multiplier(&self) -> f32 {
+        if !self.inside {
+            return 1.0;
+        }
+        let m = 1.0 + (self.mult.max(1.0) - 1.0) * self.ramp.clamp(0.0, 1.0);
+        m.clamp(1.0, self.cap.max(1.0))
+    }
+
+    fn from_zone(z: &ZoneDef, inside: bool, pos: [f32; 3]) -> Self {
+        let wall_run_m = tuning_or(z, "wall_run_m", 0.0).max(0.0);
+        let (long, _) = lane_axes(z);
+        let lo = z.center[long] - z.half[long];
+        let hi = z.center[long] + z.half[long];
+        let ramp = if wall_run_m <= 0.0 {
+            1.0
+        } else {
+            ((pos[long] - lo).min(hi - pos[long]) / wall_run_m).clamp(0.0, 1.0)
+        };
+        Self {
+            wall_run_m,
+            mult: tuning_or(z, "mult", 1.0),
+            cap: tuning_or(z, "cap", 1.0),
+            decay: tuning_or(z, "decay", 0.0).clamp(0.0, 1.0),
+            inside,
+            ramp,
+        }
+    }
+}
+
+fn tuning_or(z: &ZoneDef, key: &str, default: f32) -> f32 {
+    z.tuning.get(key).copied().unwrap_or(default)
+}
+
+/// Horizontal axes of a `speed_lane` volume: (long axis along the wall face, thin axis across it).
+fn lane_axes(z: &ZoneDef) -> (usize, usize) {
+    if z.half[0] > z.half[2] { (0, 2) } else { (2, 0) }
+}
+
+/// A wall normal counts as the tagged face when it points mostly across the lane's thin axis and from the wall
+/// toward the lane interior (the player centre sits between the wall and the lane middle).
+fn lane_face_matches(z: &ZoneDef, pos: [f32; 3], normal: [f32; 3]) -> bool {
+    let (_, thin) = lane_axes(z);
+    normal[thin].abs() >= 0.7 && normal[thin] * (pos[thin] - z.center[thin]) <= 0.0
+}
+
+impl LevelFeatures {
+    /// Resolve the `speed_lane` effect for a player centre and wall-run normal. This is the one query both the
+    /// authoritative server and the client predictor call, so no per-map branching or wire state is needed.
+    ///
+    /// The exact AABB (`inside == true`) drives the boost. Up to `wall_run_m` metres beyond either long-axis end,
+    /// on the same tagged wall face (`inside == false`), the returned tuning drives the post-exit speed decay.
+    /// `None` while not on a `speed_lane` wall face: walking, airborne and unrelated walls never match.
+    pub fn speed_lane_for(&self, pos: [f32; 3], wall_normal: Option<[f32; 3]>) -> Option<SpeedLane> {
+        let n = wall_normal?;
+        for z in self.zones.iter().filter(|z| z.tag == SpeedLane::TAG) {
+            if !lane_face_matches(z, pos, n) {
+                continue;
+            }
+            let (long, thin) = lane_axes(z);
+            let lo = z.center[long] - z.half[long];
+            let hi = z.center[long] + z.half[long];
+            let within_other = pos[thin] >= z.center[thin] - z.half[thin]
+                && pos[thin] <= z.center[thin] + z.half[thin]
+                && pos[1] >= z.center[1] - z.half[1]
+                && pos[1] <= z.center[1] + z.half[1];
+            if within_other && pos[long] >= lo && pos[long] <= hi {
+                return Some(SpeedLane::from_zone(z, true, pos));
+            }
+        }
+        for z in self.zones.iter().filter(|z| z.tag == SpeedLane::TAG) {
+            if !lane_face_matches(z, pos, n) {
+                continue;
+            }
+            let (long, thin) = lane_axes(z);
+            let lo = z.center[long] - z.half[long];
+            let hi = z.center[long] + z.half[long];
+            let within_other = pos[thin] >= z.center[thin] - z.half[thin]
+                && pos[thin] <= z.center[thin] + z.half[thin]
+                && pos[1] >= z.center[1] - z.half[1]
+                && pos[1] <= z.center[1] + z.half[1];
+            if !within_other {
+                continue;
+            }
+            let out = if pos[long] < lo { lo - pos[long] } else if pos[long] > hi { pos[long] - hi } else { 0.0 };
+            if out > 0.0 && out <= tuning_or(z, "wall_run_m", 0.0).max(0.0) {
+                return Some(SpeedLane::from_zone(z, false, pos));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MoveAxis {
+    X,
+    Y,
+    Z,
+}
+
+impl MoveAxis {
+    pub fn index(self) -> usize {
+        match self {
+            MoveAxis::X => 0,
+            MoveAxis::Y => 1,
+            MoveAxis::Z => 2,
+        }
+    }
+
+    pub fn token(self) -> &'static str {
+        match self {
+            MoveAxis::X => "x",
+            MoveAxis::Y => "y",
+            MoveAxis::Z => "z",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "x" | "X" => Some(MoveAxis::X),
+            "y" | "Y" => Some(MoveAxis::Y),
+            "z" | "Z" => Some(MoveAxis::Z),
+            _ => None,
+        }
+    }
+}
+
+/// Deterministic ping-pong mover. One leg takes `period_ticks`; `phase_ticks` (optional tuning) offsets the cycle.
+#[derive(Clone, PartialEq, Debug)]
+pub struct MoverDef {
+    pub center: [f32; 3],
+    pub half: [f32; 3],
+    pub axis: MoveAxis,
+    pub distance: f32,
+    pub period_ticks: u32,
+    pub solid: bool,
+    pub tag: String,
+    pub tuning: BTreeMap<String, f32>,
+}
+
+/// Periodic damage volume. Phases are tick-exact: `active_ticks` (optional tuning, default 1) at the start of every
+/// `period_ticks` cycle, with the last `telegraph_ticks` ticks of the cycle as warning. `phase_ticks` shifts the cycle.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HazardDef {
+    pub center: [f32; 3],
+    pub half: [f32; 3],
+    pub period_ticks: u32,
+    pub telegraph_ticks: u32,
+    pub damage: f32,
+    pub tag: String,
+    pub tuning: BTreeMap<String, f32>,
+}
+
 /// Everything a level file says. `LevelDesc` is the part both sides need.
 #[derive(Clone, PartialEq, Debug)]
 pub struct LevelFile {
     pub level: LevelDesc,
     pub pickups: Vec<PickupPoint>,
+    pub features: LevelFeatures,
 }
 
 pub const DEFAULT_PICKUP_RESPAWN_SECS: f32 = 20.0;
 pub const DEFAULT_WEAPON_RESPAWN_SECS: f32 = 45.0;
+/// Level hazards report through `HazardSource::Obstacle` ids starting at `0xE000`; 0x1000 leaves the reserved
+/// high ids (`VOID`, `SPLAT`, `LIGHTNING`) and the obstacle-wave range clear.
+pub const MAX_LEVEL_HAZARDS: usize = 0x1000;
 
 /// Parse a level file: one directive per line, `#` starts a comment.
 /// ```text
@@ -189,57 +530,77 @@ pub const DEFAULT_WEAPON_RESPAWN_SECS: f32 = 45.0;
 /// pickup x y z [respawn_secs]                  # power-up cube, default respawn 20 s
 /// yumi   x y z [respawn_secs]                  # power-weapon pedestal: digital bow (default respawn 45 s)
 /// tag    x y z [respawn_secs]                  # power-weapon pedestal: explosive fuda tags (default respawn 45 s)
+/// zone   cx cy cz hx hy hz tag [key=value...]  # trigger volume; `cooldown_ticks` gates re-entry
+/// mover  cx cy cz hx hy hz axis distance period_ticks solid|ghost tag [key=value...]
+/// hazard cx cy cz hx hy hz period_ticks telegraph_ticks damage tag [key=value...]
 /// ```
-/// Errors name the line. A level needs at least one `box` and one `spawn`.
+/// Feature `key=value` values are finite f32; `active_ticks` and `phase_ticks` (hazard) and `phase_ticks` (mover)
+/// are whole tick counts. Errors name the line. A level needs at least one `box` and one `spawn`.
 pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
     let (mut boxes, mut spawns, mut pickups) = (Vec::new(), Vec::new(), Vec::new());
+    let mut features = LevelFeatures::default();
     for (n, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap().trim();
         if line.is_empty() {
             continue;
         }
         let err = |m: &str| format!("line {}: {m}: `{line}`", n + 1);
-        let mut it = line.split_whitespace();
-        let kind = it.next().unwrap();
-        let nums: Vec<f32> =
-            it.map(|t| t.parse::<f32>().map_err(|_| err("not a number"))).collect::<Result<_, _>>()?;
-        if nums.iter().any(|v| !v.is_finite()) {
-            return Err(err("non-finite number"));
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let kind = tokens[0];
+        match kind {
+            "box" | "dbox" | "spawn" | "pickup" | "yumi" | "tag" => {
+                let nums = parse_numbers(&tokens[1..], &err)?;
+                match (kind, nums.len()) {
+                    ("box", 6 | 7) => {
+                        if nums[3..6].iter().any(|h| *h <= 0.0) {
+                            return Err(err("half extents must be > 0"));
+                        }
+                        let b = LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]);
+                        boxes.push(if nums.len() == 7 { b.rolled(nums[6]) } else { b });
+                    }
+                    ("dbox", 8) => {
+                        if nums[3..6].iter().any(|h| *h <= 0.0) {
+                            return Err(err("half extents must be > 0"));
+                        }
+                        if nums[7] <= 0.0 {
+                            return Err(err("hp must be > 0 (use `box` for permanent geometry)"));
+                        }
+                        boxes.push(LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]).rolled(nums[6]).destructible(nums[7]));
+                    }
+                    ("spawn", 3 | 4) => {
+                        if nums.len() == 4 && !(nums[3] == 0.0 || nums[3] == 1.0) {
+                            return Err(err("spawn team must be 0 (Cyan) or 1 (Orange)"));
+                        }
+                        spawns.push([nums[0], nums[1], nums[2]]);
+                    }
+                    ("pickup" | "yumi" | "tag", 3 | 4) => {
+                        let (kind, default) = match kind {
+                            "yumi" => (crate::power::PowerKind::Yumi, DEFAULT_WEAPON_RESPAWN_SECS),
+                            "tag" => (crate::power::PowerKind::Tag, DEFAULT_WEAPON_RESPAWN_SECS),
+                            _ => (crate::power::PowerKind::None, DEFAULT_PICKUP_RESPAWN_SECS),
+                        };
+                        pickups.push(PickupPoint { pos: [nums[0], nums[1], nums[2]], respawn_secs: nums.get(3).copied().unwrap_or(default), kind });
+                    }
+                    _ => return Err(err("wrong number of values")),
+                }
+            }
+            "zone" => features.zones.push(parse_zone(&tokens[1..], &err)?),
+            "mover" => features.movers.push(parse_mover(&tokens[1..], &err)?),
+            "hazard" => features.hazards.push(parse_hazard(&tokens[1..], &err)?),
+            "tube" => features.shapes.push(parse_shape(ShapeKind::Tube, &tokens[1..], &err)?),
+            "ring" => features.shapes.push(parse_shape(ShapeKind::Ring, &tokens[1..], &err)?),
+            _ => return Err(err("unknown directive (box | dbox | spawn | pickup | yumi | tag | zone | mover | hazard | tube | ring)")),
         }
-        match (kind, nums.len()) {
-            ("box", 6 | 7) => {
-                if nums[3..6].iter().any(|h| *h <= 0.0) {
-                    return Err(err("half extents must be > 0"));
-                }
-                let b = LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]);
-                boxes.push(if nums.len() == 7 { b.rolled(nums[6]) } else { b });
+    }
+    for h in &features.hazards {
+        if let Some(m) = h.mover_index() {
+            if m >= features.movers.len() {
+                return Err(format!("hazard `{}` rides mover {m}, but the file has {} mover lines", h.tag, features.movers.len()));
             }
-            ("dbox", 8) => {
-                if nums[3..6].iter().any(|h| *h <= 0.0) {
-                    return Err(err("half extents must be > 0"));
-                }
-                if nums[7] <= 0.0 {
-                    return Err(err("hp must be > 0 (use `box` for permanent geometry)"));
-                }
-                boxes.push(LevelBox::new([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]).rolled(nums[6]).destructible(nums[7]));
-            }
-            ("spawn", 3 | 4) => {
-                if nums.len() == 4 && !(nums[3] == 0.0 || nums[3] == 1.0) {
-                    return Err(err("spawn team must be 0 (Cyan) or 1 (Orange)"));
-                }
-                spawns.push([nums[0], nums[1], nums[2]]);
-            }
-            ("pickup" | "yumi" | "tag", 3 | 4) => {
-                let (kind, default) = match kind {
-                    "yumi" => (crate::power::PowerKind::Yumi, DEFAULT_WEAPON_RESPAWN_SECS),
-                    "tag" => (crate::power::PowerKind::Tag, DEFAULT_WEAPON_RESPAWN_SECS),
-                    _ => (crate::power::PowerKind::None, DEFAULT_PICKUP_RESPAWN_SECS),
-                };
-                pickups.push(PickupPoint { pos: [nums[0], nums[1], nums[2]], respawn_secs: nums.get(3).copied().unwrap_or(default), kind });
-            }
-            ("box" | "dbox" | "spawn" | "pickup" | "yumi" | "tag", _) => return Err(err("wrong number of values")),
-            _ => return Err(err("unknown directive (box | dbox | spawn | pickup | yumi | tag)")),
         }
+    }
+    if features.hazards.len() > MAX_LEVEL_HAZARDS {
+        return Err(format!("too many `hazard` directives (max {MAX_LEVEL_HAZARDS})"));
     }
     if boxes.is_empty() {
         return Err("level has no `box` (nothing to stand on)".into());
@@ -247,7 +608,179 @@ pub fn parse_level_file(text: &str) -> Result<LevelFile, String> {
     if spawns.is_empty() {
         return Err("level has no `spawn`".into());
     }
-    Ok(LevelFile { level: LevelDesc { boxes, spawns }, pickups })
+    Ok(LevelFile { level: LevelDesc { boxes, spawns }, pickups, features })
+}
+
+fn parse_numbers(tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<Vec<f32>, String> {
+    let mut nums = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        let v = t.parse::<f32>().map_err(|_| err("not a number"))?;
+        if !v.is_finite() {
+            return Err(err("non-finite number"));
+        }
+        nums.push(v);
+    }
+    Ok(nums)
+}
+
+fn parse_number(tok: &str, err: &impl Fn(&str) -> String) -> Result<f32, String> {
+    let v = tok.parse::<f32>().map_err(|_| err("not a number"))?;
+    if !v.is_finite() {
+        return Err(err("non-finite number"));
+    }
+    Ok(v)
+}
+
+fn parse_ticks(tok: &str, err: &impl Fn(&str) -> String) -> Result<u32, String> {
+    tok.parse::<u32>().map_err(|_| err("not a whole tick count"))
+}
+
+fn parse_tag(tok: &str, err: &impl Fn(&str) -> String) -> Result<String, String> {
+    let ok = !tok.is_empty() && tok.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+    if !ok {
+        return Err(err("tag must be letters, digits, '_', '-', '.' or ':'"));
+    }
+    Ok(tok.to_string())
+}
+
+fn parse_key(tok: &str) -> bool {
+    let mut chars = tok.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_params(tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<BTreeMap<String, f32>, String> {
+    let mut out = BTreeMap::new();
+    for t in tokens {
+        let Some((k, v)) = t.split_once('=') else { return Err(err("expected key=value tuning")) };
+        if !parse_key(k) {
+            return Err(err("bad tuning key"));
+        }
+        let v = parse_number(v, err)?;
+        if out.insert(k.to_string(), v).is_some() {
+            return Err(err("duplicate tuning key"));
+        }
+    }
+    Ok(out)
+}
+
+fn tuning_ticks(params: &BTreeMap<String, f32>, key: &str, default: u32, err: &impl Fn(&str) -> String) -> Result<u32, String> {
+    match params.get(key) {
+        None => Ok(default),
+        Some(v) if *v >= 0.0 && v.fract() == 0.0 && *v <= u32::MAX as f32 => Ok(*v as u32),
+        Some(_) => Err(err("tick tuning must be a non-negative whole number")),
+    }
+}
+
+fn feature_box(nums: &[f32], err: &impl Fn(&str) -> String) -> Result<([f32; 3], [f32; 3]), String> {
+    if nums.len() < 6 {
+        return Err(err("wrong number of values"));
+    }
+    if nums[3..6].iter().any(|h| *h <= 0.0) {
+        return Err(err("half extents must be > 0"));
+    }
+    Ok(([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]))
+}
+
+fn parse_shape(kind: ShapeKind, tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<ShapeDef, String> {
+    if tokens.len() < 8 {
+        return Err(err("wrong number of values"));
+    }
+    let nums = parse_numbers(&tokens[..6], err)?;
+    let (center, radius, extent, thickness) = ([nums[0], nums[1], nums[2]], nums[3], nums[4], nums[5]);
+    if radius <= 0.0 || extent <= 0.0 || thickness <= 0.0 {
+        return Err(err("radius, height/width and thickness must be > 0"));
+    }
+    if kind == ShapeKind::Ring && extent >= 2.0 * radius {
+        return Err(err("ring width must be < 2 * radius"));
+    }
+    let segments = parse_ticks(tokens[6], err)?;
+    if !(3..=MAX_SHAPE_SEGMENTS).contains(&segments) {
+        return Err(err("segments must be 3..=256"));
+    }
+    let tag = parse_tag(tokens[7], err)?;
+    let tuning = parse_params(&tokens[8..], err)?;
+    Ok(ShapeDef { kind, center, radius, extent, thickness, segments, tag, tuning })
+}
+
+fn parse_zone(tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<ZoneDef, String> {
+    if tokens.len() < 7 {
+        return Err(err("wrong number of values"));
+    }
+    let nums = parse_numbers(&tokens[..6], err)?;
+    let (center, half) = feature_box(&nums, err)?;
+    let tag = parse_tag(tokens[6], err)?;
+    let tuning = parse_params(&tokens[7..], err)?;
+    tuning_ticks(&tuning, "cooldown_ticks", 0, err)?;
+    tuning_ticks(&tuning, "fill_ticks", 90, err)?;
+    tuning_ticks(&tuning, "reveal_ticks", 300, err)?;
+    Ok(ZoneDef { center, half, tag, tuning })
+}
+
+fn parse_mover(tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<MoverDef, String> {
+    if tokens.len() < 11 {
+        return Err(err("wrong number of values"));
+    }
+    let nums = parse_numbers(&tokens[..6], err)?;
+    let (center, half) = feature_box(&nums, err)?;
+    let axis = MoveAxis::parse(tokens[6]).ok_or_else(|| err("mover axis must be x, y or z"))?;
+    let distance = parse_number(tokens[7], err)?;
+    if distance <= 0.0 {
+        return Err(err("mover distance must be > 0"));
+    }
+    let period_ticks = parse_ticks(tokens[8], err)?;
+    if period_ticks == 0 {
+        return Err(err("period_ticks must be > 0"));
+    }
+    if period_ticks > u16::MAX as u32 {
+        return Err(err("period_ticks must be <= 65535"));
+    }
+    let solid = match tokens[9] {
+        "solid" => true,
+        "ghost" => false,
+        _ => return Err(err("mover must be solid or ghost")),
+    };
+    let tag = parse_tag(tokens[10], err)?;
+    let tuning = parse_params(&tokens[11..], err)?;
+    tuning_ticks(&tuning, "phase_ticks", 0, err)?;
+    Ok(MoverDef { center, half, axis, distance, period_ticks, solid, tag, tuning })
+}
+
+fn parse_hazard(tokens: &[&str], err: &impl Fn(&str) -> String) -> Result<HazardDef, String> {
+    if tokens.len() < 10 {
+        return Err(err("wrong number of values"));
+    }
+    let nums = parse_numbers(&tokens[..6], err)?;
+    let (center, half) = feature_box(&nums, err)?;
+    let period_ticks = parse_ticks(tokens[6], err)?;
+    if period_ticks == 0 {
+        return Err(err("period_ticks must be > 0"));
+    }
+    let telegraph_ticks = parse_ticks(tokens[7], err)?;
+    if telegraph_ticks > period_ticks {
+        return Err(err("telegraph_ticks must be <= period_ticks"));
+    }
+    let damage = parse_number(tokens[8], err)?;
+    if damage < 0.0 {
+        return Err(err("damage must be >= 0"));
+    }
+    let tag = parse_tag(tokens[9], err)?;
+    let tuning = parse_params(&tokens[10..], err)?;
+    let active_ticks = tuning_ticks(&tuning, "active_ticks", 1, err)?;
+    if active_ticks == 0 {
+        return Err(err("active_ticks must be > 0"));
+    }
+    if active_ticks > period_ticks {
+        return Err(err("active_ticks must be <= period_ticks"));
+    }
+    if active_ticks.saturating_add(telegraph_ticks) > period_ticks {
+        return Err(err("active_ticks + telegraph_ticks must be <= period_ticks"));
+    }
+    let phase_ticks = tuning_ticks(&tuning, "phase_ticks", 0, err)?;
+    if phase_ticks >= period_ticks {
+        return Err(err("phase_ticks must be < period_ticks"));
+    }
+    Ok(HazardDef { center, half, period_ticks, telegraph_ticks, damage, tag, tuning })
 }
 
 /// Team of each `spawn` line of a level file, in order (`NO_TEAM` when the line has no team). Parallel to
@@ -263,6 +796,12 @@ pub fn parse_spawn_teams(text: &str) -> Vec<u8> {
 }
 
 impl LevelFile {
+    /// Stable fingerprint of everything both sides simulate from a level file: `LevelDesc` geometry/spawns plus
+    /// `zone`/`mover`/`hazard` features. Pickups are server-only and excluded. Sent in `Welcome`.
+    pub fn fingerprint(&self) -> u64 {
+        crate::hash::mix_u64(self.level.fingerprint(), self.features.fingerprint())
+    }
+
     /// Inverse of `parse_level_file`: `parse(to_text(x)) == x` exactly (f32 `Display` round-trips).
     pub fn to_text(&self) -> String {
         let mut out = String::new();
@@ -290,6 +829,43 @@ impl LevelFile {
                 crate::power::PowerKind::Tag => "tag",
             };
             out += &format!("{word} {} {} {} {}\n", p.pos[0], p.pos[1], p.pos[2], p.respawn_secs);
+        }
+        for z in &self.features.zones {
+            out += &format!("zone {} {} {} {} {} {} {}", z.center[0], z.center[1], z.center[2], z.half[0], z.half[1], z.half[2], z.tag);
+            for (k, v) in &z.tuning {
+                out += &format!(" {k}={v}");
+            }
+            out.push('\n');
+        }
+        for m in &self.features.movers {
+            out += &format!(
+                "mover {} {} {} {} {} {} {} {} {} {} {}",
+                m.center[0], m.center[1], m.center[2], m.half[0], m.half[1], m.half[2], m.axis.token(), m.distance, m.period_ticks, if m.solid { "solid" } else { "ghost" }, m.tag
+            );
+            for (k, v) in &m.tuning {
+                out += &format!(" {k}={v}");
+            }
+            out.push('\n');
+        }
+        for h in &self.features.hazards {
+            out += &format!(
+                "hazard {} {} {} {} {} {} {} {} {} {}",
+                h.center[0], h.center[1], h.center[2], h.half[0], h.half[1], h.half[2], h.period_ticks, h.telegraph_ticks, h.damage, h.tag
+            );
+            for (k, v) in &h.tuning {
+                out += &format!(" {k}={v}");
+            }
+            out.push('\n');
+        }
+        for sh in &self.features.shapes {
+            out += &format!(
+                "{} {} {} {} {} {} {} {} {}",
+                sh.token(), sh.center[0], sh.center[1], sh.center[2], sh.radius, sh.extent, sh.thickness, sh.segments, sh.tag
+            );
+            for (k, v) in &sh.tuning {
+                out += &format!(" {k}={v}");
+            }
+            out.push('\n');
         }
         out
     }
@@ -325,7 +901,7 @@ impl LevelDesc {
 
     /// Level-file text for just the geometry and spawns.
     pub fn to_text(&self) -> String {
-        LevelFile { level: self.clone(), pickups: Vec::new() }.to_text()
+        LevelFile { level: self.clone(), pickups: Vec::new(), features: LevelFeatures::default() }.to_text()
     }
 
     /// Half extent of the level's floor slab (largest box whose top face is y = 0), if it has one.
@@ -417,6 +993,36 @@ mod tests {
     }
 
     #[test]
+    fn feature_fingerprint_is_stable_changes_with_features_and_ignores_pickups() {
+        let text = "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\npickup 8 1 0\n\
+            zone 2 1 3 2 1 2 vent cooldown_ticks=90 fill_rate=0.5\n\
+            mover 6 2 0 1 2 1 x 6 180 solid piston phase_ticks=30\n\
+            hazard 0 4 0 2 1 2 180 36 20 vent_fire active_ticks=12\n";
+        let a = parse_level_file(text).unwrap();
+        let b = parse_level_file(&a.to_text()).unwrap();
+        assert_eq!(a.features.fingerprint(), b.features.fingerprint(), "stable across the file round-trip");
+        assert_eq!(a.fingerprint(), b.fingerprint());
+
+        let mut moved = a.clone();
+        moved.features.movers[0].distance += 0.5;
+        assert_ne!(a.features.fingerprint(), moved.features.fingerprint(), "a mover change moves the feature hash");
+        assert_ne!(a.fingerprint(), moved.fingerprint());
+        assert_eq!(a.level.fingerprint(), moved.level.fingerprint(), "LevelDesc::fingerprint stays geometry-only");
+
+        let mut retagged = a.clone();
+        retagged.features.zones[0].tag.push_str("_x");
+        assert_ne!(a.features.fingerprint(), retagged.features.fingerprint(), "tags are part of the hash");
+
+        let mut retuned = a.clone();
+        retuned.features.hazards[0].tuning.insert("phase_ticks".into(), 3.0);
+        assert_ne!(a.features.fingerprint(), retuned.features.fingerprint(), "tuning entries are part of the hash");
+
+        let mut picked = a.clone();
+        picked.pickups.push(PickupPoint { pos: [9.0, 1.0, 9.0], respawn_secs: 7.0, kind: crate::power::PowerKind::Yumi });
+        assert_eq!(a.fingerprint(), picked.fingerprint(), "pickups are server-only and excluded");
+    }
+
+    #[test]
     fn parse_good_file() {
         let f = parse_level_file(
             "# arena\nbox 0 -0.5 0  50 0.5 50\nbox 5 1 0 1 1 4 0.3  # ramp\nspawn 0 0.81 0\nspawn 4 0.81 4\npickup 8 1 0\npickup -8 1 0 5\n",
@@ -464,11 +1070,92 @@ mod tests {
                 spawns: vec![[0.0, 0.81, 0.0], [4.25, 0.81, -4.0]],
             },
             pickups: vec![PickupPoint { pos: [8.0, 1.0, 0.0], respawn_secs: 5.5, kind: crate::power::PowerKind::None }],
+            features: LevelFeatures::default(),
         };
         assert_eq!(parse_level_file(&f.to_text()).unwrap(), f);
         assert_eq!(LevelDesc::from_text(&f.to_text()).unwrap(), f.level);
         assert_eq!(LevelDesc::from_text(&f.level.to_text()).unwrap(), f.level);
         assert_eq!(LevelDesc::from_text(&LevelDesc::standard().to_text()).unwrap(), LevelDesc::standard());
+    }
+
+    #[test]
+    fn feature_directives_parse_and_roundtrip_exactly() {
+        let text = "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\n\
+            zone 2 1 3 2 1 2 vent cooldown_ticks=90 fill_rate=0.5\n\
+            mover 6 2 0 1 2 1 x 6 180 solid piston phase_ticks=30\n\
+            mover -6 2 0 1 1 1 z 4 120 ghost fan\n\
+            hazard 0 4 0 2 1 2 180 36 20 vent_fire active_ticks=12\n";
+        let f = parse_level_file(text).unwrap();
+        assert_eq!(f.features.zones.len(), 1);
+        assert_eq!(f.features.movers.len(), 2);
+        assert_eq!(f.features.hazards.len(), 1);
+        assert_eq!(f.features.zones[0].tag, "vent");
+        assert_eq!(f.features.zones[0].tuning["cooldown_ticks"], 90.0);
+        assert_eq!(f.features.movers[0].axis, MoveAxis::X);
+        assert!(f.features.movers[0].solid);
+        assert!(!f.features.movers[1].solid);
+        assert_eq!(f.features.movers[0].tuning["phase_ticks"], 30.0);
+        assert_eq!(f.features.hazards[0].tuning["active_ticks"], 12.0);
+        assert_eq!(parse_level_file(&f.to_text()).unwrap(), f);
+    }
+
+    #[test]
+    fn feature_parse_errors_name_the_line() {
+        for (text, needle) in [
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nzone 0 0 0 1 1 1\n", "line 3: wrong number"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nzone 0 0 0 1 1 1 vent bad\n", "line 3: expected key=value"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nmover 0 0 0 1 1 1 w 2 10 solid p\n", "line 3: mover axis"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nmover 0 0 0 1 1 1 x 2 0 solid p\n", "line 3: period_ticks must be > 0"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nhazard 0 0 0 1 1 1 0 1 5 h\n", "line 3: period_ticks must be > 0"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nhazard 0 0 0 1 1 1 10 5 5 h active_ticks=6\n", "line 3: active_ticks + telegraph_ticks"),
+            ("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nzone 0 0 0 1 1 1 vent cooldown_ticks=1.5\n", "line 3: tick tuning"),
+        ] {
+            let e = parse_level_file(text).unwrap_err();
+            assert!(e.contains(needle), "{text:?} -> {e}");
+        }
+    }
+
+    #[test]
+    fn speed_lane_query_uses_centre_tag_face_band_and_tuning() {
+        let text = "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\n\
+            zone 27 4 4.5 14 4 0.5 speed_lane cap=1.6 decay=0.9 mult=1.15 wall_run_m=10\n\
+            zone -27 4 4.5 14 4 0.5 core_vent\n";
+        let f = parse_level_file(text).unwrap();
+        let n = Some([0.0, 0.0, -1.0]);
+        let centre = f.features.speed_lane_for([27.0, 4.0, 4.5], n).expect("inside the authored AABB");
+        assert!(centre.inside);
+        assert_eq!(centre.wall_run_m, 10.0);
+        assert_eq!(centre.mult, 1.15);
+        assert_eq!(centre.cap, 1.6);
+        assert_eq!(centre.decay, 0.9);
+        assert!((centre.ramp - 1.0).abs() < 1e-6);
+        assert!((centre.multiplier() - 1.15).abs() < 1e-6);
+
+        let edge = f.features.speed_lane_for([13.5, 4.0, 4.5], n).unwrap();
+        assert!(edge.inside);
+        assert!((edge.ramp - 0.05).abs() < 1e-6, "ramp = 0.5 m into a 10 m lane");
+        assert!((edge.multiplier() - 1.0075).abs() < 1e-6);
+
+        assert!(f.features.speed_lane_for([27.0, 4.0, 4.7], Some([0.0, 0.0, 1.0])).is_none(), "opposite face");
+        assert!(f.features.speed_lane_for([27.0, 4.0, 4.5], None).is_none(), "cannot match while walking/airborne");
+        assert!(f.features.speed_lane_for([27.0, 9.0, 4.5], n).is_none(), "above the volume");
+
+        let band = f.features.speed_lane_for([3.5, 4.0, 4.5], n).expect("post-exit band");
+        assert!(!band.inside);
+        assert_eq!(band.multiplier(), 1.0, "the band decays carried speed, it does not add more");
+        assert!(f.features.speed_lane_for([2.9, 4.0, 4.5], n).is_none(), "past wall_run_m");
+
+        let vent_only = parse_level_file(
+            "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nzone 0 1 0 2 1 2 core_vent\n",
+        )
+        .unwrap();
+        assert!(vent_only.features.speed_lane_for([0.0, 1.0, 0.0], Some([0.0, 0.0, -1.0])).is_none(), "tag must match");
+
+        let capped = parse_level_file(
+            "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nzone 0 4 4.5 10 4 0.5 speed_lane wall_run_m=0 mult=3 cap=1.6\n",
+        )
+        .unwrap();
+        assert!((capped.features.speed_lane_for([0.0, 4.0, 4.5], n).unwrap().multiplier() - 1.6).abs() < 1e-6);
     }
 
     #[test]

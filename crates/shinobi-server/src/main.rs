@@ -155,7 +155,7 @@ fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind(&conf.bind)?;
     socket.set_nonblocking(true)?;
     // Prediction-config parity: the client compares these against its own level / balance and warns on a mismatch.
-    let level_hash = setup.level.fingerprint();
+    let level_hash = setup.level_fingerprint();
     let balance_hash = setup.balance.fingerprint();
     eprintln!("shinobi-server: {}, {TICK_HZ} Hz, protocol v{VERSION}", conf.bind);
     eprintln!("{}", conf.describe());

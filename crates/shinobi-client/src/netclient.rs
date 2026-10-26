@@ -89,6 +89,10 @@ pub struct NetClient {
     /// Players currently cloaked (`cloak.rs`), from `NetEvent::CloakFx`. Fair to read: the shimmer is visible to
     /// everyone regardless of distance.
     cloaked: std::collections::HashSet<u16>,
+    /// `core_vent` reveals from `NetEvent::VentReveal`: player id -> (fill tick, reveal end tick), server ticks.
+    vent_reveals: HashMap<u16, (u32, u32)>,
+    /// Last `core_vent` fill tick seen per player; kept after the reveal ends so the cooldown can be shown.
+    vent_fills: HashMap<u16, u32>,
     /// Team of every player (from `TeamAssign`), team kills and the match result (from `TeamScore`).
     teams: HashMap<u16, u8>,
     /// Custom looks of every player (from `CharacterLook`), validated again by `from_wire`.
@@ -179,6 +183,8 @@ impl Default for NetClient {
             events: Vec::new(),
             ropes: HashMap::new(),
             cloaked: std::collections::HashSet::new(),
+            vent_reveals: HashMap::new(),
+            vent_fills: HashMap::new(),
             teams: HashMap::new(),
             looks: HashMap::new(),
             my_look: None,
@@ -355,6 +361,16 @@ impl NetClient {
                 NetEvent::MapChange { .. } => {
                     self.ropes.clear();
                     self.cloaked.clear();
+                    self.vent_reveals.clear();
+                    self.vent_fills.clear();
+                }
+                NetEvent::VentReveal { tick, player, ticks } => {
+                    if ticks == 0 {
+                        self.vent_reveals.remove(&player);
+                    } else {
+                        self.vent_reveals.insert(player, (tick, tick.saturating_add(ticks as u32)));
+                        self.vent_fills.insert(player, tick);
+                    }
                 }
                 NetEvent::CloakFx { player, on, .. } => {
                     if on {
@@ -783,6 +799,18 @@ impl NetClient {
     /// `player`'s stealth cloak is up right now (from `CloakFx`): draw the shimmer, not the ordinary body.
     pub fn is_cloaked(&self, player: u16) -> bool {
         self.cloaked.contains(&player)
+    }
+
+    /// Players a completed `core_vent` fill reveals at `server_tick` (sorted), from `VentReveal`.
+    pub fn vent_revealed(&self, server_tick: u32) -> Vec<u16> {
+        let mut ids: Vec<u16> = self.vent_reveals.iter().filter(|(_, (_, until))| server_tick < *until).map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Server tick of `player`'s last completed `core_vent` fill, from `VentReveal` (kept after the reveal ends).
+    pub fn vent_fill_tick(&self, player: u16) -> Option<u32> {
+        self.vent_fills.get(&player).copied()
     }
 
     /// Reliable events (walls, obstacles) received since last call, in order.

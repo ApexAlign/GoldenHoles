@@ -453,6 +453,12 @@ pub struct PhysicsWorld {
 }
 
 // ---------- Character ----------
+/// Vortex Slam: a fall faster than this with the slide key held turns into a dive at `DIVE_SPEED` (m/s).
+pub const DIVE_ARM_VY: f32 = 6.0;
+pub const DIVE_SPEED: f32 = 32.0;
+/// A dive this fast on landing sets off the slam.
+pub const DIVE_SLAM_MIN: f32 = 28.0;
+
 pub struct CharacterSystem {
     pub cfg: Cfg,
     pub body: RigidBodyHandle,
@@ -467,6 +473,10 @@ pub struct CharacterSystem {
     pub double_jumped: bool,
     /// Edge flag: true only for the update() tick in which a grind began (audio / FX).
     pub grind_started: bool,
+    /// Vortex Slam (v35, no wire): the dive speed (m/s) reached while the slide key was held in a fall, kept after the
+    /// landing until the server's pass reads and clears it. 0 = not diving. Server-only meaning; the dive itself
+    /// (the speed) is part of the shared step so a client predicts it.
+    pub dive_peak: f32,
     coyote: f32,
     jump_buf: f32,
     dash_cd: f32,
@@ -501,6 +511,9 @@ pub struct CharacterSystem {
     /// Seconds since the last fresh wall-run entry (large = long ago; continuing an existing wall-run does not reset
     /// it). Same purpose as `dash_age`. Not on the wire.
     pub wallrun_age: f32,
+    /// `speed_lane` tuning resolved from the level for the pre-step position and wall face. Derived identically by the
+    /// server and the client predictor every tick; not on the wire and never part of a restore.
+    pub speed_lane: Option<crate::level::SpeedLane>,
 }
 
 /// Parented colliders only follow their body during `PhysicsPipeline::step`, which this sim never runs, so any
@@ -560,6 +573,7 @@ impl CharacterSystem {
             jump_buf: 0.0,
             dash_cd: 0.0,
             wall_cd: 0.0,
+            dive_peak: 0.0,
             slide: None,
             slide_cd: 0.0,
             grind: None,
@@ -575,6 +589,7 @@ impl CharacterSystem {
             walljump_age: 99.0,
             dash_age: 99.0,
             wallrun_age: 99.0,
+            speed_lane: None,
         }
     }
 
@@ -638,6 +653,24 @@ impl CharacterSystem {
     pub fn knock_off(&mut self, dir: Vector<Real>, speed: f32) {
         let d = flat_norm(dir);
         self.vel = Vector::new(d.x * speed, 4.0, d.z * speed);
+        self.grind = None;
+        if matches!(self.state, MoveState::WallRun { .. }) {
+            self.state = MoveState::Airborne;
+        }
+        self.wall_cd = 0.6;
+        if self.grapple.is_some() {
+            self.grapple_release();
+        }
+    }
+
+    /// Server-side yank (Tether Arrow): one impulse toward `dir` at `speed` with a small lift, dropping the rope, the
+    /// grind and the wall-run. Reconciled to the client like any server push.
+    pub fn yank(&mut self, dir: Vector<Real>, speed: f32) {
+        if dir.norm_squared() < 1e-8 {
+            return;
+        }
+        let d = dir.normalize();
+        self.vel = Vector::new(d.x * speed, d.y * speed + 3.0, d.z * speed);
         self.grind = None;
         if matches!(self.state, MoveState::WallRun { .. }) {
             self.state = MoveState::Airborne;
@@ -770,6 +803,7 @@ impl CharacterSystem {
         self.grapple_cd = s.grapple_cd;
         self.grind = s.grind;
         self.slice_buf = s.slice_buf;
+        self.speed_lane = None;
         self.rope_player = None;
         self.grapple_event = GrappleEvent::None;
         self.double_jumped = false;
@@ -900,10 +934,18 @@ impl CharacterSystem {
             // the run is a 2D velocity in the wall's plane: `a` along the horizontal tangent, `b` straight up (down < 0).
             // Both live in `vel` (on the wire), so a vertical run needs no extra state.
             let (a, b) = (self.vel.dot(&tangent), self.vel.y);
+            let wall_speed = match self.speed_lane {
+                Some(l) if l.inside => cfg.wall_speed * l.multiplier(),
+                Some(l) => {
+                    let surplus = (a.abs() - cfg.wall_speed).max(0.0);
+                    cfg.wall_speed + surplus * l.decay
+                }
+                None => cfg.wall_speed,
+            };
             if self.jump_buf > 0.0 {
                 // wall jump: kick off the wall, keep the sideways run, and add the climb you had
                 self.vel = normal * cfg.wall_jump_push
-                    + tangent * a.clamp(-cfg.wall_speed, cfg.wall_speed) * cfg.wall_jump_keep
+                    + tangent * a.clamp(-wall_speed, wall_speed) * cfg.wall_jump_keep
                     + up * (cfg.jump_speed + b.max(0.0) * 0.5);
                 self.jump_buf = 0.0;
                 self.wall_cd = 0.3;
@@ -921,14 +963,14 @@ impl CharacterSystem {
                 let (mut ta, mut tb) = (a, b);
                 if dir_in.norm_squared() > 0.0 && s_h.abs() + s_v.abs() > 0.2 {
                     let m = (s_h * s_h + s_v * s_v).sqrt();
-                    ta = s_h / m * cfg.wall_speed;
+                    ta = s_h / m * wall_speed;
                     tb = s_v / m * cfg.wall_climb_speed;
                 }
                 let (da, db) = (ta - a, tb - b);
                 let dn = (da * da + db * db).sqrt();
                 let step = cfg.wall_steer * dt;
                 let (mut a2, mut b2) = if dn <= step { (ta, tb) } else { (a + da / dn * step, b + db / dn * step) };
-                let cap = cfg.wall_speed.max(cfg.wall_climb_speed);
+                let cap = wall_speed.max(cfg.wall_climb_speed);
                 let m2 = (a2 * a2 + b2 * b2).sqrt();
                 if m2 > cap {
                     a2 *= cap / m2;
@@ -1130,6 +1172,13 @@ impl CharacterSystem {
                     cfg.gravity
                 };
                 self.vel.y = (self.vel.y - g * dt).max(-cfg.terminal);
+                // Vortex Slam: slide held in a fall (no rope, not in a slide) plunges at DIVE_SPEED
+                if input.slide && self.slide.is_none() && self.grapple.is_none() && self.vel.y < -DIVE_ARM_VY {
+                    self.vel.y = self.vel.y.min(-DIVE_SPEED);
+                    self.dive_peak = self.dive_peak.max(-self.vel.y);
+                } else {
+                    self.dive_peak = 0.0;
+                }
             }
 
             // wall-run entry: airborne + jump held + a wall beside you (run along it) or in front (run up it)

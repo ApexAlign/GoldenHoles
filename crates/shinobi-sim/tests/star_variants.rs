@@ -206,3 +206,45 @@ fn a_star_is_a_close_range_tool_full_damage_inside_7_m_gone_by_14_m() {
     assert!(edge <= mid && edge >= near * 0.5 - 0.01, "about half at the edge of its range: {edge}");
     assert_eq!(far, 0.0, "past 14 m the star is gone before it arrives");
 }
+
+fn mine_discs(s: &Server) -> Vec<shinobi_sim::combat::shuriken::Disc> {
+    objects(s, A, StarKind::Mine)
+}
+
+#[test]
+fn a_glitch_mine_sticks_arms_and_shorts_the_first_enemy_that_comes_close() {
+    // B stands 12 m away, off to the side, out of the mine's reach
+    let mut s = server(-12.0);
+    tp(&mut s, B, [30.0, 0.81, -12.0]);
+    tp(&mut s, A, [0.0, 0.81, -20.0]);
+    wait(&mut s, 5);
+    let e0 = energy(&s).0;
+    feed(&mut s, throw(0.0, 0.0, StarKind::Mine), idle(B_YAW));
+    assert!((e0 - energy(&s).0 - 2.0).abs() < 0.1, "a mine costs 2");
+    for _ in 0..60 {
+        feed(&mut s, idle(0.0), idle(B_YAW));
+    }
+    let m = mine_discs(&s);
+    assert_eq!(m.len(), 1, "the mine is still there");
+    assert!(m[0].stuck, "and it has landed on the far wall");
+    // the thrower walking next to it does nothing, nor does B far away
+    assert_eq!(hp(&s, B), 100.0);
+    // B walks up to the mine: it shorts out
+    let at = m[0].pos;
+    tp(&mut s, B, [at.x, 0.81, at.z + 1.0]);
+    for _ in 0..30 {
+        feed(&mut s, idle(0.0), idle(B_YAW));
+    }
+    assert!(hp(&s, B) < 100.0, "the first enemy to come close takes the hit ({})", hp(&s, B));
+    assert!(mine_discs(&s).is_empty(), "and the mine is spent");
+}
+
+#[test]
+fn at_most_two_mines_are_live_per_player() {
+    let mut s = server(-30.0);
+    for _ in 0..3 {
+        feed(&mut s, throw(0.0, -0.2, StarKind::Mine), idle(B_YAW));
+        wait(&mut s, 30);
+    }
+    assert_eq!(mine_discs(&s).len(), 2, "the oldest was recalled");
+}

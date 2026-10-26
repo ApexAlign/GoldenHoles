@@ -37,6 +37,8 @@ class Level:
         self.sections = []  # (title, [(cx, cy, cz, hx, hy, hz, rot, hp)])
         self.cur = None
         self.spawns, self.pickups, self.weapons = [], [], []
+        self.zones, self.movers, self.hazards = [], [], []
+        self.shapes = []
         self.section("main")
 
     def section(self, title):
@@ -133,6 +135,27 @@ class Level:
     def weapon(self, kind, x, y, z, respawn=45):
         self.weapons.append((kind, x, y, z, respawn))
 
+    # ------------------------------------------------------------------------------------------------ features
+    def zone(self, cx, cy, cz, hx, hy, hz, tag, **tuning):
+        """An axis-aligned server trigger volume (`zone`) with optional key=value tuning."""
+        self.zones.append((cx, cy, cz, hx, hy, hz, tag, dict(tuning)))
+
+    def mover(self, cx, cy, cz, hx, hy, hz, axis, distance, period_ticks, tag, solid=True, **tuning):
+        """A one-axis ping-pong mover (`mover`); `period_ticks` is one leg. Solid movers get server colliders."""
+        self.movers.append((cx, cy, cz, hx, hy, hz, axis, distance, period_ticks, solid, tag, dict(tuning)))
+
+    def hazard(self, cx, cy, cz, hx, hy, hz, period_ticks, telegraph_ticks, damage, tag, **tuning):
+        """A periodic damage volume (`hazard`). Levels that ship one need a telegraph and deterministic active phase."""
+        self.hazards.append((cx, cy, cz, hx, hy, hz, period_ticks, telegraph_ticks, damage, tag, dict(tuning)))
+
+    def tube(self, cx, cy, cz, radius, height, thickness, segments, tag, **tuning):
+        """A hollow vertical cylinder (`tube`): inner wall at `radius`; `door_start`/`door_count` leave segments out."""
+        self.shapes.append(("tube", cx, cy, cz, radius, height, thickness, segments, tag, dict(tuning)))
+
+    def ring(self, cx, cy, cz, radius, width, thickness, segments, tag, **tuning):
+        """A flat horizontal annulus (`ring`) whose centre line is at `radius`."""
+        self.shapes.append(("ring", cx, cy, cz, radius, width, thickness, segments, tag, dict(tuning)))
+
     # ------------------------------------------------------------------------------------------------ output
     def stats(self):
         n = nd = 0
@@ -188,6 +211,39 @@ class Level:
         lines.append("# --- %d power-weapon pedestals ---" % len(self.weapons))
         for kind, x, y, z, r in self.weapons:
             lines.append("%s %s %s %s %s" % (kind, fnum(x), fnum(y), fnum(z), fnum(r)))
+        lines.append("")
+        lines.append("# --- %d zones ---" % len(self.zones))
+        for cx, cy, cz, hx, hy, hz, tag, tuning in self.zones:
+            row = "zone %s %s %s  %s %s %s %s" % (fnum(cx), fnum(cy), fnum(cz), fnum(hx), fnum(hy), fnum(hz), tag)
+            for k in sorted(tuning):
+                row += " %s=%s" % (k, fnum(tuning[k]))
+            lines.append(row)
+        lines.append("")
+        lines.append("# --- %d movers ---" % len(self.movers))
+        for cx, cy, cz, hx, hy, hz, axis, distance, period_ticks, solid, tag, tuning in self.movers:
+            row = "mover %s %s %s  %s %s %s %s %s %d %s %s" % (
+                fnum(cx), fnum(cy), fnum(cz), fnum(hx), fnum(hy), fnum(hz), axis, fnum(distance), period_ticks, "solid" if solid else "ghost", tag
+            )
+            for k in sorted(tuning):
+                row += " %s=%s" % (k, fnum(tuning[k]))
+            lines.append(row)
+        lines.append("")
+        lines.append("# --- %d hazards ---" % len(self.hazards))
+        for cx, cy, cz, hx, hy, hz, period_ticks, telegraph_ticks, damage, tag, tuning in self.hazards:
+            row = "hazard %s %s %s  %s %s %s %d %d %s %s" % (
+                fnum(cx), fnum(cy), fnum(cz), fnum(hx), fnum(hy), fnum(hz), period_ticks, telegraph_ticks, fnum(damage), tag
+            )
+            for k in sorted(tuning):
+                row += " %s=%s" % (k, fnum(tuning[k]))
+            lines.append(row)
+        if self.shapes:
+            lines.append("")
+            lines.append("# --- %d tubes / rings ---" % len(self.shapes))
+            for kind, cx, cy, cz, radius, extent, thickness, segments, tag, tuning in self.shapes:
+                row = "%s %s %s %s  %s %s %s %d %s" % (kind, fnum(cx), fnum(cy), fnum(cz), fnum(radius), fnum(extent), fnum(thickness), segments, tag)
+                for k in sorted(tuning):
+                    row += " %s=%s" % (k, fnum(tuning[k]))
+                lines.append(row)
         open(path, "w").write("\n".join(lines) + "\n")
         total, dest, frac = self.stats()
         print("wrote %s: %d boxes (%d destructible, %.0f%% of volume), %d spawns, %d pickups, %d weapon pedestals" % (path, total, dest, 100 * frac, len(self.spawns), len(self.pickups), len(self.weapons)))

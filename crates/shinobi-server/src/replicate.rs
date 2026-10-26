@@ -71,6 +71,8 @@ pub struct Replicator {
     ropes: HashMap<u16, [i32; 3]>,
     /// Players currently broadcast as cloaked (`cloak.rs`); edges become `CloakFx`.
     cloaks: std::collections::HashSet<u16>,
+    /// Live `core_vent` reveals (player -> reveal end tick) as broadcast; new or ended reveals become `VentReveal`.
+    vent_reveals: HashMap<u16, u32>,
     /// Last team broadcast per player (`TeamAssign`), and the last `TeamScore` sent.
     teams: HashMap<u16, u8>,
     /// Last custom look broadcast per player (`CharacterLook`).
@@ -108,6 +110,7 @@ impl Replicator {
             log: Vec::new(),
             ropes: HashMap::new(),
             cloaks: std::collections::HashSet::new(),
+            vent_reveals: HashMap::new(),
             teams: HashMap::new(),
             looks: HashMap::new(),
             last_team_score: None,
@@ -208,6 +211,14 @@ impl Replicator {
         for player in cloaked {
             st.outbox.push(NetEvent::CloakFx { tick: now_tick, player, on: true });
         }
+        let mut revealed: Vec<(u16, u32)> = self.vent_reveals.iter().map(|(p, u)| (*p, *u)).collect();
+        revealed.sort_unstable();
+        for (player, until) in revealed {
+            let ticks = until.saturating_sub(now_tick).min(u16::MAX as u32) as u16;
+            if ticks > 0 {
+                st.outbox.push(NetEvent::VentReveal { tick: now_tick, player, ticks });
+            }
+        }
         self.peers.insert(id, st);
     }
 
@@ -221,6 +232,9 @@ impl Replicator {
         }
         if self.cloaks.remove(&id) {
             self.broadcast(NetEvent::CloakFx { tick: now_tick, player: id, on: false });
+        }
+        if self.vent_reveals.remove(&id).is_some() {
+            self.broadcast(NetEvent::VentReveal { tick: now_tick, player: id, ticks: 0 });
         }
         self.peers.remove(&id);
     }
@@ -253,6 +267,7 @@ impl Replicator {
         self.drain_game_events(server, tick);
         self.sync_ropes(server, tick);
         self.sync_cloaks(server, tick);
+        self.sync_vent_reveals(server, tick);
         self.sync_teams(server, tick);
         self.sync_looks(server);
         self.sync_blocks(server);
@@ -474,6 +489,26 @@ impl Replicator {
             } else if !now && was {
                 self.cloaks.remove(&p.id);
                 self.broadcast(NetEvent::CloakFx { tick, player: p.id, on: false });
+            }
+        }
+    }
+
+    /// `core_vent` reveals (`shield.rs`) -> reliable `VentReveal`: a completed fill shows the filler to everyone for
+    /// `reveal_ticks`; a death ends it early. Natural expiry needs no event: clients time it out themselves.
+    fn sync_vent_reveals(&mut self, server: &Server, tick: u32) {
+        for p in &server.players {
+            let until = p.shield.vent_reveal_until;
+            let live = p.vitals.alive() && until > tick;
+            let sent = self.vent_reveals.get(&p.id).copied();
+            if live && sent != Some(until) {
+                self.vent_reveals.insert(p.id, until);
+                let ticks = (until - tick).min(u16::MAX as u32) as u16;
+                self.broadcast(NetEvent::VentReveal { tick, player: p.id, ticks });
+            } else if !live && sent.is_some() {
+                self.vent_reveals.remove(&p.id);
+                if sent.is_some_and(|u| u > tick) {
+                    self.broadcast(NetEvent::VentReveal { tick, player: p.id, ticks: 0 });
+                }
             }
         }
     }
@@ -761,8 +796,12 @@ fn own_block(server: &Server, id: u16, hits: &[HitMsg], hit_seq: u8, margin: i32
         intent_complete: p.queue.complete_tick(),
         lead_margin: margin.clamp(shinobi_proto::gameplay::LEAD_MARGIN_MIN as i32, shinobi_proto::gameplay::LEAD_MARGIN_MAX as i32 - 1) as i8,
     };
+    let mut own = OwnState::from_snapshot(&p.ch.snapshot(&server.world));
+    own.battery_q = p.shield.battery;
+    own.aura_ticks_left = p.shield.aura_ticks_left(server.tick.saturating_sub(1));
+    own.aura_total_ticks = p.shield.aura_total;
     let mut w = BitWriter::new();
-    extras.write(&mut w, |w| OwnState::from_snapshot(&p.ch.snapshot(&server.world)).write(w));
+    extras.write(&mut w, |w| own.write(w));
     w.finish()
 }
 
@@ -953,7 +992,9 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
                     yaw: p.yaw,
                     kind,
                     flags,
-                    fx: p.blk.fx_bits(tick) | if p.melee.marked(tick) { shinobi_proto::snapshot::FX_MARK } else { 0 },
+                    fx: p.blk.fx_bits(tick)
+                        | if p.melee.marked(tick) { shinobi_proto::snapshot::FX_MARK } else { 0 }
+                        | if p.vitals.alive() && p.shield.aura_active(tick.saturating_sub(1)) { shinobi_proto::snapshot::FX_AURA } else { 0 },
                 },
             )
         })
@@ -962,7 +1003,7 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
     // shurikens: ids PROJECTILE_ID_BASE.., yaw = owner id, flags = bounce count, vel = dir * speed
     let speed = server.balance.shuriken_cfg().speed;
     for (i, (owner, d)) in server.projectiles().into_iter().take(disc_cap).enumerate() {
-        let v = d.dir * speed;
+        let v = if d.stuck { shinobi_sim::rapier3d::prelude::Vector::zeros() } else { d.dir * speed }; // a landed mine sits still
         entities.push((
             PROJECTILE_ID_BASE + i as u16,
             EntityState {
@@ -981,7 +1022,7 @@ fn build_snapshot(tick: u32, server: &Server, disc_cap: usize) -> Snapshot {
 
 /// Arrows in flight, fuda tags and the bows being drawn as snapshot entities (ids documented in `snapshot.rs`), sorted by id.
 fn power_entities(server: &Server, entities: &mut Vec<(u16, EntityState)>) {
-    use shinobi_proto::snapshot::{ARROW_ID_BASE, ARROW_REFLECTED, DRAW_ID_BASE, STUCK_NORMAL_SPEED, TAG_ARMED, TAG_FLYING, TAG_ID_BASE, TAG_ON_PLAYER};
+    use shinobi_proto::snapshot::{ARROW_ID_BASE, ARROW_REFLECTED, ARROW_TETHER, DRAW_ID_BASE, STUCK_NORMAL_SPEED, TAG_ARMED, TAG_FLYING, TAG_ID_BASE, TAG_ON_PLAYER};
     let pc = server.balance.combat.power;
     let tc = pc.tag;
     let mut out: Vec<(u16, EntityState)> = Vec::new();
@@ -993,7 +1034,7 @@ fn power_entities(server: &Server, entities: &mut Vec<(u16, EntityState)>) {
                 vel: [q_vel(a.vel[0]), q_vel(a.vel[1]), q_vel(a.vel[2])],
                 yaw: a.owner,
                 kind: MoveKind::Airborne,
-                flags: if a.reflected { ARROW_REFLECTED } else { 0 },
+                flags: (if a.reflected { ARROW_REFLECTED } else { 0 }) | (if a.tether { ARROW_TETHER } else { 0 }),
                 fx: 0,
             },
         ));

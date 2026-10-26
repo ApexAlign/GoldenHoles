@@ -7,14 +7,19 @@ use bevy::prelude::*;
 use shinobi_client::client_game::{ClientGameCfg, InputFrame, RenderView};
 use shinobi_client::display_clock::DisplayClock;
 use shinobi_client::udp_game::UdpGame;
-use shinobi_sim::level::LevelDesc;
+use shinobi_sim::level::{LevelDesc, LevelFeatures};
 
 #[derive(Resource)]
 pub struct Net(pub UdpGame);
 
-/// The level being played (also drawn by `play::setup`).
+/// The level being played (also drawn by `play::setup`). Geometry only: boxes and spawns.
 #[derive(Resource, Clone)]
 pub struct LevelRes(pub LevelDesc);
+
+/// The level's `zone` / `mover` / `hazard` features, for client-side visualisation. Kept separate from
+/// `LevelRes` so geometry stays churn-free; `FeaturesRes` is what `features_vis` draws.
+#[derive(Resource, Clone)]
+pub struct FeaturesRes(pub LevelFeatures);
 
 /// Input accumulated between fixed steps: `look` and `buttons` are drained by each step, `stick` is a level.
 #[derive(Resource, Default)]
@@ -30,6 +35,9 @@ pub struct NetPlugin {
     pub offline: bool,
     /// Same geometry the server runs (`--level`); prediction diverges at the first wall otherwise.
     pub level: LevelDesc,
+    /// Same `zone` / `mover` / `hazard` features the server loaded. `reconnect` keeps them (`UdpGame::reconnect`
+    /// preserves `self.features`), so reconnecting clients render the same movers they predicted against.
+    pub features: LevelFeatures,
     /// Same balance preset the server runs (`--balance`); the Welcome fingerprint flags a mismatch.
     pub balance: shinobi_sim::balance::Balance,
 }
@@ -37,10 +45,11 @@ pub struct NetPlugin {
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         let cfg = ClientGameCfg::with_balance(self.balance.clone());
-        let net = UdpGame::new(self.server, self.level.clone(), cfg).expect("bind UDP socket");
+        let net = UdpGame::new_with_features(self.server, self.level.clone(), self.features.clone(), cfg).expect("bind UDP socket");
         let mut net = net;
         let view = ViewRes(net.view());
         app.insert_resource(LevelRes(self.level.clone()))
+            .insert_resource(FeaturesRes(self.features.clone()))
             .insert_resource(crate::hud_view::ServerLabel(self.server.to_string()))
             .insert_resource(Time::<Fixed>::from_hz(60.0))
             .insert_resource(Net(net))

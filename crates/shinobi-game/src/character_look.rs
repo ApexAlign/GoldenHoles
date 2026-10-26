@@ -1359,7 +1359,9 @@ impl Rig {
         }
         if let Some(p) = part("katana") {
             if let Ok(mut t) = tf.get_mut(self.katana) {
-                *t = Transform { translation: Vec3::from(p.offset), rotation: Quat::from_rotation_x(p.pitch), scale: Vec3::new(bw, bw, 1.0) };
+                // Kinetic Battery aura: the lit edge swells and pulses so everyone can read the 1.2x threat
+                let aura = if c.fx & shinobi_proto::snapshot::FX_AURA != 0 { 2.2 + 0.6 * (c.t * 9.0).sin() } else { 1.0 };
+                *t = Transform { translation: Vec3::from(p.offset), rotation: Quat::from_rotation_x(p.pitch), scale: Vec3::new(bw * aura, bw * aura, 1.0) };
             }
         }
         // arms hang from the shoulders in torso space

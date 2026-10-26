@@ -734,3 +734,31 @@ fn the_weapon_of_a_dead_player_lies_where_they_fell_with_what_was_left() {
     let b = player(&mut s, B);
     assert_eq!((b.power.kind, b.power.ammo), (PowerKind::Tag, 2));
 }
+
+#[test]
+fn a_tether_arrow_hits_for_40_percent_and_yanks_the_victim_toward_the_shooter() {
+    let mut yanked = false;
+    for pitch in [-0.03, -0.01, 0.0, 0.006, 0.012, 0.018] {
+        let mut s = server(-30.0);
+        give(&mut s, A, PowerKind::Yumi, 0);
+        let mut ev = Vec::new();
+        for _ in 0..40 {
+            ev.extend(feed(&mut s, PlayerIntent { tether: true, ..drawing(0.0, pitch) }, idle(B_YAW)));
+        }
+        ev.extend(feed(&mut s, PlayerIntent { tether: true, aim_pitch: q_pitch(pitch), ..idle(0.0) }, idle(B_YAW)));
+        let mut peak = 0.0f32;
+        for _ in 0..40 {
+            ev.extend(feed(&mut s, idle(0.0), idle(B_YAW)));
+            peak = peak.max(player(&mut s, B).ch.vel.z);
+        }
+        let hits = arrow_hits(&ev);
+        assert!(hits.len() <= 1);
+        for (amount, head) in hits {
+            let want = if head { 120.0 } else { 80.0 } * 0.4;
+            assert!((amount - want).abs() < 0.01, "tether arrow: {amount} vs {want}");
+            assert!(peak > 8.0, "B was yanked toward A (+Z): peak vz {peak}");
+            yanked = true;
+        }
+    }
+    assert!(yanked, "at least one of the aims connected");
+}

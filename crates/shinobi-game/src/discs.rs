@@ -274,6 +274,7 @@ fn disc_colour(net: &Net, view: &shinobi_client::client_game::RenderView, i: usi
     // the flash star flies white
     match view.disc_kinds.get(i) {
         Some(StarKind::Flash) => return [1.0, 1.0, 1.0],
+        Some(StarKind::Mine) => return [1.0, 0.55, 0.05], // glitch mines read orange
         _ => {}
     }
     match view.disc_owners.get(i).copied().filter(|o| *o != 0) {

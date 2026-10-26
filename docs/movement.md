@@ -46,6 +46,27 @@ The table below is the older round (5.4 m/s era).
 - **Grind:** hold C on the ground or through a landing and you keep your speed (docs/grind.md); the katana hits harder
   meanwhile. The crouch slide and the ground roll are gone: C is the grind.
 
+## Speed lanes (Circuit data lanes)
+`zone ... speed_lane` volumes add a wall-run-only speed lane. The query is `LevelFeatures::speed_lane_for(centre,
+wall_normal)` and is called by the server and the client predictor every tick from the pre-step position and state:
+walking and airborne (no wall normal) never match, and a normal on the wrong side of the lane's thin axis does not
+match either.
+
+- **Match:** the player centre must be inside the authored AABB. The wall normal must be mostly across the lane's thin
+  axis (the smaller horizontal half-extent axis, `|n| >= 0.7`) and point from the tagged wall toward the lane interior.
+- **Ramp:** `ramp = clamp(distance_from_nearest_long_end / wall_run_m, 0, 1)`. It is 0 at either authored end, 1 once
+  `wall_run_m` metres inside. `wall_run_m <= 0` means full ramp immediately.
+- **Boost:** while wall-running inside the AABB, along-wall speed uses `wall_speed * multiplier`, where
+  `multiplier = clamp(1 + (mult - 1) * ramp, 1, cap)`. `mult` is the authored speed multiplier; `cap` is the hard
+  maximum multiplier. The usual plane cap still applies with `wall_speed = cfg.wall_speed * multiplier`.
+- **Exit:** for up to `wall_run_m` metres beyond either long end, on the same tagged face, the lane returns
+  `inside = false`. Along-wall surplus over `cfg.wall_speed` decays by `decay` per tick:
+  `wall_speed = cfg.wall_speed + max(|along| - cfg.wall_speed, 0) * decay`. It never adds speed. Re-entering a lane
+  recomputes the boost from its ramp, so the bonus resets. Past the band the normal non-lane wall-run cap applies.
+- **Circuit tuning:** four lanes each author `wall_run_m=10`, `mult=1.15`, `cap=1.6`, `decay=0.9`. They are level data,
+  not wire state; server and prediction derive the same value from the same `LevelFeatures`. No `PlayerInput` or
+  `OwnState` change is involved.
+
 ## Knobs (all in `Cfg`, `character.rs`)
 `run_speed`, `gravity`, `terminal`, `jump_speed`, `double_jump_speed`, `rise_hold_mult`, `rise_cut_mult`,
 `fall_glide_mult`, `jump_carry`, `double_jump_carry`, `air_speed_cap`, `air_drag`, `wall_jump_keep`, `wall_jump_push`,

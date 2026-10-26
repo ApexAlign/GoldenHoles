@@ -36,7 +36,7 @@ use shinobi_sim::combat::shuriken::ShurikenCfg;
 use shinobi_sim::combat::stars::{StarCfg, StarKind};
 use shinobi_sim::combat::{Aim as CombatAim, CombatEvent, CombatInput, CombatSystem, GROUP_HITBOX, GROUP_MELEE, GROUP_PLAYER, GROUP_PROJECTILE};
 use shinobi_sim::events::NetEvent;
-use shinobi_sim::level::LevelDesc;
+use shinobi_sim::level::{LevelDesc, LevelFeatures, LevelFile};
 use shinobi_sim::movement::{refresh_solid, step_player_with};
 use shinobi_sim::own_state::OwnState;
 use shinobi_sim::rapier3d::prelude::*;
@@ -172,6 +172,8 @@ impl ClientGameCfg {
 /// Local predicted character.
 struct Predicted {
     world: PhysicsWorld,
+    /// Solid level movers (`mover ... solid`): same tick-exact collider sweep as the server, local player only.
+    features: shinobi_sim::features::Features,
     ch: CharacterSystem,
     /// Local copy of the combat state machine: cosmetics (slash / throw / recoil) and the katana lunge. Its
     /// `PlayerInput` mutation drives movement; the katana cooldown is mirrored into `ch` (and so into `OwnState`).
@@ -316,6 +318,8 @@ impl Predicted {
 
     fn step(&mut self, input: &PlayerInput) -> [f32; 3] {
         refresh_solid(&mut self.solid, &self.world.colliders);
+        let normal = self.ch.wall_normal().map(|n| [n.x, n.y, n.z]);
+        self.ch.speed_lane = self.features.defs().speed_lane_for(self.pos, normal);
         step_player_with(&mut self.ch, input, &mut self.world, self.now, TICK_DT, &mut self.solid);
         self.now += TICK_DT;
         let t = self.world.bodies[self.ch.body].translation();
@@ -541,6 +545,14 @@ pub struct RenderView {
     pub connect_failed: bool,
     /// Exact own health in server units (None before the first extras block).
     pub hp: Option<f32>,
+    /// Owner-only Kinetic Battery (0..=1) and the active aura timers (0 = inactive).
+    pub shield_battery: f32,
+    pub shield_aura_ticks: u16,
+    pub shield_aura_total: u16,
+    /// Players a completed `core_vent` fill currently reveals to everyone (`VentReveal`), sorted; may include us.
+    pub vent_revealed: Vec<u16>,
+    /// Our own `core_vent` cooldown still to run, as a fraction of `cooldown_ticks` (0 = ready): the vent dims.
+    pub vent_cooldown: f32,
     /// Hits since the previous view: dealt (hit marker) and taken (damage direction).
     pub hits: Vec<HitMsg>,
     pub board: Option<Board>,
@@ -584,6 +596,8 @@ pub struct RenderView {
     /// (the "WHEEL / R switches star" hint keys off the last two).
     pub star_sel: StarKind,
     pub star_cycled: bool,
+    /// The selected bow arrow is the Tether Arrow.
+    pub arrow_tether: bool,
     pub star_throws: u32,
     /// The kind of each flying disc in `discs`.
     pub disc_kinds: Vec<StarKind>,
@@ -665,11 +679,18 @@ pub struct ClientGame {
     pub reconciler: Reconciler,
     pub camera: FpsCamera,
     level: LevelDesc,
+    /// `zone` / `mover` / `hazard` level data the server runs. Prediction only needs solid movers; the rest is
+    /// server-authoritative, but the combined fingerprint must match the server's WELCOME.
+    features: LevelFeatures,
     latch: ButtonLatch,
     zip_edge: bool,
     /// The block key is down (raw), and whether the shield is actually up this tick (not while dead).
     block_held: bool,
     blocking: bool,
+    /// Owner-only Kinetic Battery (0..=1) and aura timers from the newest server `OwnState`.
+    shield_battery: f32,
+    shield_aura_ticks: u16,
+    shield_aura_total: u16,
     /// The grind key is down (raw, held): sent as `PlayerIntent.grind` (docs/grind.md).
     grind_held: bool,
     /// The cloak key is down (raw, held like `block_held`); `cloak.rs` on the server decides whether it is actually
@@ -688,6 +709,8 @@ pub struct ClientGame {
     /// Selected throwable (mouse wheel / R), whether it was ever changed, plain throws so far.
     star_sel: StarKind,
     star_cycled: bool,
+    /// The selected bow arrow is the Tether Arrow (cycled with the star keys while the bow is up).
+    arrow_tether: bool,
     star_throws: u32,
     /// White-out from a flash star: ticks left / at start, and its strength.
     blind_left: u32,
@@ -760,12 +783,19 @@ struct Death {
 }
 
 impl ClientGame {
-    pub fn new(level: LevelDesc, mut cfg: ClientGameCfg) -> Self {
+    pub fn new(level: LevelDesc, cfg: ClientGameCfg) -> Self {
+        Self::new_with_features(level, LevelFeatures::default(), cfg)
+    }
+
+    /// Predict against the server's level *and* its `zone` / `mover` / `hazard` features. A solid mover that the
+    /// client does not know about would drift silently; the combined fingerprint is checked in WELCOME.
+    pub fn new_with_features(level: LevelDesc, features: LevelFeatures, mut cfg: ClientGameCfg) -> Self {
         cfg.camera.slide_drop = cfg.sim.slide_eye_drop; // one source for the eye drop: camera and shot origin agree
-        // The predictor runs from the local level + balance. Tell the net layer what that was, so the server's
-        // WELCOME can flag a level / balance mismatch instead of letting prediction drift silently.
+        // The predictor runs from the local level + features + balance. Tell the net layer what that was, so the
+        // server's WELCOME can flag a level / feature / balance mismatch instead of letting prediction drift silently.
         let mut net = NetClient::default();
-        net.set_expected_world(level.fingerprint(), cfg.balance.fingerprint());
+        let level_hash = LevelFile { level: level.clone(), pickups: Vec::new(), features: features.clone() }.fingerprint();
+        net.set_expected_world(level_hash, cfg.balance.fingerprint());
         Self {
             camera: FpsCamera::new(cfg.camera),
             cfg,
@@ -777,11 +807,15 @@ impl ClientGame {
             screen: (1280.0, 720.0),
             reconciler: Reconciler::default(),
             level,
+            features,
             latch: ButtonLatch::default(),
             zip_edge: false,
             block_held: false,
             cloak_held: false,
             blocking: false,
+            shield_battery: 0.0,
+            shield_aura_ticks: 0,
+            shield_aura_total: 0,
             grind_held: false,
             fire_hold: None,
             fire_release: None,
@@ -790,6 +824,7 @@ impl ClientGame {
             star_refused: false,
             star_sel: StarKind::Standard,
             star_cycled: false,
+            arrow_tether: false,
             star_throws: 0,
             blind_left: 0,
             blind_total: 0,
@@ -888,6 +923,10 @@ impl ClientGame {
             Action::Block => self.block_held = e.down,
             Action::Cloak => self.cloak_held = e.down,
             Action::Grind => self.grind_held = e.down,
+            // with the bow up the same keys cycle the arrow instead: Rail <-> Tether
+            Action::StarNext | Action::StarPrev if e.down && self.bow_up && self.power.kind == PowerKind::Yumi => {
+                self.arrow_tether = !self.arrow_tether;
+            }
             Action::StarNext if e.down => {
                 self.star_sel = self.star_sel.next();
                 self.star_cycled = true;
@@ -977,6 +1016,9 @@ impl ClientGame {
 
     /// Authoritative own-state for an acked intent tick. Creates the predictor on the first one.
     pub fn on_own_state(&mut self, ack: OwnAck) {
+        self.shield_battery = ack.own.battery_q as f32 / shinobi_sim::shield::BATTERY_MAX as f32;
+        self.shield_aura_ticks = ack.own.aura_ticks_left;
+        self.shield_aura_total = ack.own.aura_total_ticks;
         let walk = self.walk_mult();
         let Some(pred) = &mut self.pred else {
             self.start_prediction(ack);
@@ -986,15 +1028,27 @@ impl ClientGame {
         let off = self.reconciler.visual_offset;
         let rendered = [sim[0] + off[0], sim[1] + off[1], sim[2] + off[2]];
         let katana = pred.katana;
-        let r = self.reconciler.on_server_own_state(
-            ack.tick,
-            ack.pos,
-            &ack.own,
-            rendered,
-            &mut pred.ch,
-            &mut pred.world,
-            &mut |it, ch| lunge_input(&katana, walk, it, ch),
-        );
+        let body = pred.ch.body;
+        let sim_cfg = self.cfg.sim;
+        let r = {
+            let Predicted { features, ch, world, .. } = &mut *pred;
+            let mut pre_step = |w: &mut PhysicsWorld, ch: &mut CharacterSystem, tick: u32| {
+                features.begin_tick_single(w, body, tick, &sim_cfg);
+                let t = *w.bodies[body].translation();
+                let normal = ch.wall_normal().map(|n| [n.x, n.y, n.z]);
+                ch.speed_lane = features.defs().speed_lane_for([t.x, t.y, t.z], normal);
+            };
+            self.reconciler.on_server_own_state_with(
+                ack.tick,
+                ack.pos,
+                &ack.own,
+                rendered,
+                ch,
+                world,
+                &mut |it, ch| lunge_input(&katana, walk, it, ch),
+                &mut pre_step,
+            )
+        };
         if let Some(p) = r {
             self.corrections += 1;
             pred.pos = p;
@@ -1022,6 +1076,9 @@ impl ClientGame {
         };
         let level_handles = self.level.insert_into(&mut world);
         let breaks = shinobi_sim::breaks::LevelBreaks::build(&self.level, &level_handles);
+        // Same collider creation order as the server: level boxes, then solid mover colliders.
+        let mut features = shinobi_sim::features::Features::default();
+        features.load(self.features.clone(), &mut world);
         let body = world.bodies.insert(
             RigidBodyBuilder::kinematic_position_based().translation(vector![ack.own.pos[0], ack.own.pos[1], ack.own.pos[2]]).build(),
         );
@@ -1043,6 +1100,7 @@ impl ClientGame {
         let katana = KatanaCfg::for_character(&cfg);
         let mut p = Predicted {
             world,
+            features,
             ch,
             combat,
             katana,
@@ -1066,6 +1124,9 @@ impl ClientGame {
         let replay: Vec<_> = self.pending.drain(..).filter(|i| i.tick > ack.tick).collect();
         for it in replay {
             let input = lunge_input(&p.katana, walk, &it, &mut p.ch);
+            p.features.begin_tick_single(&mut p.world, p.ch.body, it.tick, &cfg);
+            let t = p.world.bodies[p.ch.body].translation();
+            p.pos = [t.x, t.y, t.z];
             let pos = p.step(&input);
             self.reconciler.record(it, pos);
         }
@@ -1286,6 +1347,7 @@ impl ClientGame {
         intent.zip = std::mem::take(&mut self.zip_edge) && !dead;
         intent.block = blocking;
         intent.zoom = zoom_held && !dead;
+        intent.tether = self.arrow_tether && !dead;
         intent.grind = self.grind_held && !blocking && !dead;
         intent.cloak = self.cloak_held && !blocking && !dead;
         intent.mark = mark_now;
@@ -1352,6 +1414,13 @@ impl ClientGame {
                 // destructible level boxes the server has broken are gone from the predicted world too
                 if p.breaks.set_broken(&mut p.world, self.net.world_broken()) {
                     p.world.queries.update(&p.world.colliders);
+                }
+                // solid level movers: the same tick-exact sweep/push the server applies, before any combat or
+                // movement raycast reads the world. Zones and hazards stay server-authoritative.
+                p.features.begin_tick_single(&mut p.world, p.ch.body, tick, &self.cfg.sim);
+                {
+                    let t = p.world.bodies[p.ch.body].translation();
+                    p.pos = [t.x, t.y, t.z];
                 }
                 let my_kills = self.net.board().and_then(|b| b.rows.iter().find(|r| r.id as u16 == my_id).map(|r| r.kills as u32)).unwrap_or(0);
                 if let Some(kind) = press {
@@ -1510,7 +1579,20 @@ impl ClientGame {
 
     // ---- render ----
 
+    /// Fraction of our `core_vent` cooldown left at `server_now`, from the last fill we were told about.
+    fn vent_cooldown(&self, own_id: Option<u16>, server_now: Option<u32>) -> f32 {
+        let (Some(id), Some(now)) = (own_id, server_now) else { return 0.0 };
+        let Some(filled) = self.net.vent_fill_tick(id) else { return 0.0 };
+        let cooldown = self.features.zones.iter().find(|z| z.tag == shinobi_sim::level::ZoneDef::CORE_VENT).map_or(0, |z| z.cooldown_ticks());
+        if cooldown == 0 {
+            return 0.0;
+        }
+        let left = filled.saturating_add(cooldown).saturating_sub(now);
+        (left as f32 / cooldown as f32).clamp(0.0, 1.0)
+    }
+
     pub fn view(&mut self, local_tick: f64) -> RenderView {
+        let server_now = self.net.server_tick_estimate(local_tick).map(|t| t.max(0.0) as u32);
         let own_id = self.net.player_id();
         let remotes = match (self.net.render_tick(local_tick), self.net.interp.newest_tick().and_then(|t| self.net.interp.get(t))) {
             (Some(rt), Some(newest)) => newest
@@ -1657,6 +1739,7 @@ impl ClientGame {
         let live_for_view = own_live.max(self.tag_throws.len() as u32);
         let power = PowerView::of(&self.power, &PowerCfg::default(), live_for_view, own_armed).filter(|_| self.death.is_none()).map(|mut v| {
             v.up = self.bow_up;
+            v.tether = self.arrow_tether;
             v
         });
         // who killed us (for the kill-cam): the Kill event can land before or after the dead flag
@@ -1720,6 +1803,7 @@ impl ClientGame {
             star: self.star_est,
             star_sel: self.star_sel,
             star_cycled: self.star_cycled,
+            arrow_tether: self.arrow_tether,
             star_throws: self.star_throws,
             disc_kinds,
             blind: self.blind_frac().map_or(0.0, |f| self.blind_strength * whiteout_level(f)),
@@ -1731,6 +1815,11 @@ impl ClientGame {
             feel: self.camera.feel,
             connect_failed: self.net.connect_failed(local_tick),
             hp: self.net.hp(),
+            shield_battery: self.shield_battery,
+            shield_aura_ticks: if self.net.hp() == Some(0.0) { 0 } else { self.shield_aura_ticks },
+            shield_aura_total: if self.net.hp() == Some(0.0) { 0 } else { self.shield_aura_total },
+            vent_revealed: server_now.map_or_else(Vec::new, |t| self.net.vent_revealed(t)),
+            vent_cooldown: self.vent_cooldown(own_id, server_now),
             hits: self.net.take_hits(),
             board: self.net.board().cloned(),
             connected: own_id.is_some(),
@@ -1799,5 +1888,30 @@ mod whiteout_tests {
         assert!(whiteout_level(0.4) > 0.3 && whiteout_level(0.4) < 0.9, "mid-fade is visible but see-through");
         assert_eq!(whiteout_level(2.0), 1.0);
         assert_eq!(whiteout_level(-1.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use shinobi_proto::datagram::Welcome;
+
+    #[test]
+    fn new_with_features_checks_the_combined_level_fingerprint_in_welcome() {
+        let f = shinobi_sim::level::parse_level_file(
+            "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nmover 6 2 0 1 2 1 x 6 180 solid piston\n",
+        )
+        .unwrap();
+        let combined = f.fingerprint();
+        let geometry_only = f.level.fingerprint();
+        assert_ne!(combined, geometry_only, "the mover is part of the combined fingerprint");
+
+        let mut game = ClientGame::new_with_features(f.level.clone(), f.features.clone(), ClientGameCfg::default());
+        game.on_datagram(&Welcome { player_id: 1, server_tick: 0, level_hash: combined, balance_hash: 0, ..Default::default() }.encode(), 0.0).unwrap();
+        assert!(!game.net.level_mismatch(), "the server's combined hash matches the predictor");
+
+        let mut stale = ClientGame::new_with_features(f.level, f.features, ClientGameCfg::default());
+        stale.on_datagram(&Welcome { player_id: 1, server_tick: 0, level_hash: geometry_only, balance_hash: 0, ..Default::default() }.encode(), 0.0).unwrap();
+        assert!(stale.net.level_mismatch(), "geometry-only (no movers) is flagged instead of drifting silently");
     }
 }

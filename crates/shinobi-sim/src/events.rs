@@ -95,6 +95,9 @@ pub enum NetEvent {
     /// Rare (a few per minute per player), so a reliable event rather than a per-snapshot flag; every client can see
     /// the shimmer regardless of distance, so this is fair game to read.
     CloakFx { tick: u32, player: u16, on: bool },
+    /// `player` completed a `core_vent` fill at `tick` and is revealed to everyone for `ticks` (`reveal_ticks`;
+    /// docs/weapons/shield.md). `ticks == 0` ends the reveal early (death or leave).
+    VentReveal { tick: u32, player: u16, ticks: u16 },
     /// Directed injury/gore: broadcast to all for client-side blood, wounds, limbing and dismemberment.
     InjuryFx {
         tick: u32,
@@ -351,6 +354,12 @@ impl NetEvent {
                 w.write_bits(*player as u32, 16);
                 w.write_bool(*on);
             }
+            Self::VentReveal { tick, player, ticks } => {
+                w.write_bits(33, 6);
+                w.write_varint(*tick);
+                w.write_bits(*player as u32, 16);
+                w.write_bits(*ticks as u32, 16);
+            }
             Self::InjuryFx { tick, attacker, victim, damage_q, kind, region, point, blocked, sever } => {
                 w.write_bits(32, 6);
                 w.write_varint(*tick);
@@ -477,6 +486,7 @@ impl NetEvent {
             29 => Self::WorldCrack { idx: r.read_bits(16)? as u16, hp_q: r.read_bits(8)? as u8 },
             31 => Self::EnvFx { what: r.read_bits(3)? as u8, id: r.read_bits(8)? as u8, pos: read_v3(r, [0; 3])?, aux: r.read_bits(16)? as u16 },
             30 => Self::CloakFx { tick: r.read_varint()?, player: r.read_bits(16)? as u16, on: r.read_bool()? },
+            33 => Self::VentReveal { tick: r.read_varint()?, player: r.read_bits(16)? as u16, ticks: r.read_bits(16)? as u16 },
             32 => Self::InjuryFx {
                 tick: r.read_varint()?,
                 attacker: r.read_bits(16)? as u16,
@@ -754,6 +764,8 @@ mod tests {
             NetEvent::EnvFx { what: ENV_BOLT_STRIKE, id: 9, pos: [1, -2, 3], aux: 0 },
             NetEvent::CloakFx { tick: 70_004, player: 6, on: true },
             NetEvent::CloakFx { tick: 70_005, player: 65_535, on: false },
+            NetEvent::VentReveal { tick: 70_006, player: 4, ticks: 300 },
+            NetEvent::VentReveal { tick: 70_007, player: 65_535, ticks: 0 },
         ];
         let mut w = BitWriter::new();
         for e in &evs {

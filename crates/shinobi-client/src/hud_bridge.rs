@@ -441,6 +441,9 @@ impl HudBridge {
             self.since_damage += dt;
         }
         self.prev_hp = Some(stats.hp);
+        hs.battery = view.shield_battery.clamp(0.0, 1.0);
+        hs.aura = (view.shield_aura_total > 0 && view.shield_aura_ticks > 0)
+            .then(|| (view.shield_aura_ticks as f32 / view.shield_aura_total as f32).clamp(0.0, 1.0));
         if !hs.dead && stats.hp < 0.999 && view.hp.is_some() {
             let delay = self.regen_delay.unwrap_or_else(regen_delay_s).max(0.01);
             hs.regen = Some(if self.since_damage >= delay { crate::hud::Regen::Healing } else { crate::hud::Regen::Waiting((self.since_damage / delay).clamp(0.0, 1.0)) });
@@ -460,6 +463,13 @@ impl HudBridge {
             crate::hud::BountyHud { name: callsign(id), is_me, live, bearing }
         });
         self.bounty_seen = bounty_now;
+        hs.vent_self = view.vent_revealed.contains(&local_id);
+        hs.vent_revealed = view
+            .vent_revealed
+            .iter()
+            .filter(|id| **id != local_id)
+            .map(|id| (callsign(*id), view.remotes.iter().find(|(r, _)| r == id).map(|(_, s)| bearing_to(me, yaw, s.pos))))
+            .collect();
         hs.zone = view.district.map(|d| (d.name.to_string(), d.tint));
         hs.telemetry = Some(Telemetry {
             speed: view.fx.speed,
@@ -478,11 +488,14 @@ impl HudBridge {
             let ally = teams.as_ref().map_or(false, |t| t.team_of.get(id).copied().map(|x| x != 0) == Some(t.my_team != 0));
             let (dx, dz) = (smp.pos[0] - me[0], smp.pos[2] - me[2]);
             let dist = (dx * dx + dz * dz).sqrt();
-            // no wallhack: enemies appear only when close or just after we fired; allies always
-            if dist > RADAR_RANGE || (!ally && dist > RADAR_ENEMY_RANGE && !firing) || (!ally && view.hidden_ids.contains(id)) {
+            // no wallhack: enemies appear only when close or just after we fired; allies always. A `core_vent`
+            // reveal is the deliberate exception: the revealed player shows at any range, pinned to the rim.
+            let vented = view.vent_revealed.contains(id);
+            if !vented && (dist > RADAR_RANGE || (!ally && dist > RADAR_ENEMY_RANGE && !firing) || (!ally && view.hidden_ids.contains(id))) {
                 continue;
             }
-            let pos = ((dx * right[0] + dz * right[1]) / RADAR_RANGE, (dx * fwd[0] + dz * fwd[1]) / RADAR_RANGE);
+            let scale = RADAR_RANGE.max(dist);
+            let pos = ((dx * right[0] + dz * right[1]) / scale, (dx * fwd[0] + dz * fwd[1]) / scale);
             let colour = match &teams {
                 Some(t) => t.team_of.get(id).map_or(crate::hud::Palette::TRON.magenta, |x| crate::hud::Palette::TRON.team(*x)),
                 None => colour_of(*id),
@@ -1082,6 +1095,33 @@ mod tests {
     }
 
     #[test]
+    fn a_vent_reveal_shows_a_far_enemy_on_the_radar_rim_and_names_them() {
+        let mut b = HudBridge::default();
+        let mut v = RenderView::default();
+        v.connected = true;
+        v.local_pos = Some([0.0, 1.0, 0.0]);
+        let smp = |x: f32, z: f32| crate::interp::Sample { pos: [x, 0.5, z], yaw: 0.0, extrapolated: false };
+        v.remotes = vec![(3, smp(200.0, 0.0))];
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.radar.is_empty(), "far enemy hidden without a reveal");
+        assert!(s.vent_revealed.is_empty() && !s.vent_self);
+
+        v.vent_revealed = vec![3];
+        let s = b.update(0.016, &v, &net(), false);
+        assert_eq!(s.radar.len(), 1);
+        let (x, y) = s.radar[0].pos;
+        assert!(((x * x + y * y).sqrt() - 1.0).abs() < 1e-4, "pinned to the rim: {:?}", s.radar[0].pos);
+        assert_eq!(s.vent_revealed.len(), 1);
+        assert!(s.vent_revealed[0].1.is_some(), "bearing known");
+        assert!(!s.vent_self);
+
+        // NetClient::default() has no id yet, so the local id reads as 0
+        v.vent_revealed = vec![0];
+        let s = b.update(0.016, &v, &net(), false);
+        assert!(s.vent_self && s.vent_revealed.is_empty());
+    }
+
+    #[test]
     fn cyber_layer_telemetry_radar_without_wallhack_lock_brackets_and_boot() {
         let mut b = HudBridge::default();
         let mut v = RenderView::default();
@@ -1209,7 +1249,7 @@ mod tests {
         // (and its travel-time check) decides `fire_ready` here
         v.fx.slice_cooldown = 1.0;
         v.fx.throw_cooldown = 1.0;
-        let bow_full = || PowerView { kind: PowerKind::Yumi, ammo: 1, ammo_max: 1, left: 1.0, left_secs: 1.0, draw: 1.0, full: true, cooldown: 0.0, reload: 1.0, up: true, live_tags: 0, armed_tags: 0 };
+        let bow_full = || PowerView { kind: PowerKind::Yumi, ammo: 1, ammo_max: 1, left: 1.0, left_secs: 1.0, draw: 1.0, full: true, cooldown: 0.0, reload: 1.0, up: true, tether: false, live_tags: 0, armed_tags: 0 };
         v.power = Some(bow_full());
         // the HUD's lock position smooths toward the real one (exp smoothing, same as the 3D lock dots): settle it
         // after every position change rather than reading the very next frame, same as it would in real play where

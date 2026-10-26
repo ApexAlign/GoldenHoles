@@ -39,6 +39,7 @@ mod net;
 mod play;
 mod power_fx;
 mod record;
+mod features_vis;
 mod shot;
 mod sky;
 mod star_fx;
@@ -56,26 +57,34 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 }
 
 /// `--level PATH` wins, else the server's default (`levels/ffa.lvl` when found), else the built-in level.
-fn load_level(path: Option<String>) -> shinobi_sim::level::LevelDesc {
+/// Returns the whole parsed file so the shell keeps both `LevelDesc` (geometry the server and the predictor
+/// collide with) and `LevelFeatures` (`zone` / `mover` / `hazard` data for client-side visualisation).
+fn load_level(path: Option<String>) -> shinobi_sim::level::LevelFile {
     if path.as_deref() == Some("builtin") {
         eprintln!("level: built-in (forced)");
-        return shinobi_sim::level::LevelDesc::standard();
+        return builtin_file();
     }
     let path = path.map(std::path::PathBuf::from).or_else(shinobi_sim::level::default_level_path);
     match path {
         None => {
             eprintln!("level: built-in");
-            shinobi_sim::level::LevelDesc::standard()
+            builtin_file()
         }
         Some(p) => {
             let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("level {}: {e}", p.display()));
-            if let Ok(f) = shinobi_sim::level::parse_level_file(&text) {
-                hud_view::set_level_pickups(f.pickups.iter().map(|p| p.pos).collect());
-            }
-            let l = shinobi_sim::level::LevelDesc::from_text(&text).unwrap_or_else(|e| panic!("level {}: {e}", p.display()));
-            eprintln!("level: {} ({} boxes, {} spawns)", p.display(), l.boxes.len(), l.spawns.len());
-            l
+            let f = shinobi_sim::level::parse_level_file(&text).unwrap_or_else(|e| panic!("level {}: {e}", p.display()));
+            hud_view::set_level_pickups(f.pickups.iter().map(|p| p.pos).collect());
+            eprintln!("level: {} ({} boxes, {} spawns, {} features)", p.display(), f.level.boxes.len(), f.level.spawns.len(), f.features.len());
+            f
         }
+    }
+}
+
+fn builtin_file() -> shinobi_sim::level::LevelFile {
+    shinobi_sim::level::LevelFile {
+        level: shinobi_sim::level::LevelDesc::standard(),
+        pickups: Vec::new(),
+        features: shinobi_sim::level::LevelFeatures::default(),
     }
 }
 
@@ -140,13 +149,15 @@ fn main() {
     let tier = tier_arg.as_deref().map(|t| Tier::parse(t).expect("--tier high|medium|low|auto")).unwrap_or_default();
     let auto_tier = tier_arg.is_none();
     let balance = load_balance(arg_value(&args, "--balance"));
+    let file = load_level(arg_value(&args, "--level"));
     let opts = shot::ShotOpts {
         // offline review shots are idle (rest pose) unless `--action` asks for the scripted swing + throw (goldens use it)
         idle: flag("--idle") || (flag("--shot-offline") && !flag("--action")),
         touch: flag("--touch"),
         quality: Quality::from_tier(tier),
         scale: arg_value(&args, "--scale").and_then(|s| s.parse().ok()),
-        level: load_level(arg_value(&args, "--level")),
+        level: file.level.clone(),
+        features: file.features.clone(),
         balance: balance.clone(),
         spawn: arg_value(&args, "--spawn").and_then(|s| s.parse().ok()).unwrap_or(0),
     };
@@ -158,7 +169,7 @@ fn main() {
 
     if flag("--headless") {
         let secs = arg_value(&args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(5.0);
-        headless::run(server, secs, flag("--demo"), opts.level.clone(), opts.balance.clone());
+        headless::run(server, secs, flag("--demo"), opts.level.clone(), opts.features.clone(), opts.balance.clone());
         return;
     }
 
@@ -218,9 +229,10 @@ fn main() {
                 ..default()
             }),
     )
-    .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone(), balance: opts.balance.clone() })
+    .add_plugins(net::NetPlugin { server, offline: false, level: opts.level.clone(), features: opts.features.clone(), balance: opts.balance.clone() })
     .add_plugins(mobile::MobilePlugin { quality: opts.quality, auto_tier, touch_overlay: opts.touch, screen: (1280.0, 720.0) })
-    .add_plugins(grid::GridPlugin);
+    .add_plugins(grid::GridPlugin)
+    .add_plugins(features_vis::FeaturesVisPlugin);
     if !off("crt") {
         app.add_plugins(crt::CrtPlugin);
     }

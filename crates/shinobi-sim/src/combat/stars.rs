@@ -12,34 +12,55 @@ pub enum StarKind {
     Standard = 0,
     /// Bursts on impact or after a short fuse: whites out and dazes anyone who faces it.
     Flash = 2,
+    /// Glitch mine (v33): sticks to the first surface it hits, arms, and shorts out the first enemy that comes close.
+    /// At most `MAX_MINES` live per player (the oldest is recalled).
+    Mine = 1,
 }
 
+/// Glitch mine numbers (fixed, not in Balance: the client predictor and the server share them).
+pub const MAX_MINES: usize = 2;
+pub const MINE_COST: f32 = 2.0;
+/// Seconds after landing before the mine can trigger.
+pub const MINE_ARM_S: f32 = 0.6;
+/// Trigger radius (m) around a landed, armed mine.
+pub const MINE_RADIUS: f32 = 2.0;
+pub const MINE_DAMAGE: f32 = 30.0;
+/// Seconds a landed mine lives.
+pub const MINE_LIFE_S: f32 = 45.0;
+
 impl StarKind {
-    pub const ALL: [StarKind; 2] = [StarKind::Standard, StarKind::Flash];
+    pub const ALL: [StarKind; 3] = [StarKind::Standard, StarKind::Flash, StarKind::Mine];
 
     pub fn from_u8(v: u8) -> Self {
         match v & 3 {
+            1 => Self::Mine,
             2 => Self::Flash,
             _ => Self::Standard,
         }
     }
 
-    /// The other kind (mouse wheel / Q).
+    /// The next kind (mouse wheel / R): star, flash, mine, star...
     pub fn next(self) -> Self {
         match self {
             Self::Standard => Self::Flash,
-            Self::Flash => Self::Standard,
+            Self::Flash => Self::Mine,
+            Self::Mine => Self::Standard,
         }
     }
 
     pub fn prev(self) -> Self {
-        self.next()
+        match self {
+            Self::Standard => Self::Mine,
+            Self::Flash => Self::Standard,
+            Self::Mine => Self::Flash,
+        }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Standard => "STAR",
             Self::Flash => "FLASH",
+            Self::Mine => "MINE",
         }
     }
 }
@@ -82,6 +103,7 @@ impl StarCfg {
         match kind {
             StarKind::Standard => standard,
             StarKind::Flash => self.flash_cost,
+            StarKind::Mine => MINE_COST,
         }
     }
 }
@@ -129,13 +151,14 @@ mod tests {
     #[test]
     fn kinds_cycle_and_round_trip() {
         assert_eq!(StarKind::Standard.next(), StarKind::Flash);
-        assert_eq!(StarKind::Flash.next(), StarKind::Standard);
+        assert_eq!(StarKind::Flash.next(), StarKind::Mine);
+        assert_eq!(StarKind::Mine.next(), StarKind::Standard);
         for k in StarKind::ALL {
             assert_eq!(StarKind::from_u8(k as u8), k);
             assert_eq!(k.next().prev(), k);
         }
-        // the retired barrel (1) and canister (3) wire values read as a plain star
-        assert_eq!(StarKind::from_u8(1), StarKind::Standard);
+        // wire value 1 is the Glitch mine since v33; the retired canister (3) still reads as a plain star
+        assert_eq!(StarKind::from_u8(1), StarKind::Mine);
         assert_eq!(StarKind::from_u8(3), StarKind::Standard);
     }
 

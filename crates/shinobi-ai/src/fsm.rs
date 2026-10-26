@@ -651,6 +651,7 @@ impl BotMem {
             draw: pout.draw && !blocking,
             zoom: pout.draw && !blocking,
             grind: false,
+            tether: false,
             cloak: cloak_held && !blocking,
         };
         // leaving Strike hands the ticket back

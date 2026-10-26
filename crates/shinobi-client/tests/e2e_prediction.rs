@@ -339,8 +339,9 @@ fn lossy_laggy_jittery_link_stays_within_5cm_with_no_visible_snaps() {
     eprintln!("lossy: err {:.4} step {:.3} corr {} n {}", o.max_pred_err, o.max_display_step, o.corrections, o.predicted_ticks);
     assert!(o.predicted_ticks > 1000, "predicted ticks {}", o.predicted_ticks);
     assert!(o.max_pred_err < 0.05, "predicted vs server error {} m", o.max_pred_err);
-    // fastest legal mover is a dash at 30 m/s = 0.5 m/tick; anything past that + 5 cm is a visible pop
-    assert!(o.max_display_step < 0.5 + 0.05, "displayed position jumped {} m in one tick", o.max_display_step);
+    // fastest legal mover is now the Vortex Slam dive: DIVE_SPEED 32 m/s down plus ~9.5 m/s run (and a tick of gravity)
+    // = ~0.61 m/tick. Anything past that + 5 cm is a visible pop (corrections are 0 here, so this is real motion)
+    assert!(o.max_display_step < 0.61 + 0.05, "displayed position jumped {} m in one tick", o.max_display_step);
     assert_eq!(o.strikes, 0, "anti-cheat must not strike an honest laggy client");
 }
 

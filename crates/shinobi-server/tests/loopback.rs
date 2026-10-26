@@ -145,7 +145,7 @@ impl Client {
 
     fn send_intent(&mut self, move_x: i8, move_z: i8) {
         let t = self.est_tick();
-        let mk = |tick| PlayerIntent { tick, buttons: Buttons(0), move_x, move_z, aim_yaw: 0, aim_pitch: 0, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false };
+        let mk = |tick| PlayerIntent { tick, buttons: Buttons(0), move_x, move_z, aim_yaw: 0, aim_pitch: 0, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false, tether: false };
         let pkt = ClientPacket {
             seq: self.seq,
             ack_snapshot_tick: self.snaps.last().map_or(0, |s| s.tick),

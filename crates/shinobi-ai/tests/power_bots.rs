@@ -110,7 +110,7 @@ fn a_bot_sometimes_raises_its_shield_against_an_arrow_and_parries_it_back() {
         let mut s = arena([0.0, 0.81, -300.0]);
         let mut h = host(100 + seed);
         spawn_bot(&mut h, &mut s, 201, [0.0, 0.81, 0.0], Archetype::Light, BotSkill::Hard);
-        let a = shinobi_sim::power_pass::Arrow { owner: HUMAN, uid: 77, pos: [0.0, 1.4, -30.0], vel: [0.0, 0.0, 90.0], origin: [0.0, 1.4, -31.0], age: 0.0, reflected: false, damage_mult: 1.0 };
+        let a = shinobi_sim::power_pass::Arrow { owner: HUMAN, uid: 77, pos: [0.0, 1.4, -30.0], vel: [0.0, 0.0, 90.0], origin: [0.0, 1.4, -31.0], age: 0.0, reflected: false, damage_mult: 1.0, tether: false };
         s.arrows.push(a);
         let mut dmg = 0.0;
         for _ in 0..60 {

@@ -5,7 +5,7 @@
 use std::io::{self, ErrorKind};
 use std::net::{SocketAddr, UdpSocket};
 
-use shinobi_sim::level::LevelDesc;
+use shinobi_sim::level::{LevelDesc, LevelFeatures};
 
 use crate::client_game::{ClientGame, ClientGameCfg, InputFrame, OwnAck, RenderView};
 use crate::udp_session::SessionStats;
@@ -16,6 +16,8 @@ pub struct UdpGame {
     sock: UdpSocket,
     server: SocketAddr,
     pub game: ClientGame,
+    /// Kept so `reconnect` can rebuild the predictor against the same level features without a new shell argument.
+    features: LevelFeatures,
     local_tick: f64,
     t0: std::time::Instant,
     pub stats: SessionStats,
@@ -23,17 +25,32 @@ pub struct UdpGame {
 
 impl UdpGame {
     pub fn new(server: SocketAddr, level: LevelDesc, cfg: ClientGameCfg) -> io::Result<Self> {
+        Self::new_with_features(server, level, LevelFeatures::default(), cfg)
+    }
+
+    /// Like `new`, but the predictor also gets the level's `zone` / `mover` / `hazard` data. Pass the same
+    /// `LevelFile.features` the server loaded; the combined fingerprint is checked in WELCOME.
+    pub fn new_with_features(server: SocketAddr, level: LevelDesc, features: LevelFeatures, cfg: ClientGameCfg) -> io::Result<Self> {
         let bind: SocketAddr = if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }.parse().unwrap();
         let sock = UdpSocket::bind(bind)?;
         sock.set_nonblocking(true)?;
-        Ok(Self { sock, server, game: ClientGame::new(level, cfg), local_tick: 0.0, t0: std::time::Instant::now(), stats: SessionStats::default() })
+        Ok(Self {
+            sock,
+            server,
+            game: ClientGame::new_with_features(level, features.clone(), cfg),
+            features,
+            local_tick: 0.0,
+            t0: std::time::Instant::now(),
+            stats: SessionStats::default(),
+        })
     }
 
     /// Drop this session and start a fresh one against the same server: new socket (so a new peer address and a new
     /// HELLO / cookie exchange), new `ClientGame` (prediction, interpolation and kick state all reset). Used by the
-    /// shell's "press Enter to reconnect" after a kick or a lost connection.
+    /// shell's "press Enter to reconnect" after a kick or a lost connection. The current level features are kept.
     pub fn reconnect(&mut self, level: LevelDesc, cfg: ClientGameCfg) -> io::Result<()> {
-        *self = UdpGame::new(self.server, level, cfg)?;
+        let features = self.features.clone();
+        *self = UdpGame::new_with_features(self.server, level, features, cfg)?;
         Ok(())
     }
 
@@ -170,6 +187,15 @@ mod tests {
         assert_eq!(ticks.len(), 10);
         assert!(ticks.windows(2).all(|w| w[1] == w[0] + 1), "consecutive: {ticks:?}");
         assert!(ticks[0] >= 500, "stamped at/after the server clock: {ticks:?}");
+    }
+
+    #[test]
+    fn reconnect_preserves_the_current_level_features() {
+        let srv = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let f = shinobi_sim::level::parse_level_file("box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\nmover 6 2 0 1 2 1 x 6 180 solid piston\n").unwrap();
+        let mut c = UdpGame::new_with_features(srv.local_addr().unwrap(), f.level.clone(), f.features.clone(), ClientGameCfg::default()).unwrap();
+        c.reconnect(f.level, ClientGameCfg::default()).unwrap();
+        assert_eq!(c.features, f.features, "reconnect keeps the movers the session was predicting against");
     }
 
     #[test]

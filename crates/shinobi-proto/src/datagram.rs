@@ -8,7 +8,8 @@
 //! * Client answers CHALLENGE with `HELLO` carrying that cookie (and keeps resending every ~100 ms, taking the
 //!   newest cookie). A HELLO whose cookie verifies allocates the slot and gets `WELCOME`.
 //! * `WELCOME` server -> client, 23 bytes: `[0x57] | player_id u16 LE | server_tick u32 LE | level_hash u64 LE |
-//!   balance_hash u64 LE` (v25; the hashes are `LevelDesc::fingerprint()` / `Balance::fingerprint()`). 0 = unknown.
+//!   balance_hash u64 LE` (v30; `level_hash` is `LevelFile::fingerprint()` = geometry + `zone`/`mover`/`hazard`
+//!   features, pickups excluded; `balance_hash` is `Balance::fingerprint()`). 0 = unknown.
 //! * HELLO with another VERSION gets `KICK(BadVersion)`; known peers re-sending HELLO get `WELCOME` again.
 //! * v19: character wire grew to 41 bytes (spec v1.1: ears, expression, horns, nose, tail, shoulders).
 //! * v20: destructible level boxes: NetEvent::WorldBreak / WorldRez / WorldCrack (ids 27-29) and `dbox` level lines.
@@ -20,6 +21,12 @@
 //! * v28: `OwnState` gained a `has_grind` flag bit and an optional grind block (the jump-landing GRIND, docs/grind.md).
 //! * v29: `PlayerIntent` gained two held bits: `grind` (`C`, the grind is no longer read off jump-held, so jumping and
 //!   grinding no longer collide) and `zoom` (RMB with the bow up: focused/sniper shots; hip-fire is weaker and reloads faster).
+//! * v30: `WELCOME.level_hash` is the combined `LevelFile::fingerprint()` (geometry + `zone`/`mover`/`hazard` features,
+//!   pickups excluded) so a client predicting on different mover data is warned instead of drifting silently.
+//! * v31: `OwnState` carries the Kinetic Battery (`battery_q` 10 bits) and the owner aura timers
+//!   (`aura_ticks_left` / `aura_total_ticks`, 16 bits each; docs/weapons/shield.md).
+//! * v35: reliable event tag 33 `VentReveal { tick, player, ticks }`: a completed `core_vent` fill reveals the filler
+//!   to everyone for `reveal_ticks` (`ticks == 0` ends it early); the owner also uses it to dim the vent on cooldown.
 //! * v25: `WELCOME` carries the server's level and balance fingerprints (u64 each) so a client predicting on a
 //!   different `--level` / `--balance` can flag the mismatch instead of drifting silently.
 //! * v24: BOUNTY system (docs/bounty.md): the periodic `board` section gained `bounty: u16` (0 = none, else the
@@ -70,7 +77,12 @@ pub const MAGIC: [u8; 4] = *b"GSHN";
 /// 26: 6-bit reliable event tags; `InjuryFx` (tag 32) carries the hurt region/point for client gore.
 /// 27: `HitMsg.guarded` (one more bit per hit): the victim's guard blocked or parried it.
 /// 28: `OwnState` carries the grind state (one flag bit + an optional 104-bit block).
-pub const VERSION: u8 = 29;
+/// 30: `Welcome.level_hash` is the combined `LevelFile::fingerprint()` (geometry + level features).
+/// 31: `OwnState` carries the Kinetic Battery and aura timers.
+/// 32: `EntityState::fx` widens to 5 bits (`FX_AURA`, the Kinetic Battery aura is visible to everyone).
+/// 33: star wire value 1 is the Glitch mine (`StarKind::Mine`); it used to read as a plain star.
+/// 34: `PlayerIntent::tether` (selected bow arrow) and `ARROW_TETHER` on arrow entities.
+pub const VERSION: u8 = 35;
 pub const TAG_WELCOME: u8 = 0x57;
 pub const TAG_SNAPSHOT: u8 = 0x53;
 pub const TAG_KICK: u8 = 0x4B;

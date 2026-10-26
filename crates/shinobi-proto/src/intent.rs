@@ -107,12 +107,15 @@ pub struct PlayerIntent {
     /// Held (v29): the bow's focused aim (RMB with a yumi up). It gates the zoom and makes a full-draw shot a
     /// focused one (full damage, standard reload); without it the bow is hip-fire (less damage, quicker reload).
     pub zoom: bool,
+    /// Held (v34): the selected bow arrow is the Tether Arrow (a level like `zoom`): the next loosed arrow yanks its
+    /// victim toward the shooter for reduced damage. False = the Rail-Arrow.
+    pub tether: bool,
 }
 
 /// Neutral intent: no buttons, no stick, looking level (pitch code 2048 = 0 deg, not straight down).
 impl Default for PlayerIntent {
     fn default() -> Self {
-        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false }
+        Self { tick: 0, buttons: Buttons(0), move_x: 0, move_z: 0, aim_yaw: 0, aim_pitch: PITCH_LEVEL, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false, tether: false }
     }
 }
 
@@ -152,6 +155,7 @@ impl PlayerIntent {
             && self.cloak == o.cloak
             && self.grind == o.grind
             && self.zoom == o.zoom
+            && self.tether == o.tether
     }
 
     fn write_body(&self, w: &mut BitWriter) {
@@ -177,6 +181,7 @@ impl PlayerIntent {
         w.write_bool(self.cloak);
         w.write_bool(self.grind);
         w.write_bool(self.zoom);
+        w.write_bool(self.tether);
     }
 
     fn read_body(r: &mut BitReader, tick: u32) -> DecodeResult<Self> {
@@ -196,7 +201,8 @@ impl PlayerIntent {
         let cloak = r.read_bool()?;
         let grind = r.read_bool()?;
         let zoom = r.read_bool()?;
-        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star, draw, cloak, grind, zoom })
+        let tether = r.read_bool()?;
+        Ok(Self { tick, buttons, move_x, move_z, aim_yaw, aim_pitch, ultimate, build, build_wall, build_ramp, zip, block, mark, star, draw, cloak, grind, zoom, tether })
     }
 }
 
@@ -556,7 +562,7 @@ mod tests {
     use super::*;
 
     fn intent(tick: u32, buttons: u8, x: i8) -> PlayerIntent {
-        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false }
+        PlayerIntent { tick, buttons: Buttons(buttons), move_x: x, move_z: -x / 2, aim_yaw: 1234 + tick as u16, aim_pitch: 2048, ultimate: false, build: false, build_wall: false, build_ramp: false, zip: false, block: false, mark: false, star: 0, draw: false, cloak: false, grind: false, zoom: false, tether: false }
     }
 
     #[test]

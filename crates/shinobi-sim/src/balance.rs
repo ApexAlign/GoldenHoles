@@ -519,6 +519,37 @@ pub struct EnvBalance {
     pub bolt_knock: f32,
 }
 
+/// Kinetic Battery (`shield.rs`, docs/weapons/shield.md): passive charges from blocked stars / parries and a
+/// short katana damage aura at full charge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShieldBalance {
+    /// Battery fraction gained by blocking an enemy star or arrow.
+    pub blocked_star_charge: f32,
+    /// Battery fraction gained by a successful parry.
+    pub parry_charge: f32,
+    /// Aura duration in seconds.
+    pub aura_s: f32,
+    /// Unguarded katana damage multiplier while the aura is active.
+    pub aura_damage_mult: f32,
+}
+
+impl Default for ShieldBalance {
+    fn default() -> Self {
+        Self { blocked_star_charge: 0.08, parry_charge: 0.25, aura_s: 5.0, aura_damage_mult: 1.2 }
+    }
+}
+
+impl ShieldBalance {
+    pub fn cfg(&self) -> crate::shield::ShieldCfg {
+        crate::shield::ShieldCfg {
+            blocked_star_charge: self.blocked_star_charge,
+            parry_charge: self.parry_charge,
+            aura_ticks: (self.aura_s * crate::match_state::TICK_HZ as f32).round().max(1.0) as u32,
+            aura_damage_mult: self.aura_damage_mult,
+        }
+    }
+}
+
 /// Destructible level geometry (`breaks.rs`, docs/destructible.md, docs/destruction_design.md). All server-only: clients just obey
 /// the break / re-form events.
 #[derive(Clone, Debug, PartialEq)]
@@ -558,6 +589,7 @@ pub struct Balance {
     pub feedback: FeedbackBalance,
     pub assist: AssistBalance,
     pub guard: GuardBalance,
+    pub shield: ShieldBalance,
     pub melee: MeleeBalance,
     pub matches: MatchBalance,
     pub enemy: EnemyBalance,
@@ -640,6 +672,7 @@ impl Default for Balance {
             feedback: FeedbackBalance::default(),
             assist: AssistBalance::default(),
             guard: GuardBalance::default(),
+            shield: ShieldBalance::default(),
             melee: MeleeBalance::default(),
             hazards: HazardBalance { obstacle_damage: 100.0, wall_damage: 100.0, rearm_ticks: 30, owner_immune: false, walls_enabled: false, obstacles_enabled: false },
             matches: MatchBalance {
@@ -1241,6 +1274,10 @@ impl Balance {
         s!("guard.break_stagger_s", F, self.guard.break_stagger_s);
         s!("guard.mercy_s", F, self.guard.mercy_s);
         s!("guard.mercy_mult", F, self.guard.mercy_mult);
+        s!("shield.blocked_star_charge", F, self.shield.blocked_star_charge);
+        s!("shield.parry_charge", F, self.shield.parry_charge);
+        s!("shield.aura_s", F, self.shield.aura_s);
+        s!("shield.aura_damage_mult", F, self.shield.aura_damage_mult);
         s!("combat.knockback_slash", F, self.combat.knockback_slash);
         s!("combat.knockback_shuriken", F, self.combat.knockback_shuriken);
         s!("combat.knockback_ultimate", F, self.combat.knockback_ultimate);
@@ -1499,6 +1536,10 @@ impl Balance {
         }
         if g.max_hold_s <= 0.0 || g.regen_s <= 0.0 || [g.parry_s, g.rearm_s, g.lockout_s, g.stagger_s, g.swing_open_s, g.counter_open_s].iter().any(|v| *v < 0.0) || g.bonus_mult < 1.0 {
             e.push("guard times must be >= 0 (max_hold_s and regen_s > 0) and guard.bonus_mult >= 1".into());
+        }
+        let s = &self.shield;
+        if !(0.0..=1.0).contains(&s.blocked_star_charge) || !(0.0..=1.0).contains(&s.parry_charge) || s.aura_s <= 0.0 || s.aura_damage_mult < 1.0 {
+            e.push("shield.blocked_star_charge and shield.parry_charge must be 0..1, shield.aura_s > 0 and shield.aura_damage_mult >= 1".into());
         }
         if self.player.regen_delay_s < 0.0 || self.player.regen_per_s < 0.0 {
             e.push("player.regen_delay_s and player.regen_per_s must be >= 0".into());

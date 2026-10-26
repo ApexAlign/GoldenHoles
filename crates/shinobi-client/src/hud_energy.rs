@@ -200,6 +200,7 @@ pub fn kind_colour(k: StarKind, p: &Palette) -> Rgba {
     match k {
         StarKind::Standard => p.cyan,
         StarKind::Flash => Rgba(1.0, 1.0, 1.0, 1.0),
+        StarKind::Mine => p.orange,
     }
 }
 
@@ -208,6 +209,7 @@ pub fn kind_blurb(k: StarKind) -> &'static str {
     match k {
         StarKind::Standard => "CLOSE-RANGE POKE - RICOCHETS",
         StarKind::Flash => "BLINDS + DAZES: +25% DAMAGE",
+        StarKind::Mine => "STICKS TO A SURFACE - MAX 2 - SHORTS THE FIRST ENEMY",
     }
 }
 
@@ -222,6 +224,11 @@ fn kind_icon(out: &mut Vec<Prim>, k: StarKind, c: (f32, f32), r: f32, col: Rgba,
                 out.push(Prim::Line { a: pt(a, r), b: pt(a + 2.4, r * 0.55), color: col, glow: 0.003 });
                 out.push(Prim::Line { a: pt(a, r), b: pt(a - 2.4, r * 0.55), color: col, glow: 0.003 });
             }
+        }
+        // a mine: a disc with a centre dot
+        StarKind::Mine => {
+            out.push(Prim::Ring { c, r: r * 0.9, color: col, fill: false, glow: 0.003 });
+            out.push(Prim::Ring { c, r: r * 0.3, color: col, fill: true, glow: 0.003 });
         }
         // a burst
         StarKind::Flash => {

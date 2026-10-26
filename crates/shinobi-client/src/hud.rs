@@ -469,9 +469,16 @@ pub struct HudState {
     pub heading: Option<f32>,
     /// Current BOUNTY (docs/bounty.md); `None` while nobody holds the title.
     pub bounty: Option<BountyHud>,
+    /// `core_vent` reveals (docs/weapons/shield.md): whether we are revealed, and the others with their bearing.
+    pub vent_self: bool,
+    pub vent_revealed: Vec<(String, Option<f32>)>,
     pub target: Option<TargetHud>,
     /// The shield is up: draw the guard ring around the crosshair.
     pub guarding: bool,
+    /// Kinetic Battery charge 0..=1 (docs/weapons/shield.md); 0 hides the meter unless the aura is up.
+    pub battery: f32,
+    /// Battery aura time left as a fraction 0..=1 (`None` = no aura).
+    pub aura: Option<f32>,
     /// Guard energy SPENT 0..=1 (0 = full, the default; client estimate of the server's: grows while held, shrinks when
     /// down, a blocked hit costs 20 %).
     pub guard_spent: f32,
@@ -1012,6 +1019,22 @@ impl Hud {
             }
         }
         bar(&mut out, Rect::new(0.59, 0.93, 0.17, 0.014), s.ult, p.gold, 1.0);
+        // Kinetic Battery: thin meter under the ult bar, only while charged or the aura is up (keeps the chin quiet).
+        if !s.dead {
+            let meter = Rect::new(0.59, 0.949, 0.17, 0.006);
+            if let Some(left) = s.aura {
+                let a = 0.7 + 0.3 * (s.time * 8.0).sin();
+                bar(&mut out, meter, left, p.orange, a);
+                out.push(Prim::Text { pos: (0.59, 0.972), text: "BATTERY AURA".into(), size: 0.017, color: p.orange.a(a), align: Align::Left });
+            } else if s.battery > 0.0 {
+                let full = s.battery >= 0.999;
+                let a = if full { 0.75 + 0.25 * (s.time * 10.0).sin() } else { 1.0 };
+                bar(&mut out, meter, s.battery, p.cyan, a);
+                if full {
+                    out.push(Prim::Text { pos: (0.59, 0.972), text: "BATTERY FULL".into(), size: 0.017, color: p.cyan.a(a), align: Align::Left });
+                }
+            }
+        }
         for (x, ready, glyph) in [(0.45, s.shuriken_ready, Glyph::Shuriken), (0.5, s.slice_ready, Glyph::Katana), (0.55, s.dash_ready, Glyph::Dash)] {
             cooldown_arc(&mut out, (x, 0.94), 0.026, ready, glyph, p);
         }
@@ -1232,6 +1255,7 @@ impl Hud {
             compass(&mut out, yaw, p);
         }
         bounty_banner(&mut out, &s.bounty, s.time, p);
+        vent_banner(&mut out, s.vent_self, &s.vent_revealed, s.time, p);
         if let Some(t) = &s.telemetry {
             telemetry_panel(&mut out, t, s.wall_run, s.audio, p);
             if let Some((name, tint)) = &s.zone {
@@ -1602,6 +1626,34 @@ fn bounty_banner(out: &mut Vec<Prim>, b: &Option<BountyHud>, time: f32, p: &Pale
         // in the bitmap font)
         let (x, glyph) = if deg > 0.0 { (x1, ">>") } else { (x0, "<<") };
         out.push(Prim::Text { pos: (x, 0.034), text: glyph.into(), size: 0.016, color: p.magenta.a(0.8), align: Align::Center });
+    }
+}
+
+/// `core_vent` reveal callout under the BOUNTY line: "VENT REVEALED YOU" while we are revealed, else the revealed
+/// players with a cyan caret on the compass strip (same construction as the bounty beacon).
+fn vent_banner(out: &mut Vec<Prim>, me: bool, others: &[(String, Option<f32>)], time: f32, p: &Palette) {
+    if me {
+        let pulse = 0.6 + 0.4 * (time * 4.0).sin().abs();
+        out.push(Prim::Text { pos: (0.5, 0.14), text: "VENT REVEALED YOU".into(), size: 0.02, color: p.cyan.a(pulse), align: Align::Center });
+    }
+    if others.is_empty() {
+        return;
+    }
+    let names: Vec<&str> = others.iter().map(|(n, _)| n.as_str()).collect();
+    let y = if me { 0.165 } else { 0.14 };
+    out.push(Prim::Text { pos: (0.5, y), text: format!("VENT: {}", names.join(" ")), size: 0.018, color: p.cyan.a(0.85), align: Align::Center });
+    let (x0, x1, span_deg) = (0.36f32, 0.64f32, 120.0f32);
+    for bearing in others.iter().filter_map(|(_, b)| *b) {
+        let deg = bearing.to_degrees();
+        if deg.abs() <= span_deg * 0.5 {
+            let x = 0.5 + deg * (x1 - x0) / span_deg;
+            let col = p.cyan.a(0.95);
+            out.push(Prim::Line { a: (x - 0.005 * ax(), 0.04), b: (x, 0.032), color: col, glow: 0.003 });
+            out.push(Prim::Line { a: (x + 0.005 * ax(), 0.04), b: (x, 0.032), color: col, glow: 0.003 });
+        } else {
+            let (x, glyph) = if deg > 0.0 { (x1, ">") } else { (x0, "<") };
+            out.push(Prim::Text { pos: (x, 0.044), text: glyph.into(), size: 0.014, color: p.cyan.a(0.8), align: Align::Center });
+        }
     }
 }
 

@@ -42,6 +42,8 @@ pub const FX_OPEN: u8 = 1 << 1;
 pub const FX_STAGGER: u8 = 1 << 2;
 /// Marked by a MARK star: the thrower's next katana hit on this player does bonus damage.
 pub const FX_MARK: u8 = 1 << 3;
+/// Kinetic Battery aura is up: the katana glows so everyone can read the 1.2x threat.
+pub const FX_AURA: u8 = 1 << 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct EntityState {
@@ -52,7 +54,7 @@ pub struct EntityState {
     pub yaw: u16,
     pub kind: MoveKind,
     pub flags: u8,
-    /// `FX_*` combat-state bits (4).
+    /// `FX_*` combat-state bits (5).
     pub fx: u8,
 }
 
@@ -76,9 +78,9 @@ pub fn with_hp_frac(flags: u8, frac: f32) -> u8 {
 }
 
 impl EntityState {
-    /// kind (2 bits) + flags (8 bits) + fx (3 bits), see `FLAG_*`, `hp_lost5` and `FX_*`.
+    /// kind (2 bits) + flags (8 bits) + fx (5 bits), see `FLAG_*`, `hp_lost5` and `FX_*`.
     fn status_bits(&self) -> u32 {
-        self.kind as u32 | ((self.flags as u32) << 2) | (((self.fx & 15) as u32) << 10)
+        self.kind as u32 | ((self.flags as u32) << 2) | (((self.fx & 31) as u32) << 10)
     }
 }
 
@@ -182,7 +184,7 @@ pub fn encode_delta(baseline: Option<&Snapshot>, cur: &Snapshot) -> Vec<u8> {
             w.write_zigzag(st.yaw.wrapping_sub(base_st.yaw) as i16 as i32);
         }
         if mask & M_STATUS != 0 {
-            w.write_bits(st.status_bits(), 14);
+            w.write_bits(st.status_bits(), 15);
         }
     }
     w.finish()
@@ -251,10 +253,10 @@ pub fn decode_delta<'a>(
             st.yaw = st.yaw.wrapping_add(r.read_zigzag()? as u16);
         }
         if mask & M_STATUS != 0 {
-            let b = r.read_bits(14)?;
+            let b = r.read_bits(15)?;
             st.kind = MoveKind::from_bits(b);
             st.flags = (b >> 2) as u8;
-            st.fx = ((b >> 10) & 15) as u8;
+            st.fx = ((b >> 10) & 31) as u8;
         }
         entities.push((id as EntityId, st));
     }
@@ -352,6 +354,8 @@ pub const TAG_ID_BASE: EntityId = 0x6100;
 pub const DRAW_ID_BASE: EntityId = 0x6200;
 pub const POWER_ID_END: EntityId = 0x6300;
 pub const ARROW_REFLECTED: u8 = 1 << 0;
+/// `flags` bit 1 of an arrow entity: a Tether Arrow (yanks its victim toward the shooter).
+pub const ARROW_TETHER: u8 = 1 << 1;
 pub const TAG_FLYING: u8 = 1 << 0;
 pub const TAG_ON_PLAYER: u8 = 1 << 1;
 pub const TAG_ARMED: u8 = 1 << 2;

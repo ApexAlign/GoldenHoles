@@ -119,9 +119,15 @@ fn sixty_seconds_of_duelling_is_consistent_and_honest() {
             saw_warmup_first = matches!(s.match_state.phase, Phase::Warmup { .. });
         }
         for e in &s.match_events {
-            if let MatchEvent::MatchStart { tick, .. } = e {
-                started_at.get_or_insert(*tick);
-                tally.clear();
+            match *e {
+                MatchEvent::MatchStart { tick, .. } => {
+                    started_at.get_or_insert(tick);
+                    tally.clear();
+                }
+                MatchEvent::BountyKilled { killer, .. } => {
+                    tally.entry(killer).or_default().0 += s.match_state.cfg.bounty_bonus_kills;
+                }
+                _ => {}
             }
         }
         if matches!(s.match_state.phase, Phase::Live { .. }) {
@@ -167,7 +173,7 @@ fn sixty_seconds_of_duelling_is_consistent_and_honest() {
     assert!(hit_events >= kills.len(), "every kill was preceded by hits");
     assert!(player_damage >= hit_events, "raw damage events cover every Hit ({player_damage} < {hit_events})");
 
-    // scoreboard agrees with the Kill events of the match in progress / just finished
+    // scoreboard agrees with the Kill events plus bounty bonus frags of the match in progress / just finished
     for e in MatchState::scoreboard(&s.players) {
         let (k, d) = tally.get(&e.id).copied().unwrap_or((0, 0));
         assert_eq!((e.kills, e.deaths), (k, d), "player {} scoreboard vs kill events", e.id);
@@ -211,6 +217,9 @@ fn four_duelist_free_for_all_for_five_minutes_keeps_the_books() {
                     }
                 }
                 MatchEvent::NextMap { .. } => maps += 1,
+                MatchEvent::BountyKilled { killer, .. } => {
+                    tally.entry(killer).or_default().0 += s.match_state.cfg.bounty_bonus_kills;
+                }
                 _ => {}
             }
         }
@@ -283,7 +292,7 @@ fn four_duelist_free_for_all_for_five_minutes_keeps_the_books() {
     assert!(kills >= 20 && respawns >= 10 && hits >= kills, "a real fight happened");
     assert!(matches_ended >= 1 && maps >= 1 && starts >= 2, "matches cycled through intermission and a new map");
 
-    // final scoreboard equals the Kill events of the match in progress / just finished
+    // final scoreboard equals the Kill events plus bounty bonus frags of the match in progress / just finished
     for e in MatchState::scoreboard(&s.players) {
         let (k, d) = tally.get(&e.id).copied().unwrap_or((0, 0));
         assert_eq!((e.kills, e.deaths), (k, d), "player {}", e.id);

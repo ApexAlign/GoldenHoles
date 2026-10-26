@@ -33,6 +33,8 @@ pub struct Arrow {
     /// Damage scale at launch: 1.0 for a focused (RMB) shot, `combat.yumi.hip_damage_mult` for hip-fire. A parried
     /// arrow keeps it.
     pub damage_mult: f32,
+    /// Tether Arrow (v34): reduced damage, yanks the victim toward the shooter.
+    pub tether: bool,
 }
 
 /// A fuda tag: flying, then stuck to a surface or to a player.
@@ -72,6 +74,10 @@ impl Tag {
     }
 }
 
+/// Tether Arrow numbers (fixed, shared by server and any predictor).
+pub const TETHER_DAMAGE_MULT: f32 = 0.4;
+pub const TETHER_YANK_SPEED: f32 = 18.0;
+
 /// A launch decided by a player's `PowerState` in the player loop, carried out in the pass (it needs the whole world).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Launch {
@@ -79,6 +85,7 @@ pub(crate) struct Launch {
     pub ev: PowerEvent,
     pub eye: V3,
     pub dir: V3,
+    pub tether: bool,
 }
 
 /// `CombatEvent::PowerFx::what` / `NetEvent::PowerFx::what`.
@@ -191,6 +198,7 @@ impl Server {
         let (yc, tc) = (pcfg.yumi, pcfg.tag);
         let bcfg = self.balance.guard.cfg();
         let mcfg = self.balance.melee.cfg();
+        let scfg = self.balance.shield.cfg();
         let dt = TICK_DT;
         let mut fx: Vec<(u16, CombatEvent)> = Vec::new();
         let swings: Vec<Swing> = self.events[ev_start.min(self.events.len())..]
@@ -213,7 +221,7 @@ impl Server {
                     let uid = self.next_uid();
                     let pos = add(l.eye, scale(l.dir, 0.6));
                     let damage_mult = if focused { 1.0 } else { yc.hip_damage_mult };
-                    self.arrows.push(Arrow { owner: l.owner, uid, pos, vel: scale(l.dir, yc.speed), origin: l.eye, age: 0.0, reflected: false, damage_mult });
+                    self.arrows.push(Arrow { owner: l.owner, uid, pos, vel: scale(l.dir, yc.speed), origin: l.eye, age: 0.0, reflected: false, damage_mult, tether: l.tether });
                     fx.push((l.owner, CombatEvent::PowerFx { what: FX_LOOSE, pos: pt(l.eye) }));
                 }
                 PowerEvent::TagThrow => {
@@ -417,7 +425,9 @@ impl Server {
                 let vid = q.id;
                 match guard {
                     crate::block::Guard::Parried => {
-                        self.players[j].blk.mark_used();
+                        let v = &mut self.players[j];
+                        v.blk.mark_used();
+                        v.shield.parry(&scfg);
                         // the arrow turns around and goes for whoever loosed it
                         let shooter = Some(oi).map(|k| {
                             let c = self.players[k].pos(&self.world);
@@ -452,8 +462,15 @@ impl Server {
                     }
                     crate::block::Guard::None => {
                         let head = hitp[1] >= vpos[1] + self.balance.combat.head_min_height;
-                        let amount = yc.damage * a.damage_mult * if head { yc.head_mult } else { 1.0 };
+                        let tether = a.tether && !a.reflected;
+                        let amount = yc.damage * a.damage_mult * if head { yc.head_mult } else { 1.0 } * if tether { TETHER_DAMAGE_MULT } else { 1.0 };
                         hits.push(PvpHit { attacker: a.owner, victim: j, amount, cause: Cause::Weapon(DamageKind::Arrow), head, stealth: false, point: hitp, guarded: false });
+                        if tether {
+                            // the line goes taut: the victim is yanked toward whoever loosed it
+                            let o = self.players[oi].pos(&self.world);
+                            let d = norm(sub([o[0], o[1] + 0.4, o[2]], vpos));
+                            self.players[j].ch.yank(rapier3d::prelude::Vector::new(d[0], d[1], d[2]), TETHER_YANK_SPEED);
+                        }
                         fx.push((a.owner, CombatEvent::PowerFx { what: if head { FX_ARROW_HEAD } else { FX_ARROW_HIT }, pos: pt(hitp) }));
                     }
                 }
@@ -470,7 +487,9 @@ impl Server {
                 let amount_base = arrow_splash_damage(&yc, beyond) * a.damage_mult;
                 match guard {
                     crate::block::Guard::Parried => {
-                        self.players[j].blk.mark_used();
+                        let v = &mut self.players[j];
+                        v.blk.mark_used();
+                        v.shield.parry(&scfg);
                         let shooter = Some(oi).map(|k| {
                             let c = self.players[k].pos(&self.world);
                             [c[0], c[1] + 0.4, c[2]]
@@ -588,6 +607,7 @@ impl Server {
     /// body-only, no reflect on a parry (the arrow that caused it is already spent).
     #[allow(clippy::too_many_arguments)]
     fn arrow_wall_splash(&mut self, p: V3, owner: u16, origin: V3, damage_mult: f32, oteam: u8, tick: u32, yc: &YumiCfg, bcfg: &crate::block::BlockCfg, hits: &mut Vec<PvpHit>, fx: &mut Vec<(u16, CombatEvent)>) {
+        let scfg = self.balance.shield.cfg();
         let hh = self.cfg().half_height;
         let inner = self.cfg().radius + yc.radius;
         for j in 0..self.players.len() {
@@ -611,7 +631,9 @@ impl Server {
             match guard {
                 crate::block::Guard::Parried => {
                     // the shockwave is absorbed outright; there is no live arrow left to turn around
-                    self.players[j].blk.mark_used();
+                    let v = &mut self.players[j];
+                    v.blk.mark_used();
+                    v.shield.parry(&scfg);
                     fx.push((qid, CombatEvent::PowerFx { what: FX_ARROW_PARRIED, pos: pt(p) }));
                 }
                 crate::block::Guard::Blocked => {

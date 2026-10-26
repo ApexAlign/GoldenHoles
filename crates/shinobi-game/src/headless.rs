@@ -10,6 +10,7 @@ use bevy::app::ScheduleRunnerPlugin;
 use bevy::prelude::*;
 
 use crate::net::{Net, NetPlugin, PendingInput, ViewRes};
+use shinobi_sim::level::LevelFeatures;
 
 #[derive(Resource)]
 struct Run {
@@ -21,10 +22,17 @@ struct Run {
 
 static PASSED: AtomicBool = AtomicBool::new(false);
 
-pub fn run(server: SocketAddr, secs: f32, demo: bool, level: shinobi_sim::level::LevelDesc, balance: shinobi_sim::balance::Balance) {
+pub fn run(
+    server: SocketAddr,
+    secs: f32,
+    demo: bool,
+    level: shinobi_sim::level::LevelDesc,
+    features: LevelFeatures,
+    balance: shinobi_sim::balance::Balance,
+) {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 120.0))))
-        .add_plugins(NetPlugin { server, offline: false, level, balance })
+        .add_plugins(NetPlugin { server, offline: false, level, features, balance })
         .insert_resource(Run { secs, last_log: 0.0, first_pos: None, max_remotes: 0 })
         .add_systems(Update, report);
     if demo {

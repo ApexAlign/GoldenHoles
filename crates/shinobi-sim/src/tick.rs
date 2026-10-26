@@ -90,6 +90,8 @@ pub struct Player {
     pub clash_ready_tick: u32,
     /// Block / parry shield, guard energy, stagger and strike-window state (`block.rs`).
     pub blk: crate::block::BlockState,
+    /// Kinetic Battery / Aegis aura (`shield.rs`, docs/weapons/shield.md).
+    pub shield: crate::shield::ShieldState,
     /// Katana moves: counter window, shield-lowered tick, air-cut slam (`katana_moves.rs`).
     pub kmoves: crate::katana_moves::KatanaMoveState,
     /// Melee heighteners: last attacker (ring-out), knock in progress (wall-splat), kill streak (`melee.rs`).
@@ -101,6 +103,12 @@ pub struct Player {
     /// Stealth cloak (`cloak.rs`, docs/melee.md "Cloak").
     pub cloak: crate::cloak::CloakState,
 }
+
+/// Vortex Slam numbers (fixed; the dive itself is `character::DIVE_*`).
+pub const VORTEX_RADIUS: f32 = 5.0;
+pub const VORTEX_KNOCK: f32 = 10.0;
+pub const VORTEX_BASE_DAMAGE: f32 = 20.0;
+pub const VORTEX_MAX_DAMAGE: f32 = 40.0;
 
 /// A team id that matches nobody (free-for-all pick for a joiner that has no `Player` yet, tests): never allied.
 pub const NO_TEAM: u8 = u8::MAX;
@@ -178,6 +186,8 @@ pub struct Server {
     /// Lightning (`env_events.rs`) and what happened in the most recent `frame`.
     pub env: crate::env_events::Env,
     pub env_events: Vec<crate::env_events::EnvEvent>,
+    /// Level-file zones, movers and hazards (`features.rs`), server-authoritative.
+    pub level_features: crate::features::Features,
     /// `Removed` events of blocks dropped between frames (a player left); delivered with the next frame's events.
     pending_block_events: Vec<crate::blocks::BlockEvent>,
     /// Spawned / Taken of the most recent `frame` (cleared each frame).
@@ -233,6 +243,7 @@ impl Server {
             break_events: Vec::new(),
             env: crate::env_events::Env::default(),
             env_events: Vec::new(),
+            level_features: crate::features::Features::default(),
             pending_block_events: Vec::new(),
             pickup_events: Vec::new(),
             arrows: Vec::new(),
@@ -301,6 +312,7 @@ impl Server {
             clash: None,
             clash_ready_tick: 0,
             blk: Default::default(),
+            shield: Default::default(),
             kmoves: Default::default(),
             melee: Default::default(),
             blind_until: 0,
@@ -338,6 +350,11 @@ impl Server {
     pub fn set_spawns(&mut self, spawns: Vec<[f32; 3]>) {
         self.spawns = spawns;
         self.spawn_teams.clear();
+    }
+
+    /// Install `zone` / `mover` / `hazard` level data and build the solid mover colliders.
+    pub fn set_level_features(&mut self, features: crate::level::LevelFeatures) {
+        self.level_features.load(features, &mut self.world);
     }
 
     /// Spawn points with a team each (`NO_TEAM` = either side), e.g. from level `spawn x y z [team]` lines.
@@ -408,6 +425,7 @@ impl Server {
     pub fn remove_player(&mut self, id: u16) -> bool {
         let Some(i) = self.players.iter().position(|p| p.id == id) else { return false };
         let mut p = self.players.remove(i);
+        self.level_features.forget_player(id);
         // their blocks go with them (each reported as Removed on the next frame)
         let tick = self.tick;
         let gone: Vec<_> = self.blocks.iter().into_iter().filter(|(o, _)| *o == id).map(|(_, c)| c).collect();
@@ -486,6 +504,49 @@ impl Server {
         report
     }
 
+    /// Piston faces (`features.rs` `PistonStrike`): a shield raised inside the parry window turns the shove into a launch
+    /// along the face (`parry_reach` m out, `parry_up` m up); anything else is `damage` and a `stagger_ticks` stagger.
+    fn resolve_piston_strikes(&mut self, tick: u32, hits: &mut Vec<pvp::PvpHit>) {
+        if self.level_features.piston_strikes().is_empty() {
+            return;
+        }
+        let bcfg = self.balance.guard.cfg();
+        let g = self.cfg.gravity.abs().max(0.1);
+        for st in self.level_features.piston_strikes().to_vec() {
+            let Some(def) = self.level_features.defs().movers.get(st.mover as usize) else { continue };
+            let (reach, up) = (def.tuning_or("parry_reach", 12.0), def.tuning_or("parry_up", 4.0));
+            let (damage, stagger) = (def.tuning_or("damage", 15.0), def.tuning_or("stagger_ticks", 30.0).max(0.0) as u32);
+            let Some(p) = self.players.get_mut(st.victim) else { continue };
+            if !p.vitals.alive() {
+                continue;
+            }
+            if p.blk.parrying(tick, &bcfg) {
+                let vy = libm::sqrtf(2.0 * g * up.max(0.0));
+                let flight = (2.0 * vy / g).max(TICK_DT as f32);
+                let vh = reach.max(0.0) / flight;
+                p.ch.vel = Vector::new(st.dir[0] * vh, vy, st.dir[2] * vh);
+                if matches!(p.ch.state, crate::character::MoveState::Grounded) {
+                    p.ch.state = crate::character::MoveState::Airborne;
+                }
+                p.blk.mark_used();
+            } else {
+                p.blk.stagger_until = p.blk.stagger_until.max(tick + stagger);
+                if damage > 0.0 {
+                    hits.push(pvp::PvpHit {
+                        attacker: pvp::NO_ATTACKER,
+                        victim: st.victim,
+                        amount: damage,
+                        cause: pvp::Cause::Hazard(pvp::HazardSource::Obstacle(crate::features::PISTON_SOURCE_ID)),
+                        head: false,
+                        stealth: false,
+                        point: [0.0; 3],
+                        guarded: false,
+                    });
+                }
+            }
+        }
+    }
+
     /// One 1/60 s tick. The only place Rapier state is mutated.
     fn step(&mut self, kicked: &mut Vec<u16>) {
         let (tick, dt, now, ac) = (self.tick, TICK_DT, self.now, self.ac);
@@ -493,6 +554,9 @@ impl Server {
             // unsupported level boxes fall, broken ones re-form (not onto a player)
             let live: Vec<[f32; 3]> = self.players.iter().filter(|p| p.vitals.alive()).map(|p| p.pos(&self.world)).collect();
             self.breaks.step(&mut self.world, tick, &live, &mut self.break_events);
+        }
+        if !self.level_features.is_empty() {
+            self.level_features.begin_tick(&mut self.world, &mut self.players, tick, &self.cfg);
         }
         self.world.queries.update(&self.world.colliders);
         self.match_state.begin_tick(
@@ -516,12 +580,15 @@ impl Server {
         let mut yanks: Vec<(usize, Vector<Real>, Vector<Real>)> = Vec::new();
         // air-cut landings this tick: (centre, slammer, slammed): the shock-wave goes off after every player has moved
         let mut shocks: Vec<([f32; 3], u16, u16)> = Vec::new();
+        // Vortex Slam landings this tick: (centre, diver, dive speed)
+        let mut vortex: Vec<([f32; 3], u16, f32)> = Vec::new();
         // one refresh for the whole player loop, after match/respawn/pickup changes to the collider set
         self.world.queries.update(&self.world.colliders);
         crate::movement::refresh_solid(&mut self.solid_queries, &self.world.colliders);
 
         let bcfg = self.balance.guard.cfg();
         let mcfg = self.balance.melee.cfg();
+        let scfg = self.balance.shield.cfg();
         // star variants: where this tick's combat events begin
         let ev_start = self.events.len();
         for i in 0..self.players.len() {
@@ -609,7 +676,7 @@ impl Server {
                 }
                 let dir = aim.forward();
                 for ev in pev {
-                    self.power_launch.push(crate::power_pass::Launch { owner: pid, ev, eye: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z] });
+                    self.power_launch.push(crate::power_pass::Launch { owner: pid, ev, eye: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z], tether: it.tether });
                 }
             }
             if self.players[i].blk.staggered(tick) {
@@ -764,6 +831,8 @@ impl Server {
             }
 
             let p = &mut self.players[i];
+            let wall_normal = p.ch.wall_normal().map(|n| [n.x, n.y, n.z]);
+            p.ch.speed_lane = self.level_features.defs().speed_lane_for(before, wall_normal);
             crate::movement::step_player_with(&mut p.ch, &input, &mut self.world, now, dt, &mut self.solid_queries);
             match p.ch.grapple_event {
                 crate::character::GrappleEvent::Attached { origin, anchor } => {
@@ -802,6 +871,13 @@ impl Server {
                 if let Some(by) = p.kmoves.slam_landed(grounded, tick) {
                     shocks.push((p.pos(&self.world), by, p.id));
                 }
+            }
+            // Vortex Slam: landing out of a dive fast enough sets off the vortex (applied once everyone has moved)
+            if matches!(p.ch.state, crate::character::MoveState::Grounded) {
+                if p.ch.dive_peak >= crate::character::DIVE_SLAM_MIN && p.vitals.alive() {
+                    vortex.push((p.pos(&self.world), p.id, p.ch.dive_peak));
+                }
+                p.ch.dive_peak = 0.0;
             }
             // delta ceiling: did the body move further than any legal mover can?
             let after = p.pos(&self.world);
@@ -846,6 +922,32 @@ impl Server {
             }
         }
 
+        // Vortex Slam: everyone near the landing takes damage scaled with the dive and is thrown clear
+        for (centre, by, peak) in vortex {
+            let by_team = self.players.iter().find(|q| q.id == by).map(|q| q.team);
+            let dmg = (VORTEX_BASE_DAMAGE + (peak - crate::character::DIVE_SLAM_MIN) * 2.0).clamp(VORTEX_BASE_DAMAGE, VORTEX_MAX_DAMAGE);
+            for qi in 0..self.players.len() {
+                let (qid, qteam, pos, alive) = {
+                    let q = &self.players[qi];
+                    (q.id, q.team, q.pos(&self.world), q.vitals.alive())
+                };
+                if qid == by || !alive || by_team.map_or(false, |bt| allied(bt, qteam)) {
+                    continue;
+                }
+                let Some(v) = crate::katana_moves::shock_push(centre, pos, VORTEX_RADIUS, VORTEX_KNOCK) else { continue };
+                let q = &mut self.players[qi];
+                q.ch.vel = Vector::new(v[0], v[1], v[2]);
+                if matches!(q.ch.state, crate::character::MoveState::Grounded) {
+                    q.ch.state = crate::character::MoveState::Airborne;
+                }
+                q.melee.knock_until = tick + mcfg.splat_ticks;
+                q.melee.knock_speed = VORTEX_KNOCK;
+                q.melee.knock_by = by;
+                q.melee.last_hit = Some((by, tick));
+                hits.push(pvp::PvpHit { attacker: by, victim: qi, amount: dmg, cause: pvp::Cause::Hazard(pvp::SPLAT), head: false, stealth: false, point: pos, guarded: false });
+            }
+        }
+
         self.resolve_clashes(tick, &clash_wins);
         self.star_pass(tick, ev_start, &mut hits);
         if frozen {
@@ -861,6 +963,24 @@ impl Server {
 
         // environment: obstacles and light-walls (positions after this tick's movement)
         self.world.queries.update(&self.world.colliders);
+        if !self.level_features.is_empty() {
+            self.level_features.end_tick(&self.world, &mut self.players, tick, &self.cfg, !frozen);
+            if !frozen {
+                for c in self.level_features.hazard_contacts() {
+                    hits.push(pvp::PvpHit {
+                        attacker: pvp::NO_ATTACKER,
+                        victim: c.victim,
+                        amount: c.amount,
+                        cause: pvp::Cause::Hazard(pvp::HazardSource::Obstacle(c.source)),
+                        head: false,
+                        stealth: false,
+                        point: [0.0; 3],
+                        guarded: false,
+                    });
+                }
+                self.resolve_piston_strikes(tick, &mut hits);
+            }
+        }
         if !frozen {
             hits.extend(pvp::void_hits(&self.players, &self.world, self.kill_plane_y, tick, &mcfg));
             hits.extend(self.hazards.hits(&self.world, &self.players, tick, &self.cfg, &mut self.pvp_events));
@@ -890,7 +1010,7 @@ impl Server {
             }
         }
         let first_new = self.pvp_events.len();
-        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &self.balance.combat.cloak, bounty_dmg, &mut self.pvp_events);
+        pvp::apply_hits(&mut self.players, &mut self.world, &hits, tick, self.balance.player.respawn_ticks, &bcfg, &mcfg, &self.balance.combat.cloak, &scfg, bounty_dmg, &mut self.pvp_events);
         for e in &self.pvp_events[first_new..] {
             if let PvpEvent::Kill { tick, killer, victim, kind, .. } = *e {
                 if kind == crate::combat::DamageKind::Slash {
@@ -924,6 +1044,13 @@ impl Server {
                         k.vitals.kills = k.vitals.kills.saturating_add(bonus);
                     }
                     self.match_events.push(MatchEvent::BountyKilled { tick, killer, bounty: victim });
+                }
+            }
+        }
+        if !frozen {
+            for p in &mut self.players {
+                if p.vitals.alive() {
+                    p.shield.update(tick, &scfg);
                 }
             }
         }

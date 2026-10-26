@@ -118,6 +118,24 @@ pub fn apply_replay(
     now_at_ack: f32,
     input_for: &mut dyn FnMut(&PlayerIntent, &mut CharacterSystem) -> PlayerInput,
 ) -> [f32; 3] {
+    apply_replay_with(rec, ch, world, server_pos, own, replay, prev, now_at_ack, input_for, &mut |_, _, _| {})
+}
+
+/// `apply_replay` with a per-tick world hook (e.g. advancing solid level movers before movement). The hook runs
+/// after the character is restored to the acked state and before the replayed tick moves it.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_replay_with(
+    rec: &mut Reconciler,
+    ch: &mut CharacterSystem,
+    world: &mut PhysicsWorld,
+    server_pos: [f32; 3],
+    own: &OwnState,
+    replay: &[PlayerIntent],
+    prev: &PlayerIntent,
+    now_at_ack: f32,
+    input_for: &mut dyn FnMut(&PlayerIntent, &mut CharacterSystem) -> PlayerInput,
+    pre_step: &mut dyn FnMut(&mut PhysicsWorld, &mut CharacterSystem, u32),
+) -> [f32; 3] {
     ch.restore_own(world, own);
     // press edges (grind cuts the rope, the katana cuts on a press) must replay exactly as first predicted: seed the
     // "last tick" button state from the acked intent
@@ -126,6 +144,7 @@ pub fn apply_replay(
     let mut now = now_at_ack;
     let mut pos = server_pos;
     for it in replay {
+        pre_step(world, ch, it.tick);
         // pre-step hook: turns the intent into this tick's PlayerInput (katana lunge, ...) and may advance
         // controller-side state it owns, exactly as it did when the tick was first predicted
         let input = input_for(it, ch);
@@ -151,13 +170,29 @@ impl Reconciler {
         world: &mut PhysicsWorld,
         input_for: &mut dyn FnMut(&PlayerIntent, &mut CharacterSystem) -> PlayerInput,
     ) -> Option<[f32; 3]> {
+        self.on_server_own_state_with(acked_tick, _server_pos, own, rendered_pos, ch, world, input_for, &mut |_, _, _| {})
+    }
+
+    /// `on_server_own_state` with a per-replayed-tick world hook (solid movers, ...).
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_server_own_state_with(
+        &mut self,
+        acked_tick: u32,
+        _server_pos: [f32; 3],
+        own: &OwnState,
+        rendered_pos: [f32; 3],
+        ch: &mut CharacterSystem,
+        world: &mut PhysicsWorld,
+        input_for: &mut dyn FnMut(&PlayerIntent, &mut CharacterSystem) -> PlayerInput,
+        pre_step: &mut dyn FnMut(&mut PhysicsWorld, &mut CharacterSystem, u32),
+    ) -> Option<[f32; 3]> {
         // the blob carries the exact server position; the snapshot's quantised one is only a fallback source
         let server_pos = own.pos;
         match self.on_server_state(acked_tick, server_pos, rendered_pos) {
             Correction::None => None,
             Correction::Replay { server_pos, replay, prev } => {
                 let now = (acked_tick + 1) as f32 * TICK_DT;
-                let new_pos = apply_replay(self, ch, world, server_pos, own, &replay, &prev, now, input_for);
+                let new_pos = apply_replay_with(self, ch, world, server_pos, own, &replay, &prev, now, input_for, pre_step);
                 // `rendered_pos` is what is on screen now (simulated + offset). Keep the screen still: the new
                 // simulated position is `new_pos`, so the offset is the difference. (`on_server_state` alone
                 // computes it against the acked-tick position, which is only right if nothing is replayed.)

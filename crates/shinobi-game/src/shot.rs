@@ -37,6 +37,8 @@ pub struct ShotOpts {
     pub quality: Quality,
     pub scale: Option<f32>,
     pub level: shinobi_sim::level::LevelDesc,
+    /// `zone` / `mover` / `hazard` data from the level file; rendered by `features_vis`.
+    pub features: shinobi_sim::level::LevelFeatures,
     /// Prediction preset; must match the server's (the Welcome fingerprint warns otherwise).
     pub balance: shinobi_sim::balance::Balance,
     /// Offline scene: which level spawn point we stand on.
@@ -64,9 +66,10 @@ pub fn base_app(server: SocketAddr, offline: bool, o: &ShotOpts, dims: (u32, u32
             .disable::<WinitPlugin>()
             .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() }),
     )
-    .add_plugins(NetPlugin { server, offline, level: o.level.clone(), balance: o.balance.clone() })
+    .add_plugins(NetPlugin { server, offline, level: o.level.clone(), features: o.features.clone(), balance: o.balance.clone() })
     .add_plugins(MobilePlugin { quality: o.quality, auto_tier: false, touch_overlay: o.touch, screen: (dims.0 as f32, dims.1 as f32) })
     .add_plugins(grid::GridPlugin)
+    .add_plugins(crate::features_vis::FeaturesVisPlugin)
     .add_plugins(crt::CrtPlugin)
     .add_plugins(sky::SkyPlugin)
     .add_plugins(PlayPlugin)

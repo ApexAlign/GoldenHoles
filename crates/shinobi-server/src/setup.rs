@@ -15,7 +15,7 @@
 use shinobi_sim::balance::Balance;
 use shinobi_sim::character::Cfg;
 use shinobi_sim::combat::powerup::PowerupKind;
-use shinobi_sim::level::{parse_level_file, LevelDesc};
+use shinobi_sim::level::{parse_level_file, LevelDesc, LevelFeatures, LevelFile};
 use shinobi_sim::tick::Server;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -31,6 +31,8 @@ pub struct PickupDef {
 pub struct Setup {
     pub level: LevelDesc,
     pub pickups: Vec<PickupDef>,
+    /// `zone` / `mover` / `hazard` directives. Runtime state is built by `Server::set_level_features`.
+    pub features: LevelFeatures,
     /// Gameplay tuning (hp, respawn, weapon damage, match rules). Default = the demo preset;
     /// `--balance PATH` loads `key = value` lines over the demo preset (`Balance::apply_text`, `Balance::default().to_text()` lists keys).
     pub balance: Balance,
@@ -48,7 +50,7 @@ impl Setup {
             .enumerate()
             .map(|(i, pos)| PickupDef { id: i as u32 + 1, pos, respawn_secs: 20.0, weapon: shinobi_sim::power::PowerKind::None })
             .collect();
-        Self { level: LevelDesc::standard(), pickups, balance: Balance::demo(), spawn_teams: Vec::new(), team_frag_limit: None }
+        Self { level: LevelDesc::standard(), pickups, features: LevelFeatures::default(), balance: Balance::demo(), spawn_teams: Vec::new(), team_frag_limit: None }
     }
 
     /// Level-file text -> `Setup` (format and errors owned by `shinobi_sim::level::parse_level_file`).
@@ -60,12 +62,18 @@ impl Setup {
             .enumerate()
             .map(|(i, p)| PickupDef { id: i as u32 + 1, pos: p.pos, respawn_secs: p.respawn_secs, weapon: p.kind })
             .collect();
-        Ok(Self { level: f.level, pickups, balance: Balance::demo(), spawn_teams: shinobi_sim::level::parse_spawn_teams(text), team_frag_limit: None })
+        Ok(Self { level: f.level, pickups, features: f.features, balance: Balance::demo(), spawn_teams: shinobi_sim::level::parse_spawn_teams(text), team_frag_limit: None })
     }
 
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Combined geometry + feature fingerprint sent in `WELCOME` (pickups are server-only and excluded), so a
+    /// client that predicts against different `zone` / `mover` / `hazard` data is warned instead of drifting.
+    pub fn level_fingerprint(&self) -> u64 {
+        LevelFile { level: self.level.clone(), pickups: Vec::new(), features: self.features.clone() }.fingerprint()
     }
 
     /// Replace the balance with one parsed from a tuning file.
@@ -86,6 +94,7 @@ impl Setup {
         let mut server = Server::new(cfg);
         server.set_balance(self.balance.clone()).expect("balance was validated when the Setup was made");
         self.level.apply_to_server(&mut server);
+        server.set_level_features(self.features.clone());
         server.set_team_spawns(self.level.spawns.clone(), self.spawn_teams.clone());
         if let Some(limit) = self.team_frag_limit {
             server.enable_teams(limit);
@@ -103,6 +112,19 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn welcome_fingerprint_includes_features_and_excludes_pickups() {
+        let text = "box 0 -0.5 0 50 0.5 50\nspawn 0 0.81 0\npickup 8 1 0\n\
+            mover 6 2 0 1 2 1 x 6 180 solid piston\n";
+        let a = Setup::parse(text).unwrap();
+        let mut picked = a.clone();
+        picked.pickups[0].pos[0] += 3.0;
+        assert_eq!(a.level_fingerprint(), picked.level_fingerprint(), "pickups do not change WELCOME");
+        let mut moved = a.clone();
+        moved.features.movers[0].distance += 1.0;
+        assert_ne!(a.level_fingerprint(), moved.level_fingerprint(), "movers do change WELCOME");
+    }
 
     #[test]
     fn spawn_lines_may_carry_a_team_and_reach_the_server() {

@@ -181,7 +181,7 @@ pub fn draw(out: &mut Vec<Prim>, s: &HudState, p: &Palette, ax: f32) {
             } else if v.up {
                 arc(out, ax, RING_R, top, top + q, SEGS, col.a(0.16), 0.0);
             }
-            out.push(Prim::Text { pos: (0.5 - 0.125 * ax, 0.5 + 0.03), text: if reloading { "YUMI RELOADING".into() } else { "YUMI".into() }, size: 0.014, color: col.a(0.95), align: Align::Right });
+            out.push(Prim::Text { pos: (0.5 - 0.125 * ax, 0.5 + 0.03), text: match (reloading, v.tether) { (true, _) => "YUMI RELOADING".into(), (false, true) => "YUMI TETHER".into(), (false, false) => "YUMI".into() }, size: 0.014, color: col.a(0.95), align: Align::Right });
             reload_bar(out, v, col, ax);
         }
         PowerKind::Tag => {

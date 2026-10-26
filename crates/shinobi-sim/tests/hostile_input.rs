@@ -123,6 +123,7 @@ fn fuzz(seed: u64, players: u16, ticks: u32) {
                     cloak: false,
                     grind: h.yaw & 8 != 0,
                     zoom: h.yaw & 16 != 0,
+                    tether: false,
                 })
                 .collect();
             seqs[i] = seqs[i].wrapping_add(1);

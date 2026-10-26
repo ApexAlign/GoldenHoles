@@ -115,6 +115,8 @@ pub struct Disc {
     pub kind: StarKind,
     /// Metres flown so far (bounces included): stars are a close-range tool (`ShurikenCfg::range`).
     pub travelled: f32,
+    /// A Glitch mine that has landed: it no longer moves and `age` counts from the landing.
+    pub stuck: bool,
 }
 
 impl Disc {
@@ -183,6 +185,13 @@ impl Weapon for ShurikenLauncher {
             return false;
         }
         let kind = if ctx.mark { StarKind::Standard } else { ctx.star };
+        if kind == StarKind::Mine && self.discs.iter().filter(|d| d.kind == StarKind::Mine).count() >= super::stars::MAX_MINES {
+            // the oldest mine is recalled to make room (the cost below is still paid)
+            if let Some(i) = self.discs.iter().position(|d| d.kind == StarKind::Mine) {
+                let gone = self.discs.remove(i);
+                ctx.events.push(CombatEvent::ShurikenGone { pos: gone.pos });
+            }
+        }
         // star energy: a star (or a mark star) must be affordable and the pool must not be locked out
         if self.cfg.energy_max > 0.0 {
             let cost = if ctx.mark { self.cfg.mark_cost } else { self.cfg.star.cost(kind, self.cfg.energy_cost) };
@@ -199,7 +208,7 @@ impl Weapon for ShurikenLauncher {
         let dir = if plain { ctx.aim.forward() } else { assisted_dir(&self.cfg, ctx) };
         let pos = Point::from(ctx.aim.origin + dir * self.cfg.muzzle);
         let homing = ctx.lock.filter(|h| !plain && h.pull >= 0.5 && self.cfg.homing_turn > 0.0 && self.cfg.assist_strength > 0.0).map(|h| h.collider);
-        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark, kind, travelled: 0.0 });
+        self.discs.push(Disc { pos, dir, bounces: 0, age: 0.0, speed_scale: 1.0, homing, mark: ctx.mark, kind, travelled: 0.0, stuck: false });
         ctx.events.push(CombatEvent::ShurikenThrown { pos, dir, kind });
         ctx.events.push(CombatEvent::Recoil { pitch_deg: self.cfg.recoil_pitch_deg, yaw_deg: 0.0 });
         true
@@ -288,6 +297,9 @@ fn step_variant(
     skip: &[ColliderHandle],
     events: &mut Vec<CombatEvent>,
 ) -> bool {
+    if d.kind == StarKind::Mine {
+        return step_mine(world, d, cfg, dt, exclude, skip, events);
+    }
     d.age += dt;
     let sc = &cfg.star;
     if d.age > cfg.max_life {
@@ -333,6 +345,93 @@ fn step_variant(
     let at = if on_target { d.pos } else { d.pos + n * 0.1 };
     events.push(CombatEvent::StarFlash { pos: at });
     false
+}
+
+/// One tick of a Glitch mine: it flies straight until the first surface, sticks there, arms after `MINE_ARM_S` and
+/// shorts out the first enemy inside `MINE_RADIUS` (damage, then it is gone). A player struck in flight triggers it at
+/// once. Teammates and the thrower never trigger it. Returns false when it is gone.
+fn step_mine(
+    world: &PhysicsWorld,
+    d: &mut Disc,
+    cfg: &ShurikenCfg,
+    dt: f32,
+    exclude: Option<RigidBodyHandle>,
+    skip: &[ColliderHandle],
+    events: &mut Vec<CombatEvent>,
+) -> bool {
+    use super::stars::{MINE_ARM_S, MINE_DAMAGE, MINE_LIFE_S, MINE_RADIUS};
+    d.age += dt;
+    if d.age > (if d.stuck { MINE_LIFE_S } else { cfg.max_life }) {
+        events.push(CombatEvent::ShurikenGone { pos: d.pos });
+        return false;
+    }
+    let pass = |h: ColliderHandle, c: &Collider| passes_projectile(h, c) && !skip.contains(&h);
+    let mut filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.mask));
+    if let Some(b) = exclude {
+        filter = filter.exclude_rigid_body(b);
+    }
+    let trip = |handle: ColliderHandle, point: Point<Real>, events: &mut Vec<CombatEvent>| {
+        let target = world.colliders.get(handle).map_or(0, |c| c.user_data);
+        events.push(CombatEvent::Damage { target, collider: handle, amount: MINE_DAMAGE, kind: DamageKind::Shuriken, point });
+        events.push(CombatEvent::ShurikenGone { pos: point });
+    };
+    if d.stuck {
+        if d.age < MINE_ARM_S {
+            return true;
+        }
+        let mut near_filter = QueryFilter::default().predicate(&pass).groups(InteractionGroups::new(GROUP_PROJECTILE, cfg.targets));
+        if let Some(b) = exclude {
+            near_filter = near_filter.exclude_rigid_body(b);
+        }
+        let near = world.queries.cast_shape(
+            &world.bodies,
+            &world.colliders,
+            &Isometry::from(d.pos.coords),
+            &d.dir,
+            &Ball::new(MINE_RADIUS),
+            ShapeCastOptions { max_time_of_impact: 0.0, target_distance: 0.0, stop_at_penetration: true, compute_impact_geometry_on_penetration: false },
+            near_filter,
+        );
+        if let Some((handle, _)) = near {
+            trip(handle, d.pos, events);
+            return false;
+        }
+        return true;
+    }
+    let dist = cfg.speed * dt;
+    let hit = world.queries.cast_shape(
+        &world.bodies,
+        &world.colliders,
+        &Isometry::from(d.pos.coords),
+        &d.dir,
+        &Ball::new(cfg.radius),
+        ShapeCastOptions { max_time_of_impact: dist, target_distance: 0.0, stop_at_penetration: true, compute_impact_geometry_on_penetration: true },
+        filter,
+    );
+    let Some((handle, h)) = hit else {
+        d.pos += d.dir * dist;
+        return d.pos.coords.iter().all(|c| c.is_finite());
+    };
+    d.pos += d.dir * h.time_of_impact;
+    if !d.pos.coords.iter().all(|c| c.is_finite()) {
+        return false;
+    }
+    let on_target = world.colliders.get(handle).map_or(false, |c| c.collision_groups().memberships.intersects(cfg.targets));
+    if on_target {
+        trip(handle, d.pos, events);
+        return false;
+    }
+    let mut n = h.normal1.into_inner();
+    if !(n.iter().all(|c| c.is_finite()) && n.norm() > 0.5) {
+        n = -d.dir;
+    }
+    if d.dir.dot(&n) > 0.0 {
+        n = -n;
+    }
+    d.pos += n.normalize() * 0.1;
+    d.stuck = true;
+    d.age = 0.0;
+    true
 }
 
 /// The crosshair direction, bent toward the lock-on target by `assist_strength` scaled with the lock's pull (weak

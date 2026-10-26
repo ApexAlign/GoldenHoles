@@ -25,6 +25,8 @@ pub struct PowerView {
     pub reload: f32,
     /// The bow is the weapon in hand (key `2`): the HUD shows its ring even when idle.
     pub up: bool,
+    /// The selected bow arrow is the Tether Arrow (shown in the bow label).
+    pub tether: bool,
     /// Own fuda tags out there and how many of them are armed (a press with empty hands sets those off).
     pub live_tags: u32,
     pub armed_tags: u32,
@@ -45,6 +47,7 @@ impl PowerView {
             cooldown: s.cooldown,
             reload: s.reload_frac(cfg),
             up: false,
+            tether: false,
             live_tags,
             armed_tags,
         })

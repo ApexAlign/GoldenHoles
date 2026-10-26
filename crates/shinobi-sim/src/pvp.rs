@@ -324,6 +324,7 @@ pub fn apply_hits(
     block: &crate::block::BlockCfg,
     melee: &crate::melee::MeleeCfg,
     cloak: &crate::cloak::CloakCfg,
+    shield: &crate::shield::ShieldCfg,
     // `(bounty's player id, damage multiplier)` while a BOUNTY is marked (docs/bounty.md); `None` or a
     // multiplier of 1 is a no-op. Applied the same place momentum/streak are: only against an open target,
     // same as the comment above says of those -- a shield is judged on the base cut, never on a bonus.
@@ -338,6 +339,9 @@ pub fn apply_hits(
         let mut mom = 1.0f32;
         // arrows, tag blasts and star explosions are resolved against shield, parry and cut-down (`power_pass.rs`, `star_pass.rs`) before they get here
         let pre_resolved = matches!(h.cause, Cause::Weapon(DamageKind::Arrow | DamageKind::Tag));
+        if h.guarded && matches!(h.cause, Cause::Weapon(DamageKind::Arrow)) {
+            players[h.victim].shield.blocked_star(shield);
+        }
         if let (Cause::Weapon(kind), false) = (h.cause, pre_resolved) {
             let apos = players.iter().find(|p| p.id == h.attacker).map(|p| p.pos(world));
             // momentum + kill streak: a fast, hot swordsman cuts harder (but only against an open target: a shield is
@@ -373,13 +377,16 @@ pub fn apply_hits(
                             mark: false,
                             kind: crate::combat::stars::StarKind::Standard,
                             travelled: 0.0,
+                            stuck: false,
                         });
                     }
                 }
             }
             match guard {
                 crate::block::Guard::Parried => {
-                    players[h.victim].blk.mark_used();
+                    let v = &mut players[h.victim];
+                    v.blk.mark_used();
+                    v.shield.parry(shield);
                     let parried = amount;
                     amount = 0.0;
                     // a parried melee attacker is staggered and wide open to the counter
@@ -399,6 +406,9 @@ pub fn apply_hits(
                     amount = if kind == DamageKind::Shuriken { 0.0 } else { h.amount * block.front_mult };
                     let v = &mut players[h.victim];
                     v.blk.mark_used();
+                    if kind == DamageKind::Shuriken {
+                        v.shield.blocked_star(shield);
+                    }
                     // a blocked hit costs guard in proportion to its raw damage (a 20 hp cut = `hit_cost`, a 7 hp star a third)
                     v.blk.energy -= block.hit_cost * (h.amount / 20.0).min(2.5);
                     if v.blk.energy <= 0.0 {
@@ -409,6 +419,9 @@ pub fn apply_hits(
                 }
                 crate::block::Guard::None => {
                     amount *= mom;
+                    if kind == DamageKind::Slash && players.iter().any(|p| p.id == h.attacker && p.shield.aura_active(tick)) {
+                        amount *= shield.aura_damage_mult;
+                    }
                     if let Some((id, mult)) = bounty {
                         if h.attacker == id && mult > 1.0 {
                             amount *= mult;
@@ -548,6 +561,7 @@ pub fn apply_hits(
         p.ch.clear_grapple();
         p.combat.reset_projectiles();
         p.blk.reset();
+        p.shield.on_death();
         p.kmoves.reset();
         p.melee.marked_until = 0;
         p.melee.knock_speed = 0.0; // a corpse splats nothing (the kill streak and last-hit survive: ring-outs after death are over)
@@ -728,6 +742,7 @@ mod tests {
         cloak: false,
         grind: false,
         zoom: false,
+        tether: false,
     };
 
     #[test]
