@@ -237,6 +237,10 @@ pub fn setup(
             let top = b.center[1] + b.half[1];
             let (tint, mode) = if floating {
                 crate::env_look::city_surface() // floating city: tier colours by height, circuit traces (env_look.rs, shader mode 3)
+            } else if bottomless {
+                // every box is a floor or wall you stand on, never a skylight: bright tint per layer (low cyan, mid magenta, high orange)
+                let c = if top < 12.0 { pal.cyan } else if top < 35.0 { pal.magenta } else { pal.orange };
+                ([c.0 * 1.6, c.1 * 1.6, c.2 * 1.6], 1.0)
             } else if b.center[1] - b.half[1] > 10.0 {
                 ([0.15, 0.35, 0.6], 2.0) // ceiling: faint skylight grid
             } else if top > 5.0 {
