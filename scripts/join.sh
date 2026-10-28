@@ -11,8 +11,8 @@ _CH="${CHARACTER:-${SHINOBI_CHARACTER:-}}"
 if [ -n "$_CH" ] && [ -f "$_CH" ]; then export SHINOBI_CHARACTER="$(cd "$(dirname "$_CH")" && pwd)/$(basename "$_CH")"; fi
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
-# MAP=sky|small|big|xl picks a shipped level by name (LEVEL=<path> still wins)
-if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; runs) LEVEL=levels/ffa_runs.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; esac; fi
+# MAP=sky|isles|runs|hive|clock|split|splitp|small|big|xl|circuit|defrag|vector picks a shipped level by name (LEVEL=<path> still wins)
+if [ -z "${LEVEL:-}" ]; then case "${MAP:-}" in sky) LEVEL=levels/ffa_sky.lvl;; isles) LEVEL=levels/ffa_isles.lvl;; runs) LEVEL=levels/ffa_runs.lvl;; hive) LEVEL=levels/ffa_hive.lvl;; clock) LEVEL=levels/ffa_clock.lvl;; split) LEVEL=levels/ffa_split.lvl;; splitp) LEVEL=levels/ffa_split_props.lvl;; small) LEVEL=levels/ffa_small.lvl;; big) LEVEL=levels/ffa.lvl;; xl) LEVEL=levels/ffa_xl.lvl;; circuit) LEVEL=levels/ffa_circuit.lvl;; defrag|de-frag) LEVEL=levels/ffa_defrag.lvl;; vector) LEVEL=levels/ffa_vector.lvl;; esac; fi
 HOST_ARG="${1:-}"; PORT="${2:-7777}"; LEVEL="${3:-${LEVEL:-levels/ffa_small.lvl}}"
 [ -n "$HOST_ARG" ] || { echo "usage: scripts/join.sh <server-ip> [port] [level]"; exit 1; }
 [ -f "$LEVEL" ] || { echo "level $LEVEL not found (run from the repo)"; exit 1; }
