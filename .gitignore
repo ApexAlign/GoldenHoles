@@ -10,3 +10,6 @@ __pycache__/
 
 # agent handoff logs (generated; commit only reviewed evidence)
 docs/handoffs/*/logs/
+
+# local agent session exports (not repo content)
+session-ses_*.md
